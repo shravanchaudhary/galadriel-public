@@ -209,14 +209,15 @@ Prompt caching has a **minimum prefix length** before it engages. If your stable
 
 | Model | Minimum to activate caching |
 |---|---|
-| Claude Opus (any version) | **4,096 tokens** (~16 KB of text) |
-| Claude Haiku 4.5 | **4,096 tokens** |
-| Claude Sonnet 4.6 | **2,048 tokens** |
-| Claude Sonnet 4.5 / 4 | **1,024 tokens** |
+| Claude Opus 4.8 (the default) · Sonnet 4.6 · Sonnet 4.5 | **1,024 tokens** (~4 KB of text) |
+| Claude Opus 4.6 · Opus 4.5 · Haiku 4.5 | **4,096 tokens** (~16 KB) |
+| Claude Opus 4.7 | **2,048 tokens** |
 
-Out of the box, `config/SOUL.md` + `config/MEMORY.md` together are roughly 500–800 tokens. **That is well below the Opus threshold.** Caching will not engage until you cross it.
+*(Source: [Anthropic prompt-caching docs](https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching) — minimum cacheable prompt length. Verify against the live table for your exact model.)*
 
-**The fix:** fill in `config/CONTEXT.md`. Drop your project's architecture, goals, key file paths, known quirks, and current status into it. Any `*.md` file you place in `config/` is automatically loaded into the stable cache block — so adding content there is all it takes. A reasonably filled CONTEXT.md (1–2 pages of project notes) will push the total above 4K tokens and keep it there.
+Out of the box, `config/SOUL.md` + `config/MEMORY.md` together are roughly 500–800 tokens. **That is below every threshold above** — including the 1,024-token floor for the default `claude-opus-4-8`. Caching will not engage until you cross it.
+
+**The fix:** fill in `config/CONTEXT.md`. Drop your project's architecture, goals, key file paths, known quirks, and current status into it. Any `*.md` file you place in `config/` is automatically loaded into the stable cache block — so adding content there is all it takes. A reasonably filled CONTEXT.md (1–2 pages of project notes) pushes the total well past the 1,024-token floor for the default Opus 4.8 — and past 4,096 too, which covers the older Opus 4.6 / 4.5 and Haiku 4.5 if you downgrade.
 
 Once you're over the threshold, verify it's working:
 
@@ -231,7 +232,7 @@ Tokens | input=60 cache_read=5800 cache_write=0 output=240
 
 `cache_read` climbing and `cache_write` near zero after the first call = caching is engaged and you're paying 10 cents on the dollar for that context. If `cache_read` stays at 0, add more content to `config/CONTEXT.md`. See `CACHING.md` for the full breakdown and a worked cost example.
 
-> **Sonnet users:** your minimum is only 2,048 tokens, so SOUL.md + MEMORY.md alone may be enough. But filling CONTEXT.md is still worthwhile — the agent has your project context without needing tool calls to find it.
+> **Sonnet 4.6 / 4.5 users:** your floor is only 1,024 tokens — the same as the default Opus 4.8 — so a modestly filled SOUL.md + MEMORY.md + CONTEXT.md crosses it easily. Filling CONTEXT.md is worthwhile regardless: the agent gets your project context without spending tool calls to find it.
 
 ---
 
