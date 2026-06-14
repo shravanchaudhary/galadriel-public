@@ -327,25 +327,43 @@ def _slug(text: str, limit: int = 40) -> str:
     return safe[:limit] or "drawer"
 
 
-async def add_drawer(content: str, topic: str | None = None, wing: str = DEFAULT_WING) -> str:
+async def add_drawer(
+    content: str,
+    topic: str | None = None,
+    wing: str = DEFAULT_WING,
+    room: str | None = None,
+) -> str:
     """File a verbatim drawer into the palace immediately.
 
     Used by the `palace_add_drawer` tool when the agent wants a fact filed
     into searchable memory *now*, without waiting for the next mine cycle.
     One-shot: writes a single .md file into the archive tree, runs mempalace
     mine on it. Returns a human-readable status string for the tool result.
+
+    When `room` is given, the drawer is routed to that room (the relational
+    layer). mempalace's `detect_room` reads room from the folder path first
+    (Priority 1), so we place the .md inside a subfolder named after the room.
+    Without `room`, behaviour is unchanged (mempalace falls back to its
+    default room).
     """
     if not content or not content.strip():
         return "[palace add] empty content — nothing filed."
 
     ts = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
     slug = _slug(topic) if topic else _slug(content.strip().split("\n", 1)[0])
+    room_slug = _slug(room) if room else None
     batch_dir = _archive_root() / f"agent_add_{ts}_{slug}"
     fname = f"{ts}_{slug}.md"
+
+    # Place the .md inside a room-named subfolder so detect_room Priority 1
+    # (folder path match) fires deterministically.
+    target_dir = batch_dir / room_slug if room_slug else batch_dir
 
     header = [f"# Agent-filed drawer", ""]
     header.append(f"- filed: {ts}")
     header.append(f"- wing: {wing}")
+    if room:
+        header.append(f"- room: {room}")
     if topic:
         header.append(f"- topic: {topic}")
     header.append("")
@@ -353,8 +371,8 @@ async def add_drawer(content: str, topic: str | None = None, wing: str = DEFAULT
     header.append("")
 
     try:
-        batch_dir.mkdir(parents=True, exist_ok=True)
-        (batch_dir / fname).write_text(
+        target_dir.mkdir(parents=True, exist_ok=True)
+        (target_dir / fname).write_text(
             "\n".join(header) + content.strip() + "\n",
             encoding="utf-8",
         )
@@ -366,6 +384,7 @@ async def add_drawer(content: str, topic: str | None = None, wing: str = DEFAULT
         return f"[palace add] mine failed — content still on disk at {batch_dir}"
     return (
         f"Filed to palace: wing=`{wing}`"
+        + (f", room=`{room}`" if room else "")
         + (f", topic=`{topic}`" if topic else "")
         + f", path={fname}"
     )

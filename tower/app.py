@@ -179,7 +179,31 @@ def create_tower(agent, scheduler=None) -> Flask:
         if interval is not None:
             interval = int(interval)
 
-        scheduler.set_heartbeat(enabled=bool(enabled), interval=interval)
+        # Accept a custom heartbeat prompt under either key (back-compat).
+        prompt = data.get("prompt", data.get("heartbeat_prompt"))
+
+        scheduler.set_heartbeat(
+            enabled=bool(enabled), interval=interval, prompt=prompt,
+        )
+        return jsonify(scheduler.get_status())
+
+    @app.route("/api/scheduler/wake", methods=["POST"])
+    def api_scheduler_wake():
+        """Arm (or disarm) a single restart-surviving one-shot wake.
+
+        Body: {"prompt": "<self-prompt>"} to arm; {"prompt": ""} or
+        {"disarm": true} to disarm. The wake fires exactly once on the next
+        scheduler loop (or on the next process start if armed and then
+        restarted), then clears itself.
+        """
+        if not scheduler:
+            return jsonify({"error": "Scheduler not available"}), 503
+        data = request.json or {}
+        if data.get("disarm"):
+            scheduler.arm_wake("")
+        else:
+            prompt = data.get("prompt", "")
+            scheduler.arm_wake(prompt)
         return jsonify(scheduler.get_status())
 
     return app

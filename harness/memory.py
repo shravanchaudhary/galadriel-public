@@ -85,6 +85,22 @@ class MemoryManager:
         vision_path = self.config_dir / VISIONS_DIR / f"{name}.md"
         return self._read_file(vision_path)
 
+    def _active_project_name(self) -> str | None:
+        """Return the current active-project name (the stem in active_vision.txt),
+        or None if unset.
+
+        This is the lightweight counterpart to _load_active_vision(): instead of
+        loading the whole vision file into the (cached) stable block, it returns
+        just the name so a per-turn scoping banner can be placed in the dynamic
+        block. Toggling the project is then instantly visible without paying a
+        cache invalidation. Tower writes this file via /api/vision.
+        """
+        active_file = self.config_dir / ACTIVE_VISION_FILE
+        if not active_file.exists():
+            return None
+        name = active_file.read_text(encoding="utf-8").strip()
+        return name or None
+
     # ── Stable / dynamic split ──────────────────────────────────
 
     def build_stable_text(self) -> str:
@@ -113,11 +129,17 @@ class MemoryManager:
         return "\n\n---\n\n".join(parts)
 
     def build_dynamic_text(self) -> str:
-        """Assemble the non-cached portion: wake-up + daily logs + timestamp.
+        """Assemble the non-cached portion: active-project banner + wake-up
+        + daily logs + timestamp.
 
         Daily logs are placed here (not in the stable block) because they
         grow throughout the day — every append_daily_log() call would
         otherwise invalidate the cache for everything.
+
+        The active-project banner is a tiny per-turn pointer to the currently
+        selected project. It lives here (not stable) so toggling it via Tower
+        is instantly visible without a cache invalidation, and so it can carry
+        a palace-scoping hint the model reads fresh each turn.
 
         Wake-up is a compact L0/L1 snapshot from the memory palace (MemPalace),
         regenerated whenever the palace mines new content. Lives in the
@@ -126,6 +148,20 @@ class MemoryManager:
         PALACE_WAKE_UP_INJECT=0.
         """
         parts: list[str] = []
+
+        # Active-project banner (per-turn, cheap). Names the current focus and
+        # tells the model to scope palace queries to the matching hall first.
+        project = self._active_project_name()
+        if project:
+            # hall names use snake_case, so hyphens → underscores.
+            hall_key = project.replace("-", "_")
+            parts.append(
+                f"# Active Project: `{project}`\n\n"
+                f"Scope your palace queries when this project is in play: "
+                f"`palace_search(query=..., hall=\"{hall_key}\")` or "
+                f"`palace_search(query=..., room=<relevant>)`. "
+                f"Cast wider only if the scoped search returns nothing."
+            )
 
         # Wake-up injection (opt-out via env). Fails silently if mempalace
         # isn't installed or no cache file exists yet.

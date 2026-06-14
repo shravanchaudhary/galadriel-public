@@ -130,6 +130,16 @@ TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": "Optional short topic hint (used for the filename slug).",
                 },
+                "room": {
+                    "type": "string",
+                    "description": (
+                        "Optional room to route this drawer to (the relational "
+                        "layer). Use a room name to group related drawers — e.g. "
+                        "'dialogue' for notable exchanges, 'open_questions' for "
+                        "unresolved threads. Omit for durable facts (defaults to "
+                        "the palace's general room)."
+                    ),
+                },
                 "wing": {
                     "type": "string",
                     "description": "Wing to file under (default 'agent').",
@@ -301,6 +311,7 @@ async def execute_tool(name: str, inputs: dict, memory_manager=None, working_dir
             content=inputs["content"],
             topic=inputs.get("topic"),
             wing=inputs.get("wing", "agent"),
+            room=inputs.get("room"),
         )
     elif name == "palace_wake_up":
         from . import palace

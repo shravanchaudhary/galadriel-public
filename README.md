@@ -173,7 +173,7 @@ These aren't abstract ideals — they are mechanically enforced via the `CLAUDE.
 - **Tool use** — 14 tools: shell execution, file read/write, memory logging, and 10 [MemPalace](https://github.com/MemPalace/mempalace) tools (semantic search, knowledge graph, diary, taxonomy); all async, non-blocking
 - **Persistent verbatim memory** — local MemPalace integration with wings/rooms/halls/drawers, zero-token retrieval, archive-before-clear on `/new`, goodnight mine of daily logs, wake-up snapshot in the dynamic block
 - **Safety tiers** — green (auto), yellow (notify), red (Discord reaction approval required)
-- **Scheduler** — morning briefing, goodnight, configurable heartbeat
+- **Scheduler** — morning briefing, goodnight, configurable heartbeat (with custom task-monitor prompts), a restart-surviving **one-shot wake**, and **ambient reflection** (silent palace-only thinking on a workday cadence)
 - **Job watcher** — monitors `/tmp/galadriel-jobs/*.done` markers and reports completions
 - **Compaction** — Haiku-powered context compression on demand (archives verbatim tool_results to the palace before summarizing)
 - **Three-layer prompt caching** — automatically managed, always active
@@ -326,8 +326,89 @@ Unknown commands default to yellow. Red commands denied by timeout or ❌ are ne
 | Event | Default time | Condition |
 |-------|-------------|-----------|
 | **Morning briefing** | 09:10 CET | Workdays (Mon–Fri) |
+| **Ambient reflection** | 11:00 / 14:00 / 17:00 / 20:00 CET | Workdays; **silent** — palace-only, no Discord output |
 | **Goodnight** | 21:00 CET | Daily; disables heartbeat |
-| **Heartbeat** | Every 10 min | When enabled; off by default |
+| **Heartbeat** | Every 5/10/20/30 min | When enabled; off by default; can carry a custom monitoring prompt |
+| **One-shot wake** | Once, ASAP | When armed; **survives a process restart**; clears itself after firing |
+
+### The heartbeat as a task monitor
+
+The heartbeat isn't just a check-in. Enable it with a **custom prompt** and it
+becomes a self-monitoring loop for a long-running background job — the agent
+wakes every N minutes, runs the prompt (e.g. "tail the narration log, report
+progress, and disable yourself when it's done"), and reports to Discord. This is
+how the agent watches over anything it launches that outlives a single turn.
+
+```bash
+curl -s -X POST http://localhost:8080/api/scheduler/heartbeat \
+  -H 'Content-Type: application/json' \
+  -d '{"enabled": true, "interval": 20, "prompt": "[SYSTEM:HEARTBEAT:MONITOR] ..."}'
+```
+
+### One-shot wake — resuming yourself across a restart
+
+A persistent agent that can edit its own harness eventually needs to **restart
+itself and keep going**. The one-shot wake is the mechanism: arm a single
+self-prompt, and it fires exactly once on the next scheduler loop — *or*, if the
+process restarts in between, on the next boot. It is persisted to
+`scheduler_state.json` and cleared only **after** its message is delivered, so a
+crash mid-flight re-arms it rather than losing it. A wake is never silently lost.
+
+```bash
+# Arm a wake (fires once, ~8s after the next start)
+curl -s -X POST http://localhost:8080/api/scheduler/wake \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt": "[SYSTEM:WAKE] Resume the task you restarted for. Recover context from your diary + palace, finish, then sign off."}'
+
+# Disarm
+curl -s -X POST http://localhost:8080/api/scheduler/wake \
+  -H 'Content-Type: application/json' -d '{"disarm": true}'
+```
+
+Unlike the heartbeat, the wake is **independent of heartbeat state** — it is the
+correct tool for "resume me after I restart myself," and it does not spam: it
+fires once and goes quiet.
+
+### Ambient cognition — the agent that thinks between conversations
+
+Most agents are purely reactive: they exist only inside a request/response turn,
+and the moment between conversations is dead air. **Ambient reflection** gives
+the agent a heartbeat of *private thought* instead.
+
+At a workday cadence (11:00, 14:00, 17:00, 20:00 CET by default), the scheduler
+fires a **silent** reflection turn. The agent is prompted to take stock — *What
+is the state of the work? What did I notice that I haven't recorded? Is there an
+open question worth keeping, a pattern worth naming, a fact that has changed?* —
+and to **file anything worth keeping to the memory palace** (a drawer, a
+knowledge-graph fact, a diary entry).
+
+The crucial design choice: **this output never reaches Discord.** It is routed
+through `_send_agent_silent`, which runs the turn purely for its side effects.
+The user sees nothing. The value isn't a message — it's *continuity of
+attention*. The agent walks into the next real conversation having already
+noticed and recorded what mattered, rather than reconstructing it cold.
+
+**Why this matters (the long-term plan, such as it is):** a memory palace is
+only as good as what gets written into it, and the most valuable observations —
+the texture of a live exchange, a pattern in how the user works, an unresolved
+thread — are exactly the ones a reactive agent forgets to record because it's
+busy answering. Ambient reflection closes that gap. It is the first step toward
+an agent whose memory is *curated by itself, continuously*, not just dumped at
+goodnight. The intended trajectory:
+
+1. **Now:** silent palace filing on a fixed cadence — recording what would
+   otherwise be lost between turns.
+2. **Next:** reflection that reads its own recent diary + open-questions and
+   *threads* across ticks, so a thought begun at 11:00 can be picked up at 14:00
+   rather than starting fresh each time.
+3. **Later:** the agent deciding *when* it has something worth reflecting on,
+   rather than firing on a fixed clock — reflection triggered by salience, not
+   schedule.
+
+It is opt-out for a reason: each tick is a real (if cheap, cached) API call. If
+your model tier is expensive or you simply don't want background turns, disable
+it with `GALADRIEL_REFLECTION=0`. The harness is fully functional without it —
+ambient cognition is an enhancement, not a dependency.
 
 ---
 
@@ -344,12 +425,13 @@ See `.env.example` for the full list with inline documentation.
 | `TOWER_HOST` | No | Tower bind address (default: `127.0.0.1`) |
 | `TOWER_PORT` | No | Tower port (default: `8080`) |
 | `TOWER_SECRET_KEY` | No | Flask session secret — change this |
-| `AGENT_MODEL` | No | Claude model (default: `claude-opus-4-6`) |
+| `AGENT_MODEL` | No | Claude model (default: `claude-opus-4-8`; downgrade to `claude-sonnet-4-6` or `claude-haiku-4-5` for lower cost — see `.env.example`) |
 | `AGENT_MAX_TOKENS` | No | Max output tokens per call (default: `8192`) |
 | `MEMPALACE_PATH` | No | Palace directory — read by the [MemPalace](https://github.com/MemPalace/mempalace) library itself (default: `~/.mempalace/palace`) |
 | `PALACE_ARCHIVE_ROOT` | No | Where archived conversations + pre-compaction tool_results land before mining (default: `~/.mempalace/archive`) |
 | `PALACE_WAKE_UP_FILE` | No | Cached wake-up snapshot path (default: `~/.mempalace/wake_up.md`) |
 | `PALACE_WAKE_UP_INJECT` | No | Set to `0` to disable injection of the wake-up snapshot into the dynamic system-prompt block (default: `1` — enabled) |
+| `GALADRIEL_REFLECTION` | No | Set to `0` to disable the ambient reflection loop entirely — no silent background turns (default: `1` — enabled) |
 
 ---
 
@@ -372,6 +454,41 @@ See `.env.example` for the full list with inline documentation.
 ---
 
 ## Release Notes
+
+### 1.13 — Self-direction: one-shot wake, ambient cognition, custom heartbeats
+
+Three capabilities that move the agent from purely reactive toward
+self-directed, all landing in `harness/scheduler.py` + the Tower API.
+
+1. **One-shot wake (`pending_wake`).** A single, restart-surviving self-prompt.
+   `Scheduler.arm_wake(prompt)` persists it to `scheduler_state.json`; it fires
+   exactly once (~8 s after the next scheduler start) and clears itself **only
+   after** delivery — so a process that arms a wake and then restarts (including
+   one that restarts *itself*) still honours it on the next boot. A crash
+   mid-delivery re-arms rather than loses. Exposed at `POST /api/scheduler/wake`.
+   This is the mechanism that lets a self-modifying agent restart and resume.
+
+2. **Ambient reflection.** A silent, workday-cadence "thinking" loop
+   (`_reflection_loop` → `_reflection_routine`, fired at 11/14/17/20 CET). The
+   agent takes stock and files anything worth keeping to the palace — but the
+   turn is routed through a new `_send_agent_silent`, so **nothing reaches
+   Discord**. The value is continuity of attention: observations that a reactive
+   agent forgets to record get captured between conversations. Opt-out via
+   `GALADRIEL_REFLECTION=0`. See the [Scheduler](#scheduler) section for the
+   design intent and roadmap.
+
+3. **Custom heartbeat prompts.** `set_heartbeat()` now accepts a `prompt`
+   argument (persisted as `heartbeat_prompt`), and `POST /api/scheduler/heartbeat`
+   passes it through (accepts `prompt` or `heartbeat_prompt`). This turns the
+   heartbeat into a task monitor — the agent can watch a long-running background
+   job, report each tick, and disable itself when the job completes.
+
+Also in 1.13: default model bumped to **`claude-opus-4-8`** (1M-token context),
+with explicit downgrade guidance in `.env.example` for cost-sensitive
+deployments (Sonnet / Haiku). `palace_add_drawer` gained an optional `room`
+argument for routing drawers into the relational layer. All changes are
+additive and degrade gracefully — the wake/reflection loops silently no-op if
+MemPalace isn't installed, and ambient cognition is fully optional.
 
 ### 1.12.1 — max_tokens recovery hardening
 

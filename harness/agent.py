@@ -48,9 +48,11 @@ CONTEXT_WINDOW_DEFAULT = 200_000  # tokens — applies to Sonnet/Opus/Haiku 4.x
 
 # Only list explicit overrides here. Anything unknown falls back to the default.
 CONTEXT_WINDOW_OVERRIDES = {
-    # 1M-context betas, enabled per-model
+    # 1M-context models
     "claude-opus-4-5-1m": 1_000_000,
     "claude-sonnet-4-5-1m": 1_000_000,
+    "claude-opus-4-7": 1_000_000,
+    "claude-opus-4-8": 1_000_000,
 }
 
 WARN_TIER_ATTENTION = "attention"  # 90%
@@ -224,7 +226,7 @@ class GaladrielAgent:
         debug_dir: str = "debug",
     ):
         self.client = AsyncAnthropic(api_key=api_key or os.environ["ANTHROPIC_API_KEY"])
-        self.model = model or os.environ.get("AGENT_MODEL", "claude-opus-4-6")
+        self.model = model or os.environ.get("AGENT_MODEL", "claude-opus-4-8")
         self.max_tokens = max_tokens or int(os.environ.get("AGENT_MAX_TOKENS", "8192"))
         self.memory = MemoryManager(config_dir=config_dir, memory_dir=memory_dir)
         self.working_dir = working_dir or os.getcwd()
