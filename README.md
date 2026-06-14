@@ -1,12 +1,97 @@
 # Galadriel
 
-A persistent, tool-wielding Claude agent with Discord and web UI interfaces. Built to be genuinely cheap to run — not as an afterthought, but as a core design constraint baked into every layer of the architecture.
+**A self-hosted Claude agent that remembers everything it has ever done — and rewrites its own code to get better at doing it.**
 
 ![Galadriel](assets/galadriel_promo.png)
 
+> *"He inferred that persons who would train this faculty must select places, and
+> form mental images of the things they wish to remember, and store those images
+> in the places."*
+> — Cicero, *De Oratore* II.lxxxvi, recounting Simonides of Ceos (c. 500 BCE)
+
+The **method of loci** — the *memory palace* — is roughly twenty-five centuries old.
+Simonides, the story goes, identified the dead crushed beneath a collapsed banquet
+hall by recalling exactly where each guest had been seated, and from that inferred
+that memory is strongest when bound to ordered *place*. Cicero wrote it down; orators,
+scholars and modern memory champions have used it ever since. The name is not a
+metaphor borrowed from a film — it is the oldest mnemonic architecture we have.
+
+This project gives that architecture to a Claude agent, then connects it to something
+new: **the ability to edit her own harness.** Those two facts, together, are the whole
+idea.
+
 ---
 
-> **1.14** — ships a ready-to-run **Dockerfile** + `docker-compose.yml`. `cp .env.example .env && docker compose up -d --build` and you have a warden. See [Run with Docker](#run-with-docker).
+## 🌟 The thesis: memory + self-modification = an agent that compounds
+
+Most AI agents are amnesiac and frozen. Each session starts cold, and the code that
+runs them never changes unless a human edits it. Galadriel is built to break both
+limits at once, and the combination is the point:
+
+| Capability | What it gives her | On its own |
+|---|---|---|
+| **🏛️ Verbatim memory palace** | Every decision, bug, cost figure and conversation, searchable by *meaning*, at **zero API cost** | A diary that never forgets |
+| **🔧 Self-modification** | A full mandate to edit her own harness, scheduler, tools and identity files | A risky toy |
+| **🔁 The two combined** | She remembers *what she tried, why it failed, and what she changed* — then restarts herself and continues | **An agent that learns from its own history and acts on it** |
+
+A self-editing agent with no memory just repeats its mistakes faster. A perfect memory
+with no ability to act on it is a library nobody visits. Put them together and you get
+the thing this repo is actually about: an agent that notices a gap in how it works,
+**writes the fix into its own code, restarts itself, and remembers why** — closing the
+loop without a human in it.
+
+The pieces that make this real, all already shipped:
+
+- **A memory palace** built on the independent [**MemPalace**](https://github.com/MemPalace/mempalace)
+  library — local, verbatim, semantically searchable, with a temporal knowledge graph.
+  Retrieval costs **zero Anthropic tokens** (see [the memory section](#-significant-change--112-persistent-verbatim-memory-at-zero-api-cost)).
+- **A one-shot wake** that survives a process restart — so she can restart *herself*
+  to load new code and resume exactly where she left off, even across a crash
+  (see [One-shot wake](#one-shot-wake--resuming-yourself-across-a-restart)).
+- **Ambient reflection** — a silent, scheduled "thinking" loop that curates her own
+  memory between conversations, recording what a reactive agent would forget
+  (see [Ambient cognition](#ambient-cognition--the-agent-that-thinks-between-conversations)).
+- **Self-modification discipline** baked into her identity — the
+  [Karpathy coding principles](#baked-in-engineering-discipline-the-karpathy-principles)
+  keep her self-edits surgical instead of sprawling.
+
+*Build it and they will come* is a poor engineering plan, so here is the honest version:
+the loop is **early**. She can already remember, restart herself, reflect silently, and
+edit her own harness under a human's eye. The trajectory — from human-approved self-edits
+toward genuinely autonomous, salience-driven self-improvement — is mapped in the
+[Scheduler](#scheduler) and [Release Notes](#release-notes) sections. This README tells
+you exactly where reality ends and ambition begins.
+
+---
+
+## 🚀 Easiest start: Docker (one command)
+
+No Python, no virtualenv, no dependency wrangling. If you have Docker, you have a
+running agent in two steps. New to Docker? Start with Docker's own short guides —
+[Install Docker Desktop](https://docs.docker.com/get-started/get-docker/) and the
+[Docker Compose overview](https://docs.docker.com/compose/) — then:
+
+```bash
+git clone https://github.com/avasol/galadriel-public.git
+cd galadriel-public
+cp .env.example .env          # open .env, paste your ANTHROPIC_API_KEY
+docker compose up -d --build  # builds the image and starts the agent
+docker compose logs -f        # watch her wake up
+```
+
+That's the whole install. The image bundles everything the memory palace needs
+(ChromaDB + embeddings), state persists on volumes, and the Tower web UI comes up on
+[http://127.0.0.1:8080](http://127.0.0.1:8080). Add a `DISCORD_BOT_TOKEN` to `.env` and
+she'll also greet you over Discord. Full details, first-boot palace seeding, and a
+security note are in [Run with Docker](#run-with-docker). Prefer a local Python install
+instead? See [Quick Start](#quick-start).
+
+> **Where to get an API key:** the [Anthropic Console](https://console.anthropic.com/).
+> A `claude-opus-4-8` run is the default; downgrade to Sonnet or Haiku in `.env` for a
+> cheaper agent — the [cost section](#the-cost-savings-that-most-people-miss) explains
+> how prompt caching keeps even Opus affordable.
+
+---
 
 ## 🟢 SIGNIFICANT CHANGE — 1.12: Persistent verbatim memory, at zero API cost
 
@@ -503,6 +588,28 @@ See `.env.example` for the full list with inline documentation.
 ---
 
 ## Release Notes
+
+### 1.15 — README: the thesis, front and centre
+
+A documentation release. The README now leads with what the project is actually
+*about* — a memory palace **plus** self-modification, and what their combination
+makes possible — rather than burying that under a cost pitch. Concretely: a new
+Simonides/Cicero provenance epigraph (the *memory palace* is a 2,500-year-old
+technique, not a coined phrase); a "🌟 The thesis" section stating the
+memory + self-modification loop explicitly and honestly marking where reality
+ends and ambition begins; and a "🚀 Easiest start: Docker" section promoted to
+the top with beginner links (Docker Desktop, Compose, Anthropic Console) so a
+newcomer can reach a running agent in two commands. No code changed.
+
+### 1.14 — Ready-to-run Docker image
+
+A two-stage `Dockerfile` + `docker-compose.yml`. `cp .env.example .env &&
+docker compose up -d --build` and you have a warden — no local Python, no venv.
+The builder stage compiles the ChromaDB/onnxruntime wheels the memory palace
+needs; the runtime is `python:3.12-slim` running as a non-root `galadriel` user
+with state on named volumes (`~/.mempalace`, `./memory`, `./config`), so
+`docker compose down` forgets nothing. Tower binds to `127.0.0.1:8080` only by
+default. Multi-arch (amd64 + arm64). See [Run with Docker](#run-with-docker).
 
 ### 1.13 — Self-direction: one-shot wake, ambient cognition, custom heartbeats
 
