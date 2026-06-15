@@ -132,9 +132,13 @@ def _build_cached_tools() -> list[dict]:
     entire `tools` array forms its own cache prefix, which survives
     unchanged across every call (tools never change at runtime).
     """
-    if not TOOL_DEFINITIONS:
+    # Stateless / no-palace mode: filter palace tools out entirely so the agent
+    # isn't offered memory it's been told to forget.
+    from .tools import visible_tool_definitions
+    defs = visible_tool_definitions()
+    if not defs:
         return []
-    cached = [dict(t) for t in TOOL_DEFINITIONS]
+    cached = [dict(t) for t in defs]
     cached[-1] = {**cached[-1], "cache_control": {"type": "ephemeral"}}
     return cached
 

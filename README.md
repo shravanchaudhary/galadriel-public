@@ -178,6 +178,35 @@ That's it. The harness picks it up automatically on next start. `palace_search` 
 | `PALACE_ARCHIVE_ROOT` | `~/.mempalace/archive` | Where archived conversations + pre-compaction tool_results land before being mined. |
 | `PALACE_WAKE_UP_FILE` | `~/.mempalace/wake_up.md` | Cached wake-up snapshot. |
 | `PALACE_WAKE_UP_INJECT` | `1` | Set to `0` to disable the wake-up injection into the dynamic block (recovers a small amount of per-call token overhead if budget is tight). |
+| `GALADRIEL_NO_PALACE` | `0` | Set to `1` (or pass `--no-palace`) to run a **stateless / amnesiac session** — see below. |
+
+### Forgetting is a feature: stateless sessions
+
+Persistent memory is the point of this project, but sometimes you want the
+opposite: an agent that knows *only* what you put in front of it, with no recall
+of past sessions and no silent writes to long-term memory. This matters most for
+**coding** — when you want full control over what the agent knows and no
+untracked changes leaking in from yesterday's context.
+
+Run an amnesiac session two ways:
+
+```bash
+python main.py --no-palace
+# or
+GALADRIEL_NO_PALACE=1 python main.py
+```
+
+In this mode the harness **withholds all ten memory-palace tools** from the
+advertised tool set — the agent isn't merely discouraged from recalling, it is
+not *offered* the means to. (A stray palace call, if one slips through, returns a
+clear stateless message rather than touching disk.) Everything else runs
+normally: shell, file read/write, the daily log, Discord, the Tower. Only
+cross-session memory is suppressed.
+
+This is the third axis of the memory design. The knowledge graph already lets a
+fact expire (`valid_from` → `valid_to`); a drawer can be superseded or retired;
+and a whole session can be made to forget on purpose. **Forgetting is a state you
+control, never silent data loss.**
 
 ---
 

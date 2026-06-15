@@ -33,6 +33,14 @@ def start_tower(agent, scheduler):
 
 
 def main():
+    # Stateless / no-palace mode. `--no-palace` (or GALADRIEL_NO_PALACE=1) runs
+    # an amnesiac session — the memory-palace tools are withheld. Forgetting as
+    # a feature: full control over what the agent knows, useful for isolated
+    # coding sessions. Only memory recall is suppressed; everything else runs.
+    if "--no-palace" in sys.argv:
+        os.environ["GALADRIEL_NO_PALACE"] = "1"
+        log.info("Stateless mode: --no-palace set; memory palace tools are DISABLED for this session.")
+
     # Validate required env vars
     if not os.environ.get("ANTHROPIC_API_KEY"):
         log.error("ANTHROPIC_API_KEY not set. Copy .env.example to .env and fill it in.")

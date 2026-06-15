@@ -280,8 +280,38 @@ TOOL_DEFINITIONS = [
 ]
 
 
+# ── Stateless / no-palace mode (forgetting as a feature) ──
+# Set GALADRIEL_NO_PALACE=1 (or pass --no-palace to main.py) to run an amnesiac
+# session: the memory-palace tools are removed from the advertised tool set and
+# any stray palace call short-circuits. Useful for controlled coding sessions
+# where you want full command over what the agent knows. Non-palace tools
+# (shell / file / memory_log) are unaffected.
+_PALACE_TOOL_NAMES = frozenset({
+    "palace_search", "palace_add_drawer", "palace_wake_up", "palace_taxonomy",
+    "palace_kg_add", "palace_kg_query", "palace_kg_invalidate",
+    "palace_kg_timeline", "palace_diary_write", "palace_diary_read",
+})
+
+
+def palace_disabled() -> bool:
+    """True when this session runs in stateless / no-palace mode."""
+    return os.environ.get("GALADRIEL_NO_PALACE", "0") == "1"
+
+
+def visible_tool_definitions() -> list:
+    """Tool defs filtered for the current session mode. In no-palace mode the
+    palace tools are not advertised at all, so the agent cannot reach for memory
+    it has been told to forget."""
+    if palace_disabled():
+        return [t for t in TOOL_DEFINITIONS if t["name"] not in _PALACE_TOOL_NAMES]
+    return list(TOOL_DEFINITIONS)
+
+
 async def execute_tool(name: str, inputs: dict, memory_manager=None, working_dir: str = None) -> str:
     """Execute a tool and return the result as a string. All operations are non-blocking."""
+    # Stateless mode: refuse palace calls clearly.
+    if palace_disabled() and name in _PALACE_TOOL_NAMES:
+        return "[stateless session] palace memory is disabled (--no-palace); this tool is unavailable."
     if name == "run_shell":
         return await _run_shell(inputs["command"], inputs.get("working_dir", working_dir))
     elif name == "read_file":
