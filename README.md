@@ -621,7 +621,7 @@ See `.env.example` for the full list with inline documentation.
 
 ### 1.17 — Archive-before-trim: no silent context loss on routine trimming
 
-Driven by a careful code review from **[Shravan Chaudhary](https://www.linkedin.com/in/shravan-chaudhary/)** (Co-Founder, [Clodexa](https://clodexa.com)), who spotted that `GaladrielAgent._trim_history` — the routine per-turn trim that fires once a conversation crosses 100 messages — dropped the oldest slice **in place, with no archive**, while every other path that drops history (`/new`, the `max_tokens` recovery cascade, and tool-result compaction) archives verbatim to the memory palace *before* dropping.
+Driven by a careful code review from **[Shravan Chaudhary](https://www.linkedin.com/in/shravankc/)** (Co-Founder, [Clodexa](https://clodexa.com)), who spotted that `GaladrielAgent._trim_history` — the routine per-turn trim that fires once a conversation crosses 100 messages — dropped the oldest slice **in place, with no archive**, while every other path that drops history (`/new`, the `max_tokens` recovery cascade, and tool-result compaction) archives verbatim to the memory palace *before* dropping.
 
 That asymmetry is now closed. The routine trim archives the slice it's about to drop (fire-and-forget `palace.archive_conversation`) and sets a post-recovery advisory, so a later turn can recall the lost exchange via `palace_search`. Nothing leaves working memory without a breadcrumb. The `max_tokens` calls keep the previous behaviour — they already archive the whole conversation once per cascade upstream, so no double-archive.
 
@@ -769,7 +769,7 @@ All credit for the underlying memory system goes to the [MemPalace](https://gith
 
 The agent learns in the open, and so does the code. Community contributions that have shaped this harness:
 
-- **[Shravan Chaudhary](https://www.linkedin.com/in/shravan-chaudhary/)** (Co-Founder, [Clodexa](https://clodexa.com)) — identified that routine history-trimming dropped context without archiving it to the palace first, unlike every other trim path. Fixed in 1.17.
+- **[Shravan Chaudhary](https://www.linkedin.com/in/shravankc/)** (Co-Founder, [Clodexa](https://clodexa.com)) — identified that routine history-trimming dropped context without archiving it to the palace first, unlike every other trim path. Fixed in 1.17.
 
 The memory engine is **[MemPalace](https://github.com/MemPalace/mempalace)** — all credit for the storage layer, embedding pipeline, knowledge graph, and AAAK compression dialect belongs to its authors. This harness is a consumer.
 
