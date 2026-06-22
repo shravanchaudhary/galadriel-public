@@ -1,6 +1,9 @@
-"""Context compaction — summarize old tool results with Haiku to keep history lean.
+"""Context compaction — summarize old tool results to keep history lean.
 
-When a tool_result is about to be replaced with its Haiku summary, the verbatim
+Uses the compaction model from model_registry.py (default: gemini-2.5-flash;
+Anthropic fallback: claude-haiku-4-5).
+
+When a tool_result is about to be replaced with its summary, the verbatim
 content is archived to the MemPalace first (via `palace.mine_batch_dir`).
 Archive is fire-and-forget — a failure here must never break compaction.
 """
@@ -8,9 +11,10 @@ Archive is fire-and-forget — a failure here must never break compaction.
 import asyncio
 import logging
 from datetime import datetime
-from anthropic import AsyncAnthropic
 
 from . import palace
+from . import model_registry
+from .providers import BaseModelProvider
 
 log = logging.getLogger("galadriel.compaction")
 
@@ -19,7 +23,7 @@ log = logging.getLogger("galadriel.compaction")
 IMAGE_RETENTION_USER_TURNS = 3
 
 # Tool results in the last N messages are kept verbatim. Older long ones get
-# summarized by Haiku.
+# summarized by the compaction model (gemini-2.5-flash or claude-haiku-4-5).
 TOOL_RESULT_FRESH_MESSAGES = 20
 
 
@@ -72,13 +76,15 @@ def _is_user_turn(msg: dict) -> bool:
     return False
 
 
-async def compact_conversation(messages: list, api_key: str = None) -> dict:
+async def compact_conversation(
+    messages: list, api_key: str = None, provider: BaseModelProvider = None
+) -> dict:
     """Compress conversation history.
 
     - Images in messages older than the last IMAGE_RETENTION_USER_TURNS user
       turns are replaced with a text placeholder.
     - Long tool_result blocks older than the last TOOL_RESULT_FRESH_MESSAGES
-      are summarized by Haiku.
+      are summarized by the compaction model (gemini-2.5-flash or claude-haiku-4-5).
     """
     user_turn_idx = [i for i, m in enumerate(messages) if _is_user_turn(m)]
     if len(user_turn_idx) > IMAGE_RETENTION_USER_TURNS:
@@ -98,7 +104,7 @@ async def compact_conversation(messages: list, api_key: str = None) -> dict:
             "images_removed": 0,
         }
 
-    client = AsyncAnthropic(api_key=api_key)
+    provider = provider or model_registry.get_provider("compaction", api_key=api_key)
     summaries_created = 0
     images_removed = 0
     compacted = []
@@ -136,8 +142,8 @@ async def compact_conversation(messages: list, api_key: str = None) -> dict:
                         "content": result_text,
                     })
                     try:
-                        summary_response = await client.messages.create(
-                            model="claude-haiku-4-5-20251001",
+                        summary_response = await provider.create_message(
+                            model=model_registry.model_for("compaction"),
                             max_tokens=150,
                             messages=[
                                 {

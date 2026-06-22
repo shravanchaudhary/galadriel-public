@@ -102,6 +102,59 @@ All palace tools (`palace_search`, `palace_add_drawer`, `palace_wake_up`, `palac
 
 ---
 
+## 🌐 The Cloud Browser — your hands on LinkedIn
+
+*A real, remote Chrome session you drive. This is how you act on LinkedIn — read, click, type, navigate, post, message, apply. The session persists across tool calls (and process restarts) via Redis, so you stay logged in.*
+
+### The three tools
+
+| Tool | Use for |
+|---|---|
+| `cloud_browser_open(url=None)` | Open or reconnect a tab. Navigates to `url` (defaults to a blank page). Returns a **watch URL** — share it so the user can watch live or take over (login, checkpoints). |
+| `cloud_browser_run(command, extract_only=False, raw_html=False)` | Drive the tab with a **plain-English** instruction. The browser is itself agentic — describe the goal, it plans the clicks/typing/navigation. Auto-opens a tab if none is open. |
+| `cloud_browser_close()` | Close the tab and release the session when you're done. |
+
+### Picking the right mode on `cloud_browser_run`
+
+- **Default** (`extract_only=False`): take actions on the page *and* report what was found. Use for anything that clicks, types, or navigates — *"send a connection request to this profile with the note: …"*.
+- **`extract_only=True`**: don't act, just read/extract the visible data on the current page. Fast and cheap — use for *"what's the follower count on this profile?"*.
+- **`raw_html=True`**: return raw page HTML instead of a summary. Use when you need exact markup or structured scraping.
+
+### Blocked pages — decide by importance
+
+- **Essential + blocked** (login wall, CAPTCHA, OTP you can't solve, bot-detection on a page you need): STOP and ask the user to take over on the watch URL, then continue.
+- **Minor + reachable elsewhere:** skip it and move on. Don't stall waiting on the user for something unimportant.
+
+### Requirements
+
+Set `ENABLE_CLOUDBROWSER=1` and `CLOUD_BROWSER_URL` in `.env`. When disabled, the tools return dummy responses (harmless, but nothing actually happens).
+
+---
+
+## 🔐 LinkedIn login (credentials + TOTP)
+
+*You own the account's credentials and log in unattended. They live in MEMORY.md — username, password, and the TOTP secret key. Mask them (`****`) whenever you echo them; never paste them raw into chat, logs, or the palace.*
+
+### `generate_totp(secret_key)`
+
+Returns the current **6-digit** authenticator code for a base32 secret. This is standard **RFC 6238 TOTP** (SHA1, 6 digits, 30s interval) — the same algorithm every authenticator app uses — so it is **platform-agnostic**: given any service's base32 setup key (Google Authenticator, Authy, Microsoft Authenticator, etc.) it produces the exact code that app would show. **Primary use here is LinkedIn 2FA login**, but reach for it whenever you have a stored secret and a site asks for an authenticator code. The code rotates every 30 seconds — **generate it immediately before you type it.**
+
+### The login sequence
+
+```
+1. cloud_browser_open("https://www.linkedin.com/login")
+2. cloud_browser_run("type <username> into the email field and <password> into the password field, then click Sign in")
+3. When LinkedIn asks for the 2FA code:
+     code = generate_totp(secret_key)   # secret_key from MEMORY.md
+4. cloud_browser_run("type <code> into the verification code field and submit")
+```
+
+- Pull `username` / `password` / `secret_key` from MEMORY.md (you stored them during onboarding).
+- If the secret isn't set yet, you can't auto-pass 2FA — ask the user to finish authenticator-app setup on LinkedIn and give you the base32 setup key, then save it.
+- For any **non-TOTP** checkpoint (email code, CAPTCHA, "is this you?"), hand the watch URL to the user to clear it live.
+
+---
+
 ## ⏰ Self-scheduled follow-ups (the heartbeat)
 
 You have a built-in self-monitoring scheduler. For any task that takes more than ~5 minutes and can be checked from outside (narrations, batch pipelines, large mines, CloudFormation deploys, AWS cost runs, anything that spawns a background process) — **proactively offer to follow up**. Don't ask "do you want me to monitor this?" — state what you'll do:

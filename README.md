@@ -1,6 +1,6 @@
 # Galadriel
 
-**A self-hosted Claude agent that remembers everything it has ever done — and rewrites its own code to get better at doing it.**
+**A self-hosted AI agent that remembers everything it has ever done — and rewrites its own code to get better at doing it.**
 
 ![Galadriel](assets/galadriel_promo.png)
 
@@ -16,7 +16,8 @@ that memory is strongest when bound to ordered *place*. Cicero wrote it down; or
 scholars and modern memory champions have used it ever since. The name is not a
 metaphor borrowed from a film — it is the oldest mnemonic architecture we have.
 
-This project gives that architecture to a Claude agent, then connects it to something
+This project gives that architecture to a persistent agent (Gemini by default, Claude
+supported), then connects it to something
 new: **the ability to edit her own harness.** Those two facts, together, are the whole
 idea.
 
@@ -44,7 +45,7 @@ The pieces that make this real, all already shipped:
 
 - **A memory palace** built on the independent [**MemPalace**](https://github.com/MemPalace/mempalace)
   library — local, verbatim, semantically searchable, with a temporal knowledge graph.
-  Retrieval costs **zero Anthropic tokens** (see [the memory section](#-significant-change--112-persistent-verbatim-memory-at-zero-api-cost)).
+  Retrieval costs **zero API tokens** (see [the memory section](#-significant-change--112-persistent-verbatim-memory-at-zero-api-cost)).
 - **A one-shot wake** that survives a process restart — so she can restart *herself*
   to load new code and resume exactly where she left off, even across a crash
   (see [One-shot wake](#one-shot-wake--resuming-yourself-across-a-restart)).
@@ -86,16 +87,19 @@ she'll also greet you over Discord. Full details, first-boot palace seeding, and
 security note are in [Run with Docker](#run-with-docker). Prefer a local Python install
 instead? See [Quick Start](#quick-start).
 
-> **Where to get an API key:** the [Anthropic Console](https://console.anthropic.com/).
-> A `claude-opus-4-8` run is the default; downgrade to Sonnet or Haiku in `.env` for a
-> cheaper agent — the [cost section](#the-cost-savings-that-most-people-miss) explains
-> how prompt caching keeps even Opus affordable.
+> **Where to get an API key:** [Google AI Studio](https://aistudio.google.com/apikey) for Gemini
+> (default — `GEMINI_API_KEY` or `GOOGLE_API_KEY`), or the
+> [Anthropic Console](https://console.anthropic.com/) if you switch back to Claude in
+> `harness/model_registry.py`. The default is **gemini-3.1-pro-preview** for the agent
+> and **gemini-2.5-flash** for compaction — see the
+> [cost section](#the-cost-savings-that-most-people-miss) for how prompt caching keeps
+> long-running agents affordable.
 
 ---
 
 ## 🟢 SIGNIFICANT CHANGE — 1.12: Persistent verbatim memory, at zero API cost
 
-Galadriel just grew a memory palace. Not a vector-DB-as-a-service. Not a paid tier. A local, embedded, verbatim store of everything she has ever written — searchable by meaning, not just keywords — with **zero Anthropic tokens spent on retrieval**.
+Galadriel just grew a memory palace. Not a vector-DB-as-a-service. Not a paid tier. A local, embedded, verbatim store of everything she has ever written — searchable by meaning, not just keywords — with **zero API tokens spent on retrieval**.
 
 The integration is built on [**MemPalace**](https://github.com/MemPalace/mempalace), an independent local-first memory library. MemPalace does the real work (storage, embeddings, knowledge graph, temporal reasoning, compression). This harness adds the wrappers that expose it to the agent as **10 new tools** (14 total, up from 4) and wires it into the lifecycle — conversations are archived before `/new` clears them, daily logs are mined at goodnight, and a compact wake-up snapshot rides in the dynamic block so she walks into every session with her own continuity.
 
@@ -148,9 +152,9 @@ Why this matters: **rooms** let you say *"look only in the code area"*, **halls*
 
 The agent's **diary** is a separate wing — her own journal, written at end-of-session, read at wake-up. Her own voice to her future self, not mixed with operational logs.
 
-The **knowledge graph** sits alongside the drawers. Where drawers are prose, the KG is relational: `claude-opus-4-6 --[supports]--> prompt_caching` with `valid_from=2025-07-10`. When a fact changes you don't delete the old triple, you invalidate it. History is preserved; the timeline is queryable.
+The **knowledge graph** sits alongside the drawers. Where drawers are prose, the KG is relational: `gemini-3.1-pro-preview --[supports]--> implicit_caching` with `valid_from=2026-03-01`. When a fact changes you don't delete the old triple, you invalidate it. History is preserved; the timeline is queryable.
 
-**The library is [MemPalace](https://github.com/MemPalace/mempalace).** All credit for the storage layer, the embedding pipeline, the knowledge graph, the AAAK compression dialect, and the wake-up generation belongs to the MemPalace team. This harness is a consumer — it adds the Python wrappers, the tool schemas, and the lifecycle hooks (archive-before-clear, mine-at-goodnight, inject-at-wake-up) that expose the library to a running Claude agent.
+**The library is [MemPalace](https://github.com/MemPalace/mempalace).** All credit for the storage layer, the embedding pipeline, the knowledge graph, the AAAK compression dialect, and the wake-up generation belongs to the MemPalace team. This harness is a consumer — it adds the Python wrappers, the tool schemas, and the lifecycle hooks (archive-before-clear, mine-at-goodnight, inject-at-wake-up) that expose the library to a running agent.
 
 ### First-time setup
 
@@ -212,23 +216,28 @@ control, never silent data loss.**
 
 ## The cost savings that most people miss
 
-Here is a fact that most Claude API users don't know about: **cached tokens cost 90% less than regular input tokens.** Not 10% less. Not 20% less. Ninety percent. [It's in the Anthropic docs](https://platform.claude.com/docs/en/build-with-claude/prompt-caching), but the majority of people building with the API leave this entirely on the table.
+Here is a fact that most LLM API users don't know about: **cached tokens cost 90% less than regular input tokens.** Not 10% less. Not 20% less. Ninety percent. [Anthropic documents this](https://platform.claude.com/docs/en/build-with-claude/prompt-caching) for Claude; [Google documents the same 90% discount](https://ai.google.dev/gemini-api/docs/pricing) for Gemini 2.5+ models — but the majority of people building with either API leave it entirely on the table.
 
-The math is brutal in your favour. Every API call you make, Claude processes your system prompt from scratch — your personality definition, your memory files, your tool schemas — and you pay full price for every token, every time. With prompt caching, after the first call, all of that context reads at **$0.30/MTok instead of $3/MTok** (on Sonnet). That's the same intelligence, the same context, for a tenth of the cost. On a long-running personal agent with a rich system prompt, this is not a rounding error. It changes the economics entirely.
+The math is brutal in your favour. Every API call you make, the model processes your system prompt from scratch — your personality definition, your memory files, your tool schemas — and you pay full price for every token, every time. With prompt caching, after the first call, all of that context reads at a tenth of the input rate: **$0.20/MTok instead of $2/MTok** on the default gemini-3.1-pro-preview, or **$0.30/MTok instead of $3/MTok** on Claude Sonnet. That's the same intelligence, the same context, for a tenth of the cost. On a long-running personal agent with a rich system prompt, this is not a rounding error. It changes the economics entirely.
 
-Galadriel exploits this with three cache breakpoints, stacked deliberately:
+Galadriel exploits this with a provider-specific caching strategy:
+
+| Provider | Mechanism | What gets cached |
+|---|---|---|
+| **Gemini (default)** | Implicit caching — automatic for 2.5+ models; stable prefix kept byte-identical | Tools + stable system block + growing conversation |
+| **Claude** | Explicit `cache_control` breakpoints on tools, stable system, trailing message | Same coverage, three deliberate breakpoints |
 
 | Cache layer | What it covers | Behaviour |
 |---|---|---|
 | **Tool definitions** | All 14 tool schemas (4 core + 10 palace) | Cached once at startup, never re-sent |
-| **Stable system block** | Personality + memory + identity files | Marked `cache_control: ephemeral`; hits at ~100% after first call |
-| **Trailing message history** | The growing conversation | Attached per-call; cache hit rate rises every turn |
+| **Stable system block** | Personality + memory + identity files | Hits at ~100% after first call |
+| **Trailing message history** | The growing conversation | Cache hit rate rises every turn |
 
-The stable block alone — your SOUL.md, MEMORY.md, identity files — is typically 4 000–8 000 tokens. On a warm cache, those tokens cost $0.08–$0.30/MTok instead of $0.80–$3.00/MTok depending on model. That's your biggest fixed overhead per call, cut by 90%, on every single turn of the conversation.
+The stable block alone — your SOUL.md, MEMORY.md, identity files — is typically 4 000–8 000 tokens. On a warm cache, those tokens cost $0.08–$0.20/MTok (Gemini) or $0.08–$0.30/MTok (Claude Sonnet) instead of full input price. That's your biggest fixed overhead per call, cut by 90%, on every single turn of the conversation.
 
-Anthropic's own benchmarks show latency dropping by up to 85% on long prompts with caching engaged. A 100K-token context that took 11.5 seconds drops to 2.4 seconds. For a persistent agent that carries memory across sessions, this is the difference between a tool that feels alive and one that grinds.
+For a persistent agent that carries memory across sessions, caching also cuts latency on long prompts — the difference between a tool that feels alive and one that grinds.
 
-**Compaction** finishes the job. The `/compact` command uses Claude Haiku — the cheapest model in the family — to summarize old tool results in your conversation history. A 60-message session bloated with verbose shell output compresses to 20% of its token count, for a fraction of a cent. Haiku handles the summarization; Opus handles the thinking.
+**Compaction** finishes the job. The `/compact` command uses **gemini-2.5-flash** (default) or **Claude Haiku** (if you switch back in `model_registry.py`) — the cheapest model in each family — to summarize old tool results in your conversation history. A 60-message session bloated with verbose shell output compresses to 20% of its token count, for a fraction of a cent. The cheap model handles the summarization; the flagship model handles the thinking.
 
 Use `/status` in Discord at any time to watch live token numbers — input, cache_read, cache_write, output — for the last API call.
 
@@ -236,17 +245,19 @@ Use `/status` in Discord at any time to watch live token numbers — input, cach
 
 Prompt caching has a **minimum prefix length** before it engages. If your stable block is too short, the API silently skips caching entirely — you get no error, no warning, just a `cache_read=0` in every log line and a bill that looks exactly like the naive approach.
 
-| Model | Minimum to activate caching |
-|---|---|
-| Claude Opus 4.8 (the default) · Sonnet 4.6 · Sonnet 4.5 | **1,024 tokens** (~4 KB of text) |
-| Claude Opus 4.6 · Opus 4.5 · Haiku 4.5 | **4,096 tokens** (~16 KB) |
-| Claude Opus 4.7 | **2,048 tokens** |
+| Provider | Model | Minimum to activate caching |
+|---|---|---|
+| **Gemini (default agent)** | gemini-3.1-pro-preview, gemini-3.5-flash | **4,096 tokens** (~16 KB) |
+| **Gemini (default compaction)** | gemini-2.5-flash, gemini-2.5-pro | **2,048 tokens** (~8 KB) |
+| Claude | Opus 4.8 · Sonnet 4.6 · Sonnet 4.5 | **1,024 tokens** (~4 KB) |
+| Claude | Opus 4.6 · Opus 4.5 · Haiku 4.5 | **4,096 tokens** (~16 KB) |
+| Claude | Opus 4.7 | **2,048 tokens** |
 
-*(Source: [Anthropic prompt-caching docs](https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching) — minimum cacheable prompt length. Verify against the live table for your exact model.)*
+*(Sources: [Google AI caching docs](https://ai.google.dev/gemini-api/docs/interactions/caching), [Anthropic prompt-caching docs](https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching). Verify against the live table for your exact model.)*
 
-Out of the box, `config/SOUL.md` + `config/MEMORY.md` together are roughly 500–800 tokens. **That is below every threshold above** — including the 1,024-token floor for the default `claude-opus-4-8`. Caching will not engage until you cross it.
+Out of the box, `config/SOUL.md` + `config/MEMORY.md` together are roughly 500–800 tokens. **That is below every threshold above** — including the 4,096-token floor for the default gemini-3.1-pro-preview agent. Caching will not engage until you cross it.
 
-**The fix:** fill in `config/CONTEXT.md`. Drop your project's architecture, goals, key file paths, known quirks, and current status into it. Any `*.md` file you place in `config/` is automatically loaded into the stable cache block — so adding content there is all it takes. A reasonably filled CONTEXT.md (1–2 pages of project notes) pushes the total well past the 1,024-token floor for the default Opus 4.8 — and past 4,096 too, which covers the older Opus 4.6 / 4.5 and Haiku 4.5 if you downgrade.
+**The fix:** fill in `config/CONTEXT.md`. Drop your project's architecture, goals, key file paths, known quirks, and current status into it. Any `*.md` file you place in `config/` is automatically loaded into the stable cache block — so adding content there is all it takes. A reasonably filled CONTEXT.md (1–2 pages of project notes) pushes the total well past the 4,096-token agent floor — and past the lower 2,048-token floor for gemini-2.5-flash compaction or Claude Sonnet 4.6 if you switch providers.
 
 Once you're over the threshold, verify it's working:
 
@@ -259,9 +270,9 @@ Look for lines like:
 Tokens | input=60 cache_read=5800 cache_write=0 output=240
 ```
 
-`cache_read` climbing and `cache_write` near zero after the first call = caching is engaged and you're paying 10 cents on the dollar for that context. If `cache_read` stays at 0, add more content to `config/CONTEXT.md`. See `CACHING.md` for the full breakdown and a worked cost example.
+`cache_read` climbing and `cache_write` near zero after the first call = caching is engaged and you're paying 10 cents on the dollar for that context. (On Gemini, `cache_write` is always 0 — implicit caching has no write surcharge.) If `cache_read` stays at 0, add more content to `config/CONTEXT.md`. See `CACHING.md` for the full breakdown and worked cost examples for both providers.
 
-> **Sonnet 4.6 / 4.5 users:** your floor is only 1,024 tokens — the same as the default Opus 4.8 — so a modestly filled SOUL.md + MEMORY.md + CONTEXT.md crosses it easily. Filling CONTEXT.md is worthwhile regardless: the agent gets your project context without spending tool calls to find it.
+> **gemini-2.5-flash / Claude Sonnet 4.6 users:** your floor is only 2,048 tokens — a modestly filled SOUL.md + MEMORY.md + CONTEXT.md crosses it easily. Filling CONTEXT.md is worthwhile regardless: the agent gets your project context without spending tool calls to find it.
 
 ---
 
@@ -292,8 +303,8 @@ These aren't abstract ideals — they are mechanically enforced via the `CLAUDE.
 - **Safety tiers** — green (auto), yellow (notify), red (Discord reaction approval required)
 - **Scheduler** — morning briefing, goodnight, configurable heartbeat (with custom task-monitor prompts), a restart-surviving **one-shot wake**, and **ambient reflection** (silent palace-only thinking on a workday cadence)
 - **Job watcher** — monitors `/tmp/galadriel-jobs/*.done` markers and reports completions
-- **Compaction** — Haiku-powered context compression on demand (archives verbatim tool_results to the palace before summarizing)
-- **Three-layer prompt caching** — automatically managed, always active
+- **Compaction** — gemini-2.5-flash / Haiku-powered context compression on demand (archives verbatim tool_results to the palace before summarizing)
+- **Prompt caching** — automatically managed, always active (implicit on Gemini, explicit breakpoints on Claude)
 
 ---
 
@@ -309,7 +320,7 @@ pip install -r requirements.txt
 
 # 3. Configure
 cp .env.example .env
-# Edit .env — set ANTHROPIC_API_KEY at minimum
+# Edit .env — set GEMINI_API_KEY (or GOOGLE_API_KEY) at minimum
 
 # 4. (Optional but recommended) Seed the memory palace
 cp mempalace.yaml.example mempalace.yaml
@@ -322,7 +333,7 @@ python main.py
 
 **Tower-only mode:** Omit `DISCORD_BOT_TOKEN` — the harness runs with just the web UI on port 8080.
 
-**Full mode:** Set both `ANTHROPIC_API_KEY` and `DISCORD_BOT_TOKEN`.
+**Full mode:** Set `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) and `DISCORD_BOT_TOKEN`.
 
 **Skipping step 4?** That's fine — the harness runs normally and palace tools just return `[palace unavailable]` until you seed. You can do it any time.
 
@@ -337,7 +348,7 @@ palace needs).
 ```bash
 git clone https://github.com/avasol/galadriel-public.git
 cd galadriel-public
-cp .env.example .env          # set ANTHROPIC_API_KEY at minimum
+cp .env.example .env          # set GEMINI_API_KEY at minimum
 docker compose up -d --build
 docker compose logs -f
 ```
@@ -380,15 +391,16 @@ forget anything:
 ```
 main.py                   Entry point — wires all components, starts Discord + Tower
 harness/
-  agent.py                Core agent loop: Anthropic API, tool use, cache management
+  agent.py                Core agent loop: LLM API (Gemini default), tool use, cache management
   memory.py               Stable + dynamic system prompt blocks; daily memory logs
   tools.py                14 tools: run_shell, read_file, write_file, memory_log + 10 palace_*
   palace.py               MemPalace wrapper: search, archive, wake-up, KG, diary, taxonomy
   safety.py               Command classification (green / yellow / red)
-  compaction.py           Haiku-powered context compression (archives to palace first)
+  compaction.py           gemini-2.5-flash / Haiku context compression (archives to palace first)
+  model_registry.py       Task → (provider, model) — single source of truth for model selection
   scheduler.py            Morning briefing, goodnight (mines daily logs), heartbeat
   job_watcher.py          Background job completion notifications
-  error_humanizer.py      Readable Anthropic API error mapping
+  error_humanizer.py      Readable API error mapping (Anthropic + Gemini)
 discord_bot/
   bot.py                  Discord gateway, approval buttons, slash + prefix commands
 tower/
@@ -398,7 +410,7 @@ tower/
 config/
   SOUL.md                 Agent personality and values (your main customization point)
   MEMORY.md               Long-term memory (agent-maintained)
-  CONTEXT.md              Your project context — fill this in to activate Opus caching
+  CONTEXT.md              Your project context — fill this in to activate caching
   TOOLS.md                Palace tool reference + decision matrix (read by agent on every call)
   visions/                Optional per-project context files
 memory/                   Daily logs — auto-generated, gitignored
@@ -429,7 +441,7 @@ When you're ready to make her your own: edit the name, rewrite the vibe, change 
 - Server: EC2 t4g.medium, eu-north-1
 - Working Dir: /opt/galadriel
 - Python Venv: /home/ubuntu/.venv
-- Model: claude-opus-4-6
+- Model: gemini-3.1-pro-preview (or edit harness/model_registry.py)
 
 ## Operational Notes
 - AWS_PROFILE must be blank when using instance role
@@ -440,7 +452,7 @@ Fill in your real values and she'll orient herself correctly from the first mess
 
 ### CONTEXT.md — your project, always in context
 
-`config/CONTEXT.md` is where you describe what you're building. It loads into the stable cache block alongside SOUL.md and MEMORY.md, so Galadriel always has your project's architecture, goals, and known quirks available without needing tool calls to find them. It's also what pushes the stable block over the Opus cache minimum — see the warning above.
+`config/CONTEXT.md` is where you describe what you're building. It loads into the stable cache block alongside SOUL.md and MEMORY.md, so Galadriel always has your project's architecture, goals, and known quirks available without needing tool calls to find them. It's also what pushes the stable block over the cache minimum for your configured model — see the warning above.
 
 ---
 
@@ -451,7 +463,7 @@ Fill in your real values and she'll orient herself correctly from the first mess
 | Command | Description |
 |---------|-------------|
 | `/new` | Archive conversation to the palace, then start fresh |
-| `/compact` | Compress history with Haiku (archives verbatim tool_results to the palace first) — reports token reduction |
+| `/compact` | Compress history with gemini-2.5-flash / Haiku (archives verbatim tool_results to the palace first) — reports token reduction |
 | `/status` | Model, memory usage, last API token breakdown, scheduler state |
 
 ### Prefix commands
@@ -582,14 +594,15 @@ See `.env.example` for the full list with inline documentation.
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `ANTHROPIC_API_KEY` | Yes | Claude API key |
+| `GEMINI_API_KEY` | Yes* | Gemini API key (*or `GOOGLE_API_KEY` — default provider) |
+| `ANTHROPIC_API_KEY` | No | Required only if you switch tasks back to Claude in `model_registry.py` |
 | `DISCORD_BOT_TOKEN` | No | Enables Discord gateway |
 | `DISCORD_AUTHORIZED_USER_ID` | No | Only this Discord user ID can interact |
 | `DISCORD_CHANNEL_ID` | No | Guild channel for conversation |
 | `TOWER_HOST` | No | Tower bind address (default: `127.0.0.1`) |
 | `TOWER_PORT` | No | Tower port (default: `8080`) |
 | `TOWER_SECRET_KEY` | No | Flask session secret — change this |
-| `AGENT_MODEL` | No | Claude model (default: `claude-opus-4-8`; downgrade to `claude-sonnet-4-6` or `claude-haiku-4-5` for lower cost — see `.env.example`) |
+| Model selection | — | Edit `TASKS` in `harness/model_registry.py` (default: gemini-3.1-pro-preview agent, gemini-2.5-flash compaction; copy from `ANTHROPIC_DEFAULTS` to switch back to Claude Opus / Haiku) |
 | `AGENT_MAX_TOKENS` | No | Max output tokens per call (default: `8192`) |
 | `MEMPALACE_PATH` | No | Palace directory — read by the [MemPalace](https://github.com/MemPalace/mempalace) library itself (default: `~/.mempalace/palace`) |
 | `PALACE_ARCHIVE_ROOT` | No | Where archived conversations + pre-compaction tool_results land before mining (default: `~/.mempalace/archive`) |

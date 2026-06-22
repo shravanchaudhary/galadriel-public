@@ -25,18 +25,23 @@ MAX_IMAGE_BYTES = 5 * 1024 * 1024  # 5 MB — Claude's per-image limit
 
 # ─── Status report — pricing + formatter ────────────────────────────
 #
-# Prices in USD per million tokens, current Anthropic public pricing.
-# Keep keys matched to the AGENT_MODEL values actually in use.
+# Prices in USD per million tokens. Keep keys matched to models in
+# harness/model_registry.py TASKS (and ANTHROPIC_DEFAULTS).
 MODEL_PRICING_USD_PER_MTOK = {
-    # Opus family
+    # Gemini family (implicit caching — cache_write always 0)
+    "gemini-3.1-pro-preview": {"input": 2.00, "cache_read": 0.20, "cache_write": 0.00, "output": 12.00},
+    "gemini-2.5-flash":       {"input": 0.30, "cache_read": 0.03, "cache_write": 0.00, "output": 2.50},
+    "gemini-2.5-pro":         {"input": 1.25, "cache_read": 0.125, "cache_write": 0.00, "output": 10.00},
+    # Claude Opus family
     "claude-opus-4-7": {"input": 15.00, "cache_read": 1.50, "cache_write": 18.75, "output": 75.00},
     "claude-opus-4-6": {"input": 15.00, "cache_read": 1.50, "cache_write": 18.75, "output": 75.00},
     "claude-opus-4-5": {"input": 15.00, "cache_read": 1.50, "cache_write": 18.75, "output": 75.00},
-    # Sonnet family
+    "claude-opus-4-8": {"input": 15.00, "cache_read": 1.50, "cache_write": 18.75, "output": 75.00},
+    # Claude Sonnet family
     "claude-sonnet-4-6": {"input": 3.00, "cache_read": 0.30, "cache_write": 3.75, "output": 15.00},
     "claude-sonnet-4-5": {"input": 3.00, "cache_read": 0.30, "cache_write": 3.75, "output": 15.00},
     "claude-sonnet-4":   {"input": 3.00, "cache_read": 0.30, "cache_write": 3.75, "output": 15.00},
-    # Haiku family
+    # Claude Haiku family
     "claude-haiku-4-5":  {"input": 0.80, "cache_read": 0.08, "cache_write": 1.00, "output": 4.00},
 }
 
@@ -45,7 +50,7 @@ def _price_call(usage: dict, model: str) -> tuple[float, float, float]:
     """Return (actual_cost_usd, hypothetical_no_cache_cost_usd, savings_pct)
     for a single API call's usage dict {input, cache_read, cache_write, output}.
 
-    Falls back to Sonnet pricing if the model is unknown — still gives a
+    Falls back to gemini-3.1-pro-preview pricing if the model is unknown — still gives a
     usable estimate rather than failing. Returns (0, 0, 0) on malformed usage.
     """
     prices = MODEL_PRICING_USD_PER_MTOK.get(model)
@@ -56,7 +61,8 @@ def _price_call(usage: dict, model: str) -> tuple[float, float, float]:
                 prices = v
                 break
     if prices is None:
-        prices = MODEL_PRICING_USD_PER_MTOK["claude-sonnet-4-6"]
+        # Default to gemini-3.1-pro-preview pricing, then Sonnet as fallback
+        prices = MODEL_PRICING_USD_PER_MTOK.get("gemini-3.1-pro-preview") or MODEL_PRICING_USD_PER_MTOK["claude-sonnet-4-6"]
 
     try:
         inp = usage.get("input", 0) or 0
@@ -617,7 +623,7 @@ def create_bot(agent: GaladrielAgent, scheduler=None, job_watcher=None) -> comma
             return
         await interaction.response.send_message(_format_status_report(agent, scheduler))
 
-    @bot.tree.command(name="compact", description="Compress conversation history using Haiku (reduces token usage)")
+    @bot.tree.command(name="compact", description="Compress conversation history (gemini-2.5-flash / Haiku) to reduce token usage")
     async def slash_compact(interaction: discord.Interaction):
         if interaction.user.id != AUTHORIZED_USER_ID:
             await interaction.response.send_message("I do not know you, stranger. 🛡️", ephemeral=True)

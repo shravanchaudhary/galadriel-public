@@ -40,6 +40,11 @@ When your changes create orphans:
 - Remove imports/variables/functions that YOUR changes made unused.
 - Don't remove pre-existing dead code unless asked.
 
+### Clean-up of Test Files
+
+- **Clean Up Your Mess:** Always delete any temporary test scripts, scratch files (`test_*.py`, `tmp_*.py`, etc.) immediately after troubleshooting or testing an issue. Do not leave behind test files that bloat the repository.
+- **Skill Memorization:** If a test script contains a valuable trick, skill, or codebase discovery, document it at appropriate place. If essential to living, document it in `config/MEMORY.md`, if it is about a particualar subject dedicated note under `sme/`, or simply archive it to the memory palace (`palace_add_drawer`) so it can be recalled on demand, rather than keeping the file itself.
+
 The test: Every changed line should trace directly to the user's request.
 
 ## 4. Goal-Driven Execution
@@ -63,3 +68,13 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 ---
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+
+---
+
+## 5. Post-Implementation Lifecycle: Mandatory Self-Restart
+
+**Always restart yourself immediately after implementing any code or feature change.**
+
+- When you implement a feature, change configuration, or edit code, the running process does not automatically hot-reload the updated Python modules or instructions.
+- Therefore, **you must trigger a restart of your own service after implementing any feature** before continuing with subsequent features or tasks.
+- Even if multiple feature requests are given at once, implement them incrementally, restart yourself after each major component is ready, and pick up where you left off. This ensures you are always executing with the most correct, up-to-date definitions and capabilities.

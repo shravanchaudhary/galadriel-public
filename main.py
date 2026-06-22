@@ -42,8 +42,14 @@ def main():
         log.info("Stateless mode: --no-palace set; memory palace tools are DISABLED for this session.")
 
     # Validate required env vars
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        log.error("ANTHROPIC_API_KEY not set. Copy .env.example to .env and fill it in.")
+    from harness.model_registry import missing_env_keys
+
+    missing = missing_env_keys()
+    if missing:
+        log.error(
+            f"Missing required env var(s): {', '.join(missing)}. "
+            "Copy .env.example to .env and fill it in."
+        )
         sys.exit(1)
 
     # Resolve config and memory paths relative to this file

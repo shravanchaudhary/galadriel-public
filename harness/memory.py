@@ -12,13 +12,16 @@ System prompt is structured for prompt caching:
 
 For caching to engage at all, the STABLE BLOCK must exceed the model's
 minimum cacheable prefix:
-    - Opus 4.7 / 4.6 / 4.5:  4096 tokens
-    - Sonnet 4.6:            2048 tokens
-    - Sonnet 4.5 / 4:        1024 tokens
-    - Haiku 4.5:             4096 tokens
+    Gemini (default):
+    - gemini-3.1-pro-preview / gemini-3.5-flash:  4096 tokens
+    - gemini-2.5-flash / gemini-2.5-pro:          2048 tokens
+    Claude (if switched back in model_registry.py):
+    - Opus 4.6 / 4.5 / Haiku 4.5:           4096 tokens
+    - Opus 4.7 / Sonnet 4.6:                2048 tokens
+    - Opus 4.8 / Sonnet 4.5 / 4:            1024 tokens
 
 CONTEXT.md (in config/) is the recommended way to keep the stable block
-above the Opus threshold. Fill it with your project details — architecture,
+above the cache threshold. Fill it with your project details — architecture,
 goals, known issues, key paths. See CACHING.md for the full breakdown.
 """
 
@@ -54,7 +57,7 @@ class MemoryManager:
         stable block. This means:
 
           - Galadriel always has your project context without needing tool calls.
-          - The stable block stays well over the 4K cache minimum for Opus.
+          - The stable block stays well over the 4K cache minimum for gemini-3.1-pro-preview.
           - Adding a new .md to config/ costs one cache write on the next call,
             then reads at 10% cost until it changes.
         """

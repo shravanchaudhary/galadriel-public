@@ -1,21 +1,20 @@
-"""Core agent — wraps the Anthropic API with tools, memory, and safety.
+"""Core agent — wraps the LLM API with tools, memory, and safety.
 
-Prompt caching strategy (3 explicit breakpoints, see harness/memory.py for details):
+Prompt caching strategy (provider-specific; see harness/memory.py and
+harness/providers/gemini_provider.py for details):
 
+  Anthropic (explicit breakpoints):
   1. cache_control on the LAST tool definition
        → caches the `tools` prefix on its own.
-       → survives changes to system[0] (unlikely but cheap insurance).
-
   2. cache_control on system[0] (the stable block built by MemoryManager)
        → caches tools + stable system as one prefix.
-       → this is the big win: all of SOUL/IDENTITY/USER/MEMORY and any
-         project .md files in config/ ride free reads after the first call.
-
   3. cache_control on the LAST block of the LAST message (injected per-call)
-       → caches the growing message history, advancing as conversation grows.
-       → captures the tool_use ↔ tool_result cascade within a turn.
-       → implemented via _attach_trailing_cache_control() to avoid mutating
-         stored conversation state.
+       → caches the growing message history.
+
+  Gemini (implicit caching, default):
+  - Stable system blocks → system_instruction (fixed prefix every call).
+  - Dynamic system block → trailing user turn at end of contents.
+  - No cache_control markers; hits surface as cached_content_token_count.
 
 Usage tokens are logged after every API call so you can verify caching is
 actually engaging. You want cache_read to climb on the second API call within
@@ -28,10 +27,11 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from anthropic import AsyncAnthropic
 from .memory import MemoryManager
 from .tools import TOOL_DEFINITIONS, execute_tool
 from .safety import classify_command, format_safety_notice
+from .providers import BaseModelProvider
+from . import model_registry
 
 log = logging.getLogger("galadriel")
 
@@ -44,7 +44,7 @@ log = logging.getLogger("galadriel")
 # Discord message suggesting /compact or /new. One nudge per tier crossing;
 # dropping back below 90% resets the tracker so a future crossing re-fires.
 
-CONTEXT_WINDOW_DEFAULT = 200_000  # tokens — applies to Sonnet/Opus/Haiku 4.x
+CONTEXT_WINDOW_DEFAULT = 200_000  # tokens — Claude Sonnet/Opus/Haiku 4.x default
 
 # Only list explicit overrides here. Anything unknown falls back to the default.
 CONTEXT_WINDOW_OVERRIDES = {
@@ -53,6 +53,11 @@ CONTEXT_WINDOW_OVERRIDES = {
     "claude-sonnet-4-5-1m": 1_000_000,
     "claude-opus-4-7": 1_000_000,
     "claude-opus-4-8": 1_000_000,
+    # Gemini — 1,048,576-token context window (official, per ai.google.dev).
+    "gemini-3.5-flash": 1_000_000,
+    "gemini-3.1-pro-preview": 1_000_000,
+    "gemini-2.5-pro": 1_000_000,
+    "gemini-2.5-flash": 1_000_000,
 }
 
 WARN_TIER_ATTENTION = "attention"  # 90%
@@ -228,9 +233,10 @@ class GaladrielAgent:
         working_dir: str = None,
         approval_callback=None,
         debug_dir: str = "debug",
+        provider: BaseModelProvider = None,
     ):
-        self.client = AsyncAnthropic(api_key=api_key or os.environ["ANTHROPIC_API_KEY"])
-        self.model = model or os.environ.get("AGENT_MODEL", "claude-opus-4-8")
+        self.provider = provider or model_registry.get_provider("agent", api_key=api_key)
+        self.model = model or model_registry.model_for("agent")
         self.max_tokens = max_tokens or int(os.environ.get("AGENT_MAX_TOKENS", "8192"))
         self.memory = MemoryManager(config_dir=config_dir, memory_dir=memory_dir)
         self.working_dir = working_dir or os.getcwd()

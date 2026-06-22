@@ -1,6 +1,7 @@
 """Tool definitions and execution for the agent."""
 
 import asyncio
+import json
 import os
 from pathlib import Path
 
@@ -57,6 +58,107 @@ TOOL_DEFINITIONS = [
                 },
             },
             "required": ["path", "content"],
+        },
+    },
+    {
+        "name": "cloud_browser_open",
+        "description": (
+            "Open a cloud browser tab you can drive. The cloud browser is a real, "
+            "remote Chrome session. Call this once before cloud_browser_run when no "
+            "tab is open yet, or to navigate a fresh tab to a starting URL. Returns "
+            "a live watch URL the user can open to see the screen in real time and "
+            "take over if needed.\n\n"
+            "If opening fails because a browser is already open (it may be a stale "
+            "session), call cloud_browser_close and then cloud_browser_open again."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "Starting URL to load (e.g. https://amazon.com). Defaults to a blank page.",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "cloud_browser_run",
+        "description": (
+            "Drive the open cloud browser tab with a natural-language instruction. "
+            "The cloud browser is itself agentic: describe the goal in plain "
+            "English (e.g. \"search amazon for wireless earbuds and open the first "
+            "result\", \"click the Sign in button\", \"read the total on the cart "
+            "page\") and it plans and executes the clicks/typing/navigation for "
+            "you. Auto-opens a tab if none exists.\n\n"
+            "Choose the right mode so you call the cheapest API for the job:\n"
+            "- Default (extract_only=false): take actions on the page AND return "
+            "what it found. Use for anything that requires clicking, typing, or "
+            "navigating.\n"
+            "- extract_only=true: do NOT act — just read/extract the visible data "
+            "on the current page. Fast and cheap; use for 'what is the value of X "
+            "on this page?'.\n"
+            "- raw_html=true: return the raw page HTML instead of a summarized "
+            "result. Use when you need exact markup or to scrape structured data.\n\n"
+            "BLOCKED PAGES — decide by importance:\n"
+            "- If you hit a login wall, CAPTCHA, OTP prompt, or bot-detection block "
+            "AND the blocked content is essential to the user's task, STOP and ask "
+            "the user to take over on the watch URL (they can log in / solve the "
+            "challenge live), then continue once they say it's done.\n"
+            "- If the block is minor and the same value is reachable another way, "
+            "skip it and move on. Do NOT stall waiting on the user for unimportant "
+            "blocks (e.g. a value you can read elsewhere)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "Plain-English instruction describing the action to take or the data to read.",
+                },
+                "extract_only": {
+                    "type": "boolean",
+                    "description": "If true, only extract visible text/data from the current page without taking any action. Default false.",
+                },
+                "raw_html": {
+                    "type": "boolean",
+                    "description": "If true, return the raw page HTML instead of a summarized result. Default false.",
+                },
+            },
+            "required": ["command"],
+        },
+    },
+    {
+        "name": "cloud_browser_close",
+        "description": (
+            "Close the cloud browser tab and release the remote session. Call when "
+            "you are done browsing to free resources. Safe to call even if no tab "
+            "is open."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "generate_totp",
+        "description": (
+            "Generate the current 6-digit TOTP (time-based one-time password) from a "
+            "base32 secret key. This is standard RFC 6238 TOTP, so it works for ANY "
+            "authenticator-app account (Google Authenticator, Authy, Microsoft "
+            "Authenticator, etc.) — give it the secret key and it returns the same "
+            "code that app would show. Primary use: LinkedIn two-factor login. When "
+            "LinkedIn (or any site) prompts for an authenticator code, call with the "
+            "secret_key you have stored in memory, then type the returned 6-digit "
+            "code into the 2FA field via cloud_browser_run. The code rotates every "
+            "30 seconds — generate it immediately before you enter it."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "secret_key": {
+                    "type": "string",
+                    "description": "The base32 TOTP secret key for the account (e.g. the LinkedIn account's key stored in your MEMORY.md). Any service's base32 authenticator secret works.",
+                },
+            },
+            "required": ["secret_key"],
         },
     },
     {
@@ -277,6 +379,32 @@ TOOL_DEFINITIONS = [
             "required": [],
         },
     },
+    {
+        "name": "google_search",
+        "description": (
+            "Perform a Google search using the Serper API. "
+            "Use this tool ONLY for web search. To open any search result or perform operations on it, "
+            "use the cloud_browser."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "q": {
+                    "type": "string",
+                    "description": "The search query (supports site:, inurl:, etc.).",
+                },
+                "start": {
+                    "type": "integer",
+                    "description": "Offset for pagination (e.g. 0 for page 1, 10 for page 2).",
+                },
+                "num": {
+                    "type": "integer",
+                    "description": "Maximum number of results to return (default 10).",
+                }
+            },
+            "required": ["q"],
+        },
+    },
 ]
 
 
@@ -318,6 +446,18 @@ async def execute_tool(name: str, inputs: dict, memory_manager=None, working_dir
         return await _read_file(inputs["path"])
     elif name == "write_file":
         return await _write_file(inputs["path"], inputs["content"])
+    elif name == "cloud_browser_open":
+        return await _cloud_browser_open(inputs.get("url"))
+    elif name == "cloud_browser_run":
+        return await _cloud_browser_run(
+            inputs["command"],
+            extract_only=inputs.get("extract_only", False),
+            raw_html=inputs.get("raw_html", False),
+        )
+    elif name == "cloud_browser_close":
+        return await _cloud_browser_close()
+    elif name == "generate_totp":
+        return _generate_totp(inputs["secret_key"])
     elif name == "memory_log":
         if memory_manager:
             memory_manager.append_daily_log(inputs["entry"])
@@ -402,8 +542,109 @@ async def execute_tool(name: str, inputs: dict, memory_manager=None, working_dir
             None,
             lambda: palace.diary_read(last_n=inputs.get("last_n", 10)),
         )
+    elif name == "google_search":
+        results = await serper_search(
+            q=inputs["q"],
+            start=inputs.get("start"),
+            num=inputs.get("num"),
+        )
+        return json.dumps(results, indent=2, ensure_ascii=False)
     else:
         return f"Unknown tool: {name}"
+
+
+
+# ── Cloud browser ─────────────────────────────────────────────────────
+# A single remote Chrome session per harness process, kept in-memory and keyed
+# by a stable user id so it survives across tool calls within the process.
+# cloud_browser is imported lazily so a harness that never browses doesn't pay
+# the import cost.
+_CLOUD_BROWSER_USER_ID = (
+    os.environ.get("CLOUD_BROWSER_USER_ID")
+    or os.environ.get("DISCORD_AUTHORIZED_USER_ID")
+    or "galadriel"
+)
+
+
+async def _get_cloud_browser(create: bool = True):
+    """Return the singleton CloudBrowserAgent for this process. Returns None
+    when create=False and none exists yet."""
+    from .cloud_browser import CLOUD_BROWSER_INSTANCE_MAP, CloudBrowserAgent
+
+    agent = CLOUD_BROWSER_INSTANCE_MAP.get(_CLOUD_BROWSER_USER_ID)
+    if agent is None and create:
+        agent = CloudBrowserAgent(_CLOUD_BROWSER_USER_ID)
+    return agent
+
+
+async def _cloud_browser_open(url: str = None) -> str:
+    """Open or re-navigate the cloud browser tab to a starting URL."""
+    agent = await _get_cloud_browser(create=True)
+    try:
+        result = await agent.create_browser(
+            agent=True, url=url or "https://example.com/"
+        )
+    except Exception as e:
+        return f"[error] Could not open cloud browser: {e}"
+    watch_url = result.get("browser_url")
+    return f"Cloud browser ready. Watch live at: {watch_url}"
+
+
+async def _cloud_browser_run(
+    command: str, extract_only: bool = False, raw_html: bool = False
+) -> str:
+    """Drive the cloud browser with a natural-language command."""
+    agent = await _get_cloud_browser(create=True)
+    if not agent.agent_url:
+        try:
+            await agent.create_browser(agent=True)
+        except Exception as e:
+            return f"[error] Could not open cloud browser: {e}"
+    try:
+        responses = await agent.run_command(
+            command,
+            direct_extract_data=extract_only,
+            raw_html=raw_html,
+        )
+    except Exception as e:
+        return f"[error] Cloud browser command failed: {e}"
+    try:
+        return json.dumps(responses, default=str, ensure_ascii=False)
+    except Exception:
+        return str(responses)
+
+
+async def _cloud_browser_close() -> str:
+    """Close the cloud browser tab and release the remote session."""
+    agent = await _get_cloud_browser(create=False)
+    if agent is None:
+        return "No cloud browser session to close."
+    try:
+        await agent.close_browser()
+    except Exception as e:
+        return f"[warn] Close request failed, cleaning up anyway: {e}"
+    finally:
+        await agent.cleanup()
+    return "Cloud browser closed."
+
+
+def _generate_totp(secret_key: str) -> str:
+    """Return the current 6-digit TOTP code for a base32 secret key.
+
+    pyotp is imported lazily so the harness doesn't require it unless LinkedIn
+    2FA login is actually used. Whitespace in the secret (LinkedIn often shows
+    the key in space-separated groups) is stripped before use.
+    """
+    cleaned = (secret_key or "").replace(" ", "").strip()
+    if not cleaned:
+        return "[error] No TOTP secret key provided."
+    try:
+        import pyotp
+
+        totp = pyotp.TOTP(cleaned, digits=6, interval=30, digest="sha1")
+        return totp.now()
+    except Exception as e:
+        return f"[error] Could not generate TOTP: {e}"
 
 
 async def _run_shell(command: str, working_dir: str = None) -> str:
@@ -469,3 +710,117 @@ def _write_file_sync(path: str, content: str) -> str:
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(content, encoding="utf-8")
     return f"Written {len(content)} bytes to {path}"
+
+
+# ── Google Search (Serper API) ────────────────────────────────────────
+
+def sync_serper_search(q: str) -> list[dict]:
+    import requests
+    import logging
+    from tenacity import (
+        retry,
+        stop_after_attempt,
+        wait_exponential,
+        retry_if_exception_type,
+    )
+
+    logger = logging.getLogger(__name__)
+    url = "https://google.serper.dev/search"
+    api_key = os.environ.get("SERPER_API_KEY")
+    if not api_key:
+        logger.error("SERPER_API_KEY environment variable is not set.")
+        return [{"error": "SERPER_API_KEY not configured"}]
+
+    payload = json.dumps({"q": q})
+    headers = {"X-API-KEY": api_key, "Content-Type": "application/json"}
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=2, min=10, max=120),
+        retry=retry_if_exception_type(
+            (requests.HTTPError, requests.RequestException, requests.Timeout)
+        ),
+        reraise=True,
+    )
+    def _do_sync_search():
+        response = requests.post(url, headers=headers, data=payload, timeout=30)
+        if response.status_code == 429:
+            logger.warning(
+                f"Rate limited by Serper API. Status: {response.status_code}"
+            )
+            response.raise_for_status()
+        response.raise_for_status()
+        result = response.json()
+        return result.get("organic", [])
+
+    try:
+        return _do_sync_search()
+    except requests.HTTPError as e:
+        if e.response and e.response.status_code == 429:
+            logger.warning(
+                f"Serper API rate limit hit, will retry. Status: {e.response.status_code}"
+            )
+        raise e
+    except requests.RequestException as e:
+        logger.error(f"Serper API request error: {e}")
+        raise e
+
+
+async def serper_search(q: str, start: int = None, num: int = None) -> list[dict]:
+    import httpx
+    import logging
+    from tenacity import (
+        retry,
+        stop_after_attempt,
+        wait_exponential,
+        retry_if_exception_type,
+    )
+
+    logger = logging.getLogger(__name__)
+    url = "https://google.serper.dev/search"
+    api_key = os.environ.get("SERPER_API_KEY")
+    if not api_key:
+        logger.error("SERPER_API_KEY environment variable is not set.")
+        return [{"error": "SERPER_API_KEY not configured"}]
+
+    payload = {"q": q}
+    if start is not None:
+        payload["start"] = start
+    if num is not None:
+        payload["num"] = num
+    payload_json = json.dumps(payload)
+    headers = {"X-API-KEY": api_key, "Content-Type": "application/json"}
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=2, min=10, max=120),
+        retry=retry_if_exception_type(
+            (httpx.HTTPStatusError, httpx.RequestError, httpx.TimeoutException)
+        ),
+        reraise=True,
+    )
+    async def _do_search():
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(url, headers=headers, data=payload_json)
+            if response.status_code == 429:
+                logger.warning(
+                    f"Rate limited by Serper API. Status: {response.status_code}"
+                )
+                response.raise_for_status()
+            response.raise_for_status()
+            return response.json().get("organic", [])
+
+    try:
+        return await _do_search()
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 429:
+            logger.warning(
+                f"Serper API rate limit hit, will retry. Status: {e.response.status_code}"
+            )
+        raise e
+    except httpx.RequestError as e:
+        logger.error(f"Serper API request error: {e}")
+        raise e
+    except httpx.TimeoutException as e:
+        logger.error(f"Serper API request timeout: {e}")
+        raise e
