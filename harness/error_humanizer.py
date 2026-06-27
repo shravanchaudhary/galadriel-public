@@ -36,7 +36,7 @@ def humanize_anthropic_error(exc: Exception) -> str | None:
     if isinstance(exc, anthropic.NotFoundError):
         return (
             "❓ Anthropic says that resource doesn't exist. The model name may "
-            "have been retired — check `AGENT_MODEL` in the environment."
+            "have been retired — check `TASKS` in harness/model_registry.py."
         )
     if _is_overloaded(exc):
         return (

@@ -1,6 +1,7 @@
 """Tool definitions and execution for the agent."""
 
 import asyncio
+import json
 import os
 from pathlib import Path
 
@@ -57,6 +58,76 @@ TOOL_DEFINITIONS = [
                 },
             },
             "required": ["path", "content"],
+        },
+    },
+    {
+        "name": "browser",
+        "description": (
+            "Drive a real, HEADED local Chrome through the browser-use CLI. You "
+            "supply the arguments that follow `browser-use` and get its output "
+            "back. A background daemon keeps the browser alive between calls, so "
+            "open once then keep driving it. The window uses a dedicated, "
+            "PERSISTENT profile (cookies/logins survive across sessions), so once "
+            "you log into a site you stay logged in next time. `close` only "
+            "disconnects — it does not wipe the profile.\n\n"
+            "Core loop:\n"
+            "1. `open <url>` — launch/navigate. The window is visible; the user can "
+            "watch and take over (e.g. solve a CAPTCHA or login).\n"
+            "2. `state` — list the interactive elements with their numbered indices "
+            "(e.g. `[0] input \"Email\"`, `[2] button \"Sign in\"`).\n"
+            "3. Act by index: `input 0 \"text\"` (click field then type), "
+            "`click 2`, `type \"text\"` (into focused element), `keys \"Enter\"`, "
+            "`select 3 \"value\"`.\n"
+            "4. Re-run `state` after the page changes — indices are only valid for "
+            "the `state` you just read.\n"
+            "5. `close` when done.\n\n"
+            "Other useful commands: `screenshot [path]`, `get title`, `get text "
+            "<index>`, `get html`, `eval \"<js>\"`, `wait text \"Welcome\"`, "
+            "`scroll down`, `back`, `tab list`. Add `--json` for machine-readable "
+            "output. Run `--help` or `<command> --help` to discover the full "
+            "surface.\n\n"
+            "BLOCKED PAGES — decide by importance: if you hit a login wall, CAPTCHA, "
+            "OTP, or bot-detection AND the content is essential, STOP and ask the "
+            "user to take over in the live window, then continue once they're done. "
+            "If the block is minor and the value is reachable another way, skip it."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "args": {
+                    "type": "string",
+                    "description": (
+                        "Arguments passed to `browser-use`, e.g. "
+                        "\"open https://example.com\", \"state\", \"click 2\", "
+                        "\"input 0 'hello'\", \"keys 'Enter'\", or \"close\"."
+                    ),
+                },
+            },
+            "required": ["args"],
+        },
+    },
+    {
+        "name": "generate_totp",
+        "description": (
+            "Generate the current 6-digit TOTP (time-based one-time password) from a "
+            "base32 secret key. This is standard RFC 6238 TOTP, so it works for ANY "
+            "authenticator-app account (Google Authenticator, Authy, Microsoft "
+            "Authenticator, etc.) — give it the secret key and it returns the same "
+            "code that app would show. Primary use: LinkedIn two-factor login. When "
+            "LinkedIn (or any site) prompts for an authenticator code, call with the "
+            "secret_key you have stored in memory, then type the returned 6-digit "
+            "code into the 2FA field via the browser tool. The code rotates every "
+            "30 seconds — generate it immediately before you enter it."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "secret_key": {
+                    "type": "string",
+                    "description": "The base32 TOTP secret key for the account (e.g. the LinkedIn account's key stored in the DB credentials collection). Any service's base32 authenticator secret works.",
+                },
+            },
+            "required": ["secret_key"],
         },
     },
     {
@@ -277,6 +348,65 @@ TOOL_DEFINITIONS = [
             "required": [],
         },
     },
+    {
+        "name": "google_search",
+        "description": (
+            "Perform a Google search using the Serper API. "
+            "Use this tool ONLY for web search. To READ any result page, use "
+            "fetch_url_data first (fast, no browser). Only use the browser tool "
+            "when fetch_url_data can't reach the page, or when you need to click/"
+            "type/navigate rather than just read."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "q": {
+                    "type": "string",
+                    "description": "The search query (supports site:, inurl:, etc.).",
+                },
+                "start": {
+                    "type": "integer",
+                    "description": "Offset for pagination (e.g. 0 for page 1, 10 for page 2).",
+                },
+                "num": {
+                    "type": "integer",
+                    "description": "Maximum number of results to return (default 10).",
+                }
+            },
+            "required": ["q"],
+        },
+    },
+    {
+        "name": "fetch_url_data",
+        "description": (
+            "Read a web page by URL — the FAST, CHEAP, FIRST-CHOICE way to get a "
+            "page's text once you have its URL (e.g. a google_search result, or a "
+            "link from anywhere). Runs a waterfall of lightweight extractor APIs; "
+            "NO browser tab is opened, so it's far faster than the cloud browser.\n\n"
+            "WATERFALL — follow this order whenever you just need to READ a page:\n"
+            "1. Call fetch_url_data first. If it returns content, you're done — do "
+            "NOT open the browser.\n"
+            "2. If it returns [no content] (login wall, bot detection, JS-only "
+            "page, or extraction failure), open the browser tool "
+            "(`open <url>` then `eval \"document.body.innerText\"` or `state`).\n"
+            "3. If the browser is ALSO blocked (login / CAPTCHA / OTP / "
+            "bot-detection) AND the page is essential to the task, STOP and ask "
+            "the user to take over in the live window to unblock it, then continue. "
+            "If the page is not essential, skip it and move on.\n\n"
+            "Use the browser directly (not this tool) when you need to "
+            "click, type, or navigate — fetch_url_data only reads."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "The full http/https URL of the page to read.",
+                },
+            },
+            "required": ["url"],
+        },
+    },
 ]
 
 
@@ -318,6 +448,10 @@ async def execute_tool(name: str, inputs: dict, memory_manager=None, working_dir
         return await _read_file(inputs["path"])
     elif name == "write_file":
         return await _write_file(inputs["path"], inputs["content"])
+    elif name == "browser":
+        return await _run_browser(inputs["args"])
+    elif name == "generate_totp":
+        return _generate_totp(inputs["secret_key"])
     elif name == "memory_log":
         if memory_manager:
             memory_manager.append_daily_log(inputs["entry"])
@@ -402,8 +536,276 @@ async def execute_tool(name: str, inputs: dict, memory_manager=None, working_dir
             None,
             lambda: palace.diary_read(last_n=inputs.get("last_n", 10)),
         )
+    elif name == "google_search":
+        results = await serper_search(
+            q=inputs["q"],
+            start=inputs.get("start"),
+            num=inputs.get("num"),
+        )
+        return json.dumps(results, indent=2, ensure_ascii=False)
+    elif name == "fetch_url_data":
+        from .web_fetch import fetch_url_data
+        content = await fetch_url_data(inputs["url"])
+        if content:
+            return content
+        return (
+            "[no content] Fast extraction could not read this URL (possible login "
+            "wall, bot detection, or JS-only page). Read it with the browser tool "
+            "(`open <url>` then `eval \"document.body.innerText\"` or `state`). If "
+            "the browser is also blocked and the page is essential, ask the user to "
+            "unblock it in the live window; otherwise skip it."
+        )
     else:
         return f"Unknown tool: {name}"
+
+
+
+# ── Browser (browser-use CLI + persistent Chrome) ─────────────────────
+# A real Chrome driven through the browser-use CLI over CDP. We launch ONE
+# dedicated Chrome with a fixed --user-data-dir + --remote-debugging-port, so
+# its profile (cookies, logins) PERSISTS across sessions and is isolated from
+# the user's personal Chrome. browser-use runs on its own dedicated --session
+# pointed at that Chrome via --cdp-url (added only when establishing the daemon).
+# `close` only disconnects the CDP session — it never kills our Chrome, so the
+# profile survives between runs.
+_HEADED_OFF = {"0", "false", "no", "off"}
+_CONN_FLAGS = {"--profile", "--cdp-url", "--connect"}
+_DEFAULT_CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+
+
+def _profile_dir() -> str:
+    return os.path.expanduser(
+        os.environ.get("BROWSER_PROFILE_DIR", "~/.galadriel/browser-profile")
+    )
+
+
+def _cdp_port() -> int:
+    return int(os.environ.get("BROWSER_CDP_PORT", "9222"))
+
+
+def _cdp_url() -> str:
+    return f"http://127.0.0.1:{_cdp_port()}"
+
+
+def _session_name() -> str:
+    return os.environ.get("BROWSER_SESSION", "galadriel")
+
+
+def _chrome_binary() -> str:
+    return os.environ.get("CHROME_BINARY", _DEFAULT_CHROME)
+
+
+def _browser_use_home() -> str:
+    return os.path.expanduser(os.environ.get("BROWSER_USE_HOME", "~/.browser-use"))
+
+
+def _daemon_state(session: str) -> str:
+    """Classify the browser-use daemon for our session: 'ours' | 'stale' | 'down'.
+
+    'ours'  — alive and already connected to our CDP url (reuse with --session only)
+    'stale' — alive but a different config (must be closed before we reconnect)
+    'down'  — no live daemon (we must establish one with --cdp-url)
+
+    We read browser-use's own per-session state file, which stores the RAW cdp_url
+    under `config` (the live `ping` reports a resolved ws:// url instead, which is
+    why re-passing --cdp-url on every call falsely trips its config-match check).
+    """
+    home = _browser_use_home()
+    if not os.path.exists(os.path.join(home, f"{session}.sock")):
+        return "down"
+    try:
+        with open(os.path.join(home, f"{session}.state.json")) as f:
+            state = json.load(f)
+    except Exception:
+        return "down"
+    if state.get("phase") in ("stopped", "shutting_down"):
+        return "down"
+    pid = state.get("pid")
+    try:
+        os.kill(int(pid), 0)
+    except (OSError, TypeError, ValueError):
+        return "down"
+    cfg = state.get("config") or {}
+    return "ours" if cfg.get("cdp_url") == _cdp_url() else "stale"
+
+
+def _cdp_ready(port: int) -> bool:
+    """True if a CDP endpoint is already responding on the given port."""
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/json/version", timeout=1
+        ) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
+
+async def _ensure_browser_chrome() -> str | None:
+    """Launch the dedicated persistent Chrome if it isn't already running.
+
+    Returns None on success, or an error string. Idempotent: if the CDP endpoint
+    is already up we reuse it, so the same profile is shared across calls/runs.
+    """
+    import subprocess
+
+    port = _cdp_port()
+    if await asyncio.to_thread(_cdp_ready, port):
+        return None
+
+    binary = _chrome_binary()
+    if not os.path.exists(binary):
+        return (
+            f"[error] Chrome binary not found at {binary!r}. Set CHROME_BINARY "
+            "to the path of your Chrome/Chromium executable."
+        )
+
+    profile_dir = _profile_dir()
+    os.makedirs(profile_dir, exist_ok=True)
+    argv = [
+        binary,
+        f"--remote-debugging-port={port}",
+        f"--user-data-dir={profile_dir}",
+        "--remote-allow-origins=*",
+        "--no-first-run",
+        "--no-default-browser-check",
+    ]
+    if os.environ.get("BROWSER_USE_HEADED", "1").strip().lower() in _HEADED_OFF:
+        argv.append("--headless=new")
+
+    try:
+        subprocess.Popen(
+            argv,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception as e:
+        return f"[error] Could not launch Chrome: {e}"
+
+    for _ in range(30):  # wait up to ~15s for the CDP endpoint to come up
+        if await asyncio.to_thread(_cdp_ready, port):
+            return None
+        await asyncio.sleep(0.5)
+    return "[error] Chrome started but its CDP endpoint never became reachable."
+
+
+def _with_cdp(argv: list[str], daemon_up: bool) -> list[str]:
+    """Route a command to the dedicated Chrome on its own daemon session.
+
+    A dedicated `--session` keeps the harness daemon isolated from any other
+    `browser-use` daemon (e.g. a manual `default` session). `--cdp-url` points a
+    NEW daemon at our persistent Chrome; we add it only when no daemon is up yet,
+    because re-passing it to a live daemon trips browser-use's config-match check.
+    Both are global flags placed before the subcommand. Skipped if the caller
+    already supplied an explicit connection.
+    """
+    prefix = ["--session", _session_name()]
+    if not daemon_up and not any(t in _CONN_FLAGS for t in argv):
+        prefix += ["--cdp-url", _cdp_url()]
+    return [*prefix, *argv]
+
+
+async def _run_browser(args: str) -> str:
+    """Run one or more `browser-use` commands and return the combined output.
+
+    `args` is everything after `browser-use`. Multiple commands may be chained
+    with `&&`; each runs as its own invocation against the persistent daemon,
+    stopping at the first failure. We split on `&&` at the token level after
+    shlex parsing, so `&&` inside a quoted value (e.g. typed text) is preserved
+    and not treated as a separator.
+    """
+    import shlex
+
+    try:
+        tokens = shlex.split(args)
+    except ValueError as e:
+        return f"[error] Could not parse browser args: {e}"
+
+    commands: list[list[str]] = [[]]
+    for tok in tokens:
+        if tok == "&&":
+            commands.append([])
+        else:
+            commands[-1].append(tok)
+    commands = [c for c in commands if c]
+    if not commands:
+        return "[error] No browser-use command given."
+
+    err = await _ensure_browser_chrome()
+    if err:
+        return err
+
+    session = _session_name()
+    state = _daemon_state(session)
+    if state == "stale":
+        await _run_one_browser(["--session", session, "close"])
+        state = "down"
+    daemon_up = state == "ours"
+
+    outputs: list[str] = []
+    for cmd in commands:
+        text, ok = await _run_one_browser(_with_cdp(cmd, daemon_up))
+        outputs.append(text)
+        if not ok:
+            break
+        daemon_up = True
+    return "\n".join(o for o in outputs if o).strip() or "(no output)"
+
+
+async def _run_one_browser(argv: list[str]) -> tuple[str, bool]:
+    """Run a single `browser-use` invocation. Returns (output, ok)."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "browser-use",
+            *argv,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return "[error] browser-use timed out after 120 seconds.", False
+    except FileNotFoundError:
+        return (
+            "[error] browser-use is not installed. Install it with "
+            "`pip install \"browser-use[core]\" && browser-use install`.",
+            False,
+        )
+    except Exception as e:
+        return f"[error] {e}", False
+
+    output = ""
+    if stdout:
+        output += stdout.decode("utf-8", errors="replace")
+    if stderr:
+        output += f"\n[stderr] {stderr.decode('utf-8', errors='replace')}"
+    if proc.returncode != 0:
+        output += f"\n[exit code: {proc.returncode}]"
+        return output.strip(), False
+    return output.strip(), True
+
+
+def _generate_totp(secret_key: str) -> str:
+    """Return the current 6-digit TOTP code for a base32 secret key.
+
+    pyotp is imported lazily so the harness doesn't require it unless LinkedIn
+    2FA login is actually used. Whitespace in the secret (LinkedIn often shows
+    the key in space-separated groups) is stripped before use.
+    """
+    cleaned = (secret_key or "").replace(" ", "").strip()
+    if not cleaned:
+        return "[error] No TOTP secret key provided."
+    try:
+        import pyotp
+
+        totp = pyotp.TOTP(cleaned, digits=6, interval=30, digest="sha1")
+        return totp.now()
+    except Exception as e:
+        return f"[error] Could not generate TOTP: {e}"
 
 
 async def _run_shell(command: str, working_dir: str = None) -> str:
@@ -469,3 +871,62 @@ def _write_file_sync(path: str, content: str) -> str:
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(content, encoding="utf-8")
     return f"Written {len(content)} bytes to {path}"
+
+async def serper_search(q: str, start: int = None, num: int = None) -> list[dict]:
+    import httpx
+    import logging
+    from tenacity import (
+        retry,
+        stop_after_attempt,
+        wait_exponential,
+        retry_if_exception_type,
+    )
+
+    logger = logging.getLogger(__name__)
+    url = "https://google.serper.dev/search"
+    api_key = os.environ.get("SERPER_API_KEY")
+    if not api_key:
+        logger.error("SERPER_API_KEY environment variable is not set.")
+        return [{"error": "SERPER_API_KEY not configured"}]
+
+    payload = {"q": q}
+    if start is not None:
+        payload["start"] = start
+    if num is not None:
+        payload["num"] = num
+    payload_json = json.dumps(payload)
+    headers = {"X-API-KEY": api_key, "Content-Type": "application/json"}
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=2, min=10, max=120),
+        retry=retry_if_exception_type(
+            (httpx.HTTPStatusError, httpx.RequestError, httpx.TimeoutException)
+        ),
+        reraise=True,
+    )
+    async def _do_search():
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(url, headers=headers, data=payload_json)
+            if response.status_code == 429:
+                logger.warning(
+                    f"Rate limited by Serper API. Status: {response.status_code}"
+                )
+                response.raise_for_status()
+            response.raise_for_status()
+            return response.json().get("organic", [])
+
+    try:
+        return await _do_search()
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 429:
+            logger.warning(
+                f"Serper API rate limit hit, will retry. Status: {e.response.status_code}"
+            )
+        raise e
+    except httpx.RequestError as e:
+        logger.error(f"Serper API request error: {e}")
+        raise e
+    except httpx.TimeoutException as e:
+        logger.error(f"Serper API request timeout: {e}")
+        raise e

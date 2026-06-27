@@ -14,3 +14,9 @@ memory/*.json
 venv/
 # Debug prompt dumps contain full system prompt content
 debug/prompts/
+
+# MemPalace per-project files (issue #185)
+mempalace.yaml
+entities.json
+.vscode/
+todo

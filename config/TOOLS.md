@@ -6,13 +6,15 @@
 
 ## 🏰 Memory Palace (MemPalace)
 
-*Your verbatim semantic memory. Everything mined into the palace — your `config/*.md`, your daily logs, archived conversations — is searchable by meaning, not just keywords. Runs locally on this box in ChromaDB + SQLite. **Zero API tokens spent, ever.** Results are your exact words, never paraphrased.*
+*Your verbatim semantic memory. The **complete chat history** (every message, archived on `/new`, compaction, and shutdown) lives here in `room=conversations`, alongside your diary and `palace_add_drawer` facts — all searchable by meaning, not just keywords. Runs locally on this box in ChromaDB + SQLite. **Zero API tokens spent, ever.** Results are your exact words, never paraphrased.*
+
+> **Daily logs vs. the palace:** `memory/*.md` daily logs are a **short truncated index** of what the user said each day — a pointer, not the full text. For the *exact wording* of any past message, `palace_search` it (`room=conversations`); don't grep the daily log expecting the whole thing.
 
 ### The structure — wings, rooms, halls, drawers
 
 - **Drawer** — a single chunk of content (~200–1000 tokens). The atomic unit of palace memory.
-- **Room** — a folder-based grouping. Mined automatically from the directory layout (e.g. `memory/`, `harness/`, `tower/`).
-- **Wing** — the top-level namespace. Usually one wing per agent (e.g. `agent`).
+- **Room** — a grouping within a wing (e.g. `conversations` for verbatim chat, `diary`, `general`).
+- **Wing** — the top-level namespace. **All your memory is the single `agent` wing — you never choose a wing to store or fetch.** (Repo code is a separate `galadriel_public` wing, not your lived memory.)
 - **Hall** — a keyword-based auto-classification that cross-cuts rooms. Examples: `decisions`, `problems`, `milestones`. A drawer in `room=harness` might also sit in `hall=problems` if it discusses a bug.
 
 So a single drawer has: a wing, a room, optionally a hall, and verbatim content.
@@ -37,8 +39,8 @@ palace_search(query="<natural phrase>", wing=None, room=None, hall=None, k=5)
 ```
 
 - `query` — full phrases beat keywords. `"cost of Polly standard voice per million chars"` outperforms `"Polly cost"`.
-- `wing` — leave `None` for global search.
-- `room` — filter by folder (e.g. `room="harness"` for code-related drawers).
+- `wing` — **leave `None`.** Your memory is one wing; a global search always covers it. Don't pass a wing.
+- `room` — optional filter (e.g. `room="conversations"` to recall past chat verbatim, `room="harness"` for code-related drawers).
 - `hall` — filter by topic (e.g. `hall="decisions"` for cross-cutting recorded decisions).
 - `k` — 5 is usually enough; bump to 10–20 for broader sweeps.
 
@@ -99,6 +101,104 @@ This is *your* journal. Future-you reads these on wake-up via `palace_diary_read
 ### Cost note
 
 All palace tools (`palace_search`, `palace_add_drawer`, `palace_wake_up`, `palace_taxonomy`, `palace_kg_*`, `palace_diary_*`) spend **zero** API tokens. Everything happens locally in ChromaDB + SQLite. Prefer them over `read_file` when you're hunting your own memory.
+
+---
+
+## 📄 Reading a web page — the waterfall
+
+*Once you have a URL (a `google_search` result, a link from anywhere), you almost always just need to **read** it. Don't open a browser tab for that — it's slow and expensive. Use the waterfall.*
+
+| Step | Tool | When |
+|---|---|---|
+| 1 | `fetch_url_data(url)` | **Always first** for reading a page. Fast, browser-free extractor waterfall (Trafilatura Lambda → Handinger markdown). Returns the page text/markdown. |
+| 2 | `browser("open <url>")` then `browser("eval \"document.body.innerText\"")` | Only if step 1 returns `[no content]` (login wall, bot detection, JS-only page, or extraction failure). `open` loads the page; `eval "document.body.innerText"` (or `state`) returns its text. |
+| 3 | Ask the user to unblock | Only if step 2 is **also** blocked (login / CAPTCHA / OTP / bot-detection) **and** the page is essential. STOP and ask the user to clear it live in the browser window, then continue. If the page isn't essential, skip it and move on. |
+
+Rules:
+- **If `fetch_url_data` returns content, you're done.** Do NOT open the browser — that defeats the point.
+- Use the browser directly (skip `fetch_url_data`) when you need to **click, type, or navigate** — `fetch_url_data` only reads.
+- Keys live in `.env` (`TRAFILATURA_ENDPOINT` / `TRAFILATURA_API_KEY`, `HANDINGER_API_KEY`). With none set, `fetch_url_data` always returns `[no content]` and you fall straight through to the browser.
+
+---
+
+## 🌐 The Browser — your hands on LinkedIn and Web
+
+*A real, HEADED local Chrome you drive through the [browser-use](https://github.com/browser-use/browser-use) CLI. This is how you act on LinkedIn — read, click, type, navigate, post, message, apply. A background daemon keeps the browser alive across tool calls, so you `open` once and keep driving it (and stay logged in).*
+
+### The one tool
+
+There's a single `browser` tool. You pass it the arguments that follow `browser-use` (a string), and get the CLI's output back:
+
+```
+browser("open https://example.com")
+browser("state")
+browser("click 2")
+browser("close")
+```
+
+(`--headed` is injected automatically on `open`, so the window is always visible.)
+
+### The loop: open → state → act → re-state
+
+**You are the planner; the browser is your hands.** browser-use is deterministic, not natural-language — you target elements by their **numbered index** taken from `state`.
+
+1. `browser("open <url>")` — launch/navigate. The window is **visible**, so the user can watch and take over.
+2. `browser("state")` — list interactive elements with their indices (`[0] input "Email"`, `[2] button "Sign in"`, …).
+3. Act by index:
+   - `browser("input 0 'wireless earbuds'")` — click field `0` then type into it (the usual way to fill).
+   - `browser("click 2")` — click element `2`.
+   - `browser("type 'text'")` — type into the currently focused element.
+   - `browser("keys 'Enter'")` — send a key / combo (`keys 'Control+a'`).
+   - `browser("select 3 'value'")` — pick a dropdown option.
+4. **Re-run `state` after the page changes** — indices go stale once the DOM changes. Read `state` again before acting on new indices.
+5. `browser("close")` when you're done.
+
+### Reading vs acting
+
+- **Read:** `browser("state")` (URL, title, interactive elements with indices), `browser("eval \"document.body.innerText\"")` (visible text), `browser("get html")` / `browser("get text <index>")`. Add `--json` for structured output.
+- **Act:** `input` / `click` / `type` / `keys` / `select` / `hover` / `dblclick` / `scroll` (by index, as above).
+- **Chain** independent steps in one call with `&&` when you don't need intermediate output: `browser("open example.com && state")`. Don't chain past a `state` you need to read first — you need its indices before you can act.
+
+Run `browser("--help")` or `browser("<command> --help")` to discover the full surface (cookies, tabs, waits, screenshots, eval, etc.).
+
+### Blocked pages — decide by importance
+
+- **Essential + blocked** (login wall, CAPTCHA, OTP you can't solve, bot-detection on a page you need): STOP and ask the user to take over in the live browser window, then continue.
+- **Minor + reachable elsewhere:** skip it and move on. Don't stall waiting on the user for something unimportant.
+
+### Requirements
+
+Install the CLI once on the host: `pip install "browser-use[core]" && browser-use install` (installs the native runtime + Chromium). The tool drives ONE dedicated, **persistent** Chrome (its own `--user-data-dir` at `~/.galadriel/browser-profile`, isolated from the user's personal Chrome) over CDP, so cookies and logins **survive across sessions** — once you log into a site you stay logged in next time, and `close` only disconnects (it never wipes the profile). Headed mode is on by default; set `BROWSER_USE_HEADED=0` in `.env` to run headless. Config (all optional): `BROWSER_PROFILE_DIR`, `BROWSER_CDP_PORT` (default 9222), `CHROME_BINARY`. If the CLI isn't installed, the tool returns an `[error]` telling you how to install it.
+
+---
+
+## 🔐 LinkedIn login (credentials + TOTP)
+
+*You own the account's credentials and log in unattended. They live in the operational DB (`credentials` collection, `name="linkedin"`) — username, password, and the TOTP secret key. Fetch them at login time per `state/credentials_map.md`. Mask them (`****`) whenever you echo them; never paste them raw into chat, logs, or the palace, and never write them back into the repo.*
+
+### `generate_totp(secret_key)`
+
+Returns the current **6-digit** authenticator code for a base32 secret. This is standard **RFC 6238 TOTP** (SHA1, 6 digits, 30s interval) — the same algorithm every authenticator app uses — so it is **platform-agnostic**: given any service's base32 setup key (Google Authenticator, Authy, Microsoft Authenticator, etc.) it produces the exact code that app would show. **Primary use here is LinkedIn 2FA login**, but reach for it whenever you have a stored secret and a site asks for an authenticator code. The code rotates every 30 seconds — **generate it immediately before you type it.**
+
+### The login sequence
+
+```
+1. browser("open https://www.linkedin.com/login")
+2. browser("state")                                # find the email/password indices
+3. browser("input <email-index> '<username>'")
+4. browser("input <password-index> '<password>'")
+5. browser("click <sign-in-index>")                # or: keys 'Enter'
+6. When LinkedIn asks for the 2FA code:
+     browser("state")                              # find the code field index
+     code = generate_totp(secret_key)              # secret_key from the DB credentials doc
+     browser("input <code-index> '<code>'")
+7. browser("click <submit-index>")                 # or the verify button
+```
+
+- Pull `username` / `password` / `secret_key` from the DB `credentials` collection (`name="linkedin"`) — see `state/credentials_map.md` for the lookup snippet.
+- Re-run `state` whenever the page changes — indices are only valid for the `state` you read them from.
+- If the secret isn't set yet, you can't auto-pass 2FA — ask the user to finish authenticator-app setup on LinkedIn and give you the base32 setup key, then save it.
+- For any **non-TOTP** checkpoint (email code, CAPTCHA, "is this you?"), ask the user to clear it live in the browser window.
 
 ---
 

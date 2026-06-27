@@ -2,11 +2,12 @@
 
 import os
 import json
+import queue
 import asyncio
 import logging
 from datetime import datetime
 from pathlib import Path
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, Response
 
 log = logging.getLogger("galadriel.tower")
 
@@ -56,7 +57,7 @@ def create_tower(agent, scheduler=None) -> Flask:
                 scheduler._loop,
             )
             try:
-                response = future.result(timeout=120)  # 2 min timeout
+                response = future.result(timeout=1200)  # 20 minutes timeout
                 return jsonify({"response": response})
             except Exception as e:
                 log.exception("Tower chat error")
@@ -74,6 +75,54 @@ def create_tower(agent, scheduler=None) -> Flask:
                 return jsonify({"error": str(e)}), 500
             finally:
                 loop.close()
+
+    @app.route("/api/chat/stream", methods=["POST"])
+    def api_chat_stream():
+        """Server-Sent Events stream of the agent's turn: thoughts, text
+        deltas, and tool calls/results as they happen.
+
+        The agent runs on the Discord asyncio loop; its async `emit` callback
+        pushes events onto a thread-safe queue that this (Flask worker thread)
+        generator drains into SSE frames.
+        """
+        data = request.json or {}
+        message = data.get("message", "").strip()
+        if not message:
+            return jsonify({"error": "Empty message"}), 400
+
+        loop = scheduler._loop if scheduler else None
+        if not (loop and loop.is_running()):
+            return jsonify({"error": "Agent event loop not available"}), 503
+
+        events: "queue.Queue" = queue.Queue()
+
+        async def emit(event):
+            events.put(event)
+
+        async def run():
+            try:
+                final = await agent.respond(message, channel_id="tower", emit=emit)
+                events.put({"type": "done", "text": final})
+            except Exception as e:
+                log.exception("Tower stream error")
+                events.put({"type": "error", "error": str(e)})
+            finally:
+                events.put(None)  # sentinel: stream complete
+
+        asyncio.run_coroutine_threadsafe(run(), loop)
+
+        def generate():
+            while True:
+                event = events.get()
+                if event is None:
+                    break
+                yield f"data: {json.dumps(event)}\n\n"
+
+        return Response(
+            generate(),
+            mimetype="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @app.route("/api/history", methods=["GET"])
     def api_history():
@@ -97,9 +146,24 @@ def create_tower(agent, scheduler=None) -> Flask:
 
     @app.route("/api/clear", methods=["POST"])
     def api_clear():
+        """Archive the channel's conversation to the palace, then clear it —
+        matching Discord's `/new` / `!new` / `!clear` behaviour."""
         channel = request.json.get("channel", "tower")
-        agent.clear_history(channel)
-        return jsonify({"status": "ok"})
+        loop = scheduler._loop if scheduler else None
+        if loop and loop.is_running():
+            future = asyncio.run_coroutine_threadsafe(
+                agent.pop_and_archive_history(channel), loop,
+            )
+            try:
+                archived = future.result(timeout=120)
+            except Exception as e:
+                log.exception("Tower clear error")
+                return jsonify({"error": str(e)}), 500
+        else:
+            # Fallback: agent loop unavailable — clear without archiving.
+            agent.clear_history(channel)
+            archived = 0
+        return jsonify({"status": "ok", "archived": archived})
 
     @app.route("/api/memory", methods=["GET"])
     def api_memory():

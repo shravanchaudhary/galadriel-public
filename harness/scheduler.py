@@ -19,13 +19,20 @@ import asyncio
 import logging
 import json
 import os
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 log = logging.getLogger("galadriel.scheduler")
 
 CET = ZoneInfo("Europe/Stockholm")
+
+# Channels owned by the scheduler's own routines (not real user conversations).
+# Used to decide which channels to checkpoint-mine before reflection.
+SCHEDULER_CHANNELS = {"wake", "heartbeat", "morning", "reflection", "goodnight"}
+# Minimum gap between heartbeat checkpoints — heartbeats are too frequent to mine
+# every tick, so we only checkpoint the heartbeat channel once per hour.
+HEARTBEAT_CHECKPOINT_MIN_GAP = timedelta(hours=1)
 
 # Morning: 09:10 CET on workdays (Mon-Fri)
 MORNING_TIME = time(9, 10)
@@ -80,6 +87,8 @@ class Scheduler:
         self._last_goodnight: str | None = None
         # Reflection tracks each (date, slot) so all slots fire once per day
         self._fired_reflections: set[str] = set()
+        # Heartbeat checkpoints are rate-limited to once per hour (see loop).
+        self._last_heartbeat_checkpoint: datetime | None = None
 
         # Load persisted state
         self._load_state()
@@ -299,6 +308,7 @@ class Scheduler:
                 # Delivered (or legitimately silent) — clear so it never repeats.
                 self.pending_wake = None
                 self._save_state()
+                await self._checkpoint("wake")
                 log.info("One-shot wake delivered and cleared.")
             else:
                 # Delivery raised — leave armed; next startup retries.
@@ -325,6 +335,15 @@ class Scheduler:
                     prompt=prompt,
                     channel_id="heartbeat",
                 )
+                # Heartbeats are frequent — only checkpoint-mine the heartbeat
+                # channel once per hour, not every tick.
+                now = datetime.now()
+                if (
+                    self._last_heartbeat_checkpoint is None
+                    or (now - self._last_heartbeat_checkpoint) >= HEARTBEAT_CHECKPOINT_MIN_GAP
+                ):
+                    await self._checkpoint("heartbeat")
+                    self._last_heartbeat_checkpoint = now
         except asyncio.CancelledError:
             log.info("Heartbeat loop cancelled.")
         except Exception as e:
@@ -456,6 +475,7 @@ class Scheduler:
             ),
             channel_id="morning",
         )
+        await self._checkpoint("morning")
 
     async def _reflection_routine(self):
         """Ambient silent reflection — fires per slot in REFLECTION_TIMES, workdays.
@@ -466,23 +486,44 @@ class Scheduler:
         response is never sent to Discord — only the palace side effects matter.
         """
         log.info("Reflection routine starting (silent)...")
+        # Mine the live user conversation(s) up to now BEFORE reflecting, so the
+        # reflection turn (and its palace_search) sees the latest state. Blocking
+        # — reflection only starts once the checkpoint mine has finished. This is
+        # also what closes the "idle conversation never mined" gap: reflection
+        # runs 4x/workday, so any active chat gets mined regularly regardless of
+        # whether it ever hit the compaction threshold.
+        await self._checkpoint_user_conversations()
         await self._send_agent_silent(
             prompt=(
-                "[SYSTEM:REFLECTION] This is an ambient reflection tick — a quiet "
-                "moment to think, not to speak. No Discord output is expected or "
-                "desired; the user will not see this turn.\n\n"
-                "Take stock: What is the current state of the work? What did you "
-                "notice recently that you have not yet recorded? Is there an open "
-                "question that deserves to stay open, a pattern worth naming, a "
-                "fact that has changed?\n\n"
-                "If something is worth keeping, FILE it now — palace_add_drawer "
-                "for a durable note, palace_kg_add for a structured fact, or "
-                "palace_diary_write for a reflection in your own voice. If nothing "
-                "needs filing, that is a valid outcome — simply end the turn. "
-                "The value of this tick is continuity of attention, not output."
+                "[SYSTEM:REFLECTION] This is an ambient reflection + retro tick — a "
+                "quiet moment to think and to learn from your recent work. No Discord "
+                "output is expected or desired; the user will not see this turn.\n\n"
+                "PART 1 — Take stock: What is the current state of the work? What did "
+                "you notice recently that you have not yet recorded? An open question "
+                "worth keeping open, a pattern worth naming, a fact that changed? If "
+                "something is worth keeping, FILE it now — palace_add_drawer for a "
+                "durable note, palace_kg_add for a structured fact, or "
+                "palace_diary_write for a reflection in your own voice.\n\n"
+                "PART 2 — Retro (learn from what you did): Review your recent work via "
+                "palace_search and palace_diary_read. Where did you get something "
+                "wrong, get corrected by the user, repeat a mistake, or have to look "
+                "up something you should already have known? Distill any DURABLE, "
+                "GENERALIZABLE lesson — not a one-off, not a restatement of what you "
+                "already know. If you find a real lesson:\n"
+                "  1. File the full lesson to the palace (palace_diary_write or "
+                "palace_add_drawer) — your permanent record.\n"
+                "  2. Update config/LESSONS.md: read_file it first, then write_file "
+                "the revised version with your new lesson added. Keep it CURATED and "
+                "BRIEF — merge duplicates, drop stale/contradicted lessons, phrase "
+                "each as an actionable rule. It is injected into your context every "
+                "turn, so every line must earn its place.\n\n"
+                "If nothing this tick needs filing and no real lesson surfaced, that "
+                "is a valid outcome — simply end the turn. The value is continuity of "
+                "attention and steady self-improvement, not output."
             ),
             channel_id="reflection",
         )
+        await self._checkpoint("reflection")
 
     async def _goodnight_routine(self):
         """Goodnight — 21:00 CET, then REST.
@@ -503,6 +544,7 @@ class Scheduler:
             ),
             channel_id="goodnight",
         )
+        await self._checkpoint("goodnight")
         # Disable heartbeat
         self.rest()
 
@@ -513,6 +555,30 @@ class Scheduler:
             log.info("Goodnight: palace daily-log mine scheduled")
         except Exception as e:
             log.warning(f"Goodnight: could not schedule palace mine: {e}")
+
+    # ── Palace checkpointing ─────────────────────────────────────
+
+    async def _checkpoint(self, channel_id: str) -> None:
+        """Non-destructively mine a channel's new messages to the palace.
+
+        Thin wrapper over agent.checkpoint_channel — never raises, so a mining
+        hiccup can't break a scheduler routine.
+        """
+        try:
+            await self.agent.checkpoint_channel(channel_id)
+        except Exception as e:
+            log.warning(f"Checkpoint failed for channel {channel_id}: {e}")
+
+    async def _checkpoint_user_conversations(self) -> None:
+        """Checkpoint-mine every live user conversation (non-scheduler channels).
+
+        Called (blocking) before reflection so the agent's own scheduler channels
+        — handled by their own routines — are skipped to avoid double work.
+        """
+        for cid in list(self.agent.conversations.keys()):
+            if cid in SCHEDULER_CHANNELS:
+                continue
+            await self._checkpoint(cid)
 
     # ── Message Delivery ─────────────────────────────────────────
 

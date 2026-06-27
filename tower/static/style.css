@@ -160,6 +160,140 @@ h2 {
 }
 .chat-input:focus { outline: none; border-color: var(--gold); }
 
+/* ── Streaming turn ──────────────────────────────────────────── */
+.msg-body { margin-top: 0.3rem; }
+
+/* Typing indicator */
+.typing { display: inline-flex; gap: 4px; padding: 0.3rem 0; }
+.typing i {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--gold);
+    opacity: 0.35;
+    animation: typing-pulse 1.2s infinite ease-in-out;
+}
+.typing i:nth-child(2) { animation-delay: 0.2s; }
+.typing i:nth-child(3) { animation-delay: 0.4s; }
+@keyframes typing-pulse {
+    0%, 80%, 100% { opacity: 0.25; transform: translateY(0); }
+    40% { opacity: 1; transform: translateY(-3px); }
+}
+
+/* Thought process */
+.thought {
+    margin: 0.4rem 0;
+    border-left: 2px solid var(--gold-dim);
+    background: rgba(212, 175, 55, 0.04);
+    border-radius: 0 6px 6px 0;
+    padding: 0.4rem 0.75rem;
+}
+.thought > summary {
+    cursor: pointer;
+    list-style: none;
+    color: var(--gold-dim);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-style: italic;
+}
+.thought > summary::-webkit-details-marker { display: none; }
+.thought-body {
+    margin-top: 0.4rem;
+    color: var(--muted);
+    font-style: italic;
+    font-size: 0.85rem;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+}
+
+/* Tool call cards */
+.tool-card {
+    margin: 0.5rem 0;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-left: 2px solid var(--gold-dim);
+    border-radius: 6px;
+    padding: 0.6rem 0.75rem;
+    transition: border-color 0.3s;
+}
+.tool-card.done { border-left-color: #27ae60; }
+.tool-head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    cursor: pointer;
+    list-style: none;
+}
+.tool-head::-webkit-details-marker { display: none; }
+.tool-head::after {
+    content: "›";
+    margin-left: auto;
+    color: var(--muted);
+    font-size: 1.1rem;
+    transition: transform 0.2s;
+}
+.tool-card[open] .tool-head::after { transform: rotate(90deg); }
+.tool-name {
+    font-family: monospace;
+    font-size: 0.85rem;
+    color: var(--gold);
+    font-weight: 600;
+    flex-shrink: 0;
+}
+.tool-spinner {
+    width: 12px; height: 12px;
+    border: 2px solid var(--border);
+    border-top-color: var(--gold);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    flex-shrink: 0;
+}
+.tool-card.done .tool-spinner {
+    animation: none;
+    border: none;
+    width: 12px; height: 12px;
+}
+.tool-card.done .tool-spinner::after {
+    content: "✓";
+    color: #27ae60;
+    font-size: 0.85rem;
+    line-height: 1;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.tool-preview {
+    font-family: monospace;
+    font-size: 0.78rem;
+    color: var(--muted);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.tool-card[open] .tool-preview { display: none; }
+.tool-input {
+    margin: 0.6rem 0 0;
+    padding-top: 0.6rem;
+    border-top: 1px solid var(--border);
+    font-family: monospace;
+    font-size: 0.78rem;
+    color: var(--muted);
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.tool-output {
+    margin: 0.6rem 0 0;
+    padding-top: 0.6rem;
+    border-top: 1px solid var(--border);
+    font-family: monospace;
+    font-size: 0.78rem;
+    color: var(--text);
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 360px;
+    overflow-y: auto;
+}
+.tool-output:empty { display: none; }
+
 /* ── Scheduler Section ───────────────────────────────────────── */
 .scheduler-section {
     margin-bottom: 2rem;

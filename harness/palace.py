@@ -27,6 +27,7 @@ Environment overrides:
 import asyncio
 import logging
 import os
+import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -37,8 +38,30 @@ DEFAULT_PALACE_PATH = str(Path.home() / ".mempalace" / "palace")
 DEFAULT_ARCHIVE_ROOT = str(Path.home() / ".mempalace" / "archive")
 DEFAULT_WAKE_UP_FILE = str(Path.home() / ".mempalace" / "wake_up.md")
 DEFAULT_WING = "agent"
+# Single wing for ALL agent memory — conversations, daily logs, diary, and
+# agent-filed drawers. The agent never has to choose a wing to store or fetch;
+# `DEFAULT_WING` is the one and only memory wing. (The codebase lives in its own
+# `galadriel_public` wing, mined out-of-band from the repo `mempalace.yaml`.)
+CONVERSATION_ROOM = "conversations"
 MINE_TIMEOUT_SEC = 90
 WAKE_UP_TIMEOUT_SEC = 30
+
+# Per-batch palace config dropped beside every archived conversation so a plain
+# (projects-mode) mine routes the whole verbatim conversation to one wing/room.
+# This replaces the old `--mode convos --extract general` path, whose LLM
+# classifier sprayed a single session across emotional/decision/etc. rooms.
+_CONVERSATION_PALACE_YAML = (
+    f"wing: {DEFAULT_WING}\n"
+    "rooms:\n"
+    f"- name: {CONVERSATION_ROOM}\n"
+    "  description: Verbatim chat history\n"
+    "  keywords:\n"
+    "  - conversations\n"
+    "  - conversation\n"
+    "- name: general\n"
+    "  description: Fallback\n"
+    "  keywords: []\n"
+)
 
 # Resolve the mempalace CLI from the same venv as the running Python, so
 # subprocess calls do not silently break if PATH is not set (test harnesses,
@@ -52,6 +75,11 @@ def _palace_path() -> str:
 
 def _archive_root() -> Path:
     return Path(os.environ.get("PALACE_ARCHIVE_ROOT", DEFAULT_ARCHIVE_ROOT))
+
+
+def _pending_shutdown_root() -> Path:
+    """Conversations written at shutdown live here until mined on next start."""
+    return _archive_root() / "_pending_shutdown"
 
 
 def search(
@@ -162,9 +190,11 @@ async def mine_batch_dir(
     Failures log at WARNING but never raise. Also refreshes the wake-up
     cache on success so wake-up injection tracks the current palace state.
 
-    mode='convos' + extract='general' auto-classifies into 5 memory types
-    (decisions, preferences, milestones, problems, emotional) — used by the
-    /new conversation archival path.
+    Conversation archives are mined in the default (projects) mode — a per-batch
+    mempalace.yaml routes them verbatim into wing=agent / room=conversations.
+    The `mode='convos'` + `extract='general'` path (LLM auto-classification into
+    5 memory types) is no longer used by the harness: it sprayed a single chat
+    session across many rooms. The args remain for ad-hoc/manual callers.
     """
     cmd = [MEMPALACE_BIN, "mine", str(batch_dir),
            "--wing", DEFAULT_WING, "--agent", agent]
@@ -242,12 +272,54 @@ async def archive_conversation(channel_id: str, messages: list[dict]) -> None:
     if not messages:
         return
 
-    ts = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
-    safe_channel = "".join(c if c.isalnum() or c in "-_" else "_" for c in str(channel_id))
-    batch_dir = _archive_root() / f"conversation_{safe_channel}_{ts}"
+    batch_dir = _write_conversation_batch(_archive_root(), channel_id, messages)
+    if batch_dir is None:
+        return
 
+    # Plain (projects-mode) mine: the per-batch mempalace.yaml routes the whole
+    # conversation verbatim into wing=agent / room=conversations — no convos-mode
+    # classification spray.
+    ok = await mine_batch_dir(batch_dir, agent="new-clear")
+    if ok:
+        log.info(
+            f"Palace conversation archive: channel={channel_id} "
+            f"messages={len(messages)} dir={batch_dir}"
+        )
+
+
+def archive_conversation_durable(channel_id: str, messages: list[dict]) -> Path | None:
+    """Synchronously stage a full conversation to the archive root and return the
+    batch dir, leaving the (slow) `mempalace mine` to the caller in the background.
+
+    Used by compaction: the raw conversation MUST be durably on disk before the
+    history is wiped, but a 90s mine must not block the interactive turn. The
+    caller schedules `mine_batch_dir(batch_dir, ...)` as a background task.
+    Returns None on empty input / write error.
+    """
+    return _write_conversation_batch(_archive_root(), channel_id, messages)
+
+
+def _safe_channel(channel_id: str) -> str:
+    return "".join(c if c.isalnum() or c in "-_" else "_" for c in str(channel_id))
+
+
+def _write_conversation_batch(root: Path, channel_id: str, messages: list[dict]) -> Path | None:
+    """Write a conversation as a single timestamped .md inside a fresh batch dir
+    under `root`. Pure file I/O (no subprocess) so it is safe to call from a
+    signal handler. Returns the batch dir, or None on empty input / write error.
+    """
+    if not messages:
+        return None
+    ts = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+    safe_channel = _safe_channel(channel_id)
+    batch_dir = root / f"conversation_{safe_channel}_{ts}"
     try:
-        batch_dir.mkdir(parents=True, exist_ok=True)
+        # The .md goes in a `conversations/` subfolder and a per-batch
+        # mempalace.yaml sits at the batch root, so a plain mine deterministically
+        # files it under wing=agent / room=conversations (detect_room Priority 1).
+        conv_dir = batch_dir / CONVERSATION_ROOM
+        conv_dir.mkdir(parents=True, exist_ok=True)
+        (batch_dir / "mempalace.yaml").write_text(_CONVERSATION_PALACE_YAML, encoding="utf-8")
         sections = [
             f"# Conversation archive — channel {channel_id}\n",
             f"- archived: {ts}",
@@ -258,20 +330,44 @@ async def archive_conversation(channel_id: str, messages: list[dict]) -> None:
             sections.append(f"<!-- message {i} -->")
             sections.append(_serialize_message(msg))
             sections.append("")
-
-        (batch_dir / f"conversation_{safe_channel}_{ts}.md").write_text(
+        (conv_dir / f"conversation_{safe_channel}_{ts}.md").write_text(
             "\n".join(sections), encoding="utf-8"
         )
     except Exception as e:
         log.warning(f"Palace conversation archive write failed: {e}")
-        return
+        return None
+    return batch_dir
 
-    ok = await mine_batch_dir(batch_dir, agent="new-clear", mode="convos", extract="general")
-    if ok:
-        log.info(
-            f"Palace conversation archive: channel={channel_id} "
-            f"messages={len(messages)} dir={batch_dir}"
-        )
+
+def write_conversation_archive_sync(channel_id: str, messages: list[dict]) -> Path | None:
+    """Synchronously stage a conversation for archival without mining.
+
+    Safe to call from a signal handler / atexit at shutdown: it only does a file
+    write (no `mempalace mine` subprocess, which could outlive the shutdown
+    grace window). The staged dir is mined into the palace — and then deleted —
+    on the next startup via mine_pending_shutdown_archives().
+    """
+    return _write_conversation_batch(_pending_shutdown_root(), channel_id, messages)
+
+
+async def mine_pending_shutdown_archives() -> int:
+    """Mine conversations staged at the previous shutdown, then delete each.
+
+    Run once on startup. Each staged dir is mined exactly like the /new archive
+    path; on a clean mine the raw .md dir is removed. Dirs that fail to mine are
+    left in place and retried on the next startup. Returns the count mined.
+    """
+    root = _pending_shutdown_root()
+    if not root.exists():
+        return 0
+    mined = 0
+    for batch_dir in sorted(p for p in root.iterdir() if p.is_dir()):
+        ok = await mine_batch_dir(batch_dir, agent="shutdown")
+        if ok:
+            shutil.rmtree(batch_dir, ignore_errors=True)
+            mined += 1
+            log.info(f"Mined pending shutdown archive: {batch_dir}")
+    return mined
 
 
 async def archive_daily_logs(memory_dir: str = "memory") -> None:
@@ -593,21 +689,26 @@ DEFAULT_DIARY_AGENT = DEFAULT_WING
 
 
 def diary_write(entry: str, topic: str = "general", agent_name: str = DEFAULT_DIARY_AGENT) -> str:
-    """Write a diary entry. Each agent gets its own wing with a diary room.
+    """Write a diary entry into the single memory wing's diary room.
 
     Use this to record end-of-session reflections: what happened, what was
     learned, what matters. Persistent across restarts.
+
+    We pin `wing=DEFAULT_WING` explicitly. Left unset, mempalace derives the wing
+    as `wing_<agent_name>` (e.g. `wing_agent`), which fragments diary entries off
+    into a separate wing from the rest of memory. Reads stay correct either way —
+    `tool_diary_read` filters by the `agent` + `room=diary` metadata, not wing.
     """
     if not entry or not entry.strip():
         return "[diary write] empty entry — nothing saved."
     try:
         from mempalace.mcp_server import tool_diary_write as _dw
-        result = _dw(agent_name=agent_name, entry=entry, topic=topic)
+        result = _dw(agent_name=agent_name, entry=entry, topic=topic, wing=DEFAULT_WING)
     except Exception as e:
         return f"[diary write] {type(e).__name__}: {e}"
     if isinstance(result, dict) and result.get("error"):
         return f"[diary write] {result['error']}"
-    return f"Diary entry saved to wing `{agent_name}`, topic `{topic}`."
+    return f"Diary entry saved to wing `{DEFAULT_WING}`, topic `{topic}`."
 
 
 def diary_read(last_n: int = 10, agent_name: str = DEFAULT_DIARY_AGENT) -> str:

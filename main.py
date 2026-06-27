@@ -6,6 +6,8 @@ Starts the Discord bot, Tower web UI, and Scheduler concurrently.
 
 import os
 import sys
+import signal
+import atexit
 import logging
 import asyncio
 import threading
@@ -32,6 +34,27 @@ def start_tower(agent, scheduler):
     app.run(host=host, port=port, use_reloader=False)
 
 
+def _install_shutdown_archive(agent):
+    """Archive live conversations to disk before the process exits.
+
+    atexit covers normal exit and SIGINT (Ctrl+C → KeyboardInterrupt unwinds to
+    a clean exit). SIGTERM (systemctl restart/stop, and the agent restarting
+    itself) does NOT run atexit by default, so we handle it explicitly: archive,
+    then restore the default disposition and re-raise so the process still
+    terminates with normal signal semantics. The archive itself is idempotent.
+    """
+    atexit.register(agent.archive_conversations_on_shutdown)
+
+    def _on_sigterm(signum, frame):
+        try:
+            agent.archive_conversations_on_shutdown()
+        finally:
+            signal.signal(signum, signal.SIG_DFL)
+            os.kill(os.getpid(), signum)
+
+    signal.signal(signal.SIGTERM, _on_sigterm)
+
+
 def main():
     # Stateless / no-palace mode. `--no-palace` (or GALADRIEL_NO_PALACE=1) runs
     # an amnesiac session — the memory-palace tools are withheld. Forgetting as
@@ -42,8 +65,14 @@ def main():
         log.info("Stateless mode: --no-palace set; memory palace tools are DISABLED for this session.")
 
     # Validate required env vars
-    if not os.environ.get("ANTHROPIC_API_KEY"):
-        log.error("ANTHROPIC_API_KEY not set. Copy .env.example to .env and fill it in.")
+    from harness.model_registry import missing_env_keys
+
+    missing = missing_env_keys()
+    if missing:
+        log.error(
+            f"Missing required env var(s): {', '.join(missing)}. "
+            "Copy .env.example to .env and fill it in."
+        )
         sys.exit(1)
 
     # Resolve config and memory paths relative to this file
@@ -61,6 +90,9 @@ def main():
         working_dir=base_dir,
     )
     log.info(f"Agent initialized (model: {agent.model})")
+
+    # Archive live conversations to disk on shutdown so none are lost.
+    _install_shutdown_archive(agent)
 
     # Create scheduler (no bot yet — will be wired after bot creation)
     scheduler = Scheduler(agent=agent, config_dir=config_dir)
