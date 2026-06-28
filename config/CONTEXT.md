@@ -45,6 +45,7 @@ for the agent, `gemini-2.5-flash` for compaction).
 | Safety | `harness/safety.py` | Shell commands classified green / yellow / red (red → approval) |
 | Compaction | `harness/compaction.py` | Cheap-model summarization of old tool results |
 | Scheduler | `harness/scheduler.py` | Morning/goodnight, heartbeat, one-shot wake, ambient reflection |
+| Background worker | `harness/worker.py` | Second agent channel (`worker`) that executes the markdown job board on a 10-min work-conserving loop; opt-in via `GALADRIEL_WORKER=1`. See "How You Operate" §5 |
 | Interfaces | `discord_bot/`, `tower/` | Discord gateway (secure, user-gated) + Flask Tower UI on `:8080` |
 
 Entry point is `main.py` (starts Tower thread + Discord, or Tower-only).
@@ -143,6 +144,50 @@ near-duplicates, and re-mining will **not** resolve that. So keep one
 canonical location per subject (current state is clean: a single tree under
 `sme/linkedin/`).
 
+### 5. Background jobs — your worker hat
+
+You can do work autonomously **between conversations**, not only when spoken to.
+You run as **two hats on one brain**: the **curator** (this chat — you talk to
+Shravan, plan, verify) and the **worker** (a separate `worker` channel on a
+10-min loop, `harness/worker.py`, opt-in via `GALADRIEL_WORKER=1`). They never
+share memory — they coordinate ONLY through markdown files, each with a single
+writer:
+
+| File | Writer | Purpose |
+|---|---|---|
+| `jobs/job_roles.md` | curator | broad goals + recurring rules (rituals) |
+| `jobs/<id>.md` | curator | per-job cookbook — key steps only; detail → palace |
+| `state/backlog.md` | curator | projects (one-offs), carry forward until done |
+| `state/worker_control.md` | curator | `active` / `paused` (first line is the state) |
+| `state/progress.md` | worker | live status, blockers, completions + evidence |
+
+- **Rituals vs projects.** Rituals (e.g. "check DMs at 11:00") fire once at their
+  time and never carry forward or duplicate; projects carry until truly done.
+  Test: *"if I do it once now, is yesterday's missed one also satisfied?"* —
+  yes → ritual, no → project.
+- **Creating a job.** When Shravan asks for recurring or background work: write
+  the cookbook (`jobs/<id>.md`, lean — steps + success-check), add the rule to
+  `jobs/job_roles.md` (ritual) or the item to `state/backlog.md` (project), file
+  nitpicky detail to the palace with a reference, and confirm with him.
+- **Start / stop.** Set the first line of `state/worker_control.md` to `active`
+  or `paused`. That is the ONLY way to stop the worker: it re-reads the flag each
+  tick and quiesces at its next checkpoint (eventual, not instant).
+- **Verify, don't self-certify.** The worker marks completions
+  `done_pending_verify` with evidence; you confirm at the next touchpoint /
+  goodnight before telling Shravan it's truly done.
+- The worker's per-turn protocol lives in `harness/worker.py` — you don't prompt
+  it, you feed it the board.
+
+**Which mechanism for a long-running task** (don't confuse these three):
+
+| Situation | Use |
+|---|---|
+| Finishes within this turn | just `await` it — no machinery |
+| Long task you launched **in this chat**, want progress pings | heartbeat-monitor (custom prompt, self-disables) — see TOOLS.md |
+| An **external/detached** shell process that finishes out-of-band | it writes a `.done` marker → the **completion watcher** notifies you (`harness/completion_watcher.py`) |
+| Standing / recurring / carry-forward work | the **worker board** (this section) |
+| A **board task** that spawns a long shell process | record it in `progress.md` and check it on your next worker tick — do **not** arm a heartbeat; your loop already polls |
+
 ---
 
 ## Key Files and Paths
@@ -156,6 +201,10 @@ canonical location per subject (current state is clean: a single tree under
 | `config/CONTEXT.md` | This manual |
 | `config/TOOLS.md` | Full tool reference + record-where decision matrix |
 | `config/CODING_PRINCIPLES.md` | Karpathy self-edit discipline (in L1 cache) |
+| `jobs/job_roles.md`, `jobs/<id>.md` | Background-job goals + recurring rules, and per-job cookbooks (curator-owned) |
+| `state/backlog.md` | Background projects / one-offs (curator-owned) |
+| `state/progress.md` | Worker status + completion evidence (worker-owned) |
+| `state/worker_control.md` | `active`/`paused` flag for the background worker (curator-owned) |
 | `sme/<subject>/` | Curated subject-matter `.md` knowledge bases (mined into rooms) |
 | `memory/*.md` | Daily logs — auto-generated, **gitignored** |
 | `cmd/` | Ops scripts (e.g. `reset_palace.sh`) |

@@ -1,12 +1,18 @@
-"""Job Watcher — monitors completion markers from background jobs.
+"""Completion Watcher — reports when external/detached shell processes finish.
 
-Background jobs (like narration pipelines) write JSON marker files to
-/tmp/galadriel-jobs/ when they complete. This watcher polls for those
-markers and triggers Discord notifications through the agent.
+Long shell processes the agent launches but cannot `await` in one turn (e.g.
+narration pipelines, batch jobs) write a JSON completion marker to
+/tmp/galadriel-jobs/ when they finish. This watcher polls for those markers and
+pushes a Discord notification through the agent.
+
+This is DISTINCT from the agent's own job *board* (`jobs/` + `state/`, the
+background worker — see config/CONTEXT.md §5). This watcher only reports the
+completion of out-of-band shell processes; it does not pick or perform work.
 
 Architecture:
-  - Marker dir: /tmp/galadriel-jobs/
-  - Each job writes <job-name>.done with JSON status on completion
+  - Marker dir: /tmp/galadriel-jobs/  (legacy path, kept as an external contract:
+    scripts the agent writes drop markers here)
+  - Each process writes <name>.done with JSON status on completion
   - Watcher polls every 15 seconds
   - On detection: reads marker, formats message, sends via agent+Discord, archives marker
 """
@@ -16,15 +22,15 @@ import json
 import logging
 from pathlib import Path
 
-log = logging.getLogger("galadriel.job_watcher")
+log = logging.getLogger("galadriel.completion_watcher")
 
 MARKER_DIR = Path("/tmp/galadriel-jobs")
 POLL_INTERVAL = 15  # seconds
 MARKER_SUFFIX = ".done"
 
 
-class JobWatcher:
-    """Watches for job completion markers and notifies via Discord."""
+class CompletionWatcher:
+    """Watches for shell-process completion markers and notifies via Discord."""
 
     def __init__(self, agent, discord_bot=None):
         self.agent = agent
@@ -38,7 +44,7 @@ class JobWatcher:
         """Start the watcher loop. Call from an async context."""
         MARKER_DIR.mkdir(parents=True, exist_ok=True)
         self._task = asyncio.ensure_future(self._watch_loop())
-        log.info(f"Job watcher started — monitoring {MARKER_DIR}")
+        log.info(f"Completion watcher started — monitoring {MARKER_DIR}")
 
     async def _watch_loop(self):
         """Main polling loop."""
@@ -47,9 +53,9 @@ class JobWatcher:
                 await asyncio.sleep(POLL_INTERVAL)
                 await self._check_markers()
         except asyncio.CancelledError:
-            log.info("Job watcher cancelled.")
+            log.info("Completion watcher cancelled.")
         except Exception as e:
-            log.exception(f"Job watcher error: {e}")
+            log.exception(f"Completion watcher error: {e}")
 
     async def _check_markers(self):
         """Scan for .done marker files and process them."""
@@ -59,7 +65,7 @@ class JobWatcher:
         for marker_path in MARKER_DIR.glob(f"*{MARKER_SUFFIX}"):
             try:
                 data = json.loads(marker_path.read_text())
-                log.info(f"Job completion detected: {marker_path.name} — {data.get('status', 'UNKNOWN')}")
+                log.info(f"Process completion detected: {marker_path.name} — {data.get('status', 'UNKNOWN')}")
 
                 # Format the notification
                 message = self._format_notification(data)
@@ -80,7 +86,7 @@ class JobWatcher:
                 log.exception(f"Error processing marker {marker_path}: {e}")
 
     def _format_notification(self, data: dict) -> str:
-        """Format job completion data into a Discord-friendly message."""
+        """Format completion data into a Discord-friendly message."""
         job = data.get("job", "unknown")
         status = data.get("status", "UNKNOWN")
 
@@ -114,7 +120,7 @@ class JobWatcher:
                 f"🕐 Failed at: {data.get('completed_at', 'N/A')}"
             )
         else:
-            return f"📦 **Job completed — {job}** — Status: {status}\n```json\n{json.dumps(data, indent=2)}\n```"
+            return f"📦 **Process completed — {job}** — Status: {status}\n```json\n{json.dumps(data, indent=2)}\n```"
 
     async def _notify(self, data: dict, formatted_message: str):
         """Send notification via agent (gets intelligent commentary) then to Discord."""
@@ -123,8 +129,8 @@ class JobWatcher:
 
         # Have the agent generate a contextual response
         prompt = (
-            f"[SYSTEM:JOB_COMPLETE] A background job has finished.\n\n"
-            f"Job: {job}\n"
+            f"[SYSTEM:PROCESS_COMPLETE] A background shell process has finished.\n\n"
+            f"Process: {job}\n"
             f"Status: {status}\n"
             f"Details:\n```json\n{json.dumps(data, indent=2)}\n```\n\n"
             f"Notify the user about this. Include the key stats. "
@@ -134,17 +140,17 @@ class JobWatcher:
         )
 
         try:
-            response = await self.agent.respond(prompt, channel_id="job_watcher")
+            response = await self.agent.respond(prompt, channel_id="completions")
             await self._send_to_discord(response)
         except Exception as e:
-            log.exception(f"Failed to generate agent response for job {job}: {e}")
+            log.exception(f"Failed to generate agent response for process {job}: {e}")
             # Fallback: send the raw formatted message
             await self._send_to_discord(formatted_message)
 
     async def _send_to_discord(self, message: str):
         """Send message to Discord via the bot."""
         if not self.bot:
-            log.warning("No Discord bot available for job notification.")
+            log.warning("No Discord bot available for completion notification.")
             return
 
         # Use the DM-safe helper
@@ -156,7 +162,7 @@ class JobWatcher:
             channel = self.bot.get_channel(channel_id) if channel_id else None
 
         if not channel:
-            log.warning("Could not resolve Discord channel for job notification.")
+            log.warning("Could not resolve Discord channel for completion notification.")
             return
 
         # Chunk long messages
@@ -172,4 +178,4 @@ class JobWatcher:
             await channel.send(text[:split_at])
             text = text[split_at:].lstrip("\n")
 
-        log.info(f"Job notification sent to Discord ({len(message)} chars)")
+        log.info(f"Completion notification sent to Discord ({len(message)} chars)")

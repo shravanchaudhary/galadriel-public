@@ -221,7 +221,7 @@ def chunk_message(text: str) -> list[str]:
     return chunks
 
 
-def create_bot(agent: GaladrielAgent, scheduler=None, job_watcher=None) -> commands.Bot:
+def create_bot(agent: GaladrielAgent, scheduler=None, completion_watcher=None, worker=None) -> commands.Bot:
     """Create and configure the Discord bot."""
     intents = discord.Intents.default()
     intents.message_content = True
@@ -407,10 +407,15 @@ def create_bot(agent: GaladrielAgent, scheduler=None, job_watcher=None) -> comma
             scheduler.start()
             log.info("Scheduler started from Discord on_ready.")
 
-        # Start the job watcher once the event loop is running
-        if job_watcher:
-            job_watcher.start()
-            log.info("Job watcher started from Discord on_ready.")
+        # Start the completion watcher once the event loop is running
+        if completion_watcher:
+            completion_watcher.start()
+            log.info("Completion watcher started from Discord on_ready.")
+
+        # Start the background worker once the event loop is running
+        if worker:
+            worker.start()
+            log.info("Background worker started from Discord on_ready.")
 
         # Mine any conversations staged during the previous shutdown, then
         # delete them. Runs in the background so it never blocks startup.

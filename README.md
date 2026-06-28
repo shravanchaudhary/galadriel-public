@@ -302,7 +302,8 @@ These aren't abstract ideals — they are mechanically enforced via the `CLAUDE.
 - **Persistent verbatim memory** — local MemPalace integration with wings/rooms/halls/drawers, zero-token retrieval, archive-before-clear on `/new`, goodnight mine of daily logs, wake-up snapshot in the dynamic block
 - **Safety tiers** — green (auto), yellow (notify), red (Discord reaction approval required)
 - **Scheduler** — morning briefing, goodnight, configurable heartbeat (with custom task-monitor prompts), a restart-surviving **one-shot wake**, and **ambient reflection** (silent palace-only thinking on a workday cadence)
-- **Job watcher** — monitors `/tmp/galadriel-jobs/*.done` markers and reports completions
+- **Background worker** — an opt-in second agent channel that autonomously executes a markdown **job board** (recurring "rituals" + carry-forward "projects") on a 10-min loop while the main channel stays free for the user; coordinated entirely through single-writer markdown files
+- **Completion watcher** — monitors `/tmp/galadriel-jobs/*.done` markers and reports when external/detached shell processes finish (distinct from the worker's job board)
 - **Compaction** — gemini-2.5-flash / Haiku-powered context compression, on demand (`/compact`) or automatically at a token threshold; archives the full conversation to the palace, then replaces it with one structured snapshot
 - **Prompt caching** — automatically managed, always active (implicit on Gemini, explicit breakpoints on Claude)
 
@@ -399,7 +400,8 @@ harness/
   compaction.py           gemini-2.5-flash / Haiku snapshot compaction (archives full conversation to palace first)
   model_registry.py       Task → (provider, model) — single source of truth for model selection
   scheduler.py            Morning briefing, goodnight (mines daily logs), heartbeat
-  job_watcher.py          Background job completion notifications
+  worker.py               Background worker — executes the jobs/ + state/ board (opt-in)
+  completion_watcher.py   External shell-process completion notifications
   error_humanizer.py      Readable API error mapping (Anthropic + Gemini)
 discord_bot/
   bot.py                  Discord gateway, approval buttons, slash + prefix commands
@@ -586,6 +588,37 @@ your model tier is expensive or you simply don't want background turns, disable
 it with `GALADRIEL_REFLECTION=0`. The harness is fully functional without it —
 ambient cognition is an enhancement, not a dependency.
 
+### Background worker — the agent that works between conversations
+
+Ambient reflection thinks; the **background worker** *does*. Enabled with
+`GALADRIEL_WORKER=1`, it runs the agent as **two hats on one brain**: the
+**curator** (the normal chat — talks to you, plans, verifies) and the **worker**
+(a second `worker` channel on a 10-min work-conserving loop, `harness/worker.py`).
+They share the same model, tools, and palace but have **isolated channel
+histories**, and they coordinate *only* through markdown files — each with a
+single writer, so parallel access can never lose or corrupt an update:
+
+| File | Writer | Purpose |
+|------|--------|---------|
+| `jobs/job_roles.md` | curator | broad goals + recurring rules ("rituals") |
+| `jobs/<id>.md` | curator | per-job cookbook — key steps + success check |
+| `state/backlog.md` | curator | projects (one-offs), carry forward until done |
+| `state/worker_control.md` | curator | `active` / `paused` (first line is the state) |
+| `state/progress.md` | worker | live status, blockers, completions + evidence |
+
+The model mirrors how a person actually runs a day: **rituals** (e.g. "check DMs
+at 11:00") fire once at their time and never carry forward or double-run;
+**projects** carry until truly done. Due rituals preempt project work; projects
+fill the gaps. A blocked task is parked (notify once, move on), not a full stop.
+Completions are marked `done_pending_verify` **with evidence** — the curator
+verifies before claiming done, so nothing is self-certified.
+
+The worker is time-aware without breaking the prompt cache: the current time and
+elapsed session time are injected at the **tail** of each worker turn. To stop
+it, set `state/worker_control.md` to `paused` — it re-reads the flag each tick
+and quiesces at its next checkpoint. Opt-out by leaving `GALADRIEL_WORKER`
+unset; the board files lie dormant and nothing runs.
+
 ---
 
 ## Environment Variables
@@ -609,6 +642,7 @@ See `.env.example` for the full list with inline documentation.
 | `PALACE_WAKE_UP_FILE` | No | Cached wake-up snapshot path (default: `~/.mempalace/wake_up.md`) |
 | `PALACE_WAKE_UP_INJECT` | No | Set to `0` to disable injection of the wake-up snapshot into the dynamic system-prompt block (default: `1` — enabled) |
 | `GALADRIEL_REFLECTION` | No | Set to `0` to disable the ambient reflection loop entirely — no silent background turns (default: `1` — enabled) |
+| `GALADRIEL_WORKER` | No | Set to `1` to start the background worker loop (executes the `jobs/` + `state/` board). Even when on, it idles until `state/worker_control.md` is `active` (default: `0` — disabled) |
 
 ---
 

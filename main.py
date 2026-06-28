@@ -82,7 +82,8 @@ def main():
 
     from harness.agent import GaladrielAgent
     from harness.scheduler import Scheduler
-    from harness.job_watcher import JobWatcher
+    from harness.completion_watcher import CompletionWatcher
+    from harness.worker import WorkerLoop
 
     agent = GaladrielAgent(
         config_dir=config_dir,
@@ -97,14 +98,22 @@ def main():
     # Create scheduler (no bot yet — will be wired after bot creation)
     scheduler = Scheduler(agent=agent, config_dir=config_dir)
 
-    # Create job watcher (no bot yet — will be wired after bot creation)
-    job_watcher = JobWatcher(agent=agent)
+    # Create completion watcher (no bot yet — will be wired after bot creation).
+    # Reports when external/detached shell processes finish (see harness/completion_watcher.py).
+    completion_watcher = CompletionWatcher(agent=agent)
+
+    # Create background worker (opt-in via GALADRIEL_WORKER=1). The worker is a
+    # second agent channel that executes day-to-day jobs from the markdown board
+    # while the main channel stays free for the user.
+    worker = None
+    if os.environ.get("GALADRIEL_WORKER", "0") == "1":
+        worker = WorkerLoop(agent=agent, working_dir=base_dir)
 
     # Attach scheduler to agent so it can be accessed for REST commands
     agent.scheduler = scheduler
 
-    # Attach job_watcher to agent so it can be referenced
-    agent.job_watcher = job_watcher
+    # Attach completion_watcher to agent so it can be referenced
+    agent.completion_watcher = completion_watcher
 
     # Start Tower in a background thread
     tower_thread = threading.Thread(
@@ -117,9 +126,11 @@ def main():
     if discord_token:
         from discord_bot.bot import create_bot
 
-        bot = create_bot(agent, scheduler, job_watcher)
+        bot = create_bot(agent, scheduler, completion_watcher, worker)
         scheduler.set_bot(bot)
-        job_watcher.set_bot(bot)
+        completion_watcher.set_bot(bot)
+        if worker:
+            worker.set_bot(bot)
         log.info("Starting Discord bot...")
         bot.run(discord_token, log_handler=None)
     else:

@@ -471,6 +471,11 @@ class Scheduler:
                 "2. Check our AWS coffers — run `aws ce get-cost-and-usage` for yesterday's costs "
                 "and provide a brief summary of spend.\n"
                 "3. Note anything else relevant from overnight.\n"
+                "4. If background jobs are in use (a `jobs/` board exists): plan today's work. "
+                "Set `state/worker_control.md` to `paused`, then read `jobs/job_roles.md`, "
+                "`state/backlog.md` and yesterday's `state/progress.md` and refresh the board — "
+                "regenerate today's due rituals and carry forward any unfinished projects (merge, "
+                "do not wipe in-progress state). Then set `state/worker_control.md` back to `active`.\n"
                 "Keep it concise but thorough. This also serves as a healthcheck."
             ),
             channel_id="morning",
@@ -538,6 +543,10 @@ class Scheduler:
                 "[SYSTEM:GOODNIGHT_ROUTINE] It is 21:00 CET. "
                 "Wish the user a peaceful good night. "
                 "Offer a brief reflection on the day if anything notable happened. "
+                "If background jobs are in use, do a verification sweep: read "
+                "`state/progress.md`, check the evidence on any `done_pending_verify` "
+                "items, confirm what truly got done, and mention anything still open "
+                "or blocked for tomorrow. "
                 "If you keep a diary, this is a good moment to write an entry. "
                 "After this message, you will enter REST — your heartbeat will be "
                 "disabled until morning."

@@ -280,4 +280,22 @@ Shows `heartbeat_enabled`, `heartbeat_interval`, `heartbeat_prompt`, plus mornin
 
 ---
 
+## 🛠️ Background worker & the job board
+
+The **heartbeat** monitors one task you launched *now*. The **background worker**
+(opt-in, `GALADRIEL_WORKER=1`) instead runs your standing day-to-day work
+autonomously between conversations, on a second `worker` channel. The full model
+— the two hats, the single-writer board files (`jobs/` + `state/`), rituals vs
+projects, and verify-with-evidence — lives in `config/CONTEXT.md` §5; it is not
+restated here. Two operational reminders worth keeping at hand:
+
+- **Start / stop:** set the first line of `state/worker_control.md` to `active`
+  or `paused`. That is the ONLY way to stop the worker — it re-reads the flag
+  each tick and quiesces at its next checkpoint (eventual, not instant).
+- **If it seems idle:** `GALADRIEL_WORKER=1` only starts the loop; the worker
+  does nothing until `state/worker_control.md` is `active` **and** the board has
+  work. Check both, not just the env var.
+
+---
+
 *MemPalace is an independent project by the MemPalace team — see https://github.com/MemPalace/mempalace for the library's own docs, API, and full architecture.*
