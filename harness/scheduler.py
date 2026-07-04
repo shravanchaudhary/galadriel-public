@@ -8,8 +8,9 @@ Scheduled activities:
      heartbeat, it fires EXACTLY ONCE and clears itself only after delivery.
      This is the correct mechanism for "resume me after I restart myself".
   3. Morning (09:10 CET, workdays only): morning greeting, calendar, coffers.
-  4. Ambient reflection (workday slots, silent): the agent thinks privately and
-     files anything worth keeping to the memory palace. No Discord output.
+  4. Ambient reflection (workday slots): the agent thinks, files anything worth
+     keeping to the palace, audits the background worker, and posts a brief
+     worker-status summary (pausing the worker if it is misbehaving).
   5. Goodnight (21:00 CET): wish good night and disable heartbeat (REST).
 
 Ambient reflection is opt-out: set GALADRIEL_REFLECTION=0 to disable.
@@ -22,6 +23,14 @@ import os
 from datetime import datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
+
+from .loop_prompts import (
+    DEFAULT_HEARTBEAT_PROMPT,
+    catchup_prompt as _catchup_prompt,
+    goodnight_prompt as _goodnight_prompt,
+    morning_prompt as _morning_prompt,
+    reflection_prompt as _reflection_prompt,
+)
 
 log = logging.getLogger("galadriel.scheduler")
 
@@ -38,21 +47,17 @@ HEARTBEAT_CHECKPOINT_MIN_GAP = timedelta(hours=1)
 MORNING_TIME = time(9, 10)
 # Goodnight: 21:00 CET every day
 GOODNIGHT_TIME = time(21, 0)
-# Ambient reflection slots (workdays only, silent — palace-only side effects)
+# Ambient reflection slots (workdays only): palace filing + worker audit +
+# a brief status summary to the user at each slot.
 REFLECTION_TIMES = (time(11, 0), time(14, 0), time(17, 0), time(20, 0))
 
 # Valid heartbeat intervals in minutes
 VALID_INTERVALS = [5, 10, 20, 30]
 DEFAULT_INTERVAL = 10
 
-# Default heartbeat prompt (used when no custom prompt is set)
-DEFAULT_HEARTBEAT_PROMPT = (
-    "[SYSTEM:HEARTBEAT] This is your periodic heartbeat. "
-    "You may check in, share an observation, "
-    "note something interesting, or simply confirm you are watching. "
-    "Keep it brief and natural — do not repeat the same thing every time. "
-    "If nothing noteworthy, a short check-in is fine."
-)
+# Default heartbeat prompt lives in harness/loop_prompts.py (also shown in Tower /loops).
+
+# Morning / catchup prompt builders live in harness/loop_prompts.py.
 
 # State file lives in config/ (ReadWritePaths in systemd)
 STATE_FILE_NAME = "scheduler_state.json"
@@ -81,6 +86,7 @@ class Scheduler:
         self._morning_task: asyncio.Task | None = None
         self._goodnight_task: asyncio.Task | None = None
         self._reflection_task: asyncio.Task | None = None
+        self._catchup_task: asyncio.Task | None = None
 
         # Track last fire times to avoid double-fires
         self._last_morning: str | None = None
@@ -113,10 +119,17 @@ class Scheduler:
                 interval = data.get("heartbeat_interval", DEFAULT_INTERVAL)
                 if interval in VALID_INTERVALS:
                     self.heartbeat_interval = interval
+                # Fire-trackers — restored so "did X already run today?" survives a
+                # restart. Without this a mid-day restart re-fires routines and a
+                # post-grace restart silently skips the missed morning entirely.
+                self._last_morning = data.get("last_morning") or None
+                self._last_goodnight = data.get("last_goodnight") or None
+                self._fired_reflections = set(data.get("fired_reflections") or [])
                 log.info(
                     f"Scheduler state loaded: enabled={self.heartbeat_enabled}, "
                     f"interval={self.heartbeat_interval}m, "
-                    f"pending_wake={'armed' if self.pending_wake else 'none'}"
+                    f"pending_wake={'armed' if self.pending_wake else 'none'}, "
+                    f"last_morning={self._last_morning}"
                 )
             except Exception as e:
                 log.warning(f"Failed to load scheduler state: {e}")
@@ -132,6 +145,12 @@ class Scheduler:
                 data["heartbeat_prompt"] = self.heartbeat_prompt
             if self.pending_wake:
                 data["pending_wake"] = self.pending_wake
+            if self._last_morning:
+                data["last_morning"] = self._last_morning
+            if self._last_goodnight:
+                data["last_goodnight"] = self._last_goodnight
+            if self._fired_reflections:
+                data["fired_reflections"] = sorted(self._fired_reflections)
             self._state_path.write_text(json.dumps(data, indent=2))
         except Exception as e:
             log.warning(f"Failed to save scheduler state: {e}")
@@ -153,7 +172,7 @@ class Scheduler:
             "valid_intervals": VALID_INTERVALS,
             "morning_time": "09:10 CET (workdays)",
             "goodnight_time": "21:00 CET (daily)",
-            "reflection_times": "11:00/14:00/17:00/20:00 CET (workdays, silent — palace only)",
+            "reflection_times": "11:00/14:00/17:00/20:00 CET (workdays — palace + worker audit + status)",
             "server_time_cet": now_cet.strftime("%Y-%m-%d %H:%M:%S %Z"),
             "is_workday": now_cet.weekday() < 5,
         }
@@ -253,6 +272,14 @@ class Scheduler:
         # Capture the running event loop so Flask threads can schedule onto it
         self._loop = asyncio.get_event_loop()
 
+        # Mine shutdown-staged archives in the background — conversation buffers
+        # are restored from disk on startup, so this no longer blocks first reply.
+        try:
+            from harness import palace
+            palace.schedule_mine_pending_shutdown_archives()
+        except Exception as e:
+            log.warning(f"Could not schedule background palace mine: {e}")
+
         # Always start morning + goodnight watchers
         self._morning_task = asyncio.ensure_future(self._cron_loop(
             name="morning",
@@ -280,6 +307,34 @@ class Scheduler:
         if self.pending_wake:
             self._wake_task = asyncio.ensure_future(self._wake_loop())
             log.info("One-shot wake pending from saved state — will fire shortly.")
+
+        # Downtime catch-up: if the process was down across the morning slot, the
+        # morning planning never ran and the cron loop above would otherwise just
+        # mark it fired-today (past its 5-min grace) and silently skip it. Decide
+        # SYNCHRONOUSLY here — before any loop gets the event loop and can mark the
+        # tracker — based on the persisted `_last_morning`. Morning only: a missed
+        # reflection slot won't re-fire (persisted fired-set) and a missed goodnight
+        # is not replayed (no 2am "good night").
+        now_cet = datetime.now(CET)
+        today_str = now_cet.strftime("%Y-%m-%d")
+        morning_dt = now_cet.replace(
+            hour=MORNING_TIME.hour, minute=MORNING_TIME.minute, second=0, microsecond=0
+        )
+        # Start the window PAST the cron's 5-min grace: within grace the normal
+        # morning cron still fires the routine itself, so a catch-up there would
+        # double-fire. Catch-up only covers the post-grace gap the cron skips.
+        # No upper bound other than "still today" — if the process is down all
+        # day and only restarts after goodnight, the planning ritual must still
+        # run today rather than being silently marked done-without-running by
+        # the plain cron loop's stale-skip branch below.
+        catchup_from = morning_dt + timedelta(minutes=5)
+        if (
+            now_cet.weekday() < 5
+            and self._last_morning != today_str
+            and catchup_from <= now_cet
+        ):
+            self._catchup_task = asyncio.ensure_future(self._catchup_loop())
+            log.info("Downtime catch-up: morning planning missed today — will run shortly after boot.")
 
         log.info("Scheduler running.")
 
@@ -319,6 +374,23 @@ class Scheduler:
             # Leave pending_wake armed — it will retry on next startup.
             log.exception(f"Wake loop error (left armed for retry): {e}")
 
+    # ── Downtime Catch-up Loop ───────────────────────────────────
+
+    async def _catchup_loop(self):
+        """Run the missed morning planning once, shortly after boot.
+
+        Only scheduled by start() when the process was down across the morning
+        slot. A small grace lets the Discord gateway/DM channel come up before
+        the catch-up turn tries to deliver.
+        """
+        try:
+            await asyncio.sleep(8)
+            await self._catchup_routine()
+        except asyncio.CancelledError:
+            log.info("Catch-up loop cancelled.")
+        except Exception as e:
+            log.exception(f"Catch-up loop error: {e}")
+
     # ── Heartbeat Loop ───────────────────────────────────────────
 
     async def _heartbeat_loop(self):
@@ -351,6 +423,12 @@ class Scheduler:
 
     # ── Cron Loop ────────────────────────────────────────────────
 
+    def _mark_fired(self, tracker: str, today_str: str) -> None:
+        """Set a daily fire-tracker and persist it, so a restart knows the
+        routine already ran today (no re-fire, no silent skip of a missed one)."""
+        setattr(self, tracker, today_str)
+        self._save_state()
+
     async def _cron_loop(self, name: str, target_time: time, callback, workday_only: bool):
         """Generic cron-style loop that fires a callback once per day at target_time CET."""
         try:
@@ -377,10 +455,10 @@ class Scheduler:
                         if diff < 300:  # 5 min grace
                             if not (workday_only and now.weekday() >= 5):
                                 log.info(f"Cron [{name}]: FIRING (within grace period)")
-                                setattr(self, tracker, today_str)
+                                self._mark_fired(tracker, today_str)
                                 await callback()
                                 continue
-                        setattr(self, tracker, today_str)
+                        self._mark_fired(tracker, today_str)
 
                     # Sleep until next check (every 30s for precision)
                     await asyncio.sleep(30)
@@ -400,11 +478,11 @@ class Scheduler:
 
                 if workday_only and now.weekday() >= 5:
                     log.info(f"Cron [{name}]: skipping — weekend")
-                    setattr(self, tracker, today_str)
+                    self._mark_fired(tracker, today_str)
                     continue
 
                 log.info(f"Cron [{name}]: FIRING")
-                setattr(self, tracker, today_str)
+                self._mark_fired(tracker, today_str)
                 await callback()
 
         except asyncio.CancelledError:
@@ -415,12 +493,12 @@ class Scheduler:
     # ── Ambient Reflection Loop ──────────────────────────────────
 
     async def _reflection_loop(self):
-        """Ambient cognition — silent palace-only reflection at a cadence.
+        """Ambient cognition — reflection + worker audit at a cadence.
 
         Fires at each time in REFLECTION_TIMES across the active window,
         workdays only. Unlike _cron_loop (once per day), this tracks each
-        (date, slot) so all slots fire once. Output is discarded for Discord —
-        the value is in what the agent files to the palace. No Discord spam.
+        (date, slot) so all slots fire once. Posts a brief status summary to
+        the user; files to the palace; audits the worker and may pause it.
         """
         try:
             while True:
@@ -443,7 +521,8 @@ class Scheduler:
                     # Fire if we're at/past the slot but within a 10-min grace.
                     if now >= target_dt and (now - target_dt).total_seconds() < 600:
                         self._fired_reflections.add(key)
-                        log.info(f"Reflection [{key}]: firing (silent)")
+                        self._save_state()  # persist so a restart won't re-fire this slot
+                        log.info(f"Reflection [{key}]: firing")
                         await self._reflection_routine()
 
                 # Trim the fired-set so it doesn't grow unbounded.
@@ -461,36 +540,43 @@ class Scheduler:
     # ── Routines ─────────────────────────────────────────────────
 
     async def _morning_routine(self):
-        """Morning greeting — workday 09:10 CET."""
+        """Morning greeting + daily planning — workday 09:10 CET."""
         log.info("Morning routine starting...")
-        await self._send_agent_message(
-            prompt=(
-                "[SYSTEM:MORNING_ROUTINE] Good morning! It is a new workday. "
-                "Please give a warm morning greeting. Then:\n"
-                "1. Check for any calendar or planning items he may need to respond to today.\n"
-                "2. Check our AWS coffers — run `aws ce get-cost-and-usage` for yesterday's costs "
-                "and provide a brief summary of spend.\n"
-                "3. Note anything else relevant from overnight.\n"
-                "4. If background jobs are in use (a `jobs/` board exists): plan today's work. "
-                "Set `state/worker_control.md` to `paused`, then read `jobs/job_roles.md`, "
-                "`state/backlog.md` and yesterday's `state/progress.md` and refresh the board — "
-                "regenerate today's due rituals and carry forward any unfinished projects (merge, "
-                "do not wipe in-progress state). Then set `state/worker_control.md` back to `active`.\n"
-                "Keep it concise but thorough. This also serves as a healthcheck."
-            ),
-            channel_id="morning",
-        )
+        today = datetime.now(CET).strftime("%Y-%m-%d")
+        await self._send_agent_message(prompt=_morning_prompt(today), channel_id="morning")
         await self._checkpoint("morning")
 
-    async def _reflection_routine(self):
-        """Ambient silent reflection — fires per slot in REFLECTION_TIMES, workdays.
+    async def _catchup_routine(self):
+        """Catch-up morning planning after downtime — see _catchup_prompt().
 
-        The agent is prompted to think privately about the current state of the
-        work and the relationship, and to FILE anything worth keeping to the
-        palace (a drawer, a knowledge-graph fact, an open question). The
-        response is never sent to Discord — only the palace side effects matter.
+        Scheduled by start() only when the process was down across the morning
+        slot, so today's planning never ran. Reconciles what was missed, then
+        does the morning planning. Marks morning fired-today (persisted) only on
+        success, so a delivery failure can retry on the next boot.
         """
-        log.info("Reflection routine starting (silent)...")
+        log.info("Catch-up routine starting (missed morning planning)...")
+        today = datetime.now(CET).strftime("%Y-%m-%d")
+        ok = await self._send_agent_message(prompt=_catchup_prompt(today), channel_id="morning")
+        if ok:
+            self._mark_fired("_last_morning", datetime.now(CET).strftime("%Y-%m-%d"))
+            await self._checkpoint("morning")
+            log.info("Catch-up routine complete.")
+        else:
+            log.warning("Catch-up delivery failed; left for retry on next boot.")
+
+    async def _reflection_routine(self):
+        """Ambient reflection + retro + worker audit — per slot in REFLECTION_TIMES, workdays.
+
+        The agent thinks privately, files anything worth keeping to the palace,
+        distills lessons, and AUDITS the background worker against the cookbooks
+        + guardrails.         It steers by appending to `state/steering.md` (which the
+        worker and morning planner read), and ALWAYS posts a brief worker-status
+        summary to the user (a forced-silent turn is unreliable, so the spoken
+        output is made useful instead). It additionally pauses the worker via
+        `state/worker_control.md` when it finds the worker doing something bad or
+        consistently misbehaving (PART 3).
+        """
+        log.info("Reflection routine starting...")
         # Mine the live user conversation(s) up to now BEFORE reflecting, so the
         # reflection turn (and its palace_search) sees the latest state. Blocking
         # — reflection only starts once the checkpoint mine has finished. This is
@@ -498,34 +584,9 @@ class Scheduler:
         # runs 4x/workday, so any active chat gets mined regularly regardless of
         # whether it ever hit the compaction threshold.
         await self._checkpoint_user_conversations()
-        await self._send_agent_silent(
-            prompt=(
-                "[SYSTEM:REFLECTION] This is an ambient reflection + retro tick — a "
-                "quiet moment to think and to learn from your recent work. No Discord "
-                "output is expected or desired; the user will not see this turn.\n\n"
-                "PART 1 — Take stock: What is the current state of the work? What did "
-                "you notice recently that you have not yet recorded? An open question "
-                "worth keeping open, a pattern worth naming, a fact that changed? If "
-                "something is worth keeping, FILE it now — palace_add_drawer for a "
-                "durable note, palace_kg_add for a structured fact, or "
-                "palace_diary_write for a reflection in your own voice.\n\n"
-                "PART 2 — Retro (learn from what you did): Review your recent work via "
-                "palace_search and palace_diary_read. Where did you get something "
-                "wrong, get corrected by the user, repeat a mistake, or have to look "
-                "up something you should already have known? Distill any DURABLE, "
-                "GENERALIZABLE lesson — not a one-off, not a restatement of what you "
-                "already know. If you find a real lesson:\n"
-                "  1. File the full lesson to the palace (palace_diary_write or "
-                "palace_add_drawer) — your permanent record.\n"
-                "  2. Update config/LESSONS.md: read_file it first, then write_file "
-                "the revised version with your new lesson added. Keep it CURATED and "
-                "BRIEF — merge duplicates, drop stale/contradicted lessons, phrase "
-                "each as an actionable rule. It is injected into your context every "
-                "turn, so every line must earn its place.\n\n"
-                "If nothing this tick needs filing and no real lesson surfaced, that "
-                "is a valid outcome — simply end the turn. The value is continuity of "
-                "attention and steady self-improvement, not output."
-            ),
+        today = datetime.now(CET).strftime("%Y-%m-%d")
+        await self._send_agent_message(
+            prompt=_reflection_prompt(today),
             channel_id="reflection",
         )
         await self._checkpoint("reflection")
@@ -538,19 +599,9 @@ class Scheduler:
         (e.g. mempalace not installed), goodnight delivery is unaffected.
         """
         log.info("Goodnight routine starting...")
+        today = datetime.now(CET).strftime("%Y-%m-%d")
         await self._send_agent_message(
-            prompt=(
-                "[SYSTEM:GOODNIGHT_ROUTINE] It is 21:00 CET. "
-                "Wish the user a peaceful good night. "
-                "Offer a brief reflection on the day if anything notable happened. "
-                "If background jobs are in use, do a verification sweep: read "
-                "`state/progress.md`, check the evidence on any `done_pending_verify` "
-                "items, confirm what truly got done, and mention anything still open "
-                "or blocked for tomorrow. "
-                "If you keep a diary, this is a good moment to write an entry. "
-                "After this message, you will enter REST — your heartbeat will be "
-                "disabled until morning."
-            ),
+            prompt=_goodnight_prompt(today),
             channel_id="goodnight",
         )
         await self._checkpoint("goodnight")

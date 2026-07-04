@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}{% block wf_title %}Workflows{% endblock %}{% endblock %}
+{% block container_class %}wf-container{% endblock %}
+{% block heading %}{% block wf_heading %}Workflows{% endblock %}{% endblock %}
+{% block subtitle %}{% block wf_subtitle %}Live view of the operational database{% endblock %}{% endblock %}
+
+{% block content %}
+<nav class="wf-nav">
+    <a href="/workflows" class="{{ 'active' if request.path == '/workflows' }}">All Workflows</a>
+    <a href="/approvals" class="{{ 'active' if request.path == '/approvals' }}">Approvals{% if approvals_count %} ({{ approvals_count }}){% endif %}</a>
+</nav>
+{% block wf_content %}{% endblock %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+    const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
+    const UNITS = [
+        ['year', 31536000], ['month', 2592000], ['week', 604800],
+        ['day', 86400], ['hour', 3600], ['minute', 60], ['second', 1],
+    ];
+    const ABS = {
+        year: 'numeric', month: 'short', day: 'numeric',
+        hour: 'numeric', minute: '2-digit',
+    };
+    function relative(date) {
+        const secs = (date.getTime() - Date.now()) / 1000;
+        const abs = Math.abs(secs);
+        if (abs < 30) return 'just now';
+        for (const [unit, s] of UNITS) {
+            if (abs >= s || unit === 'second') {
+                return rtf.format(Math.round(secs / s), unit);
+            }
+        }
+    }
+    function render() {
+        document.querySelectorAll('time.rel').forEach(el => {
+            const iso = el.getAttribute('datetime');
+            const d = new Date(iso);
+            if (isNaN(d)) return;
+            el.textContent = `${d.toLocaleString(undefined, ABS)} (${relative(d)})`;
+            el.setAttribute('data-tip', iso);
+            el.removeAttribute('title');
+        });
+    }
+    render();
+    setInterval(render, 30000);
+})();
+</script>
+{% endblock %}

@@ -5,6 +5,17 @@ import json
 import os
 from pathlib import Path
 
+from .explorium_tools import (
+    EXPLORIUM_TOOL_DEFINITIONS,
+    EXPLORIUM_TOOL_NAMES,
+    execute_explorium_tool,
+)
+from .contact_enrichment import (
+    CONTACT_TOOL_DEFINITIONS,
+    CONTACT_TOOL_NAMES,
+    execute_contact_tool,
+)
+
 TOOL_DEFINITIONS = [
     {
         "name": "run_shell",
@@ -70,6 +81,13 @@ TOOL_DEFINITIONS = [
             "PERSISTENT profile (cookies/logins survive across sessions), so once "
             "you log into a site you stay logged in next time. `close` only "
             "disconnects — it does not wipe the profile.\n\n"
+            "MULTIPLE ACCOUNTS: by default this drives the single `main` profile "
+            "(unchanged, single-account behavior). To manage more than one account "
+            "at once (e.g. a second LinkedIn login), register a named profile in "
+            "state/browser_profiles.md (read that file for the exact format/"
+            "procedure), then pass `profile=<id>` on every call for that account — "
+            "it gets its own isolated Chrome, cookie jar, and daemon session, and "
+            "can run at the same time as other profiles.\n\n"
             "Core loop:\n"
             "1. `open <url>` — launch/navigate. The window is visible; the user can "
             "watch and take over (e.g. solve a CAPTCHA or login).\n"
@@ -100,6 +118,21 @@ TOOL_DEFINITIONS = [
                         "Arguments passed to `browser-use`, e.g. "
                         "\"open https://example.com\", \"state\", \"click 2\", "
                         "\"input 0 'hello'\", \"keys 'Enter'\", or \"close\"."
+                    ),
+                },
+                "profile": {
+                    "type": "string",
+                    "description": (
+                        "Which browser profile to drive. Omit for the default "
+                        "`main` profile (single persistent Chrome, exactly the "
+                        "prior behavior). Pass a profile_id registered in "
+                        "state/browser_profiles.md to drive a separate, fully "
+                        "isolated Chrome + account instead — e.g. a second "
+                        "LinkedIn login. Different profiles can run "
+                        "concurrently. To register a new one: read_file "
+                        "state/browser_profiles.md for the exact procedure, "
+                        "then write_file the new row yourself — there is no "
+                        "dedicated tool for this, it's a plain file."
                     ),
                 },
             },
@@ -147,17 +180,36 @@ TOOL_DEFINITIONS = [
     {
         "name": "palace_search",
         "description": (
-            "Semantic search over the verbatim memory palace (MemPalace). "
-            "Use this to recall past conversations, decisions, code changes, or facts "
-            "that are not in the current context window or daily logs. "
-            "Zero API cost — searches run locally against ChromaDB."
+            "Search the verbatim memory palace (MemPalace). "
+            "Default (order=semantic): natural-language similarity search. "
+            "For 'what did we just discuss' / 'previous conversation' use "
+            "order=recency with room=conversations (optionally channel=main). "
+            "Zero API cost — runs locally against ChromaDB."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Natural-language query. Works best with full phrases, not keywords.",
+                    "description": (
+                        "Natural-language query for semantic search. Optional when "
+                        "order=recency (then filters sessions containing this text)."
+                    ),
+                },
+                "order": {
+                    "type": "string",
+                    "enum": ["semantic", "recency"],
+                    "description": (
+                        "semantic (default): rank by meaning. recency: latest archive "
+                        "sessions by filed_at DESC — use for prior/previous conversation."
+                    ),
+                },
+                "channel": {
+                    "type": "string",
+                    "description": (
+                        "With order=recency: filter to conversation archives for this "
+                        "channel id (e.g. main, worker)."
+                    ),
                 },
                 "wing": {
                     "type": "string",
@@ -165,18 +217,18 @@ TOOL_DEFINITIONS = [
                 },
                 "room": {
                     "type": "string",
-                    "description": "Optional room filter (folder-based — memory, harness, tower, etc).",
+                    "description": "Optional room filter (e.g. conversations for chat history).",
                 },
                 "hall": {
                     "type": "string",
-                    "description": "Optional hall filter (keyword-based auto-topic — decisions, problems, milestones, etc). Best scope for cross-cutting topic recall.",
+                    "description": "Optional hall filter (decisions, problems, milestones, etc).",
                 },
                 "k": {
                     "type": "integer",
                     "description": "Number of results (default 5, max 20).",
                 },
             },
-            "required": ["query"],
+            "required": [],
         },
     },
     {
@@ -407,7 +459,159 @@ TOOL_DEFINITIONS = [
             "required": ["url"],
         },
     },
+    {
+        "name": "db_create",
+        "description": (
+            "Create a new entity document in the operational DB (MongoDB). This is "
+            "the ONLY sanctioned way to insert operational state — never write "
+            "freestyle pymongo. The entity must be defined in a workflows/*.json "
+            "spec (see config/WORKFLOWS.md). The doc's status is set to the spec's "
+            "initial state automatically, history[] is initialized, and the unique "
+            "key dedups: if a doc with that key already exists, nothing is created."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "entity": {"type": "string", "description": "Entity name from a workflow spec (e.g. 'lead')."},
+                "doc": {
+                    "type": "object",
+                    "description": "The document fields, including the entity's unique key. Do not set 'status' — it is forced to the spec's initial state.",
+                },
+            },
+            "required": ["entity", "doc"],
+        },
+    },
+    {
+        "name": "db_get",
+        "description": (
+            "Read one entity document by its unique key (exact lookup, never search). "
+            "Use this to check current operational state before acting."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "entity": {"type": "string", "description": "Entity name from a workflow spec."},
+                "key": {"type": "string", "description": "The value of the entity's unique key."},
+            },
+            "required": ["entity", "key"],
+        },
+    },
+    {
+        "name": "db_query",
+        "description": (
+            "List entity documents matching an optional filter — e.g. 'what is due "
+            "now?' or 'all leads in status queued'. Returns up to `limit` docs."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "entity": {"type": "string", "description": "Entity name from a workflow spec."},
+                "filter": {"type": "object", "description": "Optional MongoDB filter document (e.g. {\"status\": \"queued\"})."},
+                "sort": {"type": "string", "description": "Optional field name to sort by."},
+                "descending": {"type": "boolean", "description": "Sort descending instead of ascending (default false)."},
+                "limit": {"type": "integer", "description": "Max docs to return (default 50)."},
+            },
+            "required": ["entity"],
+        },
+    },
+    {
+        "name": "db_move_state",
+        "description": (
+            "Move an entity to a new status. This is the enforced state-machine "
+            "transition: an illegal move (not allowed by the spec's transitions) is "
+            "REJECTED, and the change is atomic + precondition-guarded so a "
+            "concurrent double-move is impossible. Use this to advance a workflow, "
+            "to request approval (move into an approval state), and to mark done "
+            "(move into a terminal state). Every move appends to history[]."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "entity": {"type": "string", "description": "Entity name from a workflow spec."},
+                "key": {"type": "string", "description": "The value of the entity's unique key."},
+                "to": {"type": "string", "description": "The target status (must be a valid, allowed next state)."},
+                "note": {"type": "string", "description": "Optional note recorded with the transition in history[]."},
+            },
+            "required": ["entity", "key", "to"],
+        },
+    },
+    {
+        "name": "db_update",
+        "description": (
+            "Set non-status fields on an entity and record the change in history[]. "
+            "To change status, use db_move_state instead (this tool refuses it)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "entity": {"type": "string", "description": "Entity name from a workflow spec."},
+                "key": {"type": "string", "description": "The value of the entity's unique key."},
+                "fields": {"type": "object", "description": "Fields to set (must not include 'status')."},
+            },
+            "required": ["entity", "key", "fields"],
+        },
+    },
+    {
+        "name": "db_delete",
+        "description": (
+            "Delete one entity document by its unique key (like MongoDB's "
+            "deleteOne). Irreversible — use for cleaning up test/dummy docs "
+            "(e.g. after a workflow self-test), not for normal workflow state "
+            "changes (use db_move_state for those)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "entity": {"type": "string", "description": "Entity name from a workflow spec."},
+                "key": {"type": "string", "description": "The value of the entity's unique key."},
+            },
+            "required": ["entity", "key"],
+        },
+    },
+    {
+        "name": "db_add_event",
+        "description": (
+            "Append an event to an entity's history[] (its timeline) without "
+            "changing status — e.g. 'browser confirmed request sent', 'noted reply'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "entity": {"type": "string", "description": "Entity name from a workflow spec."},
+                "key": {"type": "string", "description": "The value of the entity's unique key."},
+                "event": {"description": "Event text (string) or a structured event object."},
+            },
+            "required": ["entity", "key", "event"],
+        },
+    },
+    {
+        "name": "db_counter",
+        "description": (
+            "Read or atomically increment a rate counter in the `counters` "
+            "collection, keyed by {name, period} (e.g. name='linkedin_invites', "
+            "period='2026-06-30'). Pass incr>0 to bump it (returns the new count); "
+            "incr=0 (default) just reads. Pass `cap` to have the result flag whether "
+            "the cap is reached. The cap is NOT hard-enforced — the cookbook decides "
+            "whether to stop."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Counter name (e.g. 'linkedin_invites')."},
+                "period": {"type": "string", "description": "Counter period bucket (e.g. a date or ISO week)."},
+                "incr": {"type": "integer", "description": "Amount to increment by (default 0 = read only)."},
+                "cap": {"type": "integer", "description": "Optional cap; the result flags whether count >= cap."},
+            },
+            "required": ["name", "period"],
+        },
+    },
 ]
+
+# Explorium lead-sourcing tools live in their own module (engine + cache stay
+# separate from the tool surface). Advertised alongside the core tools.
+TOOL_DEFINITIONS.extend(EXPLORIUM_TOOL_DEFINITIONS)
+# Contact (email/phone) enrichment — FullEnrich ⇄ Explorium waterfall, own cache.
+TOOL_DEFINITIONS.extend(CONTACT_TOOL_DEFINITIONS)
 
 
 # ── Stateless / no-palace mode (forgetting as a feature) ──
@@ -443,13 +647,22 @@ async def execute_tool(name: str, inputs: dict, memory_manager=None, working_dir
     if palace_disabled() and name in _PALACE_TOOL_NAMES:
         return "[stateless session] palace memory is disabled (--no-palace); this tool is unavailable."
     if name == "run_shell":
+        from .safety import is_db_freestyle
+        if is_db_freestyle(inputs["command"]):
+            return (
+                "[blocked] Freestyle MongoDB access via run_shell is not allowed. "
+                "Use the db_* primitive tools (db_create, db_get, db_query, "
+                "db_move_state, db_update, db_delete, db_add_event, db_counter) "
+                "instead — they enforce the workflow spec. See config/WORKFLOWS.md "
+                "and config/DATA.md."
+            )
         return await _run_shell(inputs["command"], inputs.get("working_dir", working_dir))
     elif name == "read_file":
         return await _read_file(inputs["path"])
     elif name == "write_file":
         return await _write_file(inputs["path"], inputs["content"])
     elif name == "browser":
-        return await _run_browser(inputs["args"])
+        return await _run_browser(inputs["args"], inputs.get("profile"))
     elif name == "generate_totp":
         return _generate_totp(inputs["secret_key"])
     elif name == "memory_log":
@@ -459,14 +672,17 @@ async def execute_tool(name: str, inputs: dict, memory_manager=None, working_dir
         return "Memory manager not available."
     elif name == "palace_search":
         from . import palace
+        order = inputs.get("order") or "semantic"
         return await asyncio.get_running_loop().run_in_executor(
             None,
             lambda: palace.search(
-                query=inputs["query"],
+                query=inputs.get("query") or "",
                 wing=inputs.get("wing"),
                 room=inputs.get("room"),
                 hall=inputs.get("hall"),
                 k=inputs.get("k", 5),
+                order=order,
+                channel=inputs.get("channel"),
             ),
         )
     elif name == "palace_add_drawer":
@@ -555,22 +771,74 @@ async def execute_tool(name: str, inputs: dict, memory_manager=None, working_dir
             "the browser is also blocked and the page is essential, ask the user to "
             "unblock it in the live window; otherwise skip it."
         )
+    elif name == "db_create":
+        from . import db_ops
+        return await db_ops.create(inputs["entity"], inputs["doc"])
+    elif name == "db_get":
+        from . import db_ops
+        return await db_ops.get(inputs["entity"], inputs["key"])
+    elif name == "db_query":
+        from . import db_ops
+        return await db_ops.query(
+            inputs["entity"],
+            filter=inputs.get("filter"),
+            sort=inputs.get("sort"),
+            descending=inputs.get("descending", False),
+            limit=inputs.get("limit", 50),
+        )
+    elif name == "db_move_state":
+        from . import db_ops
+        return await db_ops.move_state(
+            inputs["entity"], inputs["key"], inputs["to"], inputs.get("note"),
+        )
+    elif name == "db_update":
+        from . import db_ops
+        return await db_ops.update(inputs["entity"], inputs["key"], inputs["fields"])
+    elif name == "db_delete":
+        from . import db_ops
+        return await db_ops.delete(inputs["entity"], inputs["key"])
+    elif name == "db_add_event":
+        from . import db_ops
+        return await db_ops.add_event(inputs["entity"], inputs["key"], inputs["event"])
+    elif name == "db_counter":
+        from . import db_ops
+        return await db_ops.counter(
+            inputs["name"],
+            inputs["period"],
+            incr=inputs.get("incr", 0),
+            cap=inputs.get("cap"),
+        )
+    elif name in EXPLORIUM_TOOL_NAMES:
+        return await execute_explorium_tool(name, inputs)
+    elif name in CONTACT_TOOL_NAMES:
+        return await execute_contact_tool(name, inputs)
     else:
         return f"Unknown tool: {name}"
 
 
 
 # ── Browser (browser-use CLI + persistent Chrome) ─────────────────────
-# A real Chrome driven through the browser-use CLI over CDP. We launch ONE
-# dedicated Chrome with a fixed --user-data-dir + --remote-debugging-port, so
-# its profile (cookies, logins) PERSISTS across sessions and is isolated from
-# the user's personal Chrome. browser-use runs on its own dedicated --session
-# pointed at that Chrome via --cdp-url (added only when establishing the daemon).
-# `close` only disconnects the CDP session — it never kills our Chrome, so the
-# profile survives between runs.
+# A real Chrome driven through the browser-use CLI over CDP. By default we
+# drive ONE dedicated "main" Chrome with a fixed --user-data-dir +
+# --remote-debugging-port, so its profile (cookies, logins) PERSISTS across
+# sessions and is isolated from the user's personal Chrome. browser-use runs
+# on its own dedicated --session pointed at that Chrome via --cdp-url (added
+# only when establishing the daemon). `close` only disconnects the CDP session
+# — it never kills our Chrome, so the profile survives between runs.
+#
+# MULTIPLE PROFILES: additional named profiles, registered by the agent as
+# plain rows (profile_id, cdp_port, reason) in state/browser_profiles.md via
+# read_file/write_file — no dedicated tool, no DB, that file's own header has
+# the procedure. Each gets its own Chrome + CDP port + browser-use session
+# under BROWSER_PROFILES_DIR, so several accounts (e.g. two LinkedIn logins)
+# can run fully isolated and concurrently. A per-session asyncio.Lock
+# serializes calls *within* one profile (so overlapping agent turns never
+# race the same Chrome) while leaving different profiles free to run in
+# parallel.
 _HEADED_OFF = {"0", "false", "no", "off"}
 _CONN_FLAGS = {"--profile", "--cdp-url", "--connect"}
 _DEFAULT_CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+_DEFAULT_PROFILE = "main"
 
 
 def _profile_dir() -> str:
@@ -581,10 +849,6 @@ def _profile_dir() -> str:
 
 def _cdp_port() -> int:
     return int(os.environ.get("BROWSER_CDP_PORT", "9222"))
-
-
-def _cdp_url() -> str:
-    return f"http://127.0.0.1:{_cdp_port()}"
 
 
 def _session_name() -> str:
@@ -599,7 +863,96 @@ def _browser_use_home() -> str:
     return os.path.expanduser(os.environ.get("BROWSER_USE_HOME", "~/.browser-use"))
 
 
-def _daemon_state(session: str) -> str:
+def _profiles_base_dir() -> str:
+    return os.path.expanduser(
+        os.environ.get("BROWSER_PROFILES_DIR", "~/.galadriel/browser-profiles")
+    )
+
+
+def _valid_profile_id(profile_id: str) -> bool:
+    import re
+
+    return bool(re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", profile_id or ""))
+
+
+# Named profiles are registered in a plain markdown table (state/browser_profiles.md),
+# not the DB — this is harness-internal config (a name + why it exists), not
+# operational/business state, so it doesn't belong behind db_ops/workflows or in
+# the Tower UI. profile_id and reason are free text; cdp_port is the one
+# mechanically-required field (assigned once at creation, kept stable).
+_PROFILES_MD_PATH = Path("state/browser_profiles.md")
+
+
+def _read_browser_profiles() -> list[dict]:
+    """Parse {profile_id, cdp_port, reason} rows out of the markdown table.
+    Any line that isn't a well-formed 3-cell data row (header, separator,
+    prose, a hand-edit typo) is silently skipped rather than erroring.
+    """
+    if not _PROFILES_MD_PATH.exists():
+        return []
+    rows = []
+    for line in _PROFILES_MD_PATH.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not (line.startswith("|") and line.endswith("|")):
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if len(cells) != 3 or not _valid_profile_id(cells[0]):
+            continue
+        try:
+            port = int(cells[1])
+        except ValueError:
+            continue
+        rows.append({"profile_id": cells[0], "cdp_port": port, "reason": cells[2]})
+    return rows
+
+
+async def _resolve_browser_profile(profile: str | None) -> tuple[dict, str | None]:
+    """Resolve a profile name to {profile_dir, cdp_port, session_name}.
+
+    None/""/"main" reproduces the original single-profile behavior exactly
+    (same env vars as before), so existing single-account jobs are unaffected.
+    Any other id must already be a row in state/browser_profiles.md — the
+    agent registers new profiles itself with read_file/write_file, per that
+    file's own instructions; there is no dedicated tool for it.
+    """
+    profile = (profile or _DEFAULT_PROFILE).strip() or _DEFAULT_PROFILE
+    if profile == _DEFAULT_PROFILE:
+        return {
+            "profile_dir": _profile_dir(),
+            "cdp_port": _cdp_port(),
+            "session_name": _session_name(),
+        }, None
+
+    rows = await asyncio.to_thread(_read_browser_profiles)
+    row = next((r for r in rows if r["profile_id"] == profile), None)
+    if not row:
+        return {}, (
+            f"[error] unknown browser profile {profile!r}. Register it first as "
+            f"a row in state/browser_profiles.md (read that file for the exact "
+            "format/procedure), then retry."
+        )
+    return {
+        "profile_dir": os.path.join(_profiles_base_dir(), profile),
+        "cdp_port": row["cdp_port"],
+        "session_name": f"{_session_name()}-{profile}",
+    }, None
+
+
+_browser_locks: dict[str, asyncio.Lock] = {}
+
+
+def _lock_for(session_name: str) -> asyncio.Lock:
+    """One lock per browser-use session, created lazily. Serializes calls to
+    the SAME profile; different profiles get different locks and run freely
+    in parallel."""
+    lock = _browser_locks.get(session_name)
+    if lock is None:
+        lock = asyncio.Lock()
+        _browser_locks[session_name] = lock
+    return lock
+
+
+def _daemon_state(session: str, cdp_url: str) -> str:
     """Classify the browser-use daemon for our session: 'ours' | 'stale' | 'down'.
 
     'ours'  — alive and already connected to our CDP url (reuse with --session only)
@@ -626,7 +979,7 @@ def _daemon_state(session: str) -> str:
     except (OSError, TypeError, ValueError):
         return "down"
     cfg = state.get("config") or {}
-    return "ours" if cfg.get("cdp_url") == _cdp_url() else "stale"
+    return "ours" if cfg.get("cdp_url") == cdp_url else "stale"
 
 
 def _cdp_ready(port: int) -> bool:
@@ -642,15 +995,15 @@ def _cdp_ready(port: int) -> bool:
         return False
 
 
-async def _ensure_browser_chrome() -> str | None:
-    """Launch the dedicated persistent Chrome if it isn't already running.
+async def _ensure_browser_chrome(profile_dir: str, port: int) -> str | None:
+    """Launch the dedicated persistent Chrome for this profile if it isn't
+    already running.
 
     Returns None on success, or an error string. Idempotent: if the CDP endpoint
     is already up we reuse it, so the same profile is shared across calls/runs.
     """
     import subprocess
 
-    port = _cdp_port()
     if await asyncio.to_thread(_cdp_ready, port):
         return None
 
@@ -661,7 +1014,6 @@ async def _ensure_browser_chrome() -> str | None:
             "to the path of your Chrome/Chromium executable."
         )
 
-    profile_dir = _profile_dir()
     os.makedirs(profile_dir, exist_ok=True)
     argv = [
         binary,
@@ -691,24 +1043,27 @@ async def _ensure_browser_chrome() -> str | None:
     return "[error] Chrome started but its CDP endpoint never became reachable."
 
 
-def _with_cdp(argv: list[str], daemon_up: bool) -> list[str]:
-    """Route a command to the dedicated Chrome on its own daemon session.
+def _with_cdp(argv: list[str], daemon_up: bool, session: str, cdp_url: str) -> list[str]:
+    """Route a command to this profile's dedicated Chrome on its own daemon
+    session.
 
     A dedicated `--session` keeps the harness daemon isolated from any other
-    `browser-use` daemon (e.g. a manual `default` session). `--cdp-url` points a
-    NEW daemon at our persistent Chrome; we add it only when no daemon is up yet,
-    because re-passing it to a live daemon trips browser-use's config-match check.
-    Both are global flags placed before the subcommand. Skipped if the caller
-    already supplied an explicit connection.
+    `browser-use` daemon (e.g. a manual `default` session, or another
+    profile's session). `--cdp-url` points a NEW daemon at our persistent
+    Chrome; we add it only when no daemon is up yet, because re-passing it to
+    a live daemon trips browser-use's config-match check. Both are global
+    flags placed before the subcommand. Skipped if the caller already
+    supplied an explicit connection.
     """
-    prefix = ["--session", _session_name()]
+    prefix = ["--session", session]
     if not daemon_up and not any(t in _CONN_FLAGS for t in argv):
-        prefix += ["--cdp-url", _cdp_url()]
+        prefix += ["--cdp-url", cdp_url]
     return [*prefix, *argv]
 
 
-async def _run_browser(args: str) -> str:
-    """Run one or more `browser-use` commands and return the combined output.
+async def _run_browser(args: str, profile: str | None = None) -> str:
+    """Run one or more `browser-use` commands against the given profile (or the
+    default `main` profile if omitted) and return the combined output.
 
     `args` is everything after `browser-use`. Multiple commands may be chained
     with `&&`; each runs as its own invocation against the persistent daemon,
@@ -733,25 +1088,31 @@ async def _run_browser(args: str) -> str:
     if not commands:
         return "[error] No browser-use command given."
 
-    err = await _ensure_browser_chrome()
+    cfg, err = await _resolve_browser_profile(profile)
     if err:
         return err
 
-    session = _session_name()
-    state = _daemon_state(session)
-    if state == "stale":
-        await _run_one_browser(["--session", session, "close"])
-        state = "down"
-    daemon_up = state == "ours"
+    async with _lock_for(cfg["session_name"]):
+        cdp_url = f"http://127.0.0.1:{cfg['cdp_port']}"
+        chrome_err = await _ensure_browser_chrome(cfg["profile_dir"], cfg["cdp_port"])
+        if chrome_err:
+            return chrome_err
 
-    outputs: list[str] = []
-    for cmd in commands:
-        text, ok = await _run_one_browser(_with_cdp(cmd, daemon_up))
-        outputs.append(text)
-        if not ok:
-            break
-        daemon_up = True
-    return "\n".join(o for o in outputs if o).strip() or "(no output)"
+        session = cfg["session_name"]
+        state = _daemon_state(session, cdp_url)
+        if state == "stale":
+            await _run_one_browser(["--session", session, "close"])
+            state = "down"
+        daemon_up = state == "ours"
+
+        outputs: list[str] = []
+        for cmd in commands:
+            text, ok = await _run_one_browser(_with_cdp(cmd, daemon_up, session, cdp_url))
+            outputs.append(text)
+            if not ok:
+                break
+            daemon_up = True
+        return "\n".join(o for o in outputs if o).strip() or "(no output)"
 
 
 async def _run_one_browser(argv: list[str]) -> tuple[str, bool]:

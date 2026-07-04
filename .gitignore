@@ -20,3 +20,4 @@ mempalace.yaml
 entities.json
 .vscode/
 todo
+state/conversation_buffers/

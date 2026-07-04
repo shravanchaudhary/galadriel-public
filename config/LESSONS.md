@@ -1,19 +1,6 @@
-# LESSONS.md — Hard-won lessons (self-maintained)
-
-*Curated by your reflection/retro loop. These are **durable, generalizable** rules
-distilled from past mistakes, user corrections, and recurring friction — so you
-get it right the first time instead of relearning it.*
-
-*This file is loaded into your stable context block **every turn**: treat it as
-authoritative guidance for how to act. The full lesson history lives in the
-palace (diary + drawers); this is the short, sharp working set.*
-
-**Maintenance (during reflection):** read this file first, add only genuinely
-durable lessons, **merge duplicates, drop stale or contradicted ones**, and phrase
-each as an actionable rule for future-you. Every line must earn its place — keep
-it brief.
-
----
-
 - **Preserve raw voice:** Never "polish" Shravan's raw edits into standard AI copy. If he provides a draft or an edit, keep it exactly as it is. He actively rejects text that sounds "straight outta ai". Close posts simply and minimally.
 - **Track draft revisions strictly:** When iterating on a post, always present the absolute newest revision. Do not accidentally regress to earlier versions in the chat.
+- **Rate limits apply inside loops:** When executing bulk actions (like sending connection requests), check and increment `db_counter` *before every single action*, not at the end of the batch. Never bulk-execute without a per-item cap check.
+- **Save drafts to DB before seeking approval:** When moving an entity into an approval state (like `review_pending`), you must use `db_update` to save the drafted text to the DB document *before* using `db_move_state`. Approval states are read from the DB by the UI; text recorded only in the progress file is invisible for review.
+- **No idle logging in the shared ledger:** Do not append an entry to today's progress file (`state/progress/`) if a background check yields no changes. The ledger is for completed actions, DB state transitions, and real blockers, not heartbeat ticks.
+- **Worker Checkbox Execution:** The worker must read today's plan file (`state/plan/<today>.md`) on every tick. If a scheduled ritual's timestamp has passed and it is unchecked, the worker must execute it immediately to prevent missing tasks.

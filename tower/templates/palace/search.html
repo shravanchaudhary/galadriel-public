@@ -1,0 +1,38 @@
+{% extends "palace/base.html" %}
+{% block title %}Search{% endblock %}
+{% block heading %}Search{% endblock %}
+{% block subtitle %}Semantic search across the memory store{% endblock %}
+
+{% block palace_content %}
+<div class="wf-toolbar">
+    <a href="/palace" class="btn btn-small btn-secondary">← Memory</a>
+</div>
+
+<form action="/palace/search" method="get" class="wf-toolbar">
+    <input type="text" name="q" value="{{ query }}" placeholder="Search the palace…" class="chat-input" style="flex:1;">
+    <input type="text" name="wing" value="{{ wing or '' }}" placeholder="wing (optional)" class="chat-input" style="max-width:140px;">
+    <input type="text" name="room" value="{{ room or '' }}" placeholder="room (optional)" class="chat-input" style="max-width:140px;">
+    <input type="text" name="hall" value="{{ hall or '' }}" placeholder="hall (optional)" class="chat-input" style="max-width:140px;">
+    <button type="submit" class="btn btn-small">Search</button>
+</form>
+
+{% if query and not results %}
+<p class="empty-state">No drawers matched <strong>{{ query }}</strong>.</p>
+{% elif results %}
+<table class="wf-table">
+    <thead><tr><th>Text</th><th>Wing</th><th>Room</th><th>Hall</th><th>Distance</th><th></th></tr></thead>
+    <tbody>
+        {% for d in results %}
+        <tr>
+            <td>{{ (d.text or d.content or '') | truncate(160) }}</td>
+            <td><code>{{ d.wing }}</code></td>
+            <td><code>{{ d.room }}</code></td>
+            <td><code>{{ d.hall }}</code></td>
+            <td class="muted">{{ '%.3f'|format(d.distance) if d.distance is not none else '—' }}</td>
+            <td>{% if d.id %}<a href="/palace/drawer/{{ d.id }}">open →</a>{% endif %}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% endif %}
+{% endblock %}

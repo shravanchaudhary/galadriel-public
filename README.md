@@ -49,16 +49,16 @@ The pieces that make this real, all already shipped:
 - **A one-shot wake** that survives a process restart — so she can restart *herself*
   to load new code and resume exactly where she left off, even across a crash
   (see [One-shot wake](#one-shot-wake--resuming-yourself-across-a-restart)).
-- **Ambient reflection** — a silent, scheduled "thinking" loop that curates her own
-  memory between conversations, recording what a reactive agent would forget
-  (see [Ambient cognition](#ambient-cognition--the-agent-that-thinks-between-conversations)).
+- **Ambient reflection** — a scheduled workday loop that curates memory, audits the
+  background worker, and posts a brief status summary — recording what a reactive
+  agent would forget (see [Ambient cognition](#ambient-cognition--the-agent-that-thinks-between-conversations)).
 - **Self-modification discipline** baked into her identity — the
   [Karpathy coding principles](#baked-in-engineering-discipline-the-karpathy-principles)
   keep her self-edits surgical instead of sprawling.
 
 *Build it and they will come* is a poor engineering plan, so here is the honest version:
-the loop is **early**. She can already remember, restart herself, reflect silently, and
-edit her own harness under a human's eye. The trajectory — from human-approved self-edits
+the loop is **early**. She can already remember, restart herself, reflect on a
+workday cadence, and edit her own harness under a human's eye. The trajectory — from human-approved self-edits
 toward genuinely autonomous, salience-driven self-improvement — is mapped in the
 [Scheduler](#scheduler) and [Release Notes](#release-notes) sections. This README tells
 you exactly where reality ends and ambition begins.
@@ -297,12 +297,14 @@ These aren't abstract ideals — they are mechanically enforced via the `CLAUDE.
 ## Features
 
 - **Discord gateway** — DMs, channel mentions, or a dedicated channel; gated by user ID
-- **Web UI (Tower)** — local chat interface and dashboard at `localhost:8080`
-- **Tool use** — 14 tools: shell execution, file read/write, memory logging, and 10 [MemPalace](https://github.com/MemPalace/mempalace) tools (semantic search, knowledge graph, diary, taxonomy); all async, non-blocking
+- **Slack gateway** — a drop-in alternative to Discord for a shared team channel (`SLACK_CHANNEL_ID`): any member of that channel can talk to it (mention-gated), each message is tagged with the sender's name, and the agent is given an explicit "you're a teammate here" system context (see [Slack](#slack))
+- **Web UI (Tower)** — local chat interface and dashboard at `localhost:8080`, plus generic workflow screens (table, kanban, detail/timeline, approval inbox, run log)
+- **Tool use** — shell execution, file read/write, memory logging, a headed browser driver, web search + fast page fetch, TOTP 2FA, **7 `db_*` workflow primitives** (the agent's only path to MongoDB — they enforce a per-workflow spec's state machine + audit trail), and 10 [MemPalace](https://github.com/MemPalace/mempalace) tools (semantic search, knowledge graph, diary, taxonomy); all async, non-blocking
+- **Structured workflows (mini-app generator)** — declarative `workflows/*.json` specs define entities and their state machines; the `db_*` primitives enforce them (legal transitions only, dedup, auto history) and the Tower screens auto-render live MongoDB state. The agent designs a workflow with you in chat, then operates it — no freestyle DB scripting
 - **Persistent verbatim memory** — local MemPalace integration with wings/rooms/halls/drawers, zero-token retrieval, archive-before-clear on `/new`, goodnight mine of daily logs, wake-up snapshot in the dynamic block
 - **Safety tiers** — green (auto), yellow (notify), red (Discord reaction approval required)
-- **Scheduler** — morning briefing, goodnight, configurable heartbeat (with custom task-monitor prompts), a restart-surviving **one-shot wake**, and **ambient reflection** (silent palace-only thinking on a workday cadence)
-- **Background worker** — an opt-in second agent channel that autonomously executes a markdown **job board** (recurring "rituals" + carry-forward "projects") on a 10-min loop while the main channel stays free for the user; coordinated entirely through single-writer markdown files
+- **Scheduler** — morning briefing, goodnight, configurable heartbeat (with custom task-monitor prompts), a restart-surviving **one-shot wake**, and **ambient reflection** (workday palace filing + worker audit + brief status to the user)
+- **Background worker** — an opt-in second agent channel that autonomously executes a markdown **job board** (recurring "rituals" + carry-forward "projects") on a 10-min loop while the main channel stays free for the user; coordinated through markdown files under `jobs/` and `state/`, with the DB as the authoritative ledger for irreversible actions
 - **Completion watcher** — monitors `/tmp/galadriel-jobs/*.done` markers and reports when external/detached shell processes finish (distinct from the worker's job board)
 - **Compaction** — gemini-2.5-flash / Haiku-powered context compression, on demand (`/compact`) or automatically at a token threshold; archives the full conversation to the palace, then replaces it with one structured snapshot
 - **Prompt caching** — automatically managed, always active (implicit on Gemini, explicit breakpoints on Claude)
@@ -332,9 +334,9 @@ mempalace mine .            # indexes this repo into the palace
 python main.py
 ```
 
-**Tower-only mode:** Omit `DISCORD_BOT_TOKEN` — the harness runs with just the web UI on port 8080.
+**Tower-only mode:** Omit `DISCORD_BOT_TOKEN` (and `SLACK_BOT_TOKEN`/`SLACK_APP_TOKEN`) — the harness runs with just the web UI on port 8080.
 
-**Full mode:** Set `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) and `DISCORD_BOT_TOKEN`.
+**Full mode:** Set `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) and `DISCORD_BOT_TOKEN`, **or** `SLACK_BOT_TOKEN` + `SLACK_APP_TOKEN` for a shared team channel instead — see [Slack](#slack).
 
 **Skipping step 4?** That's fine — the harness runs normally and palace tools just return `[palace unavailable]` until you seed. You can do it any time.
 
@@ -394,9 +396,11 @@ main.py                   Entry point — wires all components, starts Discord +
 harness/
   agent.py                Core agent loop: LLM API (Gemini default), tool use, cache management
   memory.py               Stable + dynamic system prompt blocks; daily memory logs
-  tools.py                14 tools: run_shell, read_file, write_file, memory_log + 10 palace_*
+  tools.py                Tool defs + dispatch: run_shell, read/write_file, browser, web, 7 db_*, 10 palace_*
+  db_ops.py               DB primitives — the agent's only MongoDB path (enforces the workflow spec)
+  workflows.py            Workflow spec loader / entity registry (reads workflows/*.json)
   palace.py               MemPalace wrapper: search, archive, wake-up, KG, diary, taxonomy
-  safety.py               Command classification (green / yellow / red)
+  safety.py               Command classification (green / yellow / red); blocks freestyle DB access
   compaction.py           gemini-2.5-flash / Haiku snapshot compaction (archives full conversation to palace first)
   model_registry.py       Task → (provider, model) — single source of truth for model selection
   scheduler.py            Morning briefing, goodnight (mines daily logs), heartbeat
@@ -405,15 +409,22 @@ harness/
   error_humanizer.py      Readable API error mapping (Anthropic + Gemini)
 discord_bot/
   bot.py                  Discord gateway, approval buttons, slash + prefix commands
+slack_bot/
+  bot.py                  Slack gateway (Socket Mode): mention-gated relay, Block Kit approvals, slash commands
 tower/
   app.py                  Flask dashboard + REST API
-  templates/              Tower UI HTML
+  workflows.py            Workflow UI blueprint (table / kanban / detail / approvals / run log)
+  templates/              Tower UI HTML (incl. workflows/ screens)
   static/                 CSS
+workflows/                Declarative workflow specs (*.json) — entity state machines
 config/
   SOUL.md                 Agent personality and values (your main customization point)
   MEMORY.md               Long-term memory (agent-maintained)
   CONTEXT.md              Your project context — fill this in to activate caching
-  TOOLS.md                Palace tool reference + decision matrix (read by agent on every call)
+  GUARDRAILS.md           Hard operating rules (cookbook is truth, verify before claiming done)
+  RECALL.md               Reflex index — operation → what to load/recall first
+  TOOLS.md                Tool reference (palace + db_* primitives) + decision matrix
+  WORKFLOWS.md            How to build & self-test a workflow (the mini-app generator)
   visions/                Optional per-project context files
 memory/                   Daily logs — auto-generated, gitignored
 mempalace.yaml.example    Room-structure template for `mempalace init` (copy to mempalace.yaml)
@@ -485,14 +496,49 @@ Fill in your real values and she'll orient herself correctly from the first mess
 
 ---
 
+## Slack
+
+An alternative gateway to Discord for teams: instead of one authorized user in DMs, the bot sits in **one shared channel** and any member of that channel can talk to it. It's designed to feel like adding a teammate to a channel, not wiring up a private assistant.
+
+### How it differs from Discord
+
+| | Discord | Slack |
+|---|---|---|
+| Who can talk to it | One `DISCORD_AUTHORIZED_USER_ID` | Any member of the configured channel |
+| Which channel | Manually set via `DISCORD_CHANNEL_ID` | Manually set via `SLACK_CHANNEL_ID` |
+| When it responds | Every message in the target channel, DMs, or when mentioned | Only when **@mentioned** — a shared channel has humans talking to each other too |
+| Who it thinks it's talking to | The one user in `config/MEMORY.md` | Whoever sent the message — each message is prefixed `[Sender Name]: ...`, and the agent is given a live roster of the channel so it knows it's a team member among several people, not a 1:1 assistant |
+| Approvals (🔴 red-tier commands) | The authorized user only, via DM buttons | **Any member of the channel**, via Block Kit buttons in the channel itself |
+| Push notifications (heartbeat, morning briefing, worker pings) | The authorized user's DM | The configured channel — there is no Slack DM push target by design |
+| Transport | Discord gateway | **Socket Mode** — an outbound-only websocket, so no public webhook URL or signing secret is needed |
+
+Only one gateway runs per deployment. If `DISCORD_BOT_TOKEN` is set, Discord wins; otherwise Slack starts if both `SLACK_BOT_TOKEN` and `SLACK_APP_TOKEN` are set.
+
+### One-time Slack app setup
+
+1. Create an app at [api.slack.com/apps](https://api.slack.com/apps) ("From scratch").
+2. **OAuth & Permissions** → add Bot Token Scopes: `chat:write`, `channels:history`, `channels:read`, `groups:history`, `groups:read`, `users:read`, `app_mentions:read`. (`groups:*` only needed if the channel you'll use is private — easy to miss, and without it the bot silently can't see that channel at all.)
+3. **Socket Mode** → enable it, generate an app-level token with the `connections:write` scope → this is your `SLACK_APP_TOKEN` (`xapp-...`).
+4. **Event Subscriptions** → enable, and subscribe to the bot events: `message.channels`, `message.groups`, `app_mention`, `member_joined_channel`, `member_left_channel`. (Slack can deliver a mention as `message`, `app_mention`, or both depending on subscriptions — the bot handles either and dedupes automatically.)
+5. **Interactivity & Shortcuts** → enable (needed for the Approve/Deny buttons; works automatically over Socket Mode, no request URL needed).
+6. **Slash Commands** → add `/new`, `/status`, `/compact` (description text is up to you; Socket Mode handles delivery, no request URL needed).
+7. **Install App to Workspace** → generates your `SLACK_BOT_TOKEN` (`xoxb-...`). If you change scopes later, reinstall to pick them up.
+8. Invite the bot into the channel it should live in (`/invite @your-bot-name`), then grab that channel's ID (right-click the channel name → View channel details → Channel ID at the bottom) and set it as `SLACK_CHANNEL_ID` in `.env`, alongside both tokens. Start the harness — it only ever listens in that one channel.
+
+### Talking to it
+
+Mention it to get its attention (`@your-bot-name what's the deploy status?`). It replies directly in the channel — no side threads — posting a "🧝‍♀️ _thinking…_" placeholder immediately (Slack bots have no native typing indicator) and editing it in place once the real answer is ready. Anyone else in the channel can also mention it and it'll know who's talking from that point on — the system prompt carries a live roster of channel members plus each message's sender name. Each message needs its own mention; it doesn't infer who a follow-up is meant for.
+
+---
+
 ## Safety Tiers
 
 All shell commands are classified before the agent executes them:
 
 | Tier | Behaviour | Examples |
 |------|----------|---------|
-| 🟢 **Green** | Auto-execute | `ls`, `git status`, `aws s3 ls`, `cat`, `python3 script.py` |
-| 🟡 **Yellow** | Notify, proceed | `git push`, `pip install`, `sudo systemctl`, `sam deploy` |
+| 🟢 **Green** | Auto-execute | `ls`, `git status`, `aws s3 ls`, `cat` (read-only), `python3 script.py`, inline `python - <<'PY'` |
+| 🟡 **Yellow** | Notify, proceed | `git push`, `pip install`, `sudo systemctl`, `sam deploy`, `cat … > file`, unknown commands |
 | 🔴 **Red** | Discord reaction required (✅/❌, 30s timeout → denied) | `rm`, IAM changes, CloudFormation mutations, `shutdown` |
 
 Unknown commands default to yellow. Red commands denied by timeout or ❌ are never executed.
@@ -504,7 +550,7 @@ Unknown commands default to yellow. Red commands denied by timeout or ❌ are ne
 | Event | Default time | Condition |
 |-------|-------------|-----------|
 | **Morning briefing** | 09:10 CET | Workdays (Mon–Fri) |
-| **Ambient reflection** | 11:00 / 14:00 / 17:00 / 20:00 CET | Workdays; **silent** — palace-only, no Discord output |
+| **Ambient reflection** | 11:00 / 14:00 / 17:00 / 20:00 CET | Workdays; palace filing + worker audit + brief status summary (can pause the worker) |
 | **Goodnight** | 21:00 CET | Daily; disables heartbeat |
 | **Heartbeat** | Every 5/10/20/30 min | When enabled; off by default; can carry a custom monitoring prompt |
 | **One-shot wake** | Once, ASAP | When armed; **survives a process restart**; clears itself after firing |
@@ -554,17 +600,20 @@ and the moment between conversations is dead air. **Ambient reflection** gives
 the agent a heartbeat of *private thought* instead.
 
 At a workday cadence (11:00, 14:00, 17:00, 20:00 CET by default), the scheduler
-fires a **silent** reflection turn. The agent is prompted to take stock — *What
-is the state of the work? What did I notice that I haven't recorded? Is there an
-open question worth keeping, a pattern worth naming, a fact that has changed?* —
-and to **file anything worth keeping to the memory palace** (a drawer, a
+fires a reflection turn. The agent is prompted to take stock — *What is the
+state of the work? What did I notice that I haven't recorded? Is there an open
+question worth keeping, a pattern worth naming, a fact that has changed?* — and
+to **file anything worth keeping to the memory palace** (a drawer, a
 knowledge-graph fact, a diary entry).
 
-The crucial design choice: **this output never reaches Discord.** It is routed
-through `_send_agent_silent`, which runs the turn purely for its side effects.
-The user sees nothing. The value isn't a message — it's *continuity of
-attention*. The agent walks into the next real conversation having already
-noticed and recorded what mattered, rather than reconstructing it cold.
+It also **audits the background worker** against the job cookbooks and
+`config/GUARDRAILS.md`: reconciles today's progress file (`state/progress/`,
+one file per day) with what actually happened (including work done in the main
+chat), appends corrections to
+`state/steering.md`, and can set `state/worker_control.md` to `paused` if the
+worker is misbehaving. Each tick ends with a **brief status summary to the user**
+(ALL GOOD / STEERED / PAUSED plus a line or two of evidence) — forced-silent
+turns proved unreliable, so the spoken output is made useful instead.
 
 **Why this matters (the long-term plan, such as it is):** a memory palace is
 only as good as what gets written into it, and the most valuable observations —
@@ -574,8 +623,8 @@ busy answering. Ambient reflection closes that gap. It is the first step toward
 an agent whose memory is *curated by itself, continuously*, not just dumped at
 goodnight. The intended trajectory:
 
-1. **Now:** silent palace filing on a fixed cadence — recording what would
-   otherwise be lost between turns.
+1. **Now:** palace filing + worker audit on a fixed cadence — recording what would
+   otherwise be lost between turns, and steering the background worker when it drifts.
 2. **Next:** reflection that reads its own recent diary + open-questions and
    *threads* across ticks, so a thought begun at 11:00 can be picked up at 14:00
    rather than starting fresh each time.
@@ -595,29 +644,35 @@ Ambient reflection thinks; the **background worker** *does*. Enabled with
 **curator** (the normal chat — talks to you, plans, verifies) and the **worker**
 (a second `worker` channel on a 10-min work-conserving loop, `harness/worker.py`).
 They share the same model, tools, and palace but have **isolated channel
-histories**, and they coordinate *only* through markdown files — each with a
-single writer, so parallel access can never lose or corrupt an update:
+histories**, and they coordinate *only* through markdown files under `jobs/` and
+`state/` (plus `config/JOBS.md`, auto-loaded into both hats' context). The DB is
+the authoritative ledger for irreversible actions; the shared `state/progress/`
+(one file per day) is human-readable narration on top of it:
 
 | File | Writer | Purpose |
 |------|--------|---------|
-| `jobs/job_roles.md` | curator | broad goals + recurring rules ("rituals") |
+| `config/JOBS.md` | curator | broad goals + recurring rules ("rituals") — always in context, no read needed |
 | `jobs/<id>.md` | curator | per-job cookbook — key steps + success check |
 | `state/backlog.md` | curator | projects (one-offs), carry forward until done |
 | `state/worker_control.md` | curator | `active` / `paused` (first line is the state) |
-| `state/progress.md` | worker | live status, blockers, completions + evidence |
+| `state/progress/YYYY-MM-DD.md` | curator + worker | shared work ledger (narration), one file per day — status, blockers, every completed/irreversible action + evidence, from both hats; DB is the authority behind it |
+| `state/plan/YYYY-MM-DD.md` | curator + scheduler | dated daily planning ledger, one file per day — morning writes today's file, reflection amends on re-plan, catch-up reads it for pending work |
+| `state/steering.md` | reflection (append-only) | corrections from the ambient audit; worker + morning read before acting |
 
 The model mirrors how a person actually runs a day: **rituals** (e.g. "check DMs
 at 11:00") fire once at their time and never carry forward or double-run;
 **projects** carry until truly done. Due rituals preempt project work; projects
 fill the gaps. A blocked task is parked (notify once, move on), not a full stop.
 Completions are marked `done_pending_verify` **with evidence** — the curator
-verifies before claiming done, so nothing is self-certified.
+verifies before claiming done, so nothing is self-certified. Work done in the
+**main chat counts too** — both hats append to the shared ledger before moving on.
 
-The worker is time-aware without breaking the prompt cache: the current time and
-elapsed session time are injected at the **tail** of each worker turn. To stop
-it, set `state/worker_control.md` to `paused` — it re-reads the flag each tick
-and quiesces at its next checkpoint. Opt-out by leaving `GALADRIEL_WORKER`
-unset; the board files lie dormant and nothing runs.
+Each worker tick **resets its channel history** and reconstructs state from the
+board + DB + palace (durable continuity lives in files, not in-context memory).
+The current time is injected at the **tail** of each turn. To stop the worker,
+set `state/worker_control.md` to `paused` — it re-reads the flag each tick and
+quiesces at its next checkpoint. Opt-out by leaving `GALADRIEL_WORKER` unset;
+the board files lie dormant and nothing runs.
 
 ---
 
@@ -632,6 +687,8 @@ See `.env.example` for the full list with inline documentation.
 | `DISCORD_BOT_TOKEN` | No | Enables Discord gateway |
 | `DISCORD_AUTHORIZED_USER_ID` | No | Only this Discord user ID can interact |
 | `DISCORD_CHANNEL_ID` | No | Guild channel for conversation |
+| `SLACK_BOT_TOKEN` | No | Enables the Slack gateway (with `SLACK_APP_TOKEN`) — alternative to Discord, see [Slack](#slack) |
+| `SLACK_APP_TOKEN` | No | App-level token (`connections:write` scope) for Slack Socket Mode |
 | `TOWER_HOST` | No | Tower bind address (default: `127.0.0.1`) |
 | `TOWER_PORT` | No | Tower port (default: `8080`) |
 | `TOWER_SECRET_KEY` | No | Flask session secret — change this |
@@ -641,7 +698,7 @@ See `.env.example` for the full list with inline documentation.
 | `PALACE_ARCHIVE_ROOT` | No | Where archived conversations + pre-compaction tool_results land before mining (default: `~/.mempalace/archive`) |
 | `PALACE_WAKE_UP_FILE` | No | Cached wake-up snapshot path (default: `~/.mempalace/wake_up.md`) |
 | `PALACE_WAKE_UP_INJECT` | No | Set to `0` to disable injection of the wake-up snapshot into the dynamic system-prompt block (default: `1` — enabled) |
-| `GALADRIEL_REFLECTION` | No | Set to `0` to disable the ambient reflection loop entirely — no silent background turns (default: `1` — enabled) |
+| `GALADRIEL_REFLECTION` | No | Set to `0` to disable the ambient reflection loop entirely — no scheduled reflection/audit turns (default: `1` — enabled) |
 | `GALADRIEL_WORKER` | No | Set to `1` to start the background worker loop (executes the `jobs/` + `state/` board). Even when on, it idles until `state/worker_control.md` is `active` (default: `0` — disabled) |
 
 ---
@@ -656,6 +713,8 @@ See `.env.example` for the full list with inline documentation.
 
 **Discord is the secure interface.** Authorization is enforced by `DISCORD_AUTHORIZED_USER_ID`. Only messages from that user ID are processed. Unauthorized users get "I do not know you, stranger."
 
+**Slack trades per-user authorization for per-channel authorization.** There is no user allowlist — anyone who is a member of the `SLACK_CHANNEL_ID` channel (including anyone who can be invited into it by an org admin) can talk to the agent and approve/deny red-tier commands. The security boundary is "who your org lets into that Slack channel," not an individual's user ID. Only point it at a channel whose full membership you'd trust with shell access. Socket Mode itself needs no public port — it's an outbound-only websocket, so there's no inbound attack surface to expose.
+
 **`run_shell` is unrestricted.** The agent can execute any command the process user can run. The safety tier system classifies and gates commands, but it's defense-in-depth, not a sandbox. Run the harness as a low-privilege user on a dedicated machine or VM.
 
 **`read_file` and `write_file` have no path restrictions.** The agent can read any file the process can access. This is intentional for a personal assistant that needs to operate freely on your system.
@@ -665,6 +724,20 @@ See `.env.example` for the full list with inline documentation.
 ---
 
 ## Release Notes
+
+### Unreleased — worker board hardening + reflection audit
+
+Operational docs above reflect this branch. Highlights:
+
+- **Slack gateway:** a drop-in alternative to Discord for shared team channels (`slack_bot/bot.py`, Socket Mode). Channel is fixed via `SLACK_CHANNEL_ID` (same pattern as Discord's `DISCORD_CHANNEL_ID`); any member of that channel can talk to it (mention-gated), replies post directly to the channel with a "thinking…" placeholder edited in place (Slack bots have no native typing indicator), messages are tagged with the sender's name, and `GaladrielAgent.set_channel_context()` (new, generic) gives the agent a live roster so it knows it's a teammate among several people rather than a 1:1 assistant. Approvals move to Block Kit buttons any member can click; pushes (heartbeat, morning briefing, worker pings) go to that one channel instead of a DM. Only one gateway runs per deployment — see [Slack](#slack).
+- **Shared work ledger:** `state/progress/` (one file per day) is written by curator *and* worker (append-style narration); main-chat sends/completions must be recorded there too, and the DB is the authoritative ledger behind it (`config/GUARDRAILS.md`, `config/RECALL.md`, `config/SOUL.md`).
+- **No double-work guard:** the DB atomic precondition-guarded transition on a unique key makes a double-action impossible by construction — no separate ownership-claim file; coarse coordination is `state/worker_control.md` (pause the worker while the curator drives).
+- **Coordination files:** `state/steering.md` (reflection corrections).
+- **Ambient reflection:** no longer silent — each slot files to the palace, audits the worker, may pause it, and posts a brief status summary. (The 1.13 release note below describes the original silent design.)
+- **Worker lean ticks:** each worker turn resets its channel history; state is reconstructed from the board + DB + palace.
+- **Compaction mining:** archive mining during `/compact` now completes synchronously before the next task runs.
+- **Palace shutdown:** `palace.close()` on process exit flushes in-process vector writes so recall survives restarts.
+- **Strict approval nuance:** bare LinkedIn connection requests (no note) may be sent autonomously; message-bearing outbound still requires approval.
 
 ### 1.18 — Snapshot compaction replaces history trimming
 

@@ -1,4 +1,14 @@
 {
   "heartbeat_enabled": false,
-  "heartbeat_interval": 10
+  "heartbeat_interval": 10,
+  "last_morning": "2026-07-03",
+  "last_goodnight": "2026-07-03",
+  "fired_reflections": [
+    "2026-06-30:1700",
+    "2026-06-30:2000",
+    "2026-07-01:1700",
+    "2026-07-01:2000",
+    "2026-07-02:1100",
+    "2026-07-03:2000"
+  ]
 }

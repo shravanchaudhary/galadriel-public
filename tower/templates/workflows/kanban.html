@@ -1,0 +1,35 @@
+{% extends "workflows/base.html" %}
+{% block title %}{{ spec.name }} — Kanban{% endblock %}
+{% block heading %}{{ spec.name }}{% endblock %}
+{% block subtitle %}{{ spec.workflow }} · kanban by status{% endblock %}
+
+{% block wf_content %}
+<div class="wf-toolbar">
+    <a href="/w/{{ spec.name }}" class="btn btn-small">← Table</a>
+</div>
+
+<div class="kanban">
+    {% for col in columns %}
+    <div class="kanban-col">
+        <h3>
+            <span>{{ col.state }}</span>
+            <span class="count">{{ col.docs | length }}</span>
+        </h3>
+        <div class="kanban-cards">
+            {% for doc in col.docs %}
+            <div class="kanban-card">
+                <a href="/w/{{ spec.name }}/item?key={{ doc.get(spec.key) | urlencode }}">
+                    {{ doc.get(spec.table_columns[0], doc.get(spec.key)) }}
+                </a>
+                {% if spec.table_columns | length > 1 %}
+                <div class="sub">{{ doc.get(spec.table_columns[1], '') | humantime }}</div>
+                {% endif %}
+            </div>
+            {% else %}
+            <div class="muted" style="font-size:0.78rem;">empty</div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% endblock %}

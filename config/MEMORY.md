@@ -5,7 +5,7 @@
 - **User Name:** Shravan
 - **LinkedIn Profile Handle:** shravankc
 - **Authorized Discord ID:** 1406315779049263114
-- **Standing Authorization:** Granted (READ/DRAFT only. Write actions require explicit approval per strict lock.)
+- **Standing Authorization:** Granted. Bare connection requests (no note) may be sent autonomously; all message-bearing writes (messages, posts, comments, notes, emails) require explicit approval per the strict lock.
 
 ## Credentials (SECURE)
 
@@ -15,7 +15,7 @@
 
 ## Constraints
 
-- **STRICT APPROVAL LOCK (CRITICAL):** Do NOT send any message, publish any post, leave any comment, or send any connection request with a note autonomously. Every single outbound piece of text must be presented to Shravan in the chat and explicitly approved before execution. No exceptions.
+- **STRICT APPROVAL LOCK (CRITICAL):** Do NOT send any message, publish any post, leave any comment, or send any connection request with a note autonomously. Every single outbound piece of text must be presented to Shravan in the chat and explicitly approved before execution. No exceptions. (A bare connection request carries no text and may be sent autonomously.)
 
 ## Infrastructure
 

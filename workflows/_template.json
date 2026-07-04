@@ -1,0 +1,20 @@
+{
+  "workflow": "example_workflow",
+  "entities": {
+    "lead": {
+      "collection": "example_leads",
+      "key": "email",
+      "states": ["new", "review_pending", "contacted", "replied", "won", "lost"],
+      "initial": "new",
+      "transitions": {
+        "new": ["review_pending", "lost"],
+        "review_pending": ["contacted", "lost"],
+        "contacted": ["replied", "lost"],
+        "replied": ["won", "lost"]
+      },
+      "approval_states": ["review_pending"],
+      "fields": ["name", "email", "company", "notes", "next_action_at"],
+      "table_columns": ["name", "company", "status", "next_action_at"]
+    }
+  }
+}

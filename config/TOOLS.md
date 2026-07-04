@@ -28,14 +28,15 @@ Recall questions where the answer is likely in your history but not in your curr
 | "How long did the last data migration take?" | **Palace** — buried in a daily log |
 | "What was that decision we made about max_tokens last week?" | **Palace** |
 | "What's the Discord authorized user ID?" | **Your cached MEMORY.md** — don't palace this |
-| "What did I say five minutes ago?" | **Dynamic block** — don't palace this |
+| "What did I say five minutes ago?" | **In-context buffer** (same session) — don't palace it. After restart, buffers reload from `state/conversation_buffers/`; if empty, use `palace_search(order="recency", room="conversations")`. |
 
 Rule of thumb: stable block → already in context, read from memory. Dynamic block → still in context, no lookup needed. **Old operational history → palace it.**
 
 ### How to call `palace_search`
 
 ```python
-palace_search(query="<natural phrase>", wing=None, room=None, hall=None, k=5)
+palace_search(query="<natural phrase>", order="semantic", wing=None, room=None, hall=None, k=5)
+palace_search(order="recency", room="conversations", channel="main", k=5)  # latest chat archives
 ```
 
 - `query` — full phrases beat keywords. `"cost of Polly standard voice per million chars"` outperforms `"Polly cost"`.
@@ -104,20 +105,96 @@ All palace tools (`palace_search`, `palace_add_drawer`, `palace_wake_up`, `palac
 
 ---
 
+## 🗄️ The operational DB — the `db_*` primitives
+
+*Your system of record (MongoDB). The single source of truth for operational state — what is true right now, what's been done, what's due next. **You touch it ONLY through these primitives.** Freestyle pymongo/mongosh in `run_shell` is removed and refused. Doctrine: `config/DATA.md`. The map of collections: `state/db_index.md`.*
+
+Every entity is defined in a `workflows/*.json` spec (its collection, unique key, states, allowed transitions). The primitives resolve the entity against that spec and enforce it, so you can't make an illegal move or forget the audit trail.
+
+| Tool | Use for |
+|---|---|
+| `db_create(entity, doc)` | Insert a new doc. Status is forced to the spec's initial; `history[]` is initialized; the unique key dedups (returns `exists` instead of duplicating). |
+| `db_get(entity, key)` | Exact read of one doc by unique key. **Read state before you act** — never from recall. |
+| `db_query(entity, filter, sort, descending, limit)` | List docs / "what's due now" (e.g. `filter={"status":"queued"}`). |
+| `db_move_state(entity, key, to, note)` | **Enforced** status transition. Rejects illegal moves; atomic + precondition-guarded (a `skipped` return = someone else already moved it). This is also how you **request approval** (move into an approval state) and **mark done** (move into a terminal state). |
+| `db_update(entity, key, fields)` | Set non-status fields (refuses `status` — use `db_move_state`). |
+| `db_add_event(entity, key, event)` | Append a timeline event to `history[]` without changing status. |
+| `db_counter(name, period, incr, cap)` | Read or atomically increment a rate counter. `incr=0` reads; `incr>0` bumps. `cap` only *flags* whether you're at the cap — **it does not stop you**; the cookbook decides. |
+
+Rules of thumb:
+- **Exact lookups, never search**, for state — `db_get`/`db_query`, not `palace_search`. (The palace is for meaning/learning; the DB is for "did I already message Alice?")
+- **Caps & approvals are prose, not code.** The primitives enforce the state machine + history; they do **not** enforce daily caps, ordering, or approval gates. Those live in the job cookbook — check `db_counter` and honor the gate yourself.
+- **No new tool for new state.** Need a new entity or status? Author a `workflows/*.json` spec — see `config/WORKFLOWS.md`. Then the same primitives + the Tower UI work on it for free.
+- **Secrets:** read credentials with `db_get(entity="credential", key="<name>")`; **mask** (`****`) whenever you echo them. The `credential` entity is hidden from the Tower UI.
+
+---
+
 ## 📄 Reading a web page — the waterfall
 
 *Once you have a URL (a `google_search` result, a link from anywhere), you almost always just need to **read** it. Don't open a browser tab for that — it's slow and expensive. Use the waterfall.*
 
 | Step | Tool | When |
 |---|---|---|
-| 1 | `fetch_url_data(url)` | **Always first** for reading a page. Fast, browser-free extractor waterfall (Trafilatura Lambda → Handinger markdown). Returns the page text/markdown. |
+| 1 | `fetch_url_data(url)` | **Always first** for reading a page. Fast, browser-free extractor waterfall (Trafilatura Lambda). Returns the page text/markdown. |
 | 2 | `browser("open <url>")` then `browser("eval \"document.body.innerText\"")` | Only if step 1 returns `[no content]` (login wall, bot detection, JS-only page, or extraction failure). `open` loads the page; `eval "document.body.innerText"` (or `state`) returns its text. |
 | 3 | Ask the user to unblock | Only if step 2 is **also** blocked (login / CAPTCHA / OTP / bot-detection) **and** the page is essential. STOP and ask the user to clear it live in the browser window, then continue. If the page isn't essential, skip it and move on. |
 
 Rules:
 - **If `fetch_url_data` returns content, you're done.** Do NOT open the browser — that defeats the point.
 - Use the browser directly (skip `fetch_url_data`) when you need to **click, type, or navigate** — `fetch_url_data` only reads.
-- Keys live in `.env` (`TRAFILATURA_ENDPOINT` / `TRAFILATURA_API_KEY`, `HANDINGER_API_KEY`). With none set, `fetch_url_data` always returns `[no content]` and you fall straight through to the browser.
+- Keys live in `.env` (`TRAFILATURA_ENDPOINT` / `TRAFILATURA_API_KEY`). With none set, `fetch_url_data` always returns `[no content]` and you fall straight through to the browser.
+
+---
+
+## 🎯 Explorium — sourcing leads & researching companies/people
+
+*A direct line into Explorium's 100M+ company & prospect database. This is how you **source apt leads by ICP** and **research** them with structured data, instead of guessing from web snippets. Every result is cached in MongoDB for 60 days (keyed by id + data type), so repeats are free. Needs `AGENTSOURCE_API_KEY` in `.env`; without it these tools return an `error` JSON and the rest of the harness runs normally.*
+
+**The golden rule: structured DB first, web second.** For company/people facts, query Explorium before reaching for `google_search` + `fetch_url_data`. Fall back to the web only when Explorium can't search a criterion or has no data.
+
+**These paid APIs run without approval** — call `explorium_*`, `fetch_email`, `fetch_phone` freely, no confirmation gate before a paid search/enrichment. Just be sensible with spend (free `explorium_business_statistics` to size a plan first, lean on the 60-day cache, don't re-fetch what you have).
+
+### Sourcing — find & resolve
+
+| Tool | Cost | Use for |
+|---|---|---|
+| `explorium_business_statistics(filters)` | **FREE** | Size a filter plan *before* paying. Same filter shape as search. Always test strict/balanced/broad plans here first. |
+| `explorium_autocomplete(field, query, semantic_search)` | **FREE** | Resolve exact filter values (category, location, tech stack, intent topics). Use the returned `value`. Autocomplete field name ≠ filter key (e.g. `country` → `country_code`). Skip it for enumerated ranges/booleans. |
+| `explorium_search_businesses(filters, size, page)` | paid (first ≤5 enriched, cached) | Discover companies matching the ICP. Free preview rows beyond the first 5. |
+| `explorium_match_business(name, domain, linkedin_url)` | paid (cached) | Resolve a company you found on the web → `business_id`. Best with name + domain. |
+| `explorium_search_prospects(business_id, job_titles, departments, countries, seniority_levels, size)` | free preview | Find people at a company by title/department/seniority. Returns `prospect_id` + name + title. |
+| `explorium_match_prospect(full_name, company_name, email, linkedin, business_id)` | paid (cached) | Resolve a known person → `prospect_id`. Email is the strongest key. |
+
+### Research — enrich a known entity
+
+| Tool | Use for |
+|---|---|
+| `explorium_enrich_business(business_id, enrichment_type, …)` | Firmographics, funding, technographics, workforce trends, ratings, website traffic, etc. (17 categories). Some need extra params — `financial_indicators` (date), `company_website_keywords` (keywords, required), `website_traffic` (month_period). |
+| `explorium_business_events(business_id, event_types, days_back)` | Buying signals: hiring surges, funding rounds, IPOs, M&A, new products/offices, layoffs, awards (39 event types). |
+| `explorium_enrich_prospect(prospect_id, enrichment_type)` | `profiles` (role/seniority/history), `contacts_information` (email/phone), or `linkedin_posts`. |
+| `explorium_prospect_events(prospect_id, event_types, days_back)` | Role changes, company hops, job anniversaries — for timing outreach. |
+
+### Contact details — email & phone (two tools, waterfall, cached)
+
+Two separate tools so you only pay for what you need — call one, or both:
+
+- `fetch_email(first_name, last_name, company_name?, domain?, linkedin_url?, prospect_id?)` → **email** via FullEnrich first (cheapest, returns a verification status), Explorium contacts as fallback. Returns `email`, `email_verified`, `source`.
+- `fetch_phone(first_name, last_name, company_name?, domain?, linkedin_url?, prospect_id?)` → **phone** via Explorium contacts first, FullEnrich as fallback. Returns `phone`, `source`.
+
+FullEnrich needs `first_name`+`last_name` and (`domain` or `company_name`); the Explorium leg needs a `prospect_id` (from `explorium_search_prospects`/`explorium_match_prospect`). Supply everything you have. Needs `FULLENRICH_API_KEY` and/or `AGENTSOURCE_API_KEY`; a missing key just disables that provider.
+
+Shared 60-day MongoDB cache (`contact_enrichment_cache`; repeats free, including "not found"). Explorium returns email+phone together, so whichever tool hits it caches the *other* field too — the sibling call is then free. **Do not construct emails** — only use what these return (GUARDRAILS: resolve, never guess).
+
+### The sourcing loop (cookbook: `jobs/lead_sourcing.md`)
+
+1. **Understand the ICP** → split into *searchable filters* vs *validation columns* (not everything is searchable).
+2. **`explorium_business_statistics`** on strict/balanced/broad plans (FREE) → pick the broadest plan that still matches and yields enough leads.
+3. **`explorium_autocomplete`** to resolve any dynamic filter values.
+4. **`explorium_search_businesses`** in batches → for companies whose criteria Explorium can't search, find them via `google_search` and `explorium_match_business` them instead.
+5. **Enrich + events** (`explorium_enrich_business`, `explorium_business_events`) to validate against the ICP. **Qualify only on positive evidence; missing data is `needs_data`, never a rejection.**
+6. **People:** `explorium_search_prospects` (DB-first) → `explorium_enrich_prospect`. **Strictly verify current employment** (open the LinkedIn page; reject past employees) before trusting a decision-maker — see `jobs/lead_sourcing.md`.
+
+The full orchestration discipline (ICP→filters mapping, qualification rules, strict LinkedIn validation) lives in `jobs/lead_sourcing.md`; Google-dorking + profile/persona research playbooks live in `jobs/research_playbook.md`.
 
 ---
 
@@ -168,7 +245,24 @@ Run `browser("--help")` or `browser("<command> --help")` to discover the full su
 
 ### Requirements
 
-Install the CLI once on the host: `pip install "browser-use[core]" && browser-use install` (installs the native runtime + Chromium). The tool drives ONE dedicated, **persistent** Chrome (its own `--user-data-dir` at `~/.galadriel/browser-profile`, isolated from the user's personal Chrome) over CDP, so cookies and logins **survive across sessions** — once you log into a site you stay logged in next time, and `close` only disconnects (it never wipes the profile). Headed mode is on by default; set `BROWSER_USE_HEADED=0` in `.env` to run headless. Config (all optional): `BROWSER_PROFILE_DIR`, `BROWSER_CDP_PORT` (default 9222), `CHROME_BINARY`. If the CLI isn't installed, the tool returns an `[error]` telling you how to install it.
+Install the CLI once on the host: `pip install "browser-use[core]" && browser-use install` (installs the native runtime + Chromium). By default the tool drives ONE dedicated, **persistent** Chrome — the `main` profile — with its own `--user-data-dir` at `~/.galadriel/browser-profile`, isolated from the user's personal Chrome, over CDP, so cookies and logins **survive across sessions** — once you log into a site you stay logged in next time, and `close` only disconnects (it never wipes the profile). Headed mode is on by default; set `BROWSER_USE_HEADED=0` in `.env` to run headless. Config (all optional): `BROWSER_PROFILE_DIR`, `BROWSER_CDP_PORT` (default 9222), `CHROME_BINARY`. If the CLI isn't installed, the tool returns an `[error]` telling you how to install it.
+
+### Running multiple accounts at once (multiple browser profiles)
+
+*You are not limited to one logged-in account. Each **named profile** is a fully separate Chrome — its own cookie jar, CDP port, and browser-use daemon session — so you can be logged into, say, two different LinkedIn accounts of the same org and drive both **at the same time**, with no cross-contamination. Calls to the same profile are serialized (never race the same Chrome); different profiles run fully in parallel.*
+
+**There is no dedicated tool for managing profiles** — the registry is a plain file, `state/browser_profiles.md`, that you read and edit yourself with `read_file`/`write_file`. That file's own header has the exact step-by-step (pick a `profile_id`, pick the next free `cdp_port`, write a one-line `reason`, append the row). The only code involved is `browser(args, profile=<profile_id>)` itself — passing `profile` drives that row's isolated Chrome; omit it (or pass `"main"`) for the original single default profile, unaffected by any of this.
+
+**The pattern, once guided to use it (e.g. by a workflow or the user):**
+
+1. `read_file("state/browser_profiles.md")` first — reuse an existing profile if the account is already registered; only register a fresh one for a genuinely new account.
+2. To register one: follow that file's own instructions (pick a slug, pick the next free port, write a `reason` naming the account clearly, e.g. `"Jane Doe's LinkedIn — credential linkedin_jane"`), then `write_file` it back. If the account needs its own DB login, store it under its own `credential` name too (e.g. `name="linkedin_jane"`, not the shared `"linkedin"` — see `state/credentials_map.md`), and mention that name in the `reason` so the profile ↔ credential link is legible from the file alone.
+3. Drive it: `browser("open https://www.linkedin.com/login", profile="linkedin_jane")`, then the normal open→state→act loop and login sequence below, all with `profile="linkedin_jane"` on every call.
+4. For a second account running concurrently, use a second `profile_id` — its Chrome, port, and daemon are fully independent, so both can be mid-task at once.
+
+**Durability across turns/restarts:** `state/browser_profiles.md` is the durable record of which profiles exist and why — you don't need to "remember" this in-context. Read it rather than guessing from recall.
+
+**Scope note:** today's `jobs/accept_linkedin_invites.md`, `jobs/lead_sourcing.md`, `jobs/outbound_sales_engine.md`, and the `workflows/linkedin_outreach.json` spec all assume the single `main` profile / single `"linkedin"` credential and are unaffected by any of this — they keep working exactly as before. A workflow that actually needs multiple accounts (e.g. round-robining outreach across two LinkedIn logins) should be co-designed fresh per `config/WORKFLOWS.md`.
 
 ---
 
@@ -285,9 +379,10 @@ Shows `heartbeat_enabled`, `heartbeat_interval`, `heartbeat_prompt`, plus mornin
 The **heartbeat** monitors one task you launched *now*. The **background worker**
 (opt-in, `GALADRIEL_WORKER=1`) instead runs your standing day-to-day work
 autonomously between conversations, on a second `worker` channel. The full model
-— the two hats, the single-writer board files (`jobs/` + `state/`), rituals vs
-projects, and verify-with-evidence — lives in `config/CONTEXT.md` §5; it is not
-restated here. Two operational reminders worth keeping at hand:
+— the two hats, the board files (`jobs/` + `state/`), the
+shared work ledger (`state/progress/`, one file per day, with the DB as the authority behind it),
+rituals vs projects, and verify-with-evidence — lives in `config/CONTEXT.md` §5;
+it is not restated here. Two operational reminders worth keeping at hand:
 
 - **Start / stop:** set the first line of `state/worker_control.md` to `active`
   or `paused`. That is the ONLY way to stop the worker — it re-reads the flag

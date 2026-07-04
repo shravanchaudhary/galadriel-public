@@ -1,43 +1,19 @@
-"""Async MongoDB connector for agent automation.
+"""Async MongoDB connector — internal infrastructure.
 
-Shared infrastructure — import it, don't fork it per script. Uses PyMongo's
-native async client (`AsyncMongoClient`); `motor` is end-of-life as of 2026.
+This is the shared connection used by the DB primitives in `harness/db_ops.py`.
+It is NOT agent-facing: the agent touches MongoDB only through the db_* primitive
+tools, never freestyle pymongo in run_shell (that path has been removed). Uses
+PyMongo's native async client (`AsyncMongoClient`); `motor` is end-of-life as of
+2026.
 
-This module is ONLY the connection. There are deliberately no query/transition
-helpers — you (the agent) compose the operation you need inline, following the
-persistence doctrine in config/DATA.md and state/db_index.md:
-  - exact lookups, never search, for state
-  - atomic, precondition-guarded transitions (find_one_and_update)
-  - append every state change to history[]
-  - one unique key per entity for dedup / idempotency
+This module is ONLY the connection — no query/transition helpers. The primitives
+in `harness/db_ops.py` compose the operations and enforce the workflow spec
+(state machine + history), per the doctrine in config/DATA.md and
+state/db_index.md.
 
-Connection comes from the environment, which scripts inherit from the harness:
+Connection comes from the environment, inherited from the harness:
     MONGO_URI   full connection string
     MONGO_DB    default database name
-
-Call it inline via run_shell (cd scripts so `from lib.db` resolves); don't author
-standalone script files, and don't re-add helpers here — keep ops at the call site:
-
-    cd scripts && python - <<'PY'
-    import asyncio
-    from datetime import datetime, timezone
-    from pymongo import ReturnDocument
-    from lib.db import get_db
-
-    async def main():
-        db = get_db()
-        now = datetime.now(timezone.utc)
-        # atomic, exactly-once transition: acts only if still queued
-        doc = await db.linkedin_profiles.find_one_and_update(
-            {"profile_url": url, "status": "queued"},          # precondition
-            {"$set": {"status": "request_sent", "last_action_at": now},
-             "$push": {"history": {"ts": now, "action": "request_sent"}}},
-            return_document=ReturnDocument.AFTER,
-        )
-        print("acted" if doc else "skipped (precondition not met)")
-
-    asyncio.run(main())
-    PY
 """
 
 import os

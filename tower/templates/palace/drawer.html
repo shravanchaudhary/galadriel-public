@@ -1,0 +1,40 @@
+{% extends "palace/base.html" %}
+{% block title %}Drawer{% endblock %}
+{% block heading %}Drawer{% endblock %}
+{% block subtitle %}<code>{{ drawer.id | truncate_label(36) }}</code>{% if drawer.source_file %} · {{ drawer.source_file | truncate_label(32) }}{% endif %}{% endblock %}
+
+{% block palace_content %}
+<div class="wf-toolbar">
+    <a href="/palace/room?wing={{ back_wing | urlencode }}&room={{ back_room | urlencode }}" class="btn btn-small">← Room</a>
+    {% if saved %}
+    <span class="badge" style="border-color:#27ae60;color:#27ae60;background:rgba(39,174,96,0.08);">Saved</span>
+    {% endif %}
+</div>
+
+<form method="post" action="/palace/drawer/{{ drawer.id }}">
+    <section class="memory-section">
+        <h2>Text</h2>
+        <textarea name="text" class="editor-textarea" spellcheck="false">{{ drawer.text }}</textarea>
+        <p class="muted" style="font-size:0.78rem;margin-top:0.4rem;">Save re-embeds this drawer and runs reconcile automatically.</p>
+    </section>
+
+    <section class="memory-section">
+        <h2>Metadata</h2>
+        <ul class="field-list">
+            <li><span class="k">wing</span><span class="v"><input type="text" name="wing" value="{{ drawer.wing }}" class="chat-input"></span></li>
+            <li><span class="k">room</span><span class="v"><input type="text" name="room" value="{{ drawer.room }}" class="chat-input"></span></li>
+            <li><span class="k">hall</span><span class="v"><input type="text" name="hall" value="{{ drawer.hall }}" class="chat-input"></span></li>
+            <li><span class="k">source_file</span><span class="v muted" title="{{ drawer.source_file }}">{{ drawer.source_file | truncate_label(48) }}</span></li>
+        </ul>
+    </section>
+
+    <div class="wf-toolbar">
+        <button type="submit" class="btn">Save</button>
+    </div>
+</form>
+
+<form method="post" action="/palace/drawer/{{ drawer.id }}" class="wf-toolbar" onsubmit="return confirm('Delete this drawer permanently?');">
+    <input type="hidden" name="_action" value="delete">
+    <button type="submit" class="btn btn-small btn-danger">Delete drawer</button>
+</form>
+{% endblock %}

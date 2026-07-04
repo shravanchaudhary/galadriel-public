@@ -22,6 +22,8 @@ import json
 import logging
 from pathlib import Path
 
+from .loop_prompts import process_complete_prompt
+
 log = logging.getLogger("galadriel.completion_watcher")
 
 MARKER_DIR = Path("/tmp/galadriel-jobs")
@@ -128,16 +130,7 @@ class CompletionWatcher:
         job = data.get("job", "unknown")
 
         # Have the agent generate a contextual response
-        prompt = (
-            f"[SYSTEM:PROCESS_COMPLETE] A background shell process has finished.\n\n"
-            f"Process: {job}\n"
-            f"Status: {status}\n"
-            f"Details:\n```json\n{json.dumps(data, indent=2)}\n```\n\n"
-            f"Notify the user about this. Include the key stats. "
-            f"If it succeeded, celebrate briefly and suggest next steps. "
-            f"If it failed, analyze what might have gone wrong and suggest a fix. "
-            f"Keep it concise."
-        )
+        prompt = process_complete_prompt(data)
 
         try:
             response = await self.agent.respond(prompt, channel_id="completions")

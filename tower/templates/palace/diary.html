@@ -1,0 +1,43 @@
+{% extends "palace/base.html" %}
+{% block title %}Diary{% endblock %}
+{% block heading %}Diary{% endblock %}
+{% block subtitle %}{{ total }} entries · stored as drawers in room=diary{% endblock %}
+
+{% block palace_content %}
+<div class="wf-toolbar">
+    <a href="/palace" class="btn btn-small btn-secondary">← Memory</a>
+</div>
+
+<form method="post" action="/palace/drawer/create" class="memory-section">
+    <h2>Create diary entry</h2>
+    <input type="hidden" name="wing" value="agent">
+    <input type="hidden" name="room" value="diary">
+    <input type="hidden" name="hall" value="general">
+    <textarea name="text" class="chat-input" rows="3" placeholder="Diary entry…" required style="width:100%;margin-bottom:0.5rem;"></textarea>
+    <button type="submit" class="btn btn-small">Create entry</button>
+</form>
+
+{% if drawers %}
+<div class="icon-grid">
+    {% for d in drawers %}
+    {% set label = d.source_file or d.text %}
+    <a class="icon-tile" href="/palace/drawer/{{ d.id }}" title="{{ label }}">
+        <span class="icon-glyph">🗂️</span>
+        <span class="icon-label">{{ label | truncate_label }}</span>
+    </a>
+    {% endfor %}
+</div>
+
+<div class="wf-toolbar">
+    {% if page > 1 %}
+    <a class="btn btn-small" href="?page={{ page - 1 }}">← Prev</a>
+    {% endif %}
+    <span class="muted">Page {{ page }}</span>
+    {% if page * page_size < total %}
+    <a class="btn btn-small" href="?page={{ page + 1 }}">Next →</a>
+    {% endif %}
+</div>
+{% else %}
+<p class="empty-state">No diary entries yet.</p>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}{% block cfg_title %}Configuration{% endblock %}{% endblock %}
+{% block container_class %}wf-container{% endblock %}
+{% block heading %}{% block cfg_heading %}Configuration{% endblock %}{% endblock %}
+{% block subtitle %}{% block cfg_subtitle %}Agent settings, jobs, and state — live from disk{% endblock %}{% endblock %}
+
+{% block content %}
+<nav class="wf-nav">
+    <a href="/config/preview" class="{{ 'active' if request.path == '/config/preview' }}">Assembled Prompt</a>
+</nav>
+{% block cfg_content %}{% endblock %}
+{% endblock %}

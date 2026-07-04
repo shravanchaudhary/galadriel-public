@@ -1,0 +1,79 @@
+{% extends "loops/base.html" %}
+{% block title %}Loops{% endblock %}
+{% block heading %}Loops{% endblock %}
+{% block subtitle %}Autonomous channel prompts — what steers the agent when you're not chatting{% endblock %}
+
+{% block loops_content %}
+{% if saved %}
+<div class="wf-toolbar">
+    <span class="badge" style="border-color:#27ae60;color:#27ae60;background:rgba(39,174,96,0.08);">
+        Saved {{ saved }}
+    </span>
+</div>
+{% endif %}
+
+{% if scheduler %}
+<div class="loops-status-bar muted">
+    CET now: <strong>{{ scheduler.server_time_cet }}</strong>
+    · Heartbeat: <strong>{{ 'ON' if scheduler.heartbeat_enabled else 'OFF' }}</strong>
+    {% if scheduler.heartbeat_enabled %}({{ scheduler.heartbeat_interval }}m){% endif %}
+    · Wake: <strong>{{ 'armed' if scheduler.pending_wake else 'disarmed' }}</strong>
+    · {{ 'Workday' if scheduler.is_workday else 'Weekend' }}
+</div>
+{% endif %}
+
+<p class="loops-intro muted">
+    Each loop runs on its own <code>channel_id</code> — isolated from main chat (<code>main</code>).
+    Fixed prompts are defined in <code>harness/loop_prompts.py</code>.
+    Date-sensitive previews use today (<code>{{ today }}</code>).
+    <a href="/actions">Actions →</a>
+</p>
+
+<div class="loops-list">
+    {% for item in loops %}
+    <section class="loops-panel" id="loop-{{ item.id }}">
+        <div class="loops-panel-head">
+            <div>
+                <h2>{{ item.name }}</h2>
+                <div class="loops-meta">
+                    <span class="badge">channel: {{ item.channel }}</span>
+                    <span class="badge loops-status-{{ item.status | lower | replace(' ', '-') }}">{{ item.status }}</span>
+                </div>
+            </div>
+            <div class="loops-schedule muted">{{ item.schedule }}</div>
+        </div>
+        {% if item.note %}
+        <p class="loops-note muted">{{ item.note }}</p>
+        {% endif %}
+        <div class="muted loops-source">Source: {{ item.source }}</div>
+
+        {% if item.editable and item.editable_kind == 'heartbeat' %}
+        <form method="post" action="/loops/heartbeat" class="loops-edit-form">
+            <textarea name="prompt" class="editor-textarea loops-editor" spellcheck="false">{{ item.prompt }}</textarea>
+            <div class="wf-toolbar">
+                <button type="submit" class="btn">Save heartbeat prompt</button>
+                <label class="muted" style="display:flex;align-items:center;gap:0.35rem;">
+                    <input type="checkbox" name="use_default" value="1"> Reset to default
+                </label>
+            </div>
+        </form>
+        {% elif item.editable and item.editable_kind == 'wake' %}
+        <form method="post" action="/loops/wake" class="loops-edit-form">
+            <textarea name="prompt" class="editor-textarea loops-editor" spellcheck="false" placeholder="Prompt to run once on next boot…">{{ item.prompt if item.status == 'ARMED' else '' }}</textarea>
+            <div class="wf-toolbar">
+                <button type="submit" class="btn">Arm wake</button>
+            </div>
+        </form>
+        {% if item.status == 'ARMED' %}
+        <form method="post" action="/loops/wake" class="wf-toolbar" onsubmit="return confirm('Disarm the one-shot wake?');">
+            <input type="hidden" name="disarm" value="1">
+            <button type="submit" class="btn btn-small btn-danger">Disarm wake</button>
+        </form>
+        {% endif %}
+        {% else %}
+        <pre class="loops-prompt">{{ item.prompt }}</pre>
+        {% endif %}
+    </section>
+    {% endfor %}
+</div>
+{% endblock %}

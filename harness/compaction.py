@@ -15,6 +15,7 @@ verbatim conversation is archived to the MemPalace first, so nothing is lost.
 import json
 import logging
 
+from . import cost_tracker
 from . import model_registry
 from .providers import BaseModelProvider
 
@@ -85,16 +86,36 @@ def _render_transcript(messages: list) -> str:
     return "\n".join(lines)
 
 
+def _log_compaction_cost(response, provider: BaseModelProvider, model: str, channel_id: str) -> None:
+    try:
+        usage = response.usage
+        provider_name = type(provider).__name__.replace("Provider", "").lower()
+        usage_dict = {
+            "input": usage.input_tokens,
+            "cache_read": getattr(usage, "cache_read_input_tokens", 0),
+            "cache_write": getattr(usage, "cache_creation_input_tokens", 0),
+            "output": usage.output_tokens,
+        }
+        cost_tracker.log_call(f"compaction:{channel_id}", "compaction", provider_name, model, usage_dict)
+    except Exception:
+        log.debug("Could not log compaction usage", exc_info=True)
+
+
 async def compact_to_snapshot(
     messages: list,
     prior_snapshot: str = "",
     api_key: str = None,
     provider: BaseModelProvider = None,
+    channel_id: str = "compaction",
 ) -> dict:
     """Compress an entire conversation into one structured memory snapshot.
 
     If `prior_snapshot` is given (a snapshot from an earlier compaction of the
     same channel), it is folded in so cumulative compactions never lose ground.
+
+    `channel_id` is only used to tag the cost log entry (the channel being
+    compacted), so cost per channel stays accurate even though this call
+    doesn't go through `GaladrielAgent.respond()`.
 
     Returns {"snapshot", "messages_before", "tokens_before", "tokens_after"}.
     """
@@ -119,11 +140,13 @@ async def compact_to_snapshot(
         )
     user_parts.append(f"\n\nCONVERSATION TO COMPRESS:\n\n{transcript}")
 
+    model = model_registry.model_for("compaction")
     response = await provider.create_message(
-        model=model_registry.model_for("compaction"),
+        model=model,
         max_tokens=SNAPSHOT_MAX_TOKENS,
         messages=[{"role": "user", "content": "".join(user_parts)}],
     )
+    _log_compaction_cost(response, provider, model, channel_id)
     text_parts = [
         b.text for b in (response.content or [])
         if hasattr(b, "text") and getattr(b, "text", None)

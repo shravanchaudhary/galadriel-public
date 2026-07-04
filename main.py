@@ -121,25 +121,55 @@ def main():
     )
     tower_thread.start()
 
-    # Start Discord bot (or run in Tower-only mode)
+    # Start Discord bot, or Slack bot, or run in Tower-only mode. Only one
+    # chat gateway runs per deployment — Slack is a drop-in alternative to
+    # Discord, not a second simultaneous one.
     discord_token = os.environ.get("DISCORD_BOT_TOKEN")
-    if discord_token:
-        from discord_bot.bot import create_bot
+    slack_bot_token = os.environ.get("SLACK_BOT_TOKEN")
+    slack_app_token = os.environ.get("SLACK_APP_TOKEN")
 
-        bot = create_bot(agent, scheduler, completion_watcher, worker)
-        scheduler.set_bot(bot)
-        completion_watcher.set_bot(bot)
-        if worker:
-            worker.set_bot(bot)
-        log.info("Starting Discord bot...")
-        bot.run(discord_token, log_handler=None)
-    else:
-        log.info("No DISCORD_BOT_TOKEN set — running in Tower-only mode.")
-        log.info("Chat via the Tower UI or set DISCORD_BOT_TOKEN to enable Discord.")
-        try:
+    try:
+        if discord_token:
+            from discord_bot.bot import create_bot
+
+            bot = create_bot(agent, scheduler, completion_watcher, worker)
+            scheduler.set_bot(bot)
+            completion_watcher.set_bot(bot)
+            if worker:
+                worker.set_bot(bot)
+            log.info("Starting Discord bot...")
+            bot.run(discord_token, log_handler=None)
+        elif slack_bot_token and slack_app_token:
+            from slack_bot.bot import create_bot, start_slack_bot
+
+            slack_app = create_bot(agent, scheduler)
+            scheduler.set_bot(slack_app)
+            completion_watcher.set_bot(slack_app)
+            if worker:
+                worker.set_bot(slack_app)
+            log.info("Starting Slack bot...")
+            asyncio.run(start_slack_bot(slack_app, scheduler, completion_watcher, worker))
+        else:
+            log.info("No DISCORD_BOT_TOKEN or SLACK_BOT_TOKEN/SLACK_APP_TOKEN set — running in Tower-only mode.")
+            log.info("Chat via the Tower UI, or set DISCORD_BOT_TOKEN, or set SLACK_BOT_TOKEN + SLACK_APP_TOKEN.")
             tower_thread.join()
-        except KeyboardInterrupt:
-            log.info("Shutting down.")
+    except KeyboardInterrupt:
+        log.info("Shutting down.")
+    finally:
+        # Run the shutdown archive/palace-close here, in normal code flow,
+        # rather than relying solely on the atexit hook below. Once any
+        # ThreadPoolExecutor has been used in the process (chromadb/onnxruntime
+        # do this as soon as a palace tool runs), Python's interpreter-shutdown
+        # sequence joins all thread pools via `threading._register_atexit`
+        # BEFORE any `atexit.register` callback runs — so by the time the
+        # atexit-registered `archive_conversations_on_shutdown` fires,
+        # `palace.close()` can no longer schedule chromadb's cleanup work
+        # ("cannot schedule new futures after interpreter shutdown"), and HNSW
+        # never flushes. Calling it here, before returning from main(), avoids
+        # that race. The call is idempotent, so the atexit fallback registered
+        # in `_install_shutdown_archive` stays safe as a catch-all for other
+        # exit paths (SIGTERM already handles its own case explicitly too).
+        agent.archive_conversations_on_shutdown()
 
 
 if __name__ == "__main__":

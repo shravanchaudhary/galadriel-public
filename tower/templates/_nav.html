@@ -1,0 +1,18 @@
+<header class="site-header">
+    <div class="site-header-inner">
+        <a href="/" class="site-brand">
+            <img src="/static/img/clodexa-logo.png" alt="Clodexa" class="site-logo">
+            <span class="site-brand-text">Clyra Console</span>
+        </a>
+        <nav class="site-nav" aria-label="Main">
+            <a href="/" class="{{ 'active' if request.path == '/' }}">Dashboard</a>
+            <a href="/actions" class="{{ 'active' if request.path.startswith('/actions') }}">Actions</a>
+            <a href="/loops" class="{{ 'active' if request.path.startswith('/loops') }}">Loops</a>
+            <a href="/workflows" class="{{ 'active' if request.path.startswith('/workflows') or request.path.startswith('/w/') or request.path.startswith('/approvals') }}">Workflows</a>
+            <a href="/config" class="{{ 'active' if request.path.startswith('/config') }}">Configuration</a>
+            <a href="/palace" class="{{ 'active' if request.path.startswith('/palace') }}">Memory</a>
+            <a href="/costs" class="{{ 'active' if request.path.startswith('/costs') }}">Costs</a>
+            <a href="#" class="site-nav-cta" id="site-nav-chat" role="button">Chat</a>
+        </nav>
+    </div>
+</header>

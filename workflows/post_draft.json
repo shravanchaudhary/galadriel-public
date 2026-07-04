@@ -1,0 +1,42 @@
+{
+  "workflow": "post_drafts",
+  "entities": {
+    "post_draft": {
+      "collection": "post_drafts",
+      "key": "draft_id",
+      "states": [
+        "interviewing",
+        "idea",
+        "drafting",
+        "review_pending",
+        "approved",
+        "rejected"
+      ],
+      "initial": "interviewing",
+      "transitions": {
+        "interviewing": ["idea"],
+        "idea": ["drafting"],
+        "drafting": ["review_pending"],
+        "review_pending": ["approved", "rejected"],
+        "rejected": ["drafting", "idea"]
+      },
+      "approval_states": [
+        "interviewing",
+        "review_pending"
+      ],
+      "fields": [
+        "author",
+        "topic",
+        "inspiration_url",
+        "content",
+        "feedback"
+      ],
+      "table_columns": [
+        "draft_id",
+        "author",
+        "status",
+        "topic"
+      ]
+    }
+  }
+}

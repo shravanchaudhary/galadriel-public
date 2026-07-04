@@ -6,7 +6,7 @@ import logging
 import asyncio
 import discord
 from discord.ext import commands
-from harness.agent import GaladrielAgent
+from harness.agent import GaladrielAgent, MAIN_CHANNEL_ID
 from harness.error_humanizer import humanize_anthropic_error
 
 log = logging.getLogger("galadriel.discord")
@@ -353,9 +353,10 @@ def create_bot(agent: GaladrielAgent, scheduler=None, completion_watcher=None, w
         """Deliver a context-utilization nudge to the relevant Discord channel.
 
         channel_id comes from the agent: a numeric string for real Discord
-        channels, or a synthetic label ("heartbeat", "morning", "goodnight",
-        "default") for scheduler-driven conversations. Numeric goes to that
-        channel; everything else falls back to the authorized-user DM so the
+        channels, or a synthetic label (MAIN_CHANNEL_ID, "heartbeat", "morning",
+        "goodnight", "default") for the shared conversation or scheduler-driven
+        ones. Numeric goes to that channel; everything else (including the
+        shared MAIN_CHANNEL_ID) falls back to the authorized-user DM so the
         nudge still lands somewhere useful.
         """
         channel = None
@@ -402,7 +403,8 @@ def create_bot(agent: GaladrielAgent, scheduler=None, completion_watcher=None, w
     async def on_ready():
         log.info(f"Connected to Discord as {bot.user} (id: {bot.user.id})")
 
-        # Start the scheduler once the event loop is running
+        # Start the scheduler once the event loop is running (also schedules
+        # background mine of shutdown-staged palace archives).
         if scheduler:
             scheduler.start()
             log.info("Scheduler started from Discord on_ready.")
@@ -416,14 +418,6 @@ def create_bot(agent: GaladrielAgent, scheduler=None, completion_watcher=None, w
         if worker:
             worker.start()
             log.info("Background worker started from Discord on_ready.")
-
-        # Mine any conversations staged during the previous shutdown, then
-        # delete them. Runs in the background so it never blocks startup.
-        try:
-            from harness import palace
-            asyncio.ensure_future(palace.mine_pending_shutdown_archives())
-        except Exception as e:
-            log.warning(f"Could not schedule pending shutdown archive mining: {e}")
 
         # Register slash commands with Discord
         try:
@@ -475,12 +469,11 @@ def create_bot(agent: GaladrielAgent, scheduler=None, completion_watcher=None, w
                 scheduler.rest()
             async with message.channel.typing():
                 try:
-                    channel_id = str(message.channel.id)
                     response = await agent.respond(
                         "[SYSTEM:REST_COMMAND] REST command received. "
                         "Your heartbeat has been disabled. Acknowledge gracefully "
                         "and keep it brief.",
-                        channel_id=channel_id,
+                        channel_id=MAIN_CHANNEL_ID,
                     )
                     await safe_send(message, response or "🌙 *(resting — no words needed)*")
                 except Exception as e:
@@ -488,10 +481,13 @@ def create_bot(agent: GaladrielAgent, scheduler=None, completion_watcher=None, w
                     await safe_send(message, humanize_anthropic_error(e) or f"⚠️ Something went wrong: `{e}`")
             return
 
-        # Build content blocks: text + any image attachments
+        # Build content blocks: text + any image attachments. Tag the text with
+        # its origin surface — the conversation is shared with Slack/Tower (see
+        # MAIN_CHANNEL_ID), so the agent needs to know which surface a message
+        # came from.
         content_blocks = []
         if content:
-            content_blocks.append({"type": "text", "text": content})
+            content_blocks.append({"type": "text", "text": f"[Discord]: {content}"})
 
         skipped = []
         for attachment in message.attachments:
@@ -542,8 +538,7 @@ def create_bot(agent: GaladrielAgent, scheduler=None, completion_watcher=None, w
         log.info(f"📥 Processing message from {message.author} in {message.channel.id}: {content[:80]}")
         async with message.channel.typing():
             try:
-                channel_id = str(message.channel.id)
-                response = await agent.respond(user_input, channel_id=channel_id)
+                response = await agent.respond(user_input, channel_id=MAIN_CHANNEL_ID)
                 log.info(f"📤 Agent response ready ({len(response)} chars), sending to Discord...")
                 if not response.strip():
                     log.info("Agent returned empty response — substituting placeholder")
@@ -556,10 +551,10 @@ def create_bot(agent: GaladrielAgent, scheduler=None, completion_watcher=None, w
 
     @bot.command(name="clear")
     async def clear_cmd(ctx: commands.Context):
-        """Clear conversation history for this channel (archives to palace first)."""
+        """Clear the shared conversation history (archives to palace first)."""
         if ctx.author.id != AUTHORIZED_USER_ID:
             return
-        archived = await agent.pop_and_archive_history(str(ctx.channel.id))
+        archived = await agent.pop_and_archive_history(MAIN_CHANNEL_ID)
         suffix = f" ({archived} msgs filed to palace)" if archived else ""
         await ctx.reply(f"🧹 Conversation history cleared.{suffix}")
 
@@ -575,7 +570,7 @@ def create_bot(agent: GaladrielAgent, scheduler=None, completion_watcher=None, w
         """Start a fresh conversation (archives to palace, then clears)."""
         if ctx.author.id != AUTHORIZED_USER_ID:
             return
-        archived = await agent.pop_and_archive_history(str(ctx.channel.id))
+        archived = await agent.pop_and_archive_history(MAIN_CHANNEL_ID)
         suffix = f" ({archived} msgs filed to palace)" if archived else ""
         await ctx.reply(f"✨ Fresh start. Blank slate.{suffix}")
 
@@ -585,7 +580,7 @@ def create_bot(agent: GaladrielAgent, scheduler=None, completion_watcher=None, w
         if ctx.author.id != AUTHORIZED_USER_ID:
             return
 
-        channel_id = str(ctx.channel.id)
+        channel_id = MAIN_CHANNEL_ID
         messages = agent._get_messages(channel_id)
         msg_count = len(messages)
 
@@ -622,7 +617,7 @@ def create_bot(agent: GaladrielAgent, scheduler=None, completion_watcher=None, w
             return
         # Defer because the palace mine can exceed Discord's 3s response window
         await interaction.response.defer()
-        archived = await agent.pop_and_archive_history(str(interaction.channel_id))
+        archived = await agent.pop_and_archive_history(MAIN_CHANNEL_ID)
         suffix = f" ({archived} msgs filed to palace)" if archived else ""
         await interaction.followup.send(f"✨ Fresh start. Blank slate.{suffix}")
 
@@ -639,7 +634,7 @@ def create_bot(agent: GaladrielAgent, scheduler=None, completion_watcher=None, w
             await interaction.response.send_message("I do not know you, stranger. 🛡️", ephemeral=True)
             return
 
-        channel_id = str(interaction.channel_id)
+        channel_id = MAIN_CHANNEL_ID
         messages = agent._get_messages(channel_id)
         msg_count = len(messages)
 

@@ -28,6 +28,8 @@ import asyncio
 import logging
 import os
 import shutil
+import sqlite3
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -83,29 +85,43 @@ def _pending_shutdown_root() -> Path:
 
 
 def search(
-    query: str,
+    query: str = "",
     wing: str | None = None,
     room: str | None = None,
     hall: str | None = None,
     k: int = 5,
+    order: str | None = None,
+    channel: str | None = None,
 ) -> str:
-    """Semantic search over the palace. Returns a markdown-formatted string
-    ready to be handed back as a tool result.
+    """Search the palace. Returns markdown ready for a tool result.
 
-    Filters:
-      - wing: top-level (e.g. 'agent', or whatever you named yours).
-      - room: folder-based room name (memory/harness/tower/…).
-      - hall: keyword-based auto-topic (decisions/problems/milestones/…).
-              Not supported by search_memories; when given, we bypass
-              search_memories and query chromadb directly with a native
-              `where={"hall": hall}` filter. Loses BM25 + closet boost
-              but keeps semantic ranking — acceptable for scoped queries.
+    order:
+      - None / ``semantic`` (default): hybrid vector + BM25 ranking on ``query``.
+      - ``recency``: latest distinct archive sessions by ``filed_at`` DESC.
+        ``query`` is optional — when set, only sessions containing that text
+        are considered. ``channel`` optionally filters to
+        ``conversation_{channel}_*`` source files (e.g. ``main``).
+
+    Filters (both modes):
+      - wing, room, hall: metadata scoping.
     """
     path = _palace_path()
     if not os.path.isdir(path):
         return f"[palace unavailable] no palace at {path} — run `mempalace init` + `mine` first"
 
     want = max(1, min(k, 20))
+
+    if order == "recency":
+        return _format_recent_results(
+            _recent_sessions(
+                wing=wing, room=room, hall=hall, k=want,
+                channel=channel, query=query or None,
+            ),
+            wing=wing, room=room, hall=hall, channel=channel, k=want,
+        )
+
+    if not (query or "").strip():
+        return "[palace_search] query is required for semantic search (use order=`recency` for latest sessions)"
 
     if hall:
         # Direct chromadb path: native where filter on hall
@@ -176,6 +192,233 @@ def search(
         lines.append(content)
         lines.append("")
     return "\n".join(lines).rstrip()
+
+
+def _chroma_sqlite_path() -> Path:
+    return Path(_palace_path()) / "chroma.sqlite3"
+
+
+def _recent_sessions(
+    *,
+    wing: str | None = None,
+    room: str | None = None,
+    hall: str | None = None,
+    k: int = 5,
+    channel: str | None = None,
+    query: str | None = None,
+) -> list[dict]:
+    """Latest *k* distinct source_file archives, newest ``filed_at`` first."""
+    db = _chroma_sqlite_path()
+    if not db.is_file():
+        return []
+
+    filters = ["c.name = 'mempalace_drawers'"]
+    params: list = []
+
+    for key, val in (("wing", wing), ("room", room), ("hall", hall)):
+        if val:
+            filters.append(
+                "EXISTS (SELECT 1 FROM embedding_metadata em_x "
+                "WHERE em_x.id = e.id AND em_x.key = ? AND em_x.string_value = ?)"
+            )
+            params.extend([key, val])
+
+    if channel:
+        safe = _safe_channel(channel)
+        filters.append("em_sf.string_value LIKE ?")
+        params.append(f"%conversation_{safe}_%")
+
+    if query:
+        filters.append(
+            "EXISTS (SELECT 1 FROM embedding_metadata em_q "
+            "WHERE em_q.id = e.id AND em_q.key = 'chroma:document' "
+            "AND em_q.string_value LIKE ?)"
+        )
+        params.append(f"%{query}%")
+
+    where_sql = " AND ".join(filters)
+    sql = f"""
+        SELECT em_sf.string_value AS source_file,
+               MAX(em_f.string_value) AS filed_at
+        FROM embeddings e
+        JOIN segments s ON e.segment_id = s.id
+        JOIN collections c ON s.collection = c.id
+        JOIN embedding_metadata em_sf ON em_sf.id = e.id AND em_sf.key = 'source_file'
+        JOIN embedding_metadata em_f ON em_f.id = e.id AND em_f.key = 'filed_at'
+        WHERE {where_sql}
+        GROUP BY em_sf.string_value
+        ORDER BY filed_at DESC
+        LIMIT ?
+    """
+    params.append(k)
+
+    sessions: list[dict] = []
+    try:
+        conn = sqlite3.connect(db)
+        cur = conn.cursor()
+        for source_file, filed_at in cur.execute(sql, params).fetchall():
+            preview = _preview_for_source_file(conn, source_file, query=query)
+            sessions.append({
+                "source_file": source_file,
+                "filed_at": filed_at or "?",
+                "text": preview.get("text", ""),
+                "wing": preview.get("wing", "?"),
+                "room": preview.get("room", "?"),
+                "hall": preview.get("hall", "?"),
+            })
+        conn.close()
+    except Exception as e:
+        log.warning(f"Palace recency query failed: {e}")
+        return []
+    return sessions
+
+
+def _preview_for_source_file(
+    conn: sqlite3.Connection,
+    source_file: str,
+    query: str | None = None,
+) -> dict:
+    """Best preview chunk for a source_file archive.
+
+    When ``query`` is set, prefer a chunk whose document contains it;
+    otherwise return the first chunk (lowest chunk_index).
+    """
+    if query:
+        row = conn.execute(
+            """
+            SELECT em_doc.string_value,
+                   em_w.string_value,
+                   em_r.string_value,
+                   em_h.string_value
+            FROM embeddings e
+            JOIN embedding_metadata em_sf ON em_sf.id = e.id
+                AND em_sf.key = 'source_file' AND em_sf.string_value = ?
+            JOIN embedding_metadata em_doc ON em_doc.id = e.id
+                AND em_doc.key = 'chroma:document'
+            LEFT JOIN embedding_metadata em_w ON em_w.id = e.id AND em_w.key = 'wing'
+            LEFT JOIN embedding_metadata em_r ON em_r.id = e.id AND em_r.key = 'room'
+            LEFT JOIN embedding_metadata em_h ON em_h.id = e.id AND em_h.key = 'hall'
+            WHERE em_doc.string_value LIKE ?
+            ORDER BY LENGTH(em_doc.string_value) ASC
+            LIMIT 1
+            """,
+            (source_file, f"%{query}%"),
+        ).fetchone()
+        if row:
+            text, wing, room, hall = row
+            return {
+                "text": (text or "").strip(),
+                "wing": wing or "?",
+                "room": room or "?",
+                "hall": hall or "?",
+            }
+
+    row = conn.execute(
+        """
+        SELECT em_doc.string_value,
+               em_w.string_value,
+               em_r.string_value,
+               em_h.string_value
+        FROM embeddings e
+        JOIN embedding_metadata em_sf ON em_sf.id = e.id
+            AND em_sf.key = 'source_file' AND em_sf.string_value = ?
+        JOIN embedding_metadata em_doc ON em_doc.id = e.id
+            AND em_doc.key = 'chroma:document'
+        LEFT JOIN embedding_metadata em_ci ON em_ci.id = e.id
+            AND em_ci.key = 'chunk_index'
+        LEFT JOIN embedding_metadata em_w ON em_w.id = e.id AND em_w.key = 'wing'
+        LEFT JOIN embedding_metadata em_r ON em_r.id = e.id AND em_r.key = 'room'
+        LEFT JOIN embedding_metadata em_h ON em_h.id = e.id AND em_h.key = 'hall'
+        ORDER BY COALESCE(em_ci.int_value, 0) ASC
+        LIMIT 1
+        """,
+        (source_file,),
+    ).fetchone()
+    if not row:
+        return {"text": ""}
+    text, wing, room, hall = row
+    return {
+        "text": (text or "").strip(),
+        "wing": wing or "?",
+        "room": room or "?",
+        "hall": hall or "?",
+    }
+
+
+def _format_recent_results(
+    sessions: list[dict],
+    *,
+    wing: str | None,
+    room: str | None,
+    hall: str | None,
+    channel: str | None,
+    k: int,
+) -> str:
+    if not sessions:
+        bits = ["order=`recency`"]
+        if wing:
+            bits.append(f"wing=`{wing}`")
+        if room:
+            bits.append(f"room=`{room}`")
+        if hall:
+            bits.append(f"hall=`{hall}`")
+        if channel:
+            bits.append(f"channel=`{channel}`")
+        return f"No recent sessions matched ({', '.join(bits)})"
+
+    header_bits = [f"order=`recency`", f"k={k}"]
+    if wing:
+        header_bits.append(f"wing=`{wing}`")
+    if room:
+        header_bits.append(f"room=`{room}`")
+    if hall:
+        header_bits.append(f"hall=`{hall}`")
+    if channel:
+        header_bits.append(f"channel=`{channel}`")
+
+    lines = ["**Palace search (recency):** " + " ".join(header_bits), ""]
+    for i, s in enumerate(sessions, 1):
+        src = Path(s.get("source_file") or "").name or "?"
+        filed = s.get("filed_at", "?")
+        wing_name = s.get("wing", "?")
+        room_name = s.get("room", "?")
+        hall_name = s.get("hall", "?")
+        lines.append(
+            f"### {i}. {wing_name} / {room_name} / hall={hall_name}  "
+            f"_(filed={filed}, source=`{src}`)_"
+        )
+        lines.append((s.get("text") or "").strip())
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+_mining_shutdown_task: asyncio.Task | None = None
+
+
+def schedule_mine_pending_shutdown_archives() -> None:
+    """Fire-and-forget mine of shutdown-staged archives on the running loop.
+
+    Safe to call from ``scheduler.start()`` — idempotent, never blocks startup.
+    """
+    global _mining_shutdown_task
+
+    async def _run() -> None:
+        try:
+            n = await mine_pending_shutdown_archives()
+            if n:
+                log.info(f"Background shutdown archive mine complete: {n} batch(es)")
+        except Exception as e:
+            log.warning(f"Background shutdown archive mining failed: {e}")
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        log.debug("schedule_mine_pending_shutdown_archives: no running event loop")
+        return
+
+    if _mining_shutdown_task is not None and not _mining_shutdown_task.done():
+        return
+    _mining_shutdown_task = asyncio.ensure_future(_run())
 
 
 # ─── Archival ──────────────────────────────────────────────────────
@@ -368,6 +611,48 @@ async def mine_pending_shutdown_archives() -> int:
             mined += 1
             log.info(f"Mined pending shutdown archive: {batch_dir}")
     return mined
+
+
+def close() -> None:
+    """Cleanly close in-process MemPalace ChromaDB handles so HNSW flushes to
+    disk before the process exits. Best-effort; never raises.
+
+    Why this matters: the backend creates collections with
+    ``hnsw:sync_threshold=50_000`` (an index-bloat guard), so the handful of
+    in-process VECTOR writes we make at runtime — chiefly ``diary_write`` via
+    mempalace's ``mcp_server`` — do NOT flush to the on-disk HNSW segment until
+    a clean ``PersistentClient.close()``. If the process is killed without that
+    close, ``chroma.sqlite3`` ends up ahead of the HNSW segment and the NEXT
+    start quarantines the segment as drift (``quarantine_stale_hnsw``) — those
+    drawers go silently missing from vector search until reindexed. Closing the
+    clients here is the fix: it forces the flush so recall stays intact across
+    restarts. Call from the shutdown path (atexit / SIGTERM).
+    """
+    path = _palace_path()
+    if not os.path.isdir(path):
+        return
+    # 1. Close the MCP write-path client (the diary_write path) if it is live —
+    #    this is the in-process client that holds unflushed vector writes.
+    try:
+        from mempalace import mcp_server as _mcp
+        client = getattr(_mcp, "_client_cache", None)
+        if client is not None:
+            try:
+                client.close()
+            except Exception:
+                pass
+            _mcp._client_cache = None
+    except Exception as e:
+        log.debug(f"Palace close: mcp client close skipped ({e})")
+    # 2. Close the shared search/read backend and clear chromadb's system cache
+    #    (this is mempalace's own canonical clean-close primitive).
+    try:
+        from mempalace.palace import _DEFAULT_BACKEND
+        from mempalace.repair import _close_chroma_handles
+        _close_chroma_handles(path, backend=_DEFAULT_BACKEND)
+        log.info("MemPalace handles closed cleanly (HNSW flushed).")
+    except Exception as e:
+        log.warning(f"Palace clean-close failed ({e}); HNSW may quarantine on next start.")
 
 
 async def archive_daily_logs(memory_dir: str = "memory") -> None:
@@ -788,3 +1073,360 @@ def taxonomy() -> str:
     for hall, n in hall_counts.most_common():
         lines.append(f"  - `{hall}`: {n}")
     return "\n".join(lines)
+
+
+# ─── Tower browser support ─────────────────────────────────────────
+#
+# Structured (non-markdown) read/write helpers for the Tower "Palace" UI.
+# These are additive — separate from search()/taxonomy() above, which are
+# agent-tool-facing and format markdown for LLM consumption. Kept as plain
+# sync functions in the same in-process-Chroma style as those, so Tower
+# (running in the same process) can call them directly.
+
+
+def search_data(query: str, wing: str | None = None, room: str | None = None,
+                 hall: str | None = None, k: int = 20) -> list[dict]:
+    """Structured semantic-search results for the Tower palace search UI.
+
+    Deliberately a standalone sibling of search() above rather than a shared
+    refactor of it — same retrieval logic, but returns drawer dicts instead
+    of a pre-formatted markdown blob, and never touches the agent-tool-facing
+    search() function.
+    """
+    path = _palace_path()
+    if not os.path.isdir(path):
+        return []
+    want = max(1, min(k, 50))
+
+    if hall:
+        coll = _drawers_collection()
+        if coll is None:
+            return []
+        where: dict = {"hall": hall}
+        if wing: where = {"$and": [where, {"wing": wing}]}
+        if room: where = {"$and": [where if isinstance(where, dict) else where, {"room": room}]}
+        try:
+            res = coll.query(query_texts=[query], n_results=want, where=where)
+        except Exception as e:
+            log.warning(f"Palace search_data (hall) failed: {e}")
+            return []
+        drawers = []
+        for i, doc in enumerate((res.get("documents") or [[]])[0]):
+            md = (res.get("metadatas") or [[]])[0][i] if res.get("metadatas") else {}
+            dist = (res.get("distances") or [[]])[0][i] if res.get("distances") else None
+            d = _drawer_from_row("", doc, md)
+            d["distance"] = dist
+            drawers.append(d)
+        return drawers
+
+    try:
+        from mempalace.searcher import search_memories
+    except ImportError:
+        return []
+    try:
+        result = search_memories(query=query, palace_path=path, wing=wing, room=room, n_results=want)
+    except Exception as e:
+        log.warning(f"Palace search_data failed: {e}")
+        return []
+    return result.get("results") or result.get("drawers") or []
+
+
+def _drawers_collection():
+    """Return the raw chromadb Collection behind the palace, or None if no
+    palace exists yet. Same access pattern as search()/taxonomy() above."""
+    try:
+        from mempalace.backends.chroma import ChromaBackend
+    except ImportError:
+        return None
+    path = _palace_path()
+    if not os.path.isdir(path):
+        return None
+    try:
+        backend = ChromaBackend()
+        return backend.get_collection(path, "mempalace_drawers")._collection
+    except Exception as e:
+        log.warning(f"Palace collection open failed: {e}")
+        return None
+
+
+def taxonomy_data() -> dict:
+    """Structured wing → room → count + hall counts, for the Tower taxonomy
+    view. Same underlying data as taxonomy(), returned as a dict instead of
+    pre-formatted markdown."""
+    coll = _drawers_collection()
+    if coll is None:
+        return {"total": 0, "wings": {}, "halls": {}}
+    try:
+        data = coll.get(include=["metadatas"])
+    except Exception as e:
+        log.warning(f"Palace taxonomy_data failed: {e}")
+        return {"total": 0, "wings": {}, "halls": {}}
+
+    from collections import Counter
+    wing_room_counts: dict[str, Counter] = {}
+    hall_counts: Counter = Counter()
+    for m in data.get("metadatas") or []:
+        if not m:
+            continue
+        w = m.get("wing", "?")
+        r = m.get("room", "?")
+        h = m.get("hall", "?")
+        wing_room_counts.setdefault(w, Counter())[r] += 1
+        hall_counts[h] += 1
+
+    return {
+        "total": len(data.get("metadatas") or []),
+        "wings": {w: dict(c) for w, c in wing_room_counts.items()},
+        "halls": dict(hall_counts),
+    }
+
+
+def _drawer_from_row(drawer_id: str, doc: str, metadata: dict | None) -> dict:
+    md = metadata or {}
+    return {
+        "id": drawer_id,
+        "text": doc or "",
+        "wing": md.get("wing", "?"),
+        "room": md.get("room", "?"),
+        "hall": md.get("hall", "?"),
+        "source_file": md.get("source_file", ""),
+        "metadata": md,
+    }
+
+
+def list_drawers(
+    wing: str | None = None,
+    room: str | None = None,
+    hall: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict:
+    """Paginated, filterable drawer listing for the Tower palace browser.
+
+    Returns {"total": <matching count>, "drawers": [...]}. Read-only —
+    no embeddings computed, just a metadata-filtered Chroma `.get()`.
+    """
+    coll = _drawers_collection()
+    if coll is None:
+        return {"total": 0, "drawers": []}
+
+    clauses = [{"wing": wing}, {"room": room}, {"hall": hall}]
+    clauses = [c for c in clauses if next(iter(c.values())) is not None]
+    where = None
+    if len(clauses) == 1:
+        where = clauses[0]
+    elif len(clauses) > 1:
+        where = {"$and": clauses}
+
+    try:
+        total = len(coll.get(where=where, include=[]).get("ids") or [])
+        res = coll.get(where=where, include=["documents", "metadatas"], limit=limit, offset=offset)
+    except Exception as e:
+        log.warning(f"Palace list_drawers failed: {e}")
+        return {"total": 0, "drawers": []}
+
+    ids = res.get("ids") or []
+    docs = res.get("documents") or []
+    metas = res.get("metadatas") or []
+    drawers = [
+        _drawer_from_row(did, docs[i] if i < len(docs) else "", metas[i] if i < len(metas) else {})
+        for i, did in enumerate(ids)
+    ]
+    return {"total": total, "drawers": drawers}
+
+
+def get_drawer(drawer_id: str) -> dict | None:
+    """Fetch a single drawer by id, or None if it doesn't exist."""
+    coll = _drawers_collection()
+    if coll is None:
+        return None
+    try:
+        res = coll.get(ids=[drawer_id], include=["documents", "metadatas"])
+    except Exception as e:
+        log.warning(f"Palace get_drawer failed: {e}")
+        return None
+    ids = res.get("ids") or []
+    if not ids:
+        return None
+    docs = res.get("documents") or [""]
+    metas = res.get("metadatas") or [{}]
+    return _drawer_from_row(ids[0], docs[0], metas[0])
+
+
+def update_drawer(
+    drawer_id: str,
+    text: str | None = None,
+    wing: str | None = None,
+    room: str | None = None,
+    hall: str | None = None,
+) -> str:
+    """Edit a single drawer in place — the human-editing counterpart to the
+    agent's append-only palace tools.
+
+    When `text` changes, Chroma recomputes ONLY this drawer's embedding: we
+    pass `documents=[text]` and deliberately omit `embeddings=`, so the
+    collection's bound embedding function (mempalace's local onnxruntime
+    model) runs once, for this one row. No other drawer is touched and no
+    `mempalace mine` re-index is needed. Metadata-only edits (wing/room/hall)
+    skip embedding recompute entirely — only `documents` writes trigger it.
+    """
+    coll = _drawers_collection()
+    if coll is None:
+        return "[palace edit] no palace found"
+    existing = get_drawer(drawer_id)
+    if existing is None:
+        return f"[palace edit] drawer `{drawer_id}` not found"
+
+    kwargs: dict = {"ids": [drawer_id]}
+    if text is not None and text.strip():
+        kwargs["documents"] = [text]
+
+    metadata = dict(existing["metadata"])
+    changed_meta = False
+    for key, value in (("wing", wing), ("room", room), ("hall", hall)):
+        if value is not None and value != metadata.get(key):
+            metadata[key] = value
+            changed_meta = True
+    if changed_meta:
+        kwargs["metadatas"] = [metadata]
+
+    if "documents" not in kwargs and "metadatas" not in kwargs:
+        return "[palace edit] nothing to change"
+
+    try:
+        coll.update(**kwargs)
+    except Exception as e:
+        return f"[palace edit] {type(e).__name__}: {e}"
+
+    parts = []
+    if "documents" in kwargs:
+        parts.append("text re-embedded")
+    if "metadatas" in kwargs:
+        parts.append("metadata updated")
+    return f"Drawer `{drawer_id}` updated ({', '.join(parts)})."
+
+
+def delete_drawer(drawer_id: str) -> str:
+    """Remove one drawer from Chroma. Call reconcile_sync() afterward to flush
+    HNSW and refresh the wake-up cache."""
+    coll = _drawers_collection()
+    if coll is None:
+        return "[palace delete] no palace found"
+    if get_drawer(drawer_id) is None:
+        return f"[palace delete] drawer `{drawer_id}` not found"
+    try:
+        coll.delete(ids=[drawer_id])
+    except Exception as e:
+        return f"[palace delete] {type(e).__name__}: {e}"
+    return f"Drawer `{drawer_id}` deleted."
+
+
+def create_drawer(
+    text: str,
+    wing: str = DEFAULT_WING,
+    room: str = "general",
+    hall: str = "general",
+) -> dict:
+    """Insert a new drawer directly into Chroma (Tower UI create). Chroma
+    computes the embedding from `text`. Returns {"id": ..., ...} or
+    {"error": "..."}."""
+    if not text or not text.strip():
+        return {"error": "empty content"}
+    coll = _drawers_collection()
+    if coll is None:
+        return {"error": "no palace found"}
+
+    import uuid
+    drawer_id = str(uuid.uuid4())
+    metadata = {
+        "wing": wing,
+        "room": room,
+        "hall": hall,
+        "source_file": "tower:create",
+    }
+    try:
+        coll.add(ids=[drawer_id], documents=[text.strip()], metadatas=[metadata])
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+    return _drawer_from_row(drawer_id, text.strip(), metadata)
+
+
+def reconcile_sync() -> dict:
+    """Post-edit housekeeping for Tower direct Chroma mutations.
+
+    1. close() — flush in-process vector writes to the on-disk HNSW segment.
+    2. Regenerate wake-up cache so the agent's dynamic prompt block matches
+       the current palace state.
+
+    Does NOT run `mempalace repair` — that is for index corruption, not
+    routine edits. Returns {"ok": bool, "steps": [str, ...]}.
+    """
+    steps: list[str] = []
+    close()
+    steps.append("HNSW flushed to disk")
+
+    out_path = _wake_up_file()
+    try:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        proc = subprocess.run(
+            [MEMPALACE_BIN, "wake-up"],
+            capture_output=True,
+            timeout=WAKE_UP_TIMEOUT_SEC,
+        )
+        if proc.returncode != 0:
+            err = proc.stderr.decode(errors="replace")[:400]
+            steps.append(f"wake-up refresh failed (rc={proc.returncode}): {err}")
+            return {"ok": False, "steps": steps}
+        out_path.write_text(proc.stdout.decode(errors="replace"), encoding="utf-8")
+        steps.append(f"wake-up cache refreshed ({len(proc.stdout)} bytes)")
+    except subprocess.TimeoutExpired:
+        steps.append(f"wake-up refresh timed out after {WAKE_UP_TIMEOUT_SEC}s")
+        return {"ok": False, "steps": steps}
+    except Exception as e:
+        steps.append(f"wake-up refresh error: {type(e).__name__}: {e}")
+        return {"ok": False, "steps": steps}
+
+    return {"ok": True, "steps": steps}
+
+
+def kg_list(limit: int = 200) -> list[dict]:
+    """Best-effort listing of ALL KG triples for the Tower KG browser.
+
+    `KnowledgeGraph` (mempalace) doesn't document a "list everything" call —
+    kg_query() above always requires at least one of subject/predicate/object.
+    This tries a few plausible library methods first, then falls back to a
+    direct read of the underlying SQLite file. The fallback's table/column
+    names are a best guess from the triple shape used elsewhere in this file
+    (subject/predicate/object/valid_from/valid_to) — verify against the
+    actually-installed mempalace version and adjust if the schema differs.
+    """
+    try:
+        from mempalace.knowledge_graph import KnowledgeGraph
+        kg = KnowledgeGraph()
+        for method_name in ("all_triples", "list_triples", "list_facts", "all_facts"):
+            method = getattr(kg, method_name, None)
+            if callable(method):
+                try:
+                    return method(limit=limit) or []
+                except TypeError:
+                    return method() or []
+    except Exception as e:
+        log.warning(f"KG list (library path) unavailable: {e}")
+
+    try:
+        import sqlite3
+        for candidate in (
+            Path.home() / ".mempalace" / "knowledge_graph.db",
+            Path.home() / ".mempalace" / "palace" / "knowledge_graph.db",
+        ):
+            if candidate.is_file():
+                conn = sqlite3.connect(str(candidate))
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    "SELECT * FROM facts ORDER BY valid_from DESC LIMIT ?", (limit,)
+                ).fetchall()
+                conn.close()
+                return [dict(r) for r in rows]
+    except Exception as e:
+        log.warning(f"KG list (sqlite fallback) failed: {e}")
+    return []

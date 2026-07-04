@@ -1,0 +1,24 @@
+{% extends "palace/base.html" %}
+{% block title %}{{ wing }}{% endblock %}
+{% block heading %}Wing: {{ wing }}{% endblock %}
+{% block subtitle %}{{ rooms | length }} room(s){% endblock %}
+
+{% block palace_content %}
+<div class="wf-toolbar">
+    <a href="/palace" class="btn btn-small btn-secondary">← Memory</a>
+</div>
+
+{% if rooms %}
+<div class="icon-grid">
+    {% for room, count in rooms.items() %}
+    <a class="icon-tile" href="/palace/room?wing={{ wing | urlencode }}&room={{ room | urlencode }}" title="{{ room }}">
+        <span class="icon-glyph icon-folder"></span>
+        <span class="icon-label">{{ room | truncate_label }}</span>
+        <span class="icon-note">{{ count }} drawer(s)</span>
+    </a>
+    {% endfor %}
+</div>
+{% else %}
+<p class="empty-state">No rooms in this wing.</p>
+{% endif %}
+{% endblock %}

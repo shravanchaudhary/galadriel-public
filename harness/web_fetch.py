@@ -47,28 +47,28 @@ async def _trafilatura_get_text(url: str, timeout: float = 10.0) -> Optional[str
             return None
 
 
-async def _handinger_markdown(url: str, timeout: float = 120.0) -> Optional[str]:
-    """Extract page markdown via the Handinger API. More robust fallback."""
-    api_key = os.environ.get("HANDINGER_API_KEY")
-    if not api_key:
-        return None
-    try:
-        encoded_url = quote(url, safe="")
-        api_url = f"https://api.handinger.com/markdown?fresh=false&url={encoded_url}"
-        headers = {"Authorization": f"Bearer {api_key}"}
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.get(api_url, headers=headers)
-            response.raise_for_status()
-            return response.text or None
-    except Exception as e:
-        logger.error(f"Handinger extraction failed for {url}: {e}")
-        return None
+# async def _handinger_markdown(url: str, timeout: float = 120.0) -> Optional[str]:
+#     """Extract page markdown via the Handinger API. More robust fallback."""
+#     api_key = os.environ.get("HANDINGER_API_KEY")
+#     if not api_key:
+#         return None
+#     try:
+#         encoded_url = quote(url, safe="")
+#         api_url = f"https://api.handinger.com/markdown?fresh=false&url={encoded_url}"
+#         headers = {"Authorization": f"Bearer {api_key}"}
+#         async with httpx.AsyncClient(timeout=timeout) as client:
+#             response = await client.get(api_url, headers=headers)
+#             response.raise_for_status()
+#             return response.text or None
+#     except Exception as e:
+#         logger.error(f"Handinger extraction failed for {url}: {e}")
+#         return None
 
 
 async def fetch_url_data(url: str) -> Optional[str]:
     """Waterfall page extraction. Returns the first extractor's usable text/markdown,
     or None if all failed (caller should fall back to the cloud browser)."""
-    for extractor in (_trafilatura_get_text, _handinger_markdown):
+    for extractor in (_trafilatura_get_text):
         content = await extractor(url)
         if content and content.strip():
             logger.info(f"fetch_url_data: {extractor.__name__} extracted {url}")

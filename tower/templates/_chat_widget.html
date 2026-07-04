@@ -1,0 +1,390 @@
+<!-- Agent chat overlay — shared across console pages. -->
+<script type="application/json" id="page-context">{{ page_context | tojson }}</script>
+
+<button id="wfc-launcher" class="wfc-launcher" onclick="wfcToggle()" title="Ask the agent">
+    <span class="wfc-launcher-icon">↗</span>
+</button>
+
+<div id="wfc-panel" class="wfc-panel" hidden>
+    <div class="wfc-resize wfc-resize-n" data-dir="n"></div>
+    <div class="wfc-resize wfc-resize-w" data-dir="w"></div>
+    <div class="wfc-resize wfc-resize-nw" data-dir="nw"></div>
+    <div class="wfc-head">
+        <span class="wfc-title">Agent</span>
+        <span class="wfc-sub" id="wfc-context-label"></span>
+        <button type="button" class="wfc-head-btn wfc-clear-btn" id="wfc-clear" title="Archive history and start fresh">Clear</button>
+        <button type="button" class="wfc-head-btn" id="wfc-expand" title="Expand to sidebar">⤢</button>
+        <button type="button" class="wfc-head-btn wfc-x" onclick="wfcToggle()" title="Close">×</button>
+    </div>
+    <div id="wfc-log" class="wfc-log"></div>
+    <form id="wfc-form" class="wfc-form" onsubmit="wfcSend(event)">
+        <textarea id="wfc-input" class="wfc-input" rows="1"
+            placeholder="Tell the agent what to do…"
+            onkeydown="wfcKey(event)"></textarea>
+        <button type="submit" class="wfc-send" id="wfc-send" title="Send">→</button>
+    </form>
+</div>
+
+<script src="/static/chat_render.js"></script>
+<script>
+(function () {
+    const log = document.getElementById('wfc-log');
+    const input = document.getElementById('wfc-input');
+    const sendBtn = document.getElementById('wfc-send');
+    const panel = document.getElementById('wfc-panel');
+    const launcher = document.getElementById('wfc-launcher');
+    const expandBtn = document.getElementById('wfc-expand');
+    const LAYOUT_KEY = 'wfc-layout';
+    const LAYOUT_DEFAULTS = { width: 380, height: 540, expanded: false };
+    const MIN_W = 320, MIN_H = 280;
+    const RENDER_OPTS = {
+        userClass: 'wfc-msg wfc-msg-user',
+        assistantClass: 'wfc-msg wfc-msg-assistant',
+        userTextClass: 'wfc-msg-text',
+    };
+
+    let pageContext = {};
+    try {
+        pageContext = JSON.parse(document.getElementById('page-context').textContent || '{}');
+    } catch (e) { pageContext = {}; }
+
+    const label = document.getElementById('wfc-context-label');
+    label.textContent = pageContext.label || pageContext.view || '';
+
+    let bodyEl = null, textEl = null, thoughtEl = null, toolCard = null;
+
+    function escapeHtml(t) {
+        return ChatRender.escapeHtml(t);
+    }
+    function atBottom() {
+        return log.scrollHeight - log.scrollTop - log.clientHeight < 40;
+    }
+    function toBottom() { log.scrollTop = log.scrollHeight; }
+
+    function appendMessage(role, text) {
+        if (role === 'user') {
+            ChatRender.appendUserMessage(log, text, RENDER_OPTS);
+            return;
+        }
+        ChatRender.appendAssistantTurn(log, [{ type: 'text', text }], RENDER_OPTS);
+    }
+
+    function startAssistant() {
+        const div = document.createElement('div');
+        div.className = 'wfc-msg wfc-msg-assistant';
+        bodyEl = document.createElement('div');
+        bodyEl.className = 'msg-body';
+        const typing = document.createElement('span');
+        typing.className = 'typing';
+        typing.innerHTML = '<i></i><i></i><i></i>';
+        bodyEl.appendChild(typing);
+        div.appendChild(bodyEl);
+        log.appendChild(div);
+        textEl = null; thoughtEl = null; toolCard = null;
+    }
+    function clearTyping() {
+        const t = bodyEl && bodyEl.querySelector('.typing');
+        if (t) t.remove();
+    }
+    function appendText(delta) {
+        clearTyping();
+        if (!textEl) {
+            textEl = document.createElement('div');
+            textEl.className = 'msg-text';
+            bodyEl.appendChild(textEl);
+        }
+        textEl.textContent += delta;
+    }
+    function appendThought(delta) {
+        clearTyping();
+        if (!thoughtEl) {
+            const d = document.createElement('details');
+            d.className = 'thought';
+            d.innerHTML = '<summary>Thinking</summary>';
+            thoughtEl = document.createElement('div');
+            thoughtEl.className = 'thought-body';
+            d.appendChild(thoughtEl);
+            bodyEl.appendChild(d);
+        }
+        thoughtEl.textContent += delta;
+    }
+    function addToolCall(name, inp) {
+        clearTyping();
+        textEl = null; thoughtEl = null;
+        const card = document.createElement('details');
+        card.className = 'tool-card running';
+        card.innerHTML =
+            '<summary class="tool-head"><span class="tool-spinner"></span>'
+            + `<span class="tool-name">${escapeHtml(name)}</span>`
+            + `<span class="tool-preview">${escapeHtml(inp || '')}</span></summary>`
+            + `<div class="tool-input">${escapeHtml(inp || '')}</div>`
+            + '<pre class="tool-output"></pre>';
+        bodyEl.appendChild(card);
+        toolCard = card;
+    }
+    function addToolResult(output) {
+        if (!toolCard) return;
+        toolCard.classList.remove('running');
+        toolCard.classList.add('done');
+        toolCard.querySelector('.tool-output').textContent = output || '';
+        toolCard = null; textEl = null;
+    }
+
+    function handleEvent(ev) {
+        switch (ev.type) {
+            case 'thought': appendThought(ev.text); break;
+            case 'text': appendText(ev.text); break;
+            case 'tool_call': addToolCall(ev.name, ev.input); break;
+            case 'tool_result': addToolResult(ev.output); break;
+            case 'done':
+                clearTyping();
+                if (bodyEl && !bodyEl.querySelector('.msg-text') && ev.text) appendText(ev.text);
+                break;
+            case 'error': appendText(`[Error] ${ev.error}`); break;
+        }
+    }
+
+    function loadLayout() {
+        try {
+            return Object.assign({}, LAYOUT_DEFAULTS, JSON.parse(localStorage.getItem(LAYOUT_KEY) || '{}'));
+        } catch (e) {
+            return Object.assign({}, LAYOUT_DEFAULTS);
+        }
+    }
+    function saveLayout(layout) {
+        localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout));
+    }
+    function clampWidth(w) {
+        const max = Math.floor(window.innerWidth * 0.92);
+        return Math.min(max, Math.max(MIN_W, w));
+    }
+    function clampHeight(h) {
+        const max = window.innerHeight - 48;
+        return Math.min(max, Math.max(MIN_H, h));
+    }
+    function applyLayout(layout) {
+        panel.style.width = layout.width + 'px';
+        const open = !panel.hasAttribute('hidden');
+        if (layout.expanded) {
+            panel.classList.add('expanded');
+            panel.style.height = '';
+            expandBtn.textContent = '⤡';
+            expandBtn.title = 'Collapse to floating panel';
+        } else {
+            panel.classList.remove('expanded');
+            panel.style.height = layout.height + 'px';
+            expandBtn.textContent = '⤢';
+            expandBtn.title = 'Expand to sidebar';
+        }
+        if (layout.expanded && open) {
+            document.body.classList.add('wfc-sidebar-open');
+            document.body.style.setProperty('--wfc-sidebar-w', layout.width + 'px');
+        } else {
+            document.body.classList.remove('wfc-sidebar-open');
+            document.body.style.removeProperty('--wfc-sidebar-w');
+        }
+    }
+    function setExpanded(expanded) {
+        const layout = loadLayout();
+        layout.expanded = expanded;
+        if (expanded) layout.width = clampWidth(Math.max(layout.width, 420));
+        saveLayout(layout);
+        applyLayout(layout);
+    }
+    expandBtn.addEventListener('click', () => setExpanded(!panel.classList.contains('expanded')));
+
+    (function initResize() {
+        let active = null;
+        function onMove(e) {
+            if (!active) return;
+            const layout = loadLayout();
+            const dx = e.clientX - active.x;
+            const dy = e.clientY - active.y;
+            if (active.dir.includes('w')) layout.width = clampWidth(active.w - dx);
+            if (active.dir.includes('n') && !layout.expanded) layout.height = clampHeight(active.h - dy);
+            saveLayout(layout);
+            applyLayout(layout);
+        }
+        function onUp() {
+            active = null;
+            document.body.classList.remove('wfc-resizing');
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup', onUp);
+        }
+        panel.querySelectorAll('.wfc-resize').forEach(handle => {
+            handle.addEventListener('mousedown', e => {
+                if (e.button !== 0) return;
+                e.preventDefault();
+                const layout = loadLayout();
+                const dir = handle.dataset.dir;
+                if (layout.expanded && dir !== 'w') return;
+                active = {
+                    dir,
+                    x: e.clientX,
+                    y: e.clientY,
+                    w: panel.offsetWidth,
+                    h: panel.offsetHeight,
+                };
+                document.body.classList.add('wfc-resizing');
+                document.addEventListener('mousemove', onMove);
+                document.addEventListener('mouseup', onUp);
+            });
+        });
+    })();
+
+    window.addEventListener('resize', () => {
+        const layout = loadLayout();
+        layout.width = clampWidth(layout.width);
+        if (!layout.expanded) layout.height = clampHeight(layout.height);
+        saveLayout(layout);
+        applyLayout(layout);
+    });
+
+    function wfcIsOpen() {
+        return !panel.hasAttribute('hidden');
+    }
+
+    function wfcSetNavActive(active) {
+        const navChat = document.getElementById('site-nav-chat');
+        if (navChat) navChat.classList.toggle('active', active);
+    }
+
+    window.wfcOpen = function () {
+        if (wfcIsOpen()) {
+            input.focus();
+            return;
+        }
+        panel.removeAttribute('hidden');
+        launcher.classList.add('open');
+        sessionStorage.setItem('wfc-open', '1');
+        wfcSetNavActive(true);
+        input.focus();
+        toBottom();
+        applyLayout(loadLayout());
+    };
+
+    window.wfcClose = function () {
+        if (!wfcIsOpen()) return;
+        panel.setAttribute('hidden', '');
+        launcher.classList.remove('open');
+        sessionStorage.removeItem('wfc-open');
+        wfcSetNavActive(false);
+        applyLayout(loadLayout());
+    };
+
+    window.wfcToggle = function () {
+        if (wfcIsOpen()) wfcClose();
+        else wfcOpen();
+    };
+
+    window.wfcKey = function (e) {
+        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); wfcSend(e); }
+    };
+
+    window.wfcClear = async function () {
+        if (!confirm('Start a fresh conversation? Current history will be archived to memory first.')) return;
+        const btn = document.getElementById('wfc-clear');
+        if (btn) btn.disabled = true;
+        try {
+            const res = await fetch('/api/clear', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ channel: 'main' }),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                alert(data.error || 'Failed to clear conversation');
+                return;
+            }
+            log.innerHTML = '';
+            bodyEl = null; textEl = null; thoughtEl = null; toolCard = null;
+        } catch (err) {
+            alert(err.message || 'Failed to clear conversation');
+        } finally {
+            if (btn) btn.disabled = false;
+        }
+    };
+
+    window.wfcSend = async function (e) {
+        e.preventDefault();
+        const message = input.value.trim();
+        if (!message) return;
+        appendMessage('user', message);
+        input.value = '';
+        sendBtn.disabled = true;
+        startAssistant();
+        toBottom();
+
+        const payload = { message };
+        if (pageContext && pageContext.view) {
+            payload.context = pageContext;
+        }
+
+        try {
+            const res = await fetch('/api/chat/stream', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            if (!res.ok || !res.body) {
+                const err = await res.json().catch(() => ({ error: res.statusText }));
+                appendText(`[Error] ${err.error || res.statusText}`);
+                return;
+            }
+            const reader = res.body.getReader();
+            const decoder = new TextDecoder();
+            let buf = '';
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+                buf += decoder.decode(value, { stream: true });
+                let idx;
+                while ((idx = buf.indexOf('\n\n')) !== -1) {
+                    const frame = buf.slice(0, idx);
+                    buf = buf.slice(idx + 2);
+                    if (!frame.startsWith('data:')) continue;
+                    const raw = frame.slice(5).trim();
+                    if (!raw) continue;
+                    const stick = atBottom();
+                    handleEvent(JSON.parse(raw));
+                    if (stick) toBottom();
+                }
+            }
+            if (pageContext.reload_on_done !== false) {
+                setTimeout(() => location.reload(), 900);
+            } else {
+                sendBtn.disabled = false;
+            }
+        } catch (err) {
+            appendText(`[Error] ${err.message}`);
+            sendBtn.disabled = false;
+        }
+    };
+
+    (async () => {
+        const navChat = document.getElementById('site-nav-chat');
+        if (navChat) {
+            navChat.addEventListener('click', e => {
+                e.preventDefault();
+                wfcOpen();
+            });
+        }
+
+        const clearBtn = document.getElementById('wfc-clear');
+        if (clearBtn) clearBtn.addEventListener('click', () => wfcClear());
+
+        if (sessionStorage.getItem('wfc-open')) {
+            panel.removeAttribute('hidden');
+            launcher.classList.add('open');
+            wfcSetNavActive(true);
+        }
+        applyLayout(loadLayout());
+        try {
+            const res = await fetch('/api/history?channel=main');
+            const data = await res.json();
+            ChatRender.hydrateHistory(log, (data.history || []).slice(-20), RENDER_OPTS);
+            toBottom();
+        } catch (e) {}
+    })();
+})();
+</script>

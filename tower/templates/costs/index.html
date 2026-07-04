@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+{% block title %}Costs{% endblock %}
+{% block container_class %}wf-container{% endblock %}
+{% block heading %}Costs{% endblock %}
+{% block subtitle %}LLM API spend — tagged by channel and model{% endblock %}
+
+{% block content %}
+{% if not db_configured %}
+<p class="empty-state">MONGO_URI / MONGO_DB not configured — cost logging has nowhere to write. Set them in the environment to start tracking.</p>
+{% else %}
+
+<div class="status-grid">
+    <div class="card">
+        <div class="card-label">Today</div>
+        <div class="card-value">{{ cost_today | usd }}</div>
+    </div>
+    <div class="card">
+        <div class="card-label">This month</div>
+        <div class="card-value">{{ cost_month | usd }}</div>
+    </div>
+    <div class="card">
+        <div class="card-label">All time</div>
+        <div class="card-value">{{ cost_all_time | usd }}</div>
+    </div>
+</div>
+
+<div class="wf-toolbar">
+    <a href="/costs?range=today" class="btn btn-small {{ 'btn-danger' if range_key == 'today' else '' }}">Today</a>
+    <a href="/costs?range=7d" class="btn btn-small {{ 'btn-danger' if range_key == '7d' else '' }}">7 days</a>
+    <a href="/costs?range=30d" class="btn btn-small {{ 'btn-danger' if range_key == '30d' else '' }}">30 days</a>
+    <a href="/costs?range=all" class="btn btn-small {{ 'btn-danger' if range_key == 'all' else '' }}">All time</a>
+</div>
+
+<section class="costs-section">
+    <h2>By day</h2>
+    {% if daily_rows %}
+    <table class="wf-table">
+        <thead>
+            <tr>
+                <th>Date</th>
+                <th>Calls</th>
+                <th>Input tok</th>
+                <th>Cache read tok</th>
+                <th>Cache write tok</th>
+                <th>Output tok</th>
+                <th>Cost</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in daily_rows %}
+            <tr>
+                <td>{{ row.date }}</td>
+                <td>{{ row.calls }}</td>
+                <td>{{ "{:,}".format(row.input_tokens) }}</td>
+                <td>{{ "{:,}".format(row.cache_read_tokens) }}</td>
+                <td>{{ "{:,}".format(row.cache_write_tokens) }}</td>
+                <td>{{ "{:,}".format(row.output_tokens) }}</td>
+                <td>{{ row.cost_total | usd }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="empty-state">No calls logged in this range yet.</p>
+    {% endif %}
+</section>
+
+<section class="costs-section">
+    <h2>By channel</h2>
+    {% if channel_rows %}
+    <table class="wf-table">
+        <thead>
+            <tr>
+                <th>Channel</th>
+                <th>Calls</th>
+                <th>Input tok</th>
+                <th>Cache read tok</th>
+                <th>Output tok</th>
+                <th>Cost</th>
+                <th>% of total</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% set range_total = channel_rows | sum(attribute="cost_total") %}
+            {% for row in channel_rows %}
+            <tr>
+                <td><span class="badge">{{ row.channel_id }}</span></td>
+                <td>{{ row.calls }}</td>
+                <td>{{ "{:,}".format(row.input_tokens) }}</td>
+                <td>{{ "{:,}".format(row.cache_read_tokens) }}</td>
+                <td>{{ "{:,}".format(row.output_tokens) }}</td>
+                <td>{{ row.cost_total | usd }}</td>
+                <td>{{ "%.1f"|format(row.cost_total / range_total * 100 if range_total else 0) }}%</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="empty-state">No calls logged in this range yet.</p>
+    {% endif %}
+</section>
+
+<section class="costs-section">
+    <h2>By model</h2>
+    {% if model_rows %}
+    <table class="wf-table">
+        <thead>
+            <tr>
+                <th>Model</th>
+                <th>Calls</th>
+                <th>Input tok</th>
+                <th>Cache read tok</th>
+                <th>Output tok</th>
+                <th>Cost</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in model_rows %}
+            <tr>
+                <td>{{ row.model }}</td>
+                <td>{{ row.calls }}</td>
+                <td>{{ "{:,}".format(row.input_tokens) }}</td>
+                <td>{{ "{:,}".format(row.cache_read_tokens) }}</td>
+                <td>{{ "{:,}".format(row.output_tokens) }}</td>
+                <td>{{ row.cost_total | usd }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="empty-state">No calls logged in this range yet.</p>
+    {% endif %}
+</section>
+
+{% endif %}
+{% endblock %}

@@ -13,16 +13,16 @@ user to approve.
 1. Fetch the latest DMs (see palace: `palace_search("dm triage how-to")`).
 2. Group into: needs-reply, FYI, ignore.
 3. For each needs-reply, draft a short reply in the user's voice.
-4. Write the drafts + summary to `state/progress.md` as `done_pending_verify`
-   with links to each thread (evidence).
+4. Write the drafts + summary to today's progress file (`state/progress/`,
+   one file per day) as `done_pending_verify` with links to each thread (evidence).
 5. Notify the user once: "DM triage done — N drafts ready for review."
 
 ## Success check
 
-`state/progress.md` lists every needs-reply thread with a drafted reply and a
+Today's progress file lists every needs-reply thread with a drafted reply and a
 link. Nothing is marked done without a thread link.
 
 ## Blockers
 
-- Missing credentials / login wall → record the blocker in `state/progress.md`,
+- Missing credentials / login wall → record the blocker in today's progress file,
   notify once, and move on. Do not retry in a loop.

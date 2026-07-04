@@ -29,11 +29,21 @@ from datetime import datetime
 from pathlib import Path
 from .memory import MemoryManager
 from .tools import TOOL_DEFINITIONS, execute_tool
-from .safety import classify_command, format_safety_notice
+from .safety import classify_command, format_safety_notice, _simple_rm_target
 from .providers import BaseModelProvider
 from . import model_registry
+from . import conversation_store
+from . import cost_tracker
 
 log = logging.getLogger("galadriel")
+
+
+# The single shared channel_id used by every human-facing interactive surface
+# (Discord, Slack, Tower) so they all read/write the same conversation and the
+# agent has continuous context regardless of which surface the user is on.
+# Background/system channels (heartbeat, worker, morning, etc.) stay on their
+# own synthetic channel_ids and are unaffected.
+MAIN_CHANNEL_ID = "main"
 
 
 # ─── Context-window warnings ──────────────────────────────────────────
@@ -268,15 +278,37 @@ class GaladrielAgent:
     ):
         self.provider = provider or model_registry.get_provider("agent", api_key=api_key)
         self.model = model or model_registry.model_for("agent")
+        # Best-effort provider id for cost logging (matches model_registry's
+        # ANTHROPIC/GEMINI strings even when a custom `provider` is injected).
+        self.provider_name = type(self.provider).__name__.replace("Provider", "").lower()
         self.max_tokens = max_tokens or int(os.environ.get("AGENT_MAX_TOKENS", "8192"))
         self.memory = MemoryManager(config_dir=config_dir, memory_dir=memory_dir)
         self.working_dir = working_dir or os.getcwd()
         self.conversations: dict[str, list] = {}
+        restored = conversation_store.load_all(self.working_dir)
+        if restored:
+            self.conversations.update(restored)
+            total = sum(len(m) for m in restored.values())
+            log.info(
+                f"Restored {len(restored)} conversation buffer(s) "
+                f"({total} message(s)) from disk."
+            )
+        # One lock per channel_id, created lazily. Serializes respond() calls on
+        # the SAME channel so two near-simultaneous turns (e.g. from different
+        # gateways sharing MAIN_CHANNEL_ID) can't interleave mid-turn and break
+        # the API's strict user/assistant/tool_result alternation.
+        self._channel_locks: dict[str, asyncio.Lock] = {}
         # Set once archive_conversations_on_shutdown() runs, so overlapping
         # shutdown signals (SIGTERM + atexit) archive exactly once.
         self._shutdown_archived = False
         self.approval_callback = approval_callback
         self.last_usage: dict = {}  # Populated after each API call; used by /status
+
+        # Files the agent has written into existence (not merely edited) during
+        # this process's lifetime — deleting one of these via a plain `rm` is
+        # auto-approved (see safety.classify_command). Resets on restart, which
+        # is the safe direction: an unknown file always falls back to red.
+        self._created_files: set[str] = set()
 
         # Context-window tracking
         self.context_window = _resolve_context_window(self.model)
@@ -309,6 +341,11 @@ class GaladrielAgent:
         # drawers. Reset whenever compaction rewrites/clears the buffer.
         self._last_archived_len: dict[str, int] = {}  # channel_id -> messages mined so far
 
+        # Extra per-channel system context (e.g. a Slack team roster), set by a
+        # gateway and re-injected on every turn until changed/cleared. Kept
+        # separate from the compaction snapshot so it survives compaction.
+        self._channel_context: dict[str, str] = {}
+
         # Precompute tools-with-cache once. Tools never change at runtime,
         # so this object can be reused across every API call.
         self.tools = _build_cached_tools()
@@ -330,6 +367,46 @@ class GaladrielAgent:
         if channel_id not in self.conversations:
             self.conversations[channel_id] = []
         return self.conversations[channel_id]
+
+    def _lock_for(self, channel_id: str) -> asyncio.Lock:
+        lock = self._channel_locks.get(channel_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._channel_locks[channel_id] = lock
+        return lock
+
+    def set_channel_context(self, channel_id: str, text: str | None) -> None:
+        """Set (or clear) extra system context injected into every turn for a
+        channel — e.g. a Slack team roster so the agent knows who's in the
+        channel and that it's a teammate, not a 1:1 assistant. Call again
+        whenever the context changes (e.g. membership change); pass None to
+        clear it. Not meant to be set per-message — that would bust the
+        prompt cache on every turn.
+        """
+        if text:
+            self._channel_context[channel_id] = text
+        else:
+            self._channel_context.pop(channel_id, None)
+
+    def reset_channel(self, channel_id: str) -> None:
+        """Drop a channel's accumulated buffer + per-channel trackers so its next
+        turn starts lean.
+
+        Used by the background worker: each tick reconstructs state from the
+        board (`state/progress/`, one file per day), the DB ledger, and
+        the palace (DATA.md), so carrying the prior tick's transcript forward
+        only inflates input tokens and busts the prompt cache across the 10-min
+        idle gap (the cache-miss cost blowup, finding #7). Durable continuity
+        lives in those files, not in this buffer.
+        """
+        self.conversations.pop(channel_id, None)
+        conversation_store.delete_channel(self.working_dir, channel_id)
+        self._last_input_tokens.pop(channel_id, None)
+        self._compaction_summary.pop(channel_id, None)
+        self._last_archived_len.pop(channel_id, None)
+        self._last_warn_tier.pop(channel_id, None)
+        self._output_ceiling_streak.pop(channel_id, None)
+        self._post_recovery_archive_tag.pop(channel_id, None)
 
     def _hard_reset(self, messages: list, user_message: str | list):
         """Nuclear option: clear conversation and start fresh with the user message.
@@ -450,8 +527,9 @@ class GaladrielAgent:
             except Exception as e:
                 log.warning(f"Output-ceiling warning callback failed: {e}")
 
-    def _log_usage(self, response):
-        """Log token usage fields so caching behavior is observable.
+    def _log_usage(self, response, channel_id: str):
+        """Log token usage fields so caching behavior is observable, and record
+        the call's cost (tagged by channel) for the Tower cost dashboard.
 
         Healthy output on a warm cache:
             cache_read >> input_tokens,  cache_write small or 0.
@@ -468,6 +546,7 @@ class GaladrielAgent:
                 f"Tokens | input={inp} cache_read={cr} cache_write={cw} output={out}"
             )
             self.last_usage = {"input": inp, "cache_read": cr, "cache_write": cw, "output": out}
+            cost_tracker.log_call(channel_id, "agent", self.provider_name, self.model, self.last_usage)
         except Exception:
             log.debug("Could not log usage fields", exc_info=True)
 
@@ -488,8 +567,9 @@ class GaladrielAgent:
     async def compact_channel(self, channel_id: str = "default") -> dict:
         """Snapshot-compact a channel.
 
-        Archives the full conversation to the palace (durable write now, mine in
-        background — archival is mandatory), generates a cumulative structured
+        Archives the full conversation to the palace (durable write + synchronous
+        mine — archival is mandatory and must finish before the next task, which
+        may recall from the palace, runs), generates a cumulative structured
         snapshot that folds in any prior snapshot, stores it (re-injected as a
         system block by respond() until the next compaction), and clears the
         message list.
@@ -502,19 +582,21 @@ class GaladrielAgent:
 
         snapshot_msgs = list(messages)  # defensive copy before reset
 
-        # 1. Archive — durable write now, mine in the background.
+        # 1. Archive — durable write now, then mine synchronously. The mine must
+        #    complete before this returns: the next task may recall from the
+        #    palace, and mining can take a while, so we cannot fire-and-forget.
         try:
             from . import palace
             batch_dir = palace.archive_conversation_durable(f"compact_{channel_id}", snapshot_msgs)
             if batch_dir is not None:
-                asyncio.create_task(palace.mine_batch_dir(batch_dir, agent="compaction"))
+                await palace.mine_batch_dir(batch_dir, agent="compaction")
         except Exception as e:
             log.warning(f"Compaction archive failed (channel={channel_id}): {e}")
 
         # 2. Snapshot — fold in any prior snapshot for this channel.
         from .compaction import compact_to_snapshot
         prior = self._compaction_summary.get(channel_id, "")
-        result = await compact_to_snapshot(snapshot_msgs, prior_snapshot=prior)
+        result = await compact_to_snapshot(snapshot_msgs, prior_snapshot=prior, channel_id=channel_id)
         self._compaction_summary[channel_id] = result["snapshot"]
 
         # 3. Reset history. The snapshot (injected as a system block) carries
@@ -551,19 +633,21 @@ class GaladrielAgent:
 
         snapshot_msgs = list(messages)  # defensive copy before reset
 
-        # Archive — durable write now, mine in the background.
+        # Archive — durable write now, then mine synchronously. The mine must
+        # complete before the loop resumes: the continuation may recall from the
+        # palace, and mining can take a while, so we cannot fire-and-forget.
         try:
             from . import palace
             batch_dir = palace.archive_conversation_durable(f"compact_{channel_id}", snapshot_msgs)
             if batch_dir is not None:
-                asyncio.create_task(palace.mine_batch_dir(batch_dir, agent="compaction"))
+                await palace.mine_batch_dir(batch_dir, agent="compaction")
         except Exception as e:
             log.warning(f"Mid-loop compaction archive failed (channel={channel_id}): {e}")
 
         # Snapshot — fold in any prior system-block snapshot, then drop it.
         from .compaction import compact_to_snapshot
         prior = self._compaction_summary.get(channel_id, "")
-        result = await compact_to_snapshot(snapshot_msgs, prior_snapshot=prior)
+        result = await compact_to_snapshot(snapshot_msgs, prior_snapshot=prior, channel_id=channel_id)
         self._compaction_summary.pop(channel_id, None)
 
         # Rebuild the live conversation: task → progress → resume nudge.
@@ -632,6 +716,12 @@ class GaladrielAgent:
         """
         system_blocks = self.memory.build_system_blocks()
 
+        # Extra per-channel context (e.g. a Slack team roster) — set via
+        # set_channel_context(), re-injected on every turn until changed.
+        channel_context = self._channel_context.get(channel_id)
+        if channel_context:
+            system_blocks.append({"type": "text", "text": channel_context})
+
         # Compacted-conversation snapshot — its own non-cached block right after
         # the dynamic block, so chronology is stable → dynamic → snapshot → user.
         summary = self._compaction_summary.get(channel_id)
@@ -670,6 +760,7 @@ class GaladrielAgent:
         user_message: str | list,
         channel_id: str = "default",
         emit=None,
+        overlay_context: str | None = None,
     ) -> str:
         """Run the agentic loop and return the final assistant text.
 
@@ -680,7 +771,30 @@ class GaladrielAgent:
           {"type": "tool_result", "name": <str>, "output": <str>}  — truncated result
         When `emit` is None the loop is identical to the non-streaming path,
         so Discord and the scheduler are unaffected.
+
+        Serialized per channel_id (see `_lock_for`) so two turns on the same
+        channel (e.g. two gateways sharing MAIN_CHANNEL_ID) never interleave.
         """
+        async with self._lock_for(channel_id):
+            return await self._respond_locked(
+                user_message, channel_id, emit, overlay_context,
+            )
+
+    @staticmethod
+    def _with_overlay(system_blocks: list, overlay_context: str | None) -> list:
+        if not overlay_context:
+            return system_blocks
+        blocks = list(system_blocks)
+        blocks.append({"type": "text", "text": overlay_context})
+        return blocks
+
+    async def _respond_locked(
+        self,
+        user_message: str | list,
+        channel_id: str,
+        emit,
+        overlay_context: str | None = None,
+    ) -> str:
         messages = self._get_messages(channel_id)
 
         # Auto-compaction: if the last measured input context for this channel
@@ -701,9 +815,13 @@ class GaladrielAgent:
 
         # System blocks: stable + dynamic + snapshot + advisory. Rebuilt after
         # any mid-loop / max_tokens compaction so it never goes stale.
-        system_blocks = self._assemble_system_blocks(channel_id)
+        # overlay_context is ephemeral (Tower page pointers) — not stored in history.
+        system_blocks = self._with_overlay(
+            self._assemble_system_blocks(channel_id), overlay_context,
+        )
 
         max_tokens_retries = 0  # Track consecutive max_tokens hits
+        turn_thought = ""  # Accumulated thought deltas for the current API response
 
         while True:
             # Guard against empty message list
@@ -716,6 +834,7 @@ class GaladrielAgent:
             # This advances the messages-cache breakpoint as the conversation
             # grows, giving hits within tool_use cascades.
             messages_for_api = _attach_trailing_cache_control(messages)
+            turn_thought = ""
             if emit is not None:
                 response = None
                 async for kind, payload in self.provider.stream_message(
@@ -727,7 +846,10 @@ class GaladrielAgent:
                 ):
                     if kind == "message":
                         response = payload
-                    else:  # "text" | "thought"
+                    elif kind == "thought":
+                        turn_thought += payload
+                        await emit({"type": kind, "text": payload})
+                    else:  # "text"
                         await emit({"type": kind, "text": payload})
             else:
                 response = await self.provider.create_message(
@@ -738,7 +860,7 @@ class GaladrielAgent:
                     messages=messages_for_api,
                 )
 
-            self._log_usage(response)
+            self._log_usage(response, channel_id)
             self._record_input_tokens(response, channel_id)
             await self._maybe_warn_context(response, channel_id)
             await self._maybe_warn_output_ceiling(response, channel_id)
@@ -752,7 +874,10 @@ class GaladrielAgent:
 
             # Now serialize for storage
             assistant_content = _serialize_content(response.content)
-            messages.append({"role": "assistant", "content": assistant_content})
+            assistant_msg: dict = {"role": "assistant", "content": assistant_content}
+            if turn_thought.strip():
+                assistant_msg["_thought"] = turn_thought.strip()
+            messages.append(assistant_msg)
             log.info(f"Response stop_reason: {response.stop_reason}")
 
             if response.stop_reason == "end_turn":
@@ -772,6 +897,7 @@ class GaladrielAgent:
                 self.memory.append_daily_log(
                     f"[chat:{channel_id}] User: {user_summary}..."
                 )
+                conversation_store.save_channel(self.working_dir, channel_id, messages)
                 return final_text
 
             if response.stop_reason == "max_tokens":
@@ -829,7 +955,9 @@ class GaladrielAgent:
                 # Rebuild system blocks: compaction set a fresh snapshot, or the
                 # hard-reset fallback set a post-recovery advisory — either way the
                 # pre-loop blocks are now stale and must be regenerated.
-                system_blocks = self._assemble_system_blocks(channel_id)
+                system_blocks = self._with_overlay(
+                    self._assemble_system_blocks(channel_id), overlay_context,
+                )
 
                 # Ensure we end with a user message for the API.
                 if not messages or messages[-1].get("role") != "user":
@@ -858,7 +986,8 @@ class GaladrielAgent:
 
                     if tool_name == "run_shell":
                         command = tool_input.get("command", "")
-                        tier = classify_command(command)
+                        shell_dir = tool_input.get("working_dir") or self.working_dir
+                        tier = classify_command(command, self._created_files, shell_dir)
                         log.info(format_safety_notice(command, tier))
 
                         if tier == "red":
@@ -883,11 +1012,26 @@ class GaladrielAgent:
                                     })
                                 continue
 
+                    is_new_file = (
+                        tool_name == "write_file"
+                        and not os.path.exists(os.path.join(self.working_dir, tool_input.get("path", "")))
+                    )
+
                     result = await execute_tool(
                         tool_name, tool_input,
                         memory_manager=self.memory,
                         working_dir=self.working_dir,
                     )
+
+                    if is_new_file and result.startswith("Written "):
+                        resolved = os.path.normpath(os.path.join(self.working_dir, tool_input["path"]))
+                        self._created_files.add(resolved)
+                    elif tool_name == "run_shell" and tier == "green":
+                        rm_target = _simple_rm_target(command)
+                        if rm_target is not None:
+                            # A successful auto-approved self-cleanup: the file is
+                            # gone, so drop it from the tracked set.
+                            self._created_files.discard(os.path.normpath(os.path.join(shell_dir, rm_target)))
 
                     if len(result) > 15000:
                         result = result[:15000] + "\n...[truncated]"
@@ -919,7 +1063,9 @@ class GaladrielAgent:
                         await self._compact_midloop(channel_id, user_message)
                         # Snapshot now lives in messages and _compaction_summary was
                         # cleared — rebuild so any stale snapshot block is dropped.
-                        system_blocks = self._assemble_system_blocks(channel_id)
+                        system_blocks = self._with_overlay(
+                            self._assemble_system_blocks(channel_id), overlay_context,
+                        )
                     except Exception as e:
                         log.warning(f"Mid-loop compaction failed ({e}); proceeding with full context")
 
@@ -929,6 +1075,7 @@ class GaladrielAgent:
 
     def clear_history(self, channel_id: str = "default"):
         self.conversations.pop(channel_id, None)
+        conversation_store.delete_channel(self.working_dir, channel_id)
         # A fresh channel starts with no recovery advisory — clear stale state.
         self._post_recovery_archive_tag.pop(channel_id, None)
         self._output_ceiling_streak.pop(channel_id, None)
@@ -949,6 +1096,7 @@ class GaladrielAgent:
         cleared, just not archived.
         """
         messages = self.conversations.pop(channel_id, None)
+        conversation_store.delete_channel(self.working_dir, channel_id)
         # Clear per-channel transient state alongside the history.
         self._post_recovery_archive_tag.pop(channel_id, None)
         self._output_ceiling_streak.pop(channel_id, None)
@@ -978,13 +1126,21 @@ class GaladrielAgent:
             from . import palace
         except Exception:
             return 0
+        conversation_store.save_all(self.working_dir, self.conversations)
         written = 0
         for channel_id, messages in list(self.conversations.items()):
             if messages and palace.write_conversation_archive_sync(channel_id, messages):
                 written += 1
         if written:
             log.info(
-                f"Shutdown: staged {written} conversation(s) for archival "
-                "(will mine into palace on next start)."
+                f"Shutdown: staged {written} conversation(s) for palace archival "
+                "(background mine on next start)."
             )
+        # Flush + close MemPalace ChromaDB handles so in-process vector writes
+        # (e.g. diary_write) persist to HNSW; otherwise the next start
+        # quarantines the segment as drift and silently loses those drawers.
+        try:
+            palace.close()
+        except Exception as e:
+            log.warning(f"Shutdown: palace close failed ({e})")
         return written

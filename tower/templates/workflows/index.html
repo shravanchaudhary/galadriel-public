@@ -1,0 +1,30 @@
+{% extends "workflows/base.html" %}
+{% block title %}Workflows{% endblock %}
+{% block heading %}Workflows{% endblock %}
+{% block subtitle %}Each entity is a state machine defined in workflows/*.json{% endblock %}
+
+{% block wf_content %}
+{% if not db_ok %}
+<p class="empty-state">DB not configured (MONGO_URI / MONGO_DB unset) — no live data to show.</p>
+{% endif %}
+
+{% if items %}
+<div class="status-grid">
+    {% for item in items %}
+    <div class="card">
+        <div class="card-label">{{ item.spec.workflow }}</div>
+        <div class="card-value">{{ item.spec.name }}</div>
+        <p class="muted" style="font-size:0.8rem;margin-top:0.4rem;">
+            {{ item.count }} record(s) · {{ item.spec.states | length }} states
+        </p>
+        <div class="wf-nav" style="margin-top:0.75rem;margin-bottom:0;">
+            <a href="/w/{{ item.spec.name }}">Table</a>
+            <a href="/w/{{ item.spec.name }}/kanban">Kanban</a>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<p class="empty-state">No workflows defined yet. Author a spec in <code>workflows/*.json</code> (see <code>config/WORKFLOWS.md</code>).</p>
+{% endif %}
+{% endblock %}

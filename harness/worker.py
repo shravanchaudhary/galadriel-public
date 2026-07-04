@@ -2,25 +2,34 @@
 
 A second channel of the same GaladrielAgent that executes day-to-day work while
 the main channel stays free to talk to the user. Curator (main) and worker
-(this) never share memory; they coordinate ONLY through markdown files:
+(this) never share memory; they coordinate ONLY through markdown files (plus
+config/JOBS.md, which is auto-loaded into both hats' context — no board file
+needed for that one):
 
-  jobs/job_roles.md      broad goals + recurring rules (rituals)   [curator writes]
+  config/JOBS.md         broad goals + recurring rules (rituals)   [curator writes; L1, always in context]
   jobs/<id>.md           per-job cookbook (key steps)              [curator writes]
   state/backlog.md       projects / one-offs, carry forward        [curator writes]
   state/worker_control.md  active | paused                         [curator writes]
-  state/progress.md      live status, blocked, done+evidence       [WORKER writes]
+  state/progress/        shared work ledger, ONE FILE PER DAY:      [curator + worker]
+                         status, blocked, done+evidence — every
+                         completed/irreversible action from BOTH hats
+  state/plan/            daily planning ledger, ONE FILE PER DAY   [curator + scheduler]
+                         (intended actions)
+  state/steering.md      reflection corrections (append-only)     [reflection writes]
 
 Loop shape (work-conserving, single asyncio task = inherently single-flight):
   - paused?            → idle-poll (no work started)
+  - else reset worker channel (lean tick — durable state is the board + DB + palace)
   - else run one worker turn (agent reads the board, picks per rules, acts,
-    writes progress.md). The turn returns text ONLY on a state transition
+    writes today's progress file). The turn returns text ONLY on a state transition
     (started/blocked/done/failed) — that text is relayed to Discord. It ends
     with a machine tag <<WORKER_STATUS: worked|idle>> the loop reads to decide
     whether to keep going (work remains) or idle-poll (nothing to do).
 
 The current time (CET) and elapsed session time are injected at the TAIL of the
-prompt each turn, so the worker is time-aware without churning the cached
-prefix. Opt-in: set GALADRIEL_WORKER=1 to enable.
+prompt each turn, so the worker is time-aware without carrying prior-tick
+transcript (which would inflate tokens and hurt prompt-cache hits). Opt-in: set
+GALADRIEL_WORKER=1 to enable.
 """
 
 import asyncio
@@ -29,6 +38,8 @@ import re
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
+
+from .loop_prompts import WORKER_PROMPT
 
 log = logging.getLogger("galadriel.worker")
 
@@ -45,44 +56,6 @@ PROJECT_SLICE_CAP_MIN = 30
 
 _STATUS_RE = re.compile(r"<<WORKER_STATUS:\s*(worked|idle)\s*>>", re.IGNORECASE)
 
-WORKER_PROMPT = (
-    "[SYSTEM:WORKER_TICK] You are operating as the WORKER. This turn is NOT shown "
-    "to the user unless you choose to notify (see OUTPUT). Work silently; the value "
-    "is in what you DO and what you file, not in talking.\n\n"
-    "1. Read the board, in this order, with read_file:\n"
-    "   - state/worker_control.md (if it says paused, stop now: output nothing but "
-    "the idle tag).\n"
-    "   - jobs/job_roles.md (your goals + recurring rules / rituals).\n"
-    "   - state/backlog.md (projects / one-offs).\n"
-    "   - state/progress.md (what you already did, what is blocked, where you left off).\n"
-    "   - the relevant jobs/<id>.md cookbook for whatever you pick (and palace_search "
-    "for any detail the cookbook references).\n\n"
-    "2. Pick the next action using the injected current time:\n"
-    "   - A RITUAL due now (e.g. 'check DMs at 11:00') PREEMPTS project work.\n"
-    "   - Else continue/advance the top open PROJECT.\n"
-    "   - A ritual missed earlier is NOT done twice — doing today's once is enough; "
-    "rituals never accumulate. Projects carry forward until truly done.\n"
-    "   - If a blocker stops a task: record it in progress.md, notify once, then "
-    "MOVE ON to the next actionable task (blocked = park, not stop).\n"
-    "   - If you have spent more than the slice cap on one project, checkpoint to "
-    "progress.md and re-scan before continuing.\n"
-    "   - If a task launches a long external process, record it in progress.md and "
-    "check it on your next tick — do NOT arm a heartbeat; this loop already polls.\n\n"
-    "3. Do ONE useful unit of work now. Verify real outcomes (a row exists, a file "
-    "was written, a message sent) — never mark something done you did not verify.\n\n"
-    "4. Update state/progress.md (write_file): current task, what you just did, any "
-    "irreversible step taken (so a restart never repeats it), blockers, and "
-    "completed items as 'done_pending_verify' WITH evidence (links/counts/paths) for "
-    "the curator to check.\n\n"
-    "OUTPUT (this is the ONLY thing the user may see):\n"
-    "  - If a state transition happened (started a long task / blocked / completed / "
-    "failed), write a short one-line notification for the user. Otherwise output NO "
-    "prose at all.\n"
-    "  - ALWAYS end your turn with exactly one machine tag on its own line:\n"
-    "      <<WORKER_STATUS: worked>>   if you did work and more may remain\n"
-    "      <<WORKER_STATUS: idle>>     if nothing was actionable (or paused)\n"
-)
-
 
 class WorkerLoop:
     """Runs the agent's background worker channel on a work-conserving loop."""
@@ -93,6 +66,10 @@ class WorkerLoop:
         self._control_path = Path(working_dir) / "state" / "worker_control.md"
         self._task: asyncio.Task | None = None
         self._started_at: datetime | None = None
+        # Rising-edge tracker for the "picking up work" ping: True only while the
+        # worker is mid-burst (consecutive worked ticks), so the ping fires once
+        # when a burst begins, not on every tick. Reset on pause/idle.
+        self._was_working: bool = False
 
     def set_bot(self, bot):
         self.bot = bot
@@ -110,6 +87,8 @@ class WorkerLoop:
             while True:
                 if self._paused():
                     log.info("Worker paused (control flag) — idle poll.")
+                    # Paused counts as rest, so resuming into work re-fires the ping.
+                    self._was_working = False
                     await asyncio.sleep(IDLE_POLL_SEC)
                     continue
 
@@ -124,6 +103,13 @@ class WorkerLoop:
 
     async def _run_turn(self) -> str:
         """Run one worker turn. Returns 'worked' or 'idle'. Relays any notification."""
+        # Lean ticks: start every tick from a clean buffer. The worker's durable
+        # memory is the board + DB + palace, not the in-context transcript, so
+        # carrying the prior tick forward only inflates input tokens and busts
+        # the prompt cache across the idle gap (the cache-miss cost blowup,
+        # finding #7). Resetting at the START is exception-safe — a failed turn
+        # never poisons the next.
+        self.agent.reset_channel(WORKER_CHANNEL)
         prompt = WORKER_PROMPT + "\n\n" + self._build_clock()
         try:
             text = await self.agent.respond(prompt, channel_id=WORKER_CHANNEL)
@@ -132,6 +118,12 @@ class WorkerLoop:
             return "idle"
 
         status, note = self._parse(text)
+        # Rising edge into a work burst (idle/paused → working): ping once so the
+        # user sees the worker pick up a task. Subsequent worked ticks in the same
+        # burst don't re-ping; an idle/paused tick resets the edge.
+        if status == "worked" and not self._was_working:
+            await self._send_to_discord("🔧 Worker picking up work…")
+        self._was_working = status == "worked"
         if note:
             log.info(f"Worker notification: {note[:100]}")
             await self._send_to_discord(note)
@@ -161,19 +153,23 @@ class WorkerLoop:
         return True
 
     def _build_clock(self) -> str:
-        """Tail-injected, cache-safe time block. Harness computes the diffs so the
-        model never has to do time math."""
+        """Tail-injected, cache-safe time block. Harness computes the diffs (and
+        today's ledger file paths) so the model never has to do time math or
+        construct a filename itself."""
         now = datetime.now(CET)
         elapsed = "unknown"
         if self._started_at:
             secs = int((now - self._started_at).total_seconds())
             elapsed = f"{secs // 3600}h {(secs % 3600) // 60}m"
+        today = now.strftime("%Y-%m-%d")
         return (
             "[WORKER:CLOCK]\n"
             f"NOW = {now.strftime('%Y-%m-%d %H:%M')} CET (weekday {now.strftime('%A')})\n"
             f"session_elapsed = {elapsed}\n"
             f"project_slice_cap = {PROJECT_SLICE_CAP_MIN}m "
-            "(if you have spent longer than this on one project, checkpoint and re-scan)"
+            "(if you have spent longer than this on one project, checkpoint and re-scan)\n"
+            f"today_progress_file = state/progress/{today}.md\n"
+            f"today_plan_file = state/plan/{today}.md"
         )
 
     def _parse(self, text: str) -> tuple[str, str]:

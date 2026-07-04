@@ -1,0 +1,18 @@
+{% extends "config/base.html" %}
+{% block title %}Configuration{% endblock %}
+
+{% block cfg_content %}
+<div class="wf-toolbar">
+    <span class="muted" style="font-size:0.84rem;">Read fresh from disk — edits apply on the agent's next turn.</span>
+</div>
+
+<div class="icon-grid">
+    {% for c in categories %}
+    <a class="icon-tile" href="/config/browse?cat={{ c.key }}" title="{{ c.label }}">
+        <span class="icon-glyph icon-folder"></span>
+        <span class="icon-label">{{ c.label | truncate_label(22) }}</span>
+        <span class="icon-note">{{ c.note }}</span>
+    </a>
+    {% endfor %}
+</div>
+{% endblock %}

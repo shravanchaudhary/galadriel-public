@@ -20,52 +20,35 @@
 | name | service | kind | fields held | notes |
 |---|---|---|---|---|
 | `linkedin` | linkedin.com | login+totp | `username`, `password`, `totp_secret` | Primary LinkedIn account. `totp_secret` is base32 for `generate_totp()`. |
+| `linkedin_rachit` | linkedin.com | login+totp | `username`, `password`, `totp_secret` | Rachit's secondary LinkedIn account. `totp_secret` is base32. |
 
 <!-- Add new credential sets above. Never put secret VALUES in this table — only the field names. -->
 
-## How to read a credential (inline via run_shell)
+## How to read a credential
 
-```bash
-cd scripts && python - <<'PY'
-import asyncio
-from lib.db import get_db
+Use the DB primitive — never freestyle pymongo (that path is removed and refused):
 
-async def main():
-    db = get_db()
-    c = await db.credentials.find_one({"name": "linkedin"})
-    # use c["username"], c["password"], c["totp_secret"] — never print them raw
-    print("loaded:", c["name"], "fields:", [k for k in c if k not in ("_id","created_at","updated_at")])
-
-asyncio.run(main())
-PY
 ```
+db_get(entity="credential", key="linkedin")
+```
+
+Returns the credential doc (`username`, `password`, `totp_secret`, …). **Mask
+(`****`) whenever you echo any secret** into chat, logs, or the palace; pass the
+raw value only where it's actually consumed (e.g. `generate_totp(totp_secret)` or
+a `browser` input). The `credential` entity is `hidden` in the spec, so the Tower
+UI never renders it.
 
 ## How to store / update a credential
 
-```bash
-cd scripts && python - <<'PY'
-import asyncio
-from datetime import datetime, timezone
-from lib.db import get_db
-
-async def main():
-    db = get_db()
-    await db.credentials.create_index("name", unique=True)
-    now = datetime.now(timezone.utc)
-    await db.credentials.update_one(
-        {"name": "<name>"},
-        {"$set": {
-            "service": "<service>",
-            "kind": "<login+totp | api_key | token | ...>",
-            # ...secret fields...
-            "updated_at": now,
-        },
-         "$setOnInsert": {"name": "<name>", "created_at": now}},
-        upsert=True,
-    )
-
-asyncio.run(main())
-PY
+```
+db_create(entity="credential", doc={
+    "name": "<name>",
+    "service": "<service>",
+    "kind": "<login+totp | api_key | token | ...>"
+    # ...secret fields: username, password, totp_secret, api_key, ...
+})
 ```
 
-Then add the new credential's row to the table above (metadata only).
+`db_create` dedups on `name` (returns `exists` if already present — update its
+fields with `db_update(entity="credential", key="<name>", fields={...})`). Then
+add the new credential's row to the table above (metadata only).

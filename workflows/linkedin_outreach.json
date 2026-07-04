@@ -1,0 +1,53 @@
+{
+  "workflow": "linkedin_outreach",
+  "entities": {
+    "lead": {
+      "collection": "linkedin_profiles",
+      "key": "profile_url",
+      "states": [
+        "discovered",
+        "queued",
+        "review_pending",
+        "approved_for_outreach",
+        "sending",
+        "request_sent",
+        "connected",
+        "replied",
+        "done",
+        "skipped"
+      ],
+      "initial": "discovered",
+      "transitions": {
+        "discovered": ["queued", "review_pending", "skipped"],
+        "queued": ["sending", "review_pending", "skipped"],
+        "review_pending": ["approved_for_outreach", "queued", "sending", "connected", "skipped"],
+        "approved_for_outreach": ["sending", "skipped"],
+        "sending": ["request_sent", "connected", "approved_for_outreach", "queued", "skipped"],
+        "request_sent": ["connected", "skipped"],
+        "connected": ["review_pending", "replied", "done"],
+        "replied": ["done"]
+      },
+      "approval_states": ["review_pending"],
+      "fields": [
+        "name",
+        "headline",
+        "company",
+        "notes",
+        "source",
+        "next_action_at"
+      ],
+      "table_columns": ["name", "company", "status", "next_action_at"]
+    },
+    "credential": {
+      "collection": "credentials",
+      "key": "name",
+      "states": ["active"],
+      "initial": "active",
+      "transitions": {},
+      "approval_states": [],
+      "fields": ["service", "kind", "username", "password", "totp_secret", "api_key", "notes"],
+      "table_columns": ["name", "service", "kind"],
+      "hidden": true
+    }
+  }
+}

@@ -1,0 +1,59 @@
+{% extends "palace/base.html" %}
+{% block title %}{{ room or hall or wing or 'Drawers' }}{% endblock %}
+{% block heading %}{{ room or hall or 'Drawers' }}{% endblock %}
+{% block subtitle %}
+    {%- if wing %}wing=<code>{{ wing }}</code>{% endif -%}
+    {%- if room %} · room=<code>{{ room }}</code>{% endif -%}
+    {%- if hall %} · hall=<code>{{ hall }}</code>{% endif -%}
+    · {{ total }} drawer(s)
+{% endblock %}
+
+{% block palace_content %}
+{% if notice %}
+<div class="notice-banner warn">{{ notice }}</div>
+{% endif %}
+
+<div class="wf-toolbar">
+    {% if wing %}
+    <a href="/palace/browse?wing={{ wing | urlencode }}" class="btn btn-small">← {{ wing }}</a>
+    {% else %}
+    <a href="/palace" class="btn btn-small btn-secondary">← Memory</a>
+    {% endif %}
+</div>
+
+{% if wing or room or hall %}
+<form method="post" action="/palace/drawer/create" class="memory-section">
+    <h2>Create drawer</h2>
+    <input type="hidden" name="wing" value="{{ wing or 'agent' }}">
+    <input type="hidden" name="room" value="{{ room or 'general' }}">
+    <input type="hidden" name="hall" value="{{ hall or 'general' }}">
+    <textarea name="text" class="chat-input" rows="3" placeholder="Drawer content…" required style="width:100%;margin-bottom:0.5rem;"></textarea>
+    <button type="submit" class="btn btn-small">Create drawer</button>
+</form>
+{% endif %}
+
+{% if drawers %}
+<div class="icon-grid">
+    {% for d in drawers %}
+    {% set label = d.source_file or d.text %}
+    <a class="icon-tile" href="/palace/drawer/{{ d.id }}" title="{{ label }}">
+        <span class="icon-glyph">🗂️</span>
+        <span class="icon-label">{{ label | truncate_label }}</span>
+        <span class="icon-note">{{ d.hall }}</span>
+    </a>
+    {% endfor %}
+</div>
+
+<div class="wf-toolbar">
+    {% if page > 1 %}
+    <a class="btn btn-small" href="?wing={{ wing or '' }}&room={{ room or '' }}&hall={{ hall or '' }}&page={{ page - 1 }}">← Prev</a>
+    {% endif %}
+    <span class="muted">Page {{ page }}</span>
+    {% if page * page_size < total %}
+    <a class="btn btn-small" href="?wing={{ wing or '' }}&room={{ room or '' }}&hall={{ hall or '' }}&page={{ page + 1 }}">Next →</a>
+    {% endif %}
+</div>
+{% else %}
+<p class="empty-state">No drawers here yet — create one above.</p>
+{% endif %}
+{% endblock %}

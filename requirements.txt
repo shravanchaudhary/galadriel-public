@@ -1,6 +1,9 @@
 anthropic>=0.52.0
 google-genai>=2.0.0
 discord.py>=2.5.0
+# Slack gateway (alternative to Discord) — Socket Mode needs aiohttp
+slack-bolt>=1.20.0
+aiohttp>=3.9.0
 Flask>=3.0.0
 python-dotenv>=1.0.0
 mempalace>=3.3.2,<3.4
@@ -12,3 +15,5 @@ pydantic>=2.0.0
 pyotp>=2.9.0
 # Async MongoDB driver for automation scripts (AsyncMongoClient; motor is EOL)
 pymongo>=4.9
+# Fuzzy company/prospect name matching for the Explorium client cache
+thefuzz>=0.22.0

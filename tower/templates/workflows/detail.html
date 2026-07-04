@@ -1,0 +1,50 @@
+{% extends "workflows/base.html" %}
+{% block title %}{{ doc.get(spec.key) }} — {{ spec.name }}{% endblock %}
+{% block heading %}{{ doc.get(spec.table_columns[0], doc.get(spec.key)) }}{% endblock %}
+{% block subtitle %}{{ spec.name }} · <span class="badge {{ 'approval' if doc.get('status') in spec.approval_states }}">{{ doc.get('status', '—') }}</span>{% endblock %}
+
+{% block wf_content %}
+<div class="wf-toolbar">
+    <a href="/w/{{ spec.name }}" class="btn btn-small">← Table</a>
+    <a href="/w/{{ spec.name }}/kanban" class="btn btn-small">Kanban</a>
+    {% if allowed %}
+    <span class="spacer"></span>
+    <span class="muted" style="font-size:0.8rem;">Allowed next: {{ allowed | join(', ') }}</span>
+    {% endif %}
+</div>
+
+<div class="wf-detail-grid">
+    <section>
+        <h2>Fields</h2>
+        <ul class="field-list">
+            {% for k, v in doc.items() %}
+            {% if k not in ('history', '_id') %}
+            <li><span class="k">{{ k }}</span><span class="v">{{ v | humantime }}</span></li>
+            {% endif %}
+            {% endfor %}
+        </ul>
+    </section>
+
+    <section>
+        <h2>Timeline</h2>
+        {% if history %}
+        <ul class="timeline">
+            {% for ev in history %}
+            <li>
+                <div class="ts">{{ ev.get('ts', '') | humantime }}</div>
+                <div class="ev">
+                    <strong>{{ ev.get('action', 'event') }}</strong>
+                    {% if ev.get('from') or ev.get('to') %} — {{ ev.get('from', '?') }} → {{ ev.get('to', '?') }}{% endif %}
+                    {% if ev.get('fields') %} ({{ ev.get('fields') | join(', ') }}){% endif %}
+                    {% if ev.get('note') %}<div class="muted" style="font-size:0.8rem;">{{ ev.get('note') | linkify }}</div>{% endif %}
+                    {% if ev.get('event') %}<div class="muted" style="font-size:0.8rem;">{{ ev.get('event') | linkify }}</div>{% endif %}
+                </div>
+            </li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <p class="muted">No history yet.</p>
+        {% endif %}
+    </section>
+</div>
+{% endblock %}

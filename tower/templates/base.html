@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    {% include "_head.html" %}
+    <title>{% block title %}Dashboard{% endblock %} — Clyra Console</title>
+    {% block extra_head %}{% endblock %}
+</head>
+<body>
+    {% include "_nav.html" %}
+    <main class="container {% block container_class %}{% endblock %}">
+        {% block page_header %}
+        <header class="page-header">
+            <h1>{% block heading %}{% endblock %}</h1>
+            <p class="subtitle">{% block subtitle %}{% endblock %}</p>
+        </header>
+        {% endblock %}
+        {% block content %}{% endblock %}
+    </main>
+    {% block chat_widget %}
+    {% include "_chat_widget.html" %}
+    {% endblock %}
+    {% block scripts %}{% endblock %}
+</body>
+</html>

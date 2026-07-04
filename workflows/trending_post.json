@@ -1,0 +1,33 @@
+{
+  "workflow": "trending_posts",
+  "entities": {
+    "trending_post": {
+      "collection": "trending_posts",
+      "key": "post_url",
+      "states": [
+        "discovered",
+        "analyzing",
+        "curated",
+        "rejected"
+      ],
+      "initial": "discovered",
+      "transitions": {
+        "discovered": ["analyzing"],
+        "analyzing": ["curated", "rejected"]
+      },
+      "approval_states": [],
+      "fields": [
+        "creator_name",
+        "likes",
+        "comments",
+        "text"
+      ],
+      "table_columns": [
+        "post_url",
+        "creator_name",
+        "likes",
+        "status"
+      ]
+    }
+  }
+}

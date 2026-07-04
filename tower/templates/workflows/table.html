@@ -1,0 +1,45 @@
+{% extends "workflows/base.html" %}
+{% block title %}{{ spec.name }} — Table{% endblock %}
+{% block heading %}{{ spec.name }}{% endblock %}
+{% block subtitle %}{{ spec.workflow }} · table view · backed by <code>{{ spec.collection }}</code>{% endblock %}
+
+{% block wf_content %}
+<div class="wf-toolbar">
+    <a href="/w/{{ spec.name }}" class="btn btn-small">All</a>
+    {% for state in spec.states %}
+    <a href="/w/{{ spec.name }}?status={{ state | urlencode }}"
+       class="btn btn-small {{ 'btn-danger' if state == status else '' }}">{{ state }}</a>
+    {% endfor %}
+    <span class="spacer"></span>
+    <a href="/w/{{ spec.name }}/kanban" class="btn btn-small">Kanban →</a>
+</div>
+
+{% if docs %}
+<table class="wf-table">
+    <thead>
+        <tr>
+            {% for col in spec.table_columns %}<th>{{ col }}</th>{% endfor %}
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for doc in docs %}
+        <tr>
+            {% for col in spec.table_columns %}
+            <td>
+                {% if col == 'status' %}
+                <span class="badge {{ 'approval' if doc.get('status') in spec.approval_states }}">{{ doc.get('status', '—') }}</span>
+                {% else %}
+                {{ doc.get(col, '') | humantime }}
+                {% endif %}
+            </td>
+            {% endfor %}
+            <td><a href="/w/{{ spec.name }}/item?key={{ doc.get(spec.key) | urlencode }}">open →</a></td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p class="empty-state">No records{% if status %} in status <strong>{{ status }}</strong>{% endif %}.</p>
+{% endif %}
+{% endblock %}

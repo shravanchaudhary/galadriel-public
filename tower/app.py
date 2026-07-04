@@ -8,6 +8,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify, Response
+from harness.agent import MAIN_CHANNEL_ID
 
 log = logging.getLogger("galadriel.tower")
 
@@ -20,6 +21,19 @@ def create_tower(agent, scheduler=None) -> Flask:
         static_folder=str(Path(__file__).parent / "static"),
     )
     app.secret_key = os.environ.get("TOWER_SECRET_KEY", "change-me")
+
+    @app.context_processor
+    def _inject_page_context():
+        return {"page_context": {}}
+
+    @app.template_filter("truncate_label")
+    def truncate_label(value, length=24):
+        """Short label for icon tiles; full text goes in the title attribute."""
+        s = str(value or "")
+        n = int(length)
+        if len(s) <= n:
+            return s
+        return s[: n - 1] + "…"
 
     @app.route("/")
     def index():
@@ -38,10 +52,6 @@ def create_tower(agent, scheduler=None) -> Flask:
             scheduler=sched_status,
         )
 
-    @app.route("/chat")
-    def chat_page():
-        return render_template("chat.html")
-
     @app.route("/api/chat", methods=["POST"])
     def api_chat():
         data = request.json
@@ -49,11 +59,21 @@ def create_tower(agent, scheduler=None) -> Flask:
         if not message:
             return jsonify({"error": "Empty message"}), 400
 
+        from .ui_context import format_overlay_system_block
+
+        context = (request.json or {}).get("context")
+        overlay = format_overlay_system_block(context)
+        user_message = f"[Tower]: {message}"
+
         # Schedule the async agent call onto the main event loop (Discord's loop)
         # This avoids creating a new event loop and works with AsyncAnthropic
         if scheduler and scheduler._loop and scheduler._loop.is_running():
             future = asyncio.run_coroutine_threadsafe(
-                agent.respond(message, channel_id="tower"),
+                agent.respond(
+                    user_message,
+                    channel_id=MAIN_CHANNEL_ID,
+                    overlay_context=overlay,
+                ),
                 scheduler._loop,
             )
             try:
@@ -67,7 +87,11 @@ def create_tower(agent, scheduler=None) -> Flask:
             loop = asyncio.new_event_loop()
             try:
                 response = loop.run_until_complete(
-                    agent.respond(message, channel_id="tower")
+                    agent.respond(
+                        user_message,
+                        channel_id=MAIN_CHANNEL_ID,
+                        overlay_context=overlay,
+                    )
                 )
                 return jsonify({"response": response})
             except Exception as e:
@@ -90,6 +114,12 @@ def create_tower(agent, scheduler=None) -> Flask:
         if not message:
             return jsonify({"error": "Empty message"}), 400
 
+        from .ui_context import format_overlay_system_block
+
+        context = data.get("context")
+        overlay = format_overlay_system_block(context)
+        user_message = f"[Tower]: {message}"
+
         loop = scheduler._loop if scheduler else None
         if not (loop and loop.is_running()):
             return jsonify({"error": "Agent event loop not available"}), 503
@@ -101,7 +131,12 @@ def create_tower(agent, scheduler=None) -> Flask:
 
         async def run():
             try:
-                final = await agent.respond(message, channel_id="tower", emit=emit)
+                final = await agent.respond(
+                    user_message,
+                    channel_id=MAIN_CHANNEL_ID,
+                    emit=emit,
+                    overlay_context=overlay,
+                )
                 events.put({"type": "done", "text": final})
             except Exception as e:
                 log.exception("Tower stream error")
@@ -126,29 +161,17 @@ def create_tower(agent, scheduler=None) -> Flask:
 
     @app.route("/api/history", methods=["GET"])
     def api_history():
-        channel = request.args.get("channel", "tower")
+        channel = request.args.get("channel", MAIN_CHANNEL_ID)
+        from .ui_context import serialize_chat_history
+
         messages = agent.conversations.get(channel, [])
-        # Serialize for the frontend
-        history = []
-        for msg in messages:
-            if isinstance(msg.get("content"), str):
-                history.append({"role": msg["role"], "text": msg["content"]})
-            elif isinstance(msg.get("content"), list):
-                texts = []
-                for block in msg["content"]:
-                    if hasattr(block, "text"):
-                        texts.append(block.text)
-                    elif isinstance(block, dict) and "content" in block:
-                        texts.append(str(block["content"])[:200])
-                if texts:
-                    history.append({"role": msg["role"], "text": "\n".join(texts)})
-        return jsonify({"history": history})
+        return jsonify({"history": serialize_chat_history(messages)})
 
     @app.route("/api/clear", methods=["POST"])
     def api_clear():
         """Archive the channel's conversation to the palace, then clear it —
         matching Discord's `/new` / `!new` / `!clear` behaviour."""
-        channel = request.json.get("channel", "tower")
+        channel = request.json.get("channel", MAIN_CHANNEL_ID)
         loop = scheduler._loop if scheduler else None
         if loop and loop.is_running():
             future = asyncio.run_coroutine_threadsafe(
@@ -269,5 +292,30 @@ def create_tower(agent, scheduler=None) -> Flask:
             prompt = data.get("prompt", "")
             scheduler.arm_wake(prompt)
         return jsonify(scheduler.get_status())
+
+    # Generic workflow screens (table / kanban / detail / approvals),
+    # auto-rendered from the workflow specs + live MongoDB.
+    from .workflows import register_workflows
+    register_workflows(app, scheduler)
+
+    # Actions — today's planned actions + progress (editable), worker status.
+    from .actions_board import register_actions_board
+    register_actions_board(app)
+
+    # Loops — autonomous channel prompts (worker, scheduler, completions).
+    from .loops_board import register_loops_board
+    register_loops_board(app, scheduler=scheduler, agent=agent)
+
+    # "Brain" — live agent configuration browser (config/jobs/state/sme).
+    from .config_browser import register_config_browser
+    register_config_browser(app, agent)
+
+    # "Palace" — memory palace browser (wings/rooms/halls/drawers/KG/diary).
+    from .palace_browser import register_palace_browser
+    register_palace_browser(app)
+
+    # Costs — LLM API spend by day/channel/model (harness/cost_tracker.py).
+    from .cost_board import register_cost_board
+    register_cost_board(app)
 
     return app
