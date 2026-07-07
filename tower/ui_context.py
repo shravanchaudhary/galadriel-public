@@ -90,8 +90,23 @@ def _tool_use_fields(block) -> tuple[str, str, Any]:
 
 def _tool_result_fields(block) -> tuple[str, str]:
     if isinstance(block, dict):
-        return block.get("tool_use_id") or "", block.get("content") or ""
-    return block.tool_use_id, block.content
+        rid, content = block.get("tool_use_id") or "", block.get("content") or ""
+    else:
+        rid, content = block.tool_use_id, block.content
+    if isinstance(content, list):
+        # Block-list result (text + image, e.g. screenshots) — text only for
+        # the UI, with a marker instead of the base64 payload.
+        texts = [
+            b.get("text", "") for b in content
+            if isinstance(b, dict) and b.get("type") == "text"
+        ]
+        n_images = sum(
+            1 for b in content if isinstance(b, dict) and b.get("type") == "image"
+        )
+        content = "\n".join(t for t in texts if t)
+        if n_images:
+            content += f"\n[{n_images} image(s) attached]"
+    return rid, content
 
 
 def _format_tool_input(tool_input) -> str:
@@ -114,7 +129,10 @@ def _serialize_assistant_turn(messages: list, start: int) -> tuple[list[dict], i
         role = msg.get("role")
         content = msg.get("content")
 
-        if role == "user" and isinstance(content, str):
+        if role == "user" and (
+            isinstance(content, str)
+            or (isinstance(content, list) and not _is_tool_results(content))
+        ):
             break
 
         if role == "assistant":
@@ -166,6 +184,19 @@ def serialize_chat_history(messages: list) -> list[dict]:
         content = msg.get("content")
         if role == "user" and isinstance(content, str):
             history.append({"role": "user", "text": display_user_text(content)})
+            i += 1
+            blocks, i = _serialize_assistant_turn(messages, i)
+            if blocks:
+                history.append({"role": "assistant", "blocks": blocks})
+        elif role == "user" and isinstance(content, list) and not _is_tool_results(content):
+            # Multimodal user message (text + image blocks from Discord/Slack/Tower).
+            texts = [_block_text(b) for b in content if _block_type(b) == "text"]
+            n_images = sum(1 for b in content if _block_type(b) == "image")
+            text = display_user_text("\n".join(t for t in texts if t))
+            if n_images:
+                marker = f"[{n_images} image(s) attached]"
+                text = f"{text}\n{marker}" if text else marker
+            history.append({"role": "user", "text": text})
             i += 1
             blocks, i = _serialize_assistant_turn(messages, i)
             if blocks:

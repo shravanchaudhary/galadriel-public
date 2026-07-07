@@ -491,9 +491,19 @@ def _serialize_message(msg: dict) -> str:
                     f"```json\n{block.get('input', {})}\n```"
                 )
             elif btype == "tool_result":
+                result = block.get("content", "")
+                if isinstance(result, list):
+                    # Block-list result (text + image, e.g. screenshots) —
+                    # keep the text, omit image payloads.
+                    result = "\n".join(
+                        "[image block — omitted]"
+                        if isinstance(b, dict) and b.get("type") == "image"
+                        else str(b.get("text", "")) if isinstance(b, dict) else str(b)
+                        for b in result
+                    )
                 parts.append(
                     f"### tool_result (id={block.get('tool_use_id', '?')})\n\n"
-                    f"{block.get('content', '')}"
+                    f"{result}"
                 )
             elif btype == "image":
                 parts.append("[image block — omitted]")

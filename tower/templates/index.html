@@ -117,6 +117,11 @@ async function changeModel() {
         if (!res.ok) {
             throw new Error(data.error || 'Failed to set model');
         }
+        const wfc = document.getElementById('wfc-model-select');
+        if (wfc) {
+            wfc.value = model;
+            wfc.dataset.current = model;
+        }
     } catch (err) {
         console.error('Failed to set model:', err);
         alert(err.message || 'Failed to set model');

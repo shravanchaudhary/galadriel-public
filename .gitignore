@@ -21,3 +21,4 @@ entities.json
 .vscode/
 todo
 state/conversation_buffers/
+state/screenshots/

@@ -169,19 +169,49 @@ def _tools_to_gemini(tools):
 
 
 def _tool_result_text(content) -> str:
-    """tool_result content is a plain string in this harness; coerce anything
-    else to text defensively."""
+    """tool_result content is a string or a list of Anthropic blocks (text +
+    image, e.g. browser screenshots); coerce to text. Image blocks are noted —
+    their pixels travel separately via FunctionResponse.parts."""
     if isinstance(content, str):
         return content
     if isinstance(content, list):
         chunks = []
         for block in content:
             if isinstance(block, dict):
-                chunks.append(str(block.get("text", block.get("content", ""))))
+                if block.get("type") == "image":
+                    chunks.append("[image attached]")
+                else:
+                    chunks.append(str(block.get("text", block.get("content", ""))))
             else:
                 chunks.append(str(block))
         return "\n".join(chunks)
     return str(content)
+
+
+def _tool_result_media_parts(content) -> list | None:
+    """Extract image blocks from tool_result content as FunctionResponseParts.
+
+    Gemini 3 series models accept multimodal function responses via
+    `FunctionResponse.parts` (see ai.google.dev/gemini-api/docs/function-calling
+    — "Multimodal function responses"); this is how a browser screenshot
+    becomes actual vision input on the tool-result turn."""
+    if not isinstance(content, list):
+        return None
+    parts = []
+    for block in content:
+        if not (isinstance(block, dict) and block.get("type") == "image"):
+            continue
+        src = block.get("source", {})
+        if src.get("type") == "base64" and src.get("data"):
+            parts.append(
+                types.FunctionResponsePart(
+                    inline_data=types.FunctionResponseBlob(
+                        mime_type=src.get("media_type"),
+                        data=base64.b64decode(src["data"]),
+                    )
+                )
+            )
+    return parts or None
 
 
 def _ends_with_tool_result(messages: list) -> bool:
@@ -276,12 +306,18 @@ def _messages_to_contents(messages: list, trailing_text: str | None = None) -> l
 
                 elif btype == "tool_result":
                     tool_use_id = block.get("tool_use_id")
+                    result_content = block.get("content")
+                    fr_kwargs = {}
+                    media_parts = _tool_result_media_parts(result_content)
+                    if media_parts:
+                        fr_kwargs["parts"] = media_parts
                     parts.append(
                         types.Part(
                             function_response=types.FunctionResponse(
                                 id=tool_use_id,
                                 name=id_to_name.get(tool_use_id, tool_use_id),
-                                response={"result": _tool_result_text(block.get("content"))},
+                                response={"result": _tool_result_text(result_content)},
+                                **fr_kwargs,
                             )
                         )
                     )

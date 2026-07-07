@@ -1,8 +1,10 @@
 """Tool definitions and execution for the agent."""
 
 import asyncio
+import base64
 import json
 import os
+from datetime import datetime
 from pathlib import Path
 
 from .explorium_tools import (
@@ -99,7 +101,16 @@ TOOL_DEFINITIONS = [
             "4. Re-run `state` after the page changes — indices are only valid for "
             "the `state` you just read.\n"
             "5. `close` when done.\n\n"
-            "Other useful commands: `screenshot [path]`, `get title`, `get text "
+            "SEEING THE PAGE: `screenshot [path]` captures the current page and "
+            "returns it to you as an ACTUAL IMAGE you can see (vision input), "
+            "alongside the text output. Use it whenever text output isn't "
+            "enough: `state` is ambiguous or empty, layout/visual verification "
+            "matters (did the post render right? is the modal open?), the page "
+            "is canvas/chart/image-heavy, or a click isn't doing what you "
+            "expect. Path is optional — omit it and the file lands under "
+            "state/screenshots/. Don't screenshot every step (images cost "
+            "tokens); reach for it when you genuinely need to look.\n\n"
+            "Other useful commands: `get title`, `get text "
             "<index>`, `get html`, `eval \"<js>\"`, `wait text \"Welcome\"`, "
             "`scroll down`, `back`, `tab list`. Add `--json` for machine-readable "
             "output. Run `--help` or `<command> --help` to discover the full "
@@ -632,17 +643,141 @@ def palace_disabled() -> bool:
     return os.environ.get("GALADRIEL_NO_PALACE", "0") == "1"
 
 
+def _browser_backend() -> str:
+    """Active browser driver: 'browser-use' (default) or 'bce'. Only one at a time."""
+    backend = os.environ.get("BROWSER_BACKEND", "browser-use").strip().lower()
+    if backend in ("browser-use", "browser_use", "browseruse"):
+        return "browser-use"
+    if backend in ("bce", "browser-command-executor", "browser_command_executor"):
+        return "bce"
+    return backend
+
+
+_BROWSER_USE_TOOL_DESCRIPTION = next(
+    t["description"] for t in TOOL_DEFINITIONS if t["name"] == "browser"
+)
+
+
+def _browser_tool_description() -> str:
+    if _browser_backend() == "bce":
+        return (
+            "Drive a real Chrome browser through the Browser Command Executor (BCE). "
+            "You supply the same arguments as `browser-use` / `bce-cli` and get "
+            "text output back. BCE controls the user's Chrome via a loaded "
+            "extension + FastAPI server — the active tab in that window is what "
+            "you drive. Use `tab list` / `tab switch` to pick tabs.\n\n"
+            "**PAIRING — ask before first use:** Each browser is identified by a "
+            "pairing code (`XXXX-XXXX`, e.g. `KJ2D-H96M`) shown in the Chrome "
+            "extension popup (Agent must be ON). Before your first browser call "
+            "for a profile, read `state/browser_profiles.md`. If no pairing code "
+            "is registered, STOP and ask the user for their code. Once they "
+            "provide it, persist it with `write_file` to "
+            "`state/browser_profiles.md` (row: profile_id | pairing_code | reason) "
+            "— use `main` for the default browser — then retry.\n\n"
+            "Prerequisites (human setup): MongoDB + BCE server running; extension "
+            "Agent ON (Connected).\n\n"
+            "Core loop:\n"
+            "1. `open <url>` — navigate the active tab.\n"
+            "2. `state` — list interactive elements with numbered indices.\n"
+            "3. Act by index: `input 0 \"text\"`, `click 2`, `type \"text\"`, "
+            "`keys \"Enter\"`, `select 3 \"value\"`.\n"
+            "4. Re-run `state` after the page changes.\n"
+            "5. `close` is a no-op (extension stays connected).\n\n"
+            "SHARED BROWSER — TAB DISCIPLINE (critical): the main channel and the "
+            "WORKER drive this SAME browser. Every command hits the ACTIVE tab, and "
+            "the other channel can switch tabs between your calls. The registry of "
+            "who owns which tab is `state/browser_tabs.md` — read it before ANY "
+            "browser work. Rules:\n"
+            "1. CLAIM your own tab when starting browser work: `tab new <url>` "
+            "(creates it and makes it active), then `tab list` to confirm its "
+            "index, then write_file your row to state/browser_tabs.md "
+            "(channel | profile | tab_index | url | purpose).\n"
+            "2. PASS `tab=<your tab_index>` on EVERY acting call (open/state/"
+            "click/input/...). The harness atomically prepends `tab switch <tab>` "
+            "inside the browser lock, so the other channel can never flip tabs "
+            "under you. A call WITHOUT `tab` acts on whatever tab is active — "
+            "only safe for tab-management calls (`tab list`, `tab new`).\n"
+            "3. Tab indices SHIFT when tabs open/close. At the start of a work "
+            "unit, `tab list`, re-find your tab by URL/title, and if its index "
+            "moved, update your row in state/browser_tabs.md. If your URL is "
+            "gone, your tab was closed — re-claim per rule 1.\n"
+            "4. NEVER navigate, act on, or close a tab owned by another row. When "
+            "your work unit is fully done, `tab close <i>` your own tab and "
+            "delete your row from state/browser_tabs.md.\n\n"
+            "SEEING THE PAGE: `screenshot [path]` captures the active tab and "
+            "returns it to you as an ACTUAL IMAGE you can see (vision input), "
+            "alongside the text output. Use it whenever text output isn't "
+            "enough: `state` is ambiguous or empty, layout/visual verification "
+            "matters, the page is canvas/chart/image-heavy, or a click isn't "
+            "doing what you expect. Path is optional — omit it and the file "
+            "lands under state/screenshots/. Don't screenshot every step "
+            "(images cost tokens); reach for it when you genuinely need to "
+            "look.\n\n"
+            "Other useful commands: `get title`, `get text "
+            "<index>`, `get html`, `eval \"<js>\"`, `wait text \"Welcome\"`, "
+            "`scroll down`, `back`, `tab list`. Add `--json` for machine-readable "
+            "output. Run `--help` for the full surface.\n\n"
+            "MULTIPLE BROWSERS: register each with its own pairing code in "
+            "`state/browser_profiles.md`, then pass `profile=<profile_id>` on "
+            "every call for that browser.\n\n"
+            "BLOCKED PAGES — decide by importance: if you hit a login wall, CAPTCHA, "
+            "OTP, or bot-detection AND the content is essential, STOP and ask the "
+            "user to take over in the live window, then continue once they're done. "
+            "If the block is minor and the value is reachable another way, skip it."
+        )
+    return _BROWSER_USE_TOOL_DESCRIPTION
+
+
 def visible_tool_definitions() -> list:
     """Tool defs filtered for the current session mode. In no-palace mode the
     palace tools are not advertised at all, so the agent cannot reach for memory
     it has been told to forget."""
-    if palace_disabled():
-        return [t for t in TOOL_DEFINITIONS if t["name"] not in _PALACE_TOOL_NAMES]
-    return list(TOOL_DEFINITIONS)
+    tools = (
+        [t for t in TOOL_DEFINITIONS if t["name"] not in _PALACE_TOOL_NAMES]
+        if palace_disabled()
+        else list(TOOL_DEFINITIONS)
+    )
+    if _browser_backend() == "bce":
+        patched = []
+        for t in tools:
+            if t["name"] == "browser":
+                schema = dict(t["input_schema"])
+                props = dict(schema["properties"])
+                props["profile"] = {
+                    "type": "string",
+                    "description": (
+                        "Which browser profile to drive (pairing code looked up in "
+                        "state/browser_profiles.md). Omit for `main`. Register new "
+                        "profiles by asking the user for their extension pairing code "
+                        "and write_file the row yourself — see that file's header."
+                    ),
+                }
+                props["tab"] = {
+                    "type": "integer",
+                    "description": (
+                        "YOUR channel's tab index (from state/browser_tabs.md). "
+                        "REQUIRED on every acting call (open/state/click/input/...) "
+                        "— the harness atomically switches to this tab first, so "
+                        "the other channel (main/worker shares this browser) can't "
+                        "hijack your call. Omit ONLY for tab-management calls "
+                        "(`tab list`, `tab new <url>`). No tab claimed yet? Read "
+                        "state/browser_tabs.md and follow its claim procedure."
+                    ),
+                }
+                t = {
+                    **t,
+                    "description": _browser_tool_description(),
+                    "input_schema": {**schema, "properties": props},
+                }
+            patched.append(t)
+        return patched
+    return tools
 
 
-async def execute_tool(name: str, inputs: dict, memory_manager=None, working_dir: str = None) -> str:
-    """Execute a tool and return the result as a string. All operations are non-blocking."""
+async def execute_tool(name: str, inputs: dict, memory_manager=None, working_dir: str = None) -> str | list:
+    """Execute a tool and return the result. Usually a string; the browser
+    tool's `screenshot` returns a list of content blocks (text + image) so the
+    captured page reaches the model as vision input. Non-blocking."""
     # Stateless mode: refuse palace calls clearly.
     if palace_disabled() and name in _PALACE_TOOL_NAMES:
         return "[stateless session] palace memory is disabled (--no-palace); this tool is unavailable."
@@ -662,7 +797,10 @@ async def execute_tool(name: str, inputs: dict, memory_manager=None, working_dir
     elif name == "write_file":
         return await _write_file(inputs["path"], inputs["content"])
     elif name == "browser":
-        return await _run_browser(inputs["args"], inputs.get("profile"))
+        tab = inputs.get("tab")
+        return await _run_browser(
+            inputs["args"], inputs.get("profile"), int(tab) if tab is not None else None
+        )
     elif name == "generate_totp":
         return _generate_totp(inputs["secret_key"])
     elif name == "memory_log":
@@ -884,9 +1022,10 @@ _PROFILES_MD_PATH = Path("state/browser_profiles.md")
 
 
 def _read_browser_profiles() -> list[dict]:
-    """Parse {profile_id, cdp_port, reason} rows out of the markdown table.
-    Any line that isn't a well-formed 3-cell data row (header, separator,
-    prose, a hand-edit typo) is silently skipped rather than erroring.
+    """Parse profile rows out of state/browser_profiles.md.
+
+    BCE rows: profile_id | pairing_code | reason  (XXXX-XXXX in col 2)
+    browser-use rows: profile_id | cdp_port | reason  (integer in col 2)
     """
     if not _PROFILES_MD_PATH.exists():
         return []
@@ -898,12 +1037,73 @@ def _read_browser_profiles() -> list[dict]:
         cells = [c.strip() for c in line.strip("|").split("|")]
         if len(cells) != 3 or not _valid_profile_id(cells[0]):
             continue
+        row: dict = {"profile_id": cells[0], "reason": cells[2]}
+        col2 = cells[1]
         try:
-            port = int(cells[1])
-        except ValueError:
-            continue
-        rows.append({"profile_id": cells[0], "cdp_port": port, "reason": cells[2]})
+            from .bce_client import BCEError, normalize_pairing_code
+
+            row["pairing_code"] = normalize_pairing_code(col2)
+        except BCEError:
+            try:
+                row["cdp_port"] = int(col2)
+            except ValueError:
+                continue
+        rows.append(row)
     return rows
+
+
+def _bce_pairing_env_key(profile_id: str) -> str:
+    return f"BCE_PAIRING_CODE_{profile_id.upper().replace('-', '_')}"
+
+
+def _bce_pairing_required_message(profile: str) -> str:
+    return (
+        f"[browser pairing required] No pairing code for profile {profile!r}.\n\n"
+        "Ask the user for their Chrome extension pairing code (format XXXX-XXXX, "
+        "e.g. KJ2D-H96M). They find it in the extension popup — Agent must be ON "
+        "(status: Connected).\n\n"
+        "Once they provide it, persist it:\n"
+        "1. read_file state/browser_profiles.md\n"
+        f"2. write_file — add or update row: | {profile} | XXXX-XXXX | <who/what this browser is for> |\n"
+        "3. Retry the browser command.\n\n"
+        "Prerequisites: MongoDB + BCE FastAPI server running."
+    )
+
+
+def _resolve_bce_pairing_code(profile: str | None) -> tuple[str, str | None]:
+    """Resolve BCE pairing code for a profile name."""
+    from .bce_client import BCEError, normalize_pairing_code
+
+    profile = (profile or _DEFAULT_PROFILE).strip() or _DEFAULT_PROFILE
+
+    if profile == _DEFAULT_PROFILE:
+        code = os.environ.get("BCE_PAIRING_CODE", "").strip()
+        if code:
+            try:
+                return normalize_pairing_code(code), None
+            except BCEError as exc:
+                return "", f"[error] {exc}"
+    else:
+        env_key = _bce_pairing_env_key(profile)
+        code = os.environ.get(env_key, "").strip()
+        if code:
+            try:
+                return normalize_pairing_code(code), None
+            except BCEError as exc:
+                return "", f"[error] {exc}"
+
+    rows = _read_browser_profiles()
+    row = next((r for r in rows if r["profile_id"] == profile), None)
+    if row and row.get("pairing_code"):
+        return row["pairing_code"], None
+
+    if profile != _DEFAULT_PROFILE and not row:
+        return "", (
+            f"[error] unknown browser profile {profile!r}. Ask the user for their "
+            f"pairing code, register it in state/browser_profiles.md, then retry."
+        )
+
+    return "", _bce_pairing_required_message(profile)
 
 
 async def _resolve_browser_profile(profile: str | None) -> tuple[dict, str | None]:
@@ -930,6 +1130,12 @@ async def _resolve_browser_profile(profile: str | None) -> tuple[dict, str | Non
             f"[error] unknown browser profile {profile!r}. Register it first as "
             f"a row in state/browser_profiles.md (read that file for the exact "
             "format/procedure), then retry."
+        )
+    if "cdp_port" not in row:
+        return {}, (
+            f"[error] profile {profile!r} is registered for BCE (pairing code) but "
+            f"BROWSER_BACKEND=browser-use. Set BROWSER_BACKEND=bce or register a "
+            f"browser-use profile with a cdp_port column."
         )
     return {
         "profile_dir": os.path.join(_profiles_base_dir(), profile),
@@ -1061,22 +1267,14 @@ def _with_cdp(argv: list[str], daemon_up: bool, session: str, cdp_url: str) -> l
     return [*prefix, *argv]
 
 
-async def _run_browser(args: str, profile: str | None = None) -> str:
-    """Run one or more `browser-use` commands against the given profile (or the
-    default `main` profile if omitted) and return the combined output.
-
-    `args` is everything after `browser-use`. Multiple commands may be chained
-    with `&&`; each runs as its own invocation against the persistent daemon,
-    stopping at the first failure. We split on `&&` at the token level after
-    shlex parsing, so `&&` inside a quoted value (e.g. typed text) is preserved
-    and not treated as a separator.
-    """
+def _split_browser_commands(args: str) -> tuple[list[list[str]], str | None]:
+    """Split browser args on `&&` (shlex-safe). Returns (commands, error)."""
     import shlex
 
     try:
         tokens = shlex.split(args)
     except ValueError as e:
-        return f"[error] Could not parse browser args: {e}"
+        return [], f"[error] Could not parse browser args: {e}"
 
     commands: list[list[str]] = [[]]
     for tok in tokens:
@@ -1086,7 +1284,128 @@ async def _run_browser(args: str, profile: str | None = None) -> str:
             commands[-1].append(tok)
     commands = [c for c in commands if c]
     if not commands:
-        return "[error] No browser-use command given."
+        return [], "[error] No browser command given."
+    return commands, None
+
+
+# Screenshots taken without an explicit path land here (timestamped files),
+# so the harness can read them back and hand the pixels to the model.
+_SCREENSHOT_DIR = Path("state/screenshots")
+_MAX_SCREENSHOT_BYTES = 5 * 1024 * 1024  # per-image cap, same as chat uploads
+
+
+def _ensure_screenshot_paths(commands: list[list[str]]) -> list[str]:
+    """Give every `screenshot` command an explicit save path (injecting a
+    timestamped one under state/screenshots/ when omitted) and return the
+    paths, so the captured image can be read back and attached as vision
+    input for the model."""
+    paths = []
+    for cmd in commands:
+        if not cmd or cmd[0] != "screenshot":
+            continue
+        path = next((a for a in cmd[1:] if not a.startswith("-")), None)
+        if path is None:
+            _SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
+            path = str(_SCREENSHOT_DIR / f"{datetime.now():%Y%m%d-%H%M%S-%f}.png")
+            cmd.append(path)
+        paths.append(path)
+    return paths
+
+
+def _screenshot_media_type(raw: bytes) -> str:
+    return "image/jpeg" if raw.startswith(b"\xff\xd8\xff") else "image/png"
+
+
+def _attach_screenshots(text: str, paths: list[str]) -> str | list:
+    """Turn captured screenshot files into content blocks so the model can
+    SEE them. Returns the plain text unchanged when nothing was captured."""
+    blocks = []
+    for path in paths:
+        try:
+            raw = Path(path).read_bytes()
+        except OSError:
+            continue
+        if len(raw) > _MAX_SCREENSHOT_BYTES:
+            text += f"\n[screenshot {path} too large to attach ({len(raw) // (1024 * 1024)}MB > 5MB) — saved to disk only]"
+            continue
+        blocks.append({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": _screenshot_media_type(raw),
+                "data": base64.b64encode(raw).decode("utf-8"),
+            },
+        })
+    if not blocks:
+        return text
+    return [{"type": "text", "text": text}, *blocks]
+
+
+def _anchor_tab(commands: list[list[str]], tab: int | None) -> list[list[str]]:
+    """Prepend an atomic `tab switch <tab>` so every command in this locked
+    batch runs on the caller's own tab. Skipped when the first command is
+    itself a `tab` command (tab management calls pick their own target)."""
+    if tab is None or (commands and commands[0] and commands[0][0] == "tab"):
+        return commands
+    return [["tab", "switch", str(tab)], *commands]
+
+
+async def _run_browser_bce(args: str, profile: str | None = None, tab: int | None = None) -> str | list:
+    """Run browser-use-compatible commands via Browser Command Executor."""
+    from .bce_cli import run_argv
+
+    commands, err = _split_browser_commands(args)
+    if err:
+        return err
+    commands = _anchor_tab(commands, tab)
+    screenshot_paths = _ensure_screenshot_paths(commands)
+
+    pairing_code, resolve_err = _resolve_bce_pairing_code(profile)
+    if resolve_err:
+        return resolve_err
+
+    lock_key = f"bce-{profile or _DEFAULT_PROFILE}"
+    async with _lock_for(lock_key):
+        outputs: list[str] = []
+        for cmd in commands:
+            text, ok = await asyncio.to_thread(
+                run_argv, cmd, pairing_code=pairing_code, ensure_online=True
+            )
+            outputs.append(text)
+            if not ok:
+                break
+        out = "\n".join(o for o in outputs if o).strip() or "(no output)"
+        return _attach_screenshots(out, screenshot_paths)
+
+
+async def _run_browser(args: str, profile: str | None = None, tab: int | None = None) -> str | list:
+    """Run one or more browser commands against the given profile (or the
+    default `main` profile if omitted) and return the combined output.
+    `screenshot` commands additionally return the captured image as a content
+    block, so the model receives it as vision input.
+
+    Backend is selected by BROWSER_BACKEND (.env): browser-use (default) or bce.
+    `args` is everything after the CLI name. Multiple commands may be chained
+    with `&&`; each runs as its own invocation, stopping at the first failure.
+
+    `tab` anchors the whole call to that tab index: the harness prepends an
+    atomic `tab switch <tab>` inside the profile lock, so concurrent channels
+    (main + worker) sharing one browser never act on each other's tabs.
+    """
+    backend = _browser_backend()
+    if backend == "bce":
+        return await _run_browser_bce(args, profile, tab)
+    if backend != "browser-use":
+        return (
+            f"[error] Unknown BROWSER_BACKEND={backend!r}. "
+            "Use 'browser-use' (default) or 'bce'."
+        )
+
+    commands, err = _split_browser_commands(args)
+    if err:
+        return err.replace("browser command", "browser-use command")
+    commands = _anchor_tab(commands, tab)
+    screenshot_paths = _ensure_screenshot_paths(commands)
 
     cfg, err = await _resolve_browser_profile(profile)
     if err:
@@ -1112,7 +1431,8 @@ async def _run_browser(args: str, profile: str | None = None) -> str:
             if not ok:
                 break
             daemon_up = True
-        return "\n".join(o for o in outputs if o).strip() or "(no output)"
+        out = "\n".join(o for o in outputs if o).strip() or "(no output)"
+        return _attach_screenshots(out, screenshot_paths)
 
 
 async def _run_one_browser(argv: list[str]) -> tuple[str, bool]:

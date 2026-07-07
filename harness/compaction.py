@@ -77,7 +77,21 @@ def _render_transcript(messages: list) -> str:
                     args = str(block.get("input", {}))
                 lines.append(f"{role} [tool_use {block.get('name', '?')}]: {args[:500]}")
             elif btype == "tool_result":
-                result = _coerce_text(block.get("content", ""))
+                result = block.get("content", "")
+                if isinstance(result, list):
+                    # Block-list result (text + image, e.g. screenshots) —
+                    # keep the text, omit image payloads.
+                    chunks = []
+                    for b in result:
+                        if isinstance(b, dict) and b.get("type") == "image":
+                            chunks.append("[image omitted]")
+                        elif isinstance(b, dict):
+                            chunks.append(str(b.get("text", "")))
+                        else:
+                            chunks.append(str(b))
+                    result = "\n".join(c for c in chunks if c)
+                else:
+                    result = _coerce_text(result)
                 lines.append(f"{role} [tool_result]: {result[:1000]}")
             elif btype == "image":
                 lines.append(f"{role} [image omitted]")

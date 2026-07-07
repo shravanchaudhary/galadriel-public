@@ -12,16 +12,21 @@
     <div class="wfc-head">
         <span class="wfc-title">Agent</span>
         <span class="wfc-sub" id="wfc-context-label"></span>
+        <select id="wfc-model-select" class="wfc-model-select interval-select" title="Agent model"></select>
         <button type="button" class="wfc-head-btn wfc-clear-btn" id="wfc-clear" title="Archive history and start fresh">Clear</button>
         <button type="button" class="wfc-head-btn" id="wfc-expand" title="Expand to sidebar">⤢</button>
         <button type="button" class="wfc-head-btn wfc-x" onclick="wfcToggle()" title="Close">×</button>
     </div>
     <div id="wfc-log" class="wfc-log"></div>
+    <div id="wfc-previews" class="wfc-previews" hidden></div>
     <form id="wfc-form" class="wfc-form" onsubmit="wfcSend(event)">
+        <button type="button" class="wfc-attach" id="wfc-attach" title="Attach image (or paste one)">📎</button>
+        <input type="file" id="wfc-file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
         <textarea id="wfc-input" class="wfc-input" rows="1"
             placeholder="Tell the agent what to do…"
             onkeydown="wfcKey(event)"></textarea>
         <button type="submit" class="wfc-send" id="wfc-send" title="Send">→</button>
+        <button type="button" class="wfc-stop" id="wfc-stop" title="Stop agent" hidden>■</button>
     </form>
 </div>
 
@@ -31,6 +36,7 @@
     const log = document.getElementById('wfc-log');
     const input = document.getElementById('wfc-input');
     const sendBtn = document.getElementById('wfc-send');
+    const stopBtn = document.getElementById('wfc-stop');
     const panel = document.getElementById('wfc-panel');
     const launcher = document.getElementById('wfc-launcher');
     const expandBtn = document.getElementById('wfc-expand');
@@ -51,7 +57,141 @@
     const label = document.getElementById('wfc-context-label');
     label.textContent = pageContext.label || pageContext.view || '';
 
+    const modelSelect = document.getElementById('wfc-model-select');
+
+    async function wfcLoadModel() {
+        try {
+            const res = await fetch('/api/model');
+            const data = await res.json();
+            modelSelect.innerHTML = '';
+            for (const m of data.options || []) {
+                const opt = document.createElement('option');
+                opt.value = m;
+                opt.textContent = m;
+                if (m === data.model) opt.selected = true;
+                modelSelect.appendChild(opt);
+            }
+            if (!data.persisted) {
+                modelSelect.title = 'Model resets on restart — set MONGO_URI / MONGO_DB to persist';
+            }
+            modelSelect.dataset.current = data.model;
+        } catch (e) {
+            modelSelect.hidden = true;
+        }
+    }
+
+    async function wfcChangeModel() {
+        const model = modelSelect.value;
+        const prev = modelSelect.dataset.current || model;
+        try {
+            const res = await fetch('/api/model', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model }),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Failed to set model');
+            modelSelect.dataset.current = data.model;
+            const dash = document.getElementById('model-select');
+            if (dash) dash.value = data.model;
+        } catch (err) {
+            modelSelect.value = prev;
+            alert(err.message || 'Failed to set model');
+        }
+    }
+
+    modelSelect.addEventListener('change', () => wfcChangeModel());
+
     let bodyEl = null, textEl = null, thoughtEl = null, toolCard = null;
+    let turnActive = false;
+
+    // ── Image attachments (file picker + paste) ─────────────────
+    const attachBtn = document.getElementById('wfc-attach');
+    const fileInput = document.getElementById('wfc-file');
+    const previews = document.getElementById('wfc-previews');
+    const MAX_IMAGES = 5;
+    const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+    let pendingImages = []; // { data (base64, no prefix), dataUrl }
+
+    function renderPreviews() {
+        previews.innerHTML = '';
+        previews.hidden = pendingImages.length === 0;
+        pendingImages.forEach((img, idx) => {
+            const chip = document.createElement('span');
+            chip.className = 'wfc-preview-chip';
+            const thumb = document.createElement('img');
+            thumb.src = img.dataUrl;
+            const x = document.createElement('button');
+            x.type = 'button';
+            x.textContent = '×';
+            x.title = 'Remove image';
+            x.addEventListener('click', () => {
+                pendingImages.splice(idx, 1);
+                renderPreviews();
+            });
+            chip.appendChild(thumb);
+            chip.appendChild(x);
+            previews.appendChild(chip);
+        });
+    }
+
+    function addImageFile(file) {
+        if (!file || !file.type.startsWith('image/')) return;
+        if (pendingImages.length >= MAX_IMAGES) {
+            alert(`Max ${MAX_IMAGES} images per message.`);
+            return;
+        }
+        if (file.size > MAX_IMAGE_BYTES) {
+            alert(`${file.name || 'Image'} is over the 5MB limit.`);
+            return;
+        }
+        const reader = new FileReader();
+        reader.onload = () => {
+            const dataUrl = reader.result;
+            pendingImages.push({ data: dataUrl.split(',', 2)[1], dataUrl });
+            renderPreviews();
+        };
+        reader.readAsDataURL(file);
+    }
+
+    attachBtn.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', () => {
+        for (const f of fileInput.files) addImageFile(f);
+        fileInput.value = '';
+    });
+    input.addEventListener('paste', (e) => {
+        for (const item of (e.clipboardData || {}).items || []) {
+            if (item.type && item.type.startsWith('image/')) {
+                e.preventDefault();
+                addImageFile(item.getAsFile());
+            }
+        }
+    });
+
+    function wfcSetTurnActive(active) {
+        turnActive = active;
+        sendBtn.disabled = active;
+        stopBtn.hidden = !active;
+    }
+
+    async function wfcStopTurn() {
+        if (!turnActive) return;
+        stopBtn.disabled = true;
+        try {
+            await fetch('/api/chat/stop', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ channel: 'main' }),
+            });
+        } catch (err) {
+            appendText(`[Error] ${err.message}`);
+            wfcSetTurnActive(false);
+        } finally {
+            stopBtn.disabled = false;
+        }
+    }
+
+    stopBtn.addEventListener('click', () => wfcStopTurn());
 
     function escapeHtml(t) {
         return ChatRender.escapeHtml(t);
@@ -63,10 +203,9 @@
 
     function appendMessage(role, text) {
         if (role === 'user') {
-            ChatRender.appendUserMessage(log, text, RENDER_OPTS);
-            return;
+            return ChatRender.appendUserMessage(log, text, RENDER_OPTS);
         }
-        ChatRender.appendAssistantTurn(log, [{ type: 'text', text }], RENDER_OPTS);
+        return ChatRender.appendAssistantTurn(log, [{ type: 'text', text }], RENDER_OPTS);
     }
 
     function startAssistant() {
@@ -139,8 +278,22 @@
             case 'done':
                 clearTyping();
                 if (bodyEl && !bodyEl.querySelector('.msg-text') && ev.text) appendText(ev.text);
+                wfcFinishTurn();
                 break;
-            case 'error': appendText(`[Error] ${ev.error}`); break;
+            case 'stopped':
+                clearTyping();
+                appendText(ev.text || '(Stopped)');
+                wfcFinishTurn();
+                break;
+            case 'error': appendText(`[Error] ${ev.error}`); wfcFinishTurn(); break;
+        }
+    }
+
+    function wfcFinishTurn() {
+        if (!turnActive) return;
+        wfcSetTurnActive(false);
+        if (pageContext.reload_on_done !== false) {
+            setTimeout(() => location.reload(), 900);
         }
     }
 
@@ -308,14 +461,30 @@
     window.wfcSend = async function (e) {
         e.preventDefault();
         const message = input.value.trim();
-        if (!message) return;
-        appendMessage('user', message);
+        const images = pendingImages.slice();
+        if (!message && !images.length) return;
+        const userDiv = appendMessage('user', message || '(image attached)');
+        if (images.length && userDiv) {
+            const strip = document.createElement('div');
+            strip.className = 'wfc-msg-images';
+            for (const img of images) {
+                const thumb = document.createElement('img');
+                thumb.src = img.dataUrl;
+                strip.appendChild(thumb);
+            }
+            userDiv.appendChild(strip);
+        }
         input.value = '';
-        sendBtn.disabled = true;
+        pendingImages = [];
+        renderPreviews();
+        wfcSetTurnActive(true);
         startAssistant();
         toBottom();
 
         const payload = { message };
+        if (images.length) {
+            payload.images = images.map(img => ({ data: img.data }));
+        }
         if (pageContext && pageContext.view) {
             payload.context = pageContext;
         }
@@ -329,6 +498,7 @@
             if (!res.ok || !res.body) {
                 const err = await res.json().catch(() => ({ error: res.statusText }));
                 appendText(`[Error] ${err.error || res.statusText}`);
+                wfcFinishTurn();
                 return;
             }
             const reader = res.body.getReader();
@@ -350,14 +520,9 @@
                     if (stick) toBottom();
                 }
             }
-            if (pageContext.reload_on_done !== false) {
-                setTimeout(() => location.reload(), 900);
-            } else {
-                sendBtn.disabled = false;
-            }
         } catch (err) {
             appendText(`[Error] ${err.message}`);
-            sendBtn.disabled = false;
+            wfcFinishTurn();
         }
     };
 
@@ -379,6 +544,7 @@
             wfcSetNavActive(true);
         }
         applyLayout(loadLayout());
+        wfcLoadModel();
         try {
             const res = await fetch('/api/history?channel=main');
             const data = await res.json();

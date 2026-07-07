@@ -13,14 +13,21 @@ security posture.
 import random
 import os
 import re
+import base64
 import logging
 import asyncio
 
+import aiohttp
 from slack_bolt.app.async_app import AsyncApp
 
 from harness.agent import GaladrielAgent, MAIN_CHANNEL_ID
 from harness.error_humanizer import humanize_anthropic_error
-from discord_bot.bot import _format_status_report
+from discord_bot.bot import (
+    _format_status_report,
+    sniff_image_media_type,
+    SUPPORTED_IMAGE_TYPES,
+    MAX_IMAGE_BYTES,
+)
 
 log = logging.getLogger("galadriel.slack")
 
@@ -53,6 +60,51 @@ def _slack_markdown(text: str) -> str:
     """Convert the Discord-flavoured `**bold**` used by _format_status_report
     into Slack mrkdwn's `*bold*` so /status renders correctly."""
     return re.sub(r"\*\*(.+?)\*\*", r"*\1*", text)
+
+
+async def _download_image_files(files: list[dict]) -> tuple[list[dict], list[str]]:
+    """Download Slack image attachments and return (image content blocks,
+    skipped-file notes). Mirrors the Discord attachment handling: supported
+    types only, 5 MB cap, media type sniffed from magic bytes (Slack's
+    `mimetype` is client-reported and can be wrong)."""
+    blocks: list[dict] = []
+    skipped: list[str] = []
+    token = os.environ["SLACK_BOT_TOKEN"]
+    async with aiohttp.ClientSession() as session:
+        for f in files:
+            name = f.get("name") or f.get("id") or "file"
+            mimetype = (f.get("mimetype") or "").split(";")[0].strip().lower()
+            if mimetype in ("image/heic", "image/heif"):
+                skipped.append(f"`{name}` (HEIC/HEIF — convert to JPEG or PNG first)")
+                continue
+            if mimetype not in SUPPORTED_IMAGE_TYPES:
+                continue  # non-image files are simply ignored
+            if (f.get("size") or 0) > MAX_IMAGE_BYTES:
+                skipped.append(f"`{name}` ({(f.get('size') or 0) // (1024 * 1024)}MB — 5MB limit)")
+                continue
+            url = f.get("url_private_download") or f.get("url_private")
+            if not url:
+                skipped.append(f"`{name}` (no download URL)")
+                continue
+            try:
+                async with session.get(
+                    url, headers={"Authorization": f"Bearer {token}"}
+                ) as resp:
+                    resp.raise_for_status()
+                    image_bytes = await resp.read()
+                sniffed = sniff_image_media_type(image_bytes)
+                if sniffed is None:
+                    skipped.append(f"`{name}` (unrecognized image format)")
+                    continue
+                blocks.append({
+                    "type": "image",
+                    "source": {"type": "base64", "media_type": sniffed, "data": base64.b64encode(image_bytes).decode("utf-8")},
+                })
+                log.info(f"📎 Slack image attached: {name} ({len(image_bytes)} bytes, {sniffed})")
+            except Exception as e:
+                log.warning(f"Failed to download Slack file {name}: {e}")
+                skipped.append(f"`{name}` (download error)")
+    return blocks, skipped
 
 
 class SlackChannel:
@@ -182,7 +234,9 @@ def create_bot(agent: GaladrielAgent, scheduler=None) -> AsyncApp:
     # handlers below funnel into this one function, deduped by message `ts`.
 
     async def _handle_incoming(event, client):
-        if event.get("subtype") is not None or event.get("bot_id"):
+        # "file_share" is how Slack delivers a message with attachments —
+        # allow it through so image uploads reach the agent.
+        if event.get("subtype") not in (None, "file_share") or event.get("bot_id"):
             return
 
         channel_id = event.get("channel")
@@ -205,14 +259,28 @@ def create_bot(agent: GaladrielAgent, scheduler=None) -> AsyncApp:
             return
 
         clean_text = text.replace(mention_tag, "").strip()
-        if not clean_text:
+        files = event.get("files") or []
+        if not clean_text and not files:
+            return
+
+        image_blocks, skipped = await _download_image_files(files) if files else ([], [])
+        if skipped:
+            try:
+                await client.chat_postMessage(
+                    channel=channel_id, text=f"⚠️ Skipped attachment(s): {', '.join(skipped)}"
+                )
+            except Exception as e:
+                log.warning(f"Could not post skipped-attachment notice: {e}")
+        if not clean_text and not image_blocks:
             return
 
         display_name = await _resolve_name(user_id)
         # Tagged with the surface — the conversation is shared with
         # Discord/Tower (see MAIN_CHANNEL_ID), so the agent needs to know
         # which surface a message came from.
-        user_input = f"[Slack/{display_name}]: {clean_text}"
+        user_input = f"[Slack/{display_name}]: {clean_text or '(image attached)'}"
+        if image_blocks:
+            user_input = [{"type": "text", "text": user_input}, *image_blocks]
 
         # Slack bots have no native "typing…" indicator (that's a legacy RTM
         # feature for user clients, not app bots) — post a placeholder and

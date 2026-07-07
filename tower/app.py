@@ -3,6 +3,7 @@
 import os
 import json
 import queue
+import base64
 import asyncio
 import logging
 from datetime import datetime
@@ -12,6 +13,46 @@ from harness.agent import MAIN_CHANNEL_ID
 from harness import tower_settings
 
 log = logging.getLogger("galadriel.tower")
+
+MAX_CHAT_IMAGES = 5
+MAX_IMAGE_BYTES = 5 * 1024 * 1024
+
+
+def _image_blocks_from_payload(images: list) -> tuple[list, str | None]:
+    """Validate base64 chat-upload images and return (image blocks, error).
+    Media type is sniffed from magic bytes, not trusted from the client."""
+    from discord_bot.bot import sniff_image_media_type
+
+    if len(images) > MAX_CHAT_IMAGES:
+        return [], f"Too many images (max {MAX_CHAT_IMAGES})"
+    blocks = []
+    for img in images:
+        data = (img or {}).get("data") or ""
+        try:
+            raw = base64.b64decode(data, validate=True)
+        except Exception:
+            return [], "Invalid image data (expected base64)"
+        if len(raw) > MAX_IMAGE_BYTES:
+            return [], "Image exceeds the 5MB limit"
+        media_type = sniff_image_media_type(raw)
+        if media_type is None:
+            return [], "Unsupported image format (use PNG, JPEG, GIF, or WebP)"
+        blocks.append({
+            "type": "image",
+            "source": {"type": "base64", "media_type": media_type, "data": data},
+        })
+    return blocks, None
+
+
+def _build_chat_message(message: str, images: list) -> str | list | None:
+    """Build the agent-facing user message: plain string, or content blocks
+    when images are attached. None when there is nothing to send."""
+    if not message and not images:
+        return None
+    text = f"[Tower]: {message or '(image attached)'}"
+    if not images:
+        return text
+    return [{"type": "text", "text": text}, *images]
 
 
 def create_tower(agent, scheduler=None) -> Flask:
@@ -59,14 +100,17 @@ def create_tower(agent, scheduler=None) -> Flask:
     def api_chat():
         data = request.json
         message = data.get("message", "").strip()
-        if not message:
+        image_blocks, img_err = _image_blocks_from_payload(data.get("images") or [])
+        if img_err:
+            return jsonify({"error": img_err}), 400
+        user_message = _build_chat_message(message, image_blocks)
+        if user_message is None:
             return jsonify({"error": "Empty message"}), 400
 
         from .ui_context import format_overlay_system_block
 
         context = (request.json or {}).get("context")
         overlay = format_overlay_system_block(context)
-        user_message = f"[Tower]: {message}"
 
         # Schedule the async agent call onto the main event loop (Discord's loop)
         # This avoids creating a new event loop and works with AsyncAnthropic
@@ -114,14 +158,17 @@ def create_tower(agent, scheduler=None) -> Flask:
         """
         data = request.json or {}
         message = data.get("message", "").strip()
-        if not message:
+        image_blocks, img_err = _image_blocks_from_payload(data.get("images") or [])
+        if img_err:
+            return jsonify({"error": img_err}), 400
+        user_message = _build_chat_message(message, image_blocks)
+        if user_message is None:
             return jsonify({"error": "Empty message"}), 400
 
         from .ui_context import format_overlay_system_block
 
         context = data.get("context")
         overlay = format_overlay_system_block(context)
-        user_message = f"[Tower]: {message}"
 
         loop = scheduler._loop if scheduler else None
         if not (loop and loop.is_running()):
@@ -161,6 +208,25 @@ def create_tower(agent, scheduler=None) -> Flask:
             mimetype="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
+
+    @app.route("/api/chat/stop", methods=["POST"])
+    def api_chat_stop():
+        """Stop the in-flight turn on a channel (default: main)."""
+        channel = (request.json or {}).get("channel", MAIN_CHANNEL_ID)
+        stopped = agent.request_stop(channel)
+        return jsonify({
+            "stopped": stopped,
+            "busy": agent.is_channel_busy(channel),
+            "channel": channel,
+        })
+
+    @app.route("/api/chat/status", methods=["GET"])
+    def api_chat_status():
+        channel = request.args.get("channel", MAIN_CHANNEL_ID)
+        return jsonify({
+            "busy": agent.is_channel_busy(channel),
+            "channel": channel,
+        })
 
     @app.route("/api/history", methods=["GET"])
     def api_history():

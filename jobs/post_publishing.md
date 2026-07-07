@@ -21,7 +21,7 @@ If a post is due:
    *(Crucial: This is our DB lock. If this fails or returns `skipped`, someone else already processed it. Stop here.)*
 2. **Execute:** 
    - Fetch the post content: `db_get(entity="scheduled_post", key="<post_id>")`
-   - Check the `author` (Shravan vs Rachit) to determine which browser profile to use (refer to `state/browser_profiles.md`).
+   - Check the `author` (Shravan vs Rachit) to determine which browser profile to use — read `state/browser_profiles.md` for the pairing code (ask the user to register one if missing).
    - Use the `browser` tool to open LinkedIn and post the `content`.
    - Retrieve the live URL of the published post.
 3. **Mark Done:** 

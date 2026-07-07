@@ -46,6 +46,13 @@ log = logging.getLogger("galadriel")
 # own synthetic channel_ids and are unaffected.
 MAIN_CHANNEL_ID = "main"
 
+_STOPPED_TOOL_RESULT = "[STOPPED] Turn cancelled from Tower."
+_STOPPED_ASSISTANT_NOTE = "(Stopped — turn cancelled from Tower.)"
+
+
+class TurnCancelled(Exception):
+    """Raised when a channel turn is cancelled via request_stop()."""
+
 
 # ─── Context-window warnings ──────────────────────────────────────────
 #
@@ -303,6 +310,8 @@ class GaladrielAgent:
         # gateways sharing MAIN_CHANNEL_ID) can't interleave mid-turn and break
         # the API's strict user/assistant/tool_result alternation.
         self._channel_locks: dict[str, asyncio.Lock] = {}
+        # Per-channel cancel events for in-flight turns (Tower stop button).
+        self._turn_cancel: dict[str, asyncio.Event] = {}
         # Set once archive_conversations_on_shutdown() runs, so overlapping
         # shutdown signals (SIGTERM + atexit) archive exactly once.
         self._shutdown_archived = False
@@ -379,6 +388,54 @@ class GaladrielAgent:
             lock = asyncio.Lock()
             self._channel_locks[channel_id] = lock
         return lock
+
+    def request_stop(self, channel_id: str) -> bool:
+        """Signal the in-flight turn on this channel to stop. Returns True if
+        a turn was active and not already stopping."""
+        ev = self._turn_cancel.get(channel_id)
+        if ev is not None and not ev.is_set():
+            ev.set()
+            log.info(f"Stop requested for channel {channel_id}")
+            return True
+        return False
+
+    def is_channel_busy(self, channel_id: str) -> bool:
+        ev = self._turn_cancel.get(channel_id)
+        return ev is not None and not ev.is_set()
+
+    def _check_cancelled(self, channel_id: str) -> None:
+        ev = self._turn_cancel.get(channel_id)
+        if ev is not None and ev.is_set():
+            raise TurnCancelled()
+
+    async def _finalize_cancelled_turn(
+        self,
+        channel_id: str,
+        messages: list,
+        emit,
+        *,
+        tool_blocks=None,
+        tool_results: list | None = None,
+    ) -> str:
+        """Persist conversation after a user-initiated stop and return UI text."""
+        results = list(tool_results or [])
+        if tool_blocks:
+            done_ids = {r["tool_use_id"] for r in results}
+            for block in tool_blocks:
+                tool_id = block.id if hasattr(block, "id") else block.get("id")
+                if tool_id and tool_id not in done_ids:
+                    results.append({
+                        "type": "tool_result",
+                        "tool_use_id": tool_id,
+                        "content": _STOPPED_TOOL_RESULT,
+                    })
+            if results:
+                messages.append({"role": "user", "content": results})
+
+        conversation_store.save_channel(self.working_dir, channel_id, messages)
+        if emit is not None:
+            await emit({"type": "stopped", "text": _STOPPED_ASSISTANT_NOTE})
+        return _STOPPED_ASSISTANT_NOTE
 
     def set_channel_context(self, channel_id: str, text: str | None) -> None:
         """Set (or clear) extra system context injected into every turn for a
@@ -814,6 +871,37 @@ class GaladrielAgent:
         emit,
         overlay_context: str | None = None,
     ) -> str:
+        cancel_ev = asyncio.Event()
+        self._turn_cancel[channel_id] = cancel_ev
+        pending_holder = {"blocks": None, "results": []}
+
+        try:
+            return await self._respond_locked_inner(
+                user_message,
+                channel_id,
+                emit,
+                overlay_context,
+                pending_holder,
+            )
+        except TurnCancelled:
+            return await self._finalize_cancelled_turn(
+                channel_id,
+                self._get_messages(channel_id),
+                emit,
+                tool_blocks=pending_holder["blocks"],
+                tool_results=pending_holder["results"],
+            )
+        finally:
+            self._turn_cancel.pop(channel_id, None)
+
+    async def _respond_locked_inner(
+        self,
+        user_message: str | list,
+        channel_id: str,
+        emit,
+        overlay_context: str | None = None,
+        pending_tool_results_holder: dict | None = None,
+    ) -> str:
         messages = self._get_messages(channel_id)
 
         # Auto-compaction: if the last measured input context for this channel
@@ -843,6 +931,11 @@ class GaladrielAgent:
         turn_thought = ""  # Accumulated thought deltas for the current API response
 
         while True:
+            self._check_cancelled(channel_id)
+            if pending_tool_results_holder is not None:
+                pending_tool_results_holder["blocks"] = None
+                pending_tool_results_holder["results"] = []
+
             # Guard against empty message list
             if not messages:
                 log.error("Message list is empty — cannot call API. Seeding with user message.")
@@ -863,6 +956,7 @@ class GaladrielAgent:
                     tools=self.tools,
                     messages=messages_for_api,
                 ):
+                    self._check_cancelled(channel_id)
                     if kind == "message":
                         response = payload
                     elif kind == "thought":
@@ -878,6 +972,8 @@ class GaladrielAgent:
                     tools=self.tools,
                     messages=messages_for_api,
                 )
+
+            self._check_cancelled(channel_id)
 
             self._log_usage(response, channel_id)
             self._record_input_tokens(response, channel_id)
@@ -898,6 +994,7 @@ class GaladrielAgent:
                 assistant_msg["_thought"] = turn_thought.strip()
             messages.append(assistant_msg)
             log.info(f"Response stop_reason: {response.stop_reason}")
+            self._check_cancelled(channel_id)
 
             if response.stop_reason == "end_turn":
                 max_tokens_retries = 0  # Reset counter on success
@@ -987,10 +1084,15 @@ class GaladrielAgent:
             if response.stop_reason == "tool_use":
                 max_tokens_retries = 0  # Reset counter on successful tool use
                 tool_results = []
+                tool_blocks = [
+                    block for block in response.content
+                    if hasattr(block, "type") and block.type == "tool_use"
+                ]
+                if pending_tool_results_holder is not None:
+                    pending_tool_results_holder["blocks"] = tool_blocks
                 # Use the original response.content blocks to extract tool IDs
-                for block in response.content:
-                    if not hasattr(block, "type") or block.type != "tool_use":
-                        continue
+                for block in tool_blocks:
+                    self._check_cancelled(channel_id)
 
                     tool_name = block.name
                     tool_input = block.input
@@ -1023,6 +1125,8 @@ class GaladrielAgent:
                                     "tool_use_id": tool_id,
                                     "content": blocked,
                                 })
+                                if pending_tool_results_holder is not None:
+                                    pending_tool_results_holder["results"] = tool_results
                                 if emit is not None:
                                     await emit({
                                         "type": "tool_result",
@@ -1052,20 +1156,39 @@ class GaladrielAgent:
                             # gone, so drop it from the tracked set.
                             self._created_files.discard(os.path.normpath(os.path.join(shell_dir, rm_target)))
 
-                    if len(result) > 15000:
-                        result = result[:15000] + "\n...[truncated]"
+                    # A tool may return a plain string OR a list of content
+                    # blocks (text + image — e.g. browser screenshots become
+                    # vision input). Truncate text; images pass through whole.
+                    if isinstance(result, str):
+                        if len(result) > 15000:
+                            result = result[:15000] + "\n...[truncated]"
+                        result_display = result
+                    else:
+                        result = [
+                            {**b, "text": b["text"][:15000] + "\n...[truncated]"}
+                            if b.get("type") == "text" and len(b.get("text", "")) > 15000
+                            else b
+                            for b in result
+                        ]
+                        texts = [b.get("text", "") for b in result if b.get("type") == "text"]
+                        n_images = sum(1 for b in result if b.get("type") == "image")
+                        result_display = "\n".join(t for t in texts if t)
+                        if n_images:
+                            result_display += f"\n[{n_images} image(s) attached — sent to the model as vision input]"
 
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": tool_id,
                         "content": result,
                     })
+                    if pending_tool_results_holder is not None:
+                        pending_tool_results_holder["results"] = tool_results
 
                     if emit is not None:
                         await emit({
                             "type": "tool_result",
                             "name": tool_name,
-                            "output": result,
+                            "output": result_display,
                         })
 
                 messages.append({"role": "user", "content": tool_results})
