@@ -1,6 +1,6 @@
 # Browser Profiles — BCE pairing registry
 
-> Read this before driving the browser when `BROWSER_BACKEND=bce`. Each row binds a **profile_id** to a Chrome extension **pairing code** (format `XXXX-XXXX`, e.g. `KJ2D-H96M`). Drive via `browser(args, profile=<profile_id>)`. Omit `profile` (or pass `"main"`) for the default row below.
+> Read this before driving the browser when `BROWSER_BACKEND=bCE`. Each row binds a **profile_id** to a Chrome extension **pairing code** (format `XXXX-XXXX`, e.g. `KJ2D-H96M`). Drive via `browser(args, profile=<profile_id>)`. Omit `profile` (or pass `"main"`) for the default row below.
 
 There is no dedicated tool for managing this file — read and edit it directly with `read_file` / `write_file`.
 
@@ -33,3 +33,4 @@ Optional: set `BCE_PAIRING_CODE` in `.env` for `main` instead of listing it here
 | profile_id | pairing_code | reason |
 |---|---|---|
 | main | KJ2D-H96M | Rachit Sharma's LinkedIn |
+| shravan | UHGX-ZSDQ | Shravan's LinkedIn |
