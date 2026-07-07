@@ -25,11 +25,24 @@
 </div>
 
 <div class="wf-toolbar">
-    <a href="/costs?range=today" class="btn btn-small {{ 'btn-danger' if range_key == 'today' else '' }}">Today</a>
-    <a href="/costs?range=7d" class="btn btn-small {{ 'btn-danger' if range_key == '7d' else '' }}">7 days</a>
-    <a href="/costs?range=30d" class="btn btn-small {{ 'btn-danger' if range_key == '30d' else '' }}">30 days</a>
-    <a href="/costs?range=all" class="btn btn-small {{ 'btn-danger' if range_key == 'all' else '' }}">All time</a>
+    <a href="/costs?range=today{{ query_suffix }}" class="btn btn-small {{ 'btn-danger' if range_key == 'today' else '' }}">Today</a>
+    <a href="/costs?range=7d{{ query_suffix }}" class="btn btn-small {{ 'btn-danger' if range_key == '7d' else '' }}">7 days</a>
+    <a href="/costs?range=30d{{ query_suffix }}" class="btn btn-small {{ 'btn-danger' if range_key == '30d' else '' }}">30 days</a>
+    <a href="/costs?range=all{{ query_suffix }}" class="btn btn-small {{ 'btn-danger' if range_key == 'all' else '' }}">All time</a>
 </div>
+
+{% if all_models %}
+<div class="model-filter-bar">
+    <span class="filter-label">Models</span>
+    {% for m in all_models %}
+    <label class="model-filter-item">
+        <input type="checkbox" class="model-filter-cb" value="{{ m }}"
+            {% if m in selected_models %}checked{% endif %}>
+        {{ m }}
+    </label>
+    {% endfor %}
+</div>
+{% endif %}
 
 <section class="costs-section">
     <h2>By day</h2>
@@ -108,10 +121,14 @@
             <tr>
                 <th>Model</th>
                 <th>Calls</th>
+                <th>Input $</th>
+                <th>Output $</th>
+                <th>Cache read $</th>
+                <th>Cache write $</th>
+                <th>Total $</th>
                 <th>Input tok</th>
                 <th>Cache read tok</th>
                 <th>Output tok</th>
-                <th>Cost</th>
             </tr>
         </thead>
         <tbody>
@@ -119,18 +136,44 @@
             <tr>
                 <td>{{ row.model }}</td>
                 <td>{{ row.calls }}</td>
+                <td>{{ row.cost_input | usd }}</td>
+                <td>{{ row.cost_output | usd }}</td>
+                <td>{{ row.cost_cache_read | usd }}</td>
+                <td>{{ row.cost_cache_write | usd }}</td>
+                <td>{{ row.cost_total | usd }}</td>
                 <td>{{ "{:,}".format(row.input_tokens) }}</td>
                 <td>{{ "{:,}".format(row.cache_read_tokens) }}</td>
                 <td>{{ "{:,}".format(row.output_tokens) }}</td>
-                <td>{{ row.cost_total | usd }}</td>
             </tr>
             {% endfor %}
         </tbody>
     </table>
     {% else %}
-    <p class="empty-state">No calls logged in this range yet.</p>
+    <p class="empty-state">No models to display.</p>
     {% endif %}
 </section>
 
 {% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+function applyModelFilter() {
+    const checked = Array.from(document.querySelectorAll('.model-filter-cb:checked'))
+        .map(cb => cb.value);
+    const params = new URLSearchParams(window.location.search);
+    const range = params.get('range') || '30d';
+    if (checked.length === 0 || checked.length === document.querySelectorAll('.model-filter-cb').length) {
+        params.delete('models');
+    } else {
+        params.set('models', checked.join(','));
+    }
+    params.set('range', range);
+    window.location.search = params.toString();
+}
+
+document.querySelectorAll('.model-filter-cb').forEach(cb => {
+    cb.addEventListener('change', applyModelFilter);
+});
+</script>
 {% endblock %}

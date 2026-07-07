@@ -7,7 +7,16 @@
 <div class="status-grid">
     <div class="card">
         <div class="card-label">Model</div>
-        <div class="card-value">{{ model }}</div>
+        <div class="model-controls">
+            <select id="model-select" class="interval-select" onchange="changeModel()">
+                {% for m in model_options %}
+                <option value="{{ m }}" {% if m == model %}selected{% endif %}>{{ m }}</option>
+                {% endfor %}
+            </select>
+            {% if not model_persisted %}
+            <div class="model-note muted">Set MONGO_URI / MONGO_DB to persist across restarts</div>
+            {% endif %}
+        </div>
     </div>
     <div class="card">
         <div class="card-label">Active Channels</div>
@@ -95,6 +104,25 @@
 
 {% block scripts %}
 <script>
+async function changeModel() {
+    const select = document.getElementById('model-select');
+    const model = select.value;
+    try {
+        const res = await fetch('/api/model', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ model }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            throw new Error(data.error || 'Failed to set model');
+        }
+    } catch (err) {
+        console.error('Failed to set model:', err);
+        alert(err.message || 'Failed to set model');
+    }
+}
+
 async function loadMemory(date) {
     const res = await fetch(`/api/memory?date=${date}`);
     const data = await res.json();

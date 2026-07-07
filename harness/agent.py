@@ -34,6 +34,7 @@ from .providers import BaseModelProvider
 from . import model_registry
 from . import conversation_store
 from . import cost_tracker
+from . import tower_settings
 
 log = logging.getLogger("galadriel")
 
@@ -278,6 +279,10 @@ class GaladrielAgent:
     ):
         self.provider = provider or model_registry.get_provider("agent", api_key=api_key)
         self.model = model or model_registry.model_for("agent")
+        saved_model = tower_settings.get_agent_model()
+        if saved_model and provider is None and model is None:
+            self.model = saved_model
+            self.provider = model_registry.build_provider(model_registry.GEMINI)
         # Best-effort provider id for cost logging (matches model_registry's
         # ANTHROPIC/GEMINI strings even when a custom `provider` is injected).
         self.provider_name = type(self.provider).__name__.replace("Provider", "").lower()
@@ -526,6 +531,20 @@ class GaladrielAgent:
                 log.info(f"Output-ceiling warning fired for channel {channel_id} (streak={streak}, out={out})")
             except Exception as e:
                 log.warning(f"Output-ceiling warning callback failed: {e}")
+
+    def set_model(self, model: str) -> None:
+        """Switch the agent model at runtime and persist the choice in MongoDB."""
+        if model not in tower_settings.AGENT_MODEL_OPTIONS:
+            raise ValueError(f"Unsupported model: {model}")
+        self.model = model
+        self.provider = model_registry.build_provider(model_registry.GEMINI)
+        self.provider_name = model_registry.GEMINI
+        self.context_window = _resolve_context_window(self.model)
+        try:
+            tower_settings.set_agent_model(model)
+        except RuntimeError:
+            log.warning("Agent model changed but not persisted — MongoDB not configured")
+        log.info(f"Agent model set to {model}")
 
     def _log_usage(self, response, channel_id: str):
         """Log token usage fields so caching behavior is observable, and record

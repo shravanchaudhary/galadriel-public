@@ -92,7 +92,21 @@ def is_configured() -> bool:
     return _db() is not None
 
 
-def daily_totals(since: datetime | None = None) -> list[dict]:
+def _match_stage(since: datetime | None, models: list[str] | None) -> dict | None:
+    """Build a $match stage from optional time and model filters."""
+    clauses = []
+    if since:
+        clauses.append({"ts": {"$gte": since}})
+    if models:
+        clauses.append({"model": {"$in": models}})
+    if not clauses:
+        return None
+    if len(clauses) == 1:
+        return clauses[0]
+    return {"$and": clauses}
+
+
+def daily_totals(since: datetime | None = None, models: list[str] | None = None) -> list[dict]:
     """Cost + tokens grouped by UTC date, most recent first.
 
     `since=None` returns all history. Each row: {date, calls, cost_total,
@@ -101,7 +115,7 @@ def daily_totals(since: datetime | None = None) -> list[dict]:
     db = _db()
     if db is None:
         return []
-    match = {"ts": {"$gte": since}} if since else {}
+    match = _match_stage(since, models)
     pipeline = [
         *([{"$match": match}] if match else []),
         {"$group": {
@@ -121,26 +135,77 @@ def daily_totals(since: datetime | None = None) -> list[dict]:
     return rows
 
 
-def channel_totals(since: datetime | None = None) -> list[dict]:
+def channel_totals(since: datetime | None = None, models: list[str] | None = None) -> list[dict]:
     """Cost + tokens grouped by channel_id, highest cost first."""
-    return _grouped_totals("$channel_id", "channel_id", since)
+    return _grouped_totals("$channel_id", "channel_id", since, models)
 
 
-def model_totals(since: datetime | None = None) -> list[dict]:
-    """Cost + tokens grouped by model, highest cost first."""
-    return _grouped_totals("$model", "model", since)
+def distinct_models(known_models: list[str] | tuple[str, ...] | None = None) -> list[str]:
+    """All model names seen in the ledger, merged with `known_models`, sorted."""
+    db = _db()
+    seen: set[str] = set(known_models or [])
+    if db is not None:
+        for row in db[COLLECTION].distinct("model"):
+            if row:
+                seen.add(row)
+    return sorted(seen)
 
 
-def _grouped_totals(group_expr: str, key_name: str, since: datetime | None) -> list[dict]:
+def _empty_model_row(model: str) -> dict:
+    return {
+        "model": model,
+        "calls": 0,
+        "cost_input": 0.0,
+        "cost_output": 0.0,
+        "cost_cache_read": 0.0,
+        "cost_cache_write": 0.0,
+        "cost_total": 0.0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+    }
+
+
+def model_totals(
+    since: datetime | None = None,
+    models: list[str] | None = None,
+    include_models: list[str] | None = None,
+) -> list[dict]:
+    """Cost + tokens grouped by model, highest cost first.
+
+    When `include_models` is set, every listed model appears (zero-filled if no
+    calls in range). `models` filters which rows are returned.
+    """
+    rows = _grouped_totals("$model", "model", since, models)
+    if include_models is None:
+        return rows
+    by_model = {row["model"]: row for row in rows}
+    visible = include_models if models is None else [m for m in include_models if m in models]
+    merged = [by_model.get(m) or _empty_model_row(m) for m in visible]
+    merged.sort(key=lambda r: r["cost_total"], reverse=True)
+    return merged
+
+
+def _grouped_totals(
+    group_expr: str,
+    key_name: str,
+    since: datetime | None,
+    models: list[str] | None = None,
+) -> list[dict]:
     db = _db()
     if db is None:
         return []
-    match = {"ts": {"$gte": since}} if since else {}
+    match = _match_stage(since, models)
     pipeline = [
         *([{"$match": match}] if match else []),
         {"$group": {
             "_id": group_expr,
             "calls": {"$sum": 1},
+            "cost_input": {"$sum": "$cost_input"},
+            "cost_output": {"$sum": "$cost_output"},
+            "cost_cache_read": {"$sum": "$cost_cache_read"},
+            "cost_cache_write": {"$sum": "$cost_cache_write"},
             "cost_total": {"$sum": "$cost_total"},
             "input_tokens": {"$sum": "$input_tokens"},
             "output_tokens": {"$sum": "$output_tokens"},
@@ -155,12 +220,12 @@ def _grouped_totals(group_expr: str, key_name: str, since: datetime | None) -> l
     return rows
 
 
-def total_cost(since: datetime | None = None) -> float:
+def total_cost(since: datetime | None = None, models: list[str] | None = None) -> float:
     """Single cumulative cost figure since `since` (or all-time if None)."""
     db = _db()
     if db is None:
         return 0.0
-    match = {"ts": {"$gte": since}} if since else {}
+    match = _match_stage(since, models)
     pipeline = [
         *([{"$match": match}] if match else []),
         {"$group": {"_id": None, "cost_total": {"$sum": "$cost_total"}}},

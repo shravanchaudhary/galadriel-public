@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify, Response
 from harness.agent import MAIN_CHANNEL_ID
+from harness import tower_settings
 
 log = logging.getLogger("galadriel.tower")
 
@@ -45,6 +46,8 @@ def create_tower(agent, scheduler=None) -> Flask:
         return render_template(
             "index.html",
             model=agent.model,
+            model_options=tower_settings.AGENT_MODEL_OPTIONS,
+            model_persisted=tower_settings.is_configured(),
             channels=channels,
             total_msgs=total_msgs,
             recent_memories=recent_memories,
@@ -199,6 +202,31 @@ def create_tower(agent, scheduler=None) -> Flask:
         # List all memory files
         files = sorted(Path(agent.memory.memory_dir).glob("*.md"), reverse=True)
         return jsonify({"files": [f.stem for f in files]})
+
+    # ── Agent model API ──────────────────────────────────────────
+
+    @app.route("/api/model", methods=["GET"])
+    def api_model_get():
+        return jsonify({
+            "model": agent.model,
+            "options": list(tower_settings.AGENT_MODEL_OPTIONS),
+            "persisted": tower_settings.is_configured(),
+        })
+
+    @app.route("/api/model", methods=["POST"])
+    def api_model_set():
+        data = request.json or {}
+        model = (data.get("model") or "").strip()
+        if model not in tower_settings.AGENT_MODEL_OPTIONS:
+            return jsonify({"error": "Invalid model"}), 400
+        try:
+            agent.set_model(model)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        return jsonify({
+            "model": agent.model,
+            "persisted": tower_settings.is_configured(),
+        })
 
     # ── Vision API ───────────────────────────────────────────────
 
