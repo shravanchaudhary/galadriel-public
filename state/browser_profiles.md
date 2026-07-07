@@ -1,26 +1,35 @@
-# Browser Profiles — registry of extra browser-use profiles (multi-account)
+# Browser Profiles — BCE pairing registry
 
-> Read this before driving a non-default browser profile. Each row is one isolated Chrome (its own cookie jar, CDP port, and browser-use session), driven via `browser(args, profile=<profile_id>)`. The default `main` profile (used whenever `profile` is omitted) is never listed here — it's unaffected by any of this.
+> Read this before driving the browser when `BROWSER_BACKEND=bce`. Each row binds a **profile_id** to a Chrome extension **pairing code** (format `XXXX-XXXX`, e.g. `KJ2D-H96M`). Drive via `browser(args, profile=<profile_id>)`. Omit `profile` (or pass `"main"`) for the default row below.
 
-There is no dedicated tool for managing this file — read and edit it directly with `read_file` / `write_file`, following the procedure below.
+There is no dedicated tool for managing this file — read and edit it directly with `read_file` / `write_file`.
+
+## First-time setup — ask the user for a pairing code
+
+When you need browser access and no pairing code is registered yet:
+
+1. **Ask the user** for their Chrome extension pairing code (`XXXX-XXXX`, shown in the extension popup). Example: *"Please open the BCE Chrome extension, toggle Agent ON, and send me the pairing code (like KJ2D-H96M)."*
+2. **Persist it** — append a row to the table below (keep header/separator intact):
+   - `main` — default browser (use when `profile` is omitted)
+   - or a named slug (e.g. `linkedin_rachit`) for a second browser/account
+3. **Retry** the browser command. The harness connects with `client.connect(pairing_code)` automatically.
+
+Prerequisites (human): MongoDB + BCE FastAPI server running; extension loaded with Agent ON (status: Connected).
+
+Optional: set `BCE_PAIRING_CODE` in `.env` for `main` instead of listing it here. Named profiles can use `BCE_PAIRING_CODE_<PROFILE_ID>` in `.env` or a row in this file.
 
 ## To register a new profile
 
-1. `read_file` this file and look at the existing rows.
-2. Pick a `profile_id`: a short slug, lowercase letters/digits/`-`/`_` only (e.g. `jane`, `linkedin_jane`). Must not be `main` (that's the built-in default) and must not already appear below.
-3. Pick a `cdp_port`: take the highest `cdp_port` already listed below (or `9222`, main's port, if the table is empty) and use the next integer up. It must not collide with `9222` or any port already in the table.
-4. Write one line describing the `reason` — which account this is for, e.g. `Jane Doe's LinkedIn — credential linkedin_jane`. If the account needs its own DB login, store it under its own `credential` name (see `state/credentials_map.md`) and mention that name here.
-5. `write_file` this file back with your new row appended to the table (keep the header/separator rows and this instructions section intact).
-6. Never change the `cdp_port` of an existing row — it must stay stable so that profile's Chrome keeps reconnecting to the same daemon/session.
+1. `read_file` this file.
+2. Pick a `profile_id`: lowercase letters/digits/`-`/`_` only (e.g. `main`, `linkedin_jane`). Must not duplicate an existing row.
+3. Ask the user for the pairing code from **that** browser's extension popup.
+4. Write the `reason` — who/what this browser is for (e.g. `Shravan's LinkedIn — credential linkedin`).
+5. `write_file` this file back with the new row appended.
 
 ## To use a profile
 
-`browser(args, profile=<profile_id>)` — its Chrome launches lazily on first use. `browser(args)` with no `profile` keeps using `main`, unaffected.
+`browser(args, profile=<profile_id>)` — connects via the stored pairing code. `browser(args)` with no profile uses `main`.
 
-## To check what's already running
-
-The table below doesn't say whether a profile's Chrome is currently up — if you need to know, try driving it (`browser("state", profile=<id>)`) and read the result.
-
-| profile_id | cdp_port | reason |
+| profile_id | pairing_code | reason |
 |---|---|---|
-| linkedin_rachit | 9223 | Rachit's LinkedIn account — credential linkedin_rachit |
+| main | KJ2D-H96M | Rachit Sharma's LinkedIn |
