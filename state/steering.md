@@ -1,3 +1,9 @@
+[2026-07-08]
+- TAB_INVALID WORKAROUND (BCE EXPLOIT):
+  If a browser profile is online but blocked with `TAB_INVALID` (which happens when the user's active Chrome tab is a system page, `about:blank`, or a blank tab):
+  1. Note that the extension was patched at [13:48], but Chrome will not pick up the update until the extension is reloaded or the browser is restarted.
+  2. Until then, the immediate fix is to ask Shravan to navigate his active tab in the browser to any valid website (like `google.com` or `linkedin.com`). Once the active tab becomes valid, the extension will unblock, and tab-management/switching commands will work perfectly.
+
 [2026-07-07]
 - OUTBOUND VOICE AND STEERING RULES (CRITICAL):
   1. STICK TO RAW, MINIMALIST DIRECT VOICE: No hyper-personalization, no generic AI-flattery hooks ("I enjoyed your post about X", "I saw your breakdown of Y"). Standardize on simple, low-friction, developer-level templates.
