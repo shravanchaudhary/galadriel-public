@@ -7,3 +7,4 @@ Use `main` for the interactive chat channel, `worker` for the worker loop.
 
 | channel | profile | tab_index | url | purpose |
 |---|---|---|---|---|
+| worker | shravan | 0 | https://www.linkedin.com/messaging/ | checking pending invitations / dms / leads |
