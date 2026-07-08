@@ -61,7 +61,7 @@
 
     async function wfcLoadModel() {
         try {
-            const res = await fetch('/api/model');
+            const res = await fetch('/api/model?channel=main');
             const data = await res.json();
             modelSelect.innerHTML = '';
             for (const m of data.options || []) {
@@ -87,7 +87,7 @@
             const res = await fetch('/api/model', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ model }),
+                body: JSON.stringify({ model, channel: 'main' }),
             });
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || 'Failed to set model');

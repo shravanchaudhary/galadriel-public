@@ -45,6 +45,7 @@ log = logging.getLogger("galadriel")
 # Background/system channels (heartbeat, worker, morning, etc.) stay on their
 # own synthetic channel_ids and are unaffected.
 MAIN_CHANNEL_ID = "main"
+WORKER_CHANNEL_ID = "worker"
 
 _STOPPED_TOOL_RESULT = "[STOPPED] Turn cancelled from Tower."
 _STOPPED_ASSISTANT_NOTE = "(Stopped — turn cancelled from Tower.)"
@@ -285,10 +286,17 @@ class GaladrielAgent:
         provider: BaseModelProvider = None,
     ):
         self.provider = provider or model_registry.get_provider("agent", api_key=api_key)
-        self.model = model or model_registry.model_for("agent")
-        saved_model = tower_settings.get_agent_model()
-        if saved_model and provider is None and model is None:
-            self.model = saved_model
+        default_model = model or model_registry.model_for("agent")
+        self._channel_models: dict[str, str] = {}
+        if provider is None and model is None:
+            for channel in tower_settings.CONFIGURABLE_CHANNELS:
+                saved = tower_settings.get_channel_model(channel)
+                if saved:
+                    self._channel_models[channel] = saved
+        self.model = self._channel_models.get(MAIN_CHANNEL_ID, default_model)
+        self._channel_models.setdefault(MAIN_CHANNEL_ID, self.model)
+        self._channel_models.setdefault(WORKER_CHANNEL_ID, self.model)
+        if provider is None and model is None and self._channel_models:
             self.provider = model_registry.build_provider(model_registry.GEMINI)
         # Best-effort provider id for cost logging (matches model_registry's
         # ANTHROPIC/GEMINI strings even when a custom `provider` is injected).
@@ -503,7 +511,9 @@ class GaladrielAgent:
         per channel; dropping below 90% clears the tracker so future crossings
         re-fire. Silent no-op if no callback is wired up.
         """
-        if not self.context_warning_callback or self.context_window <= 0:
+        channel_model = self.model_for_channel(channel_id)
+        context_window = _resolve_context_window(channel_model)
+        if not self.context_warning_callback or context_window <= 0:
             return
 
         usage = getattr(response, "usage", None)
@@ -520,7 +530,7 @@ class GaladrielAgent:
         if tokens <= 0:
             return
 
-        pct = int(100 * tokens / self.context_window)
+        pct = int(100 * tokens / context_window)
 
         if pct >= 95:
             new_tier = WARN_TIER_URGENT
@@ -537,7 +547,7 @@ class GaladrielAgent:
             return
 
         self._last_warn_tier[channel_id] = new_tier
-        msg = _format_context_warning(pct, new_tier, tokens, self.context_window)
+        msg = _format_context_warning(pct, new_tier, tokens, context_window)
         try:
             await self.context_warning_callback(channel_id, msg)
             log.info(f"Context warning fired ({new_tier}, {pct}%) for channel {channel_id}")
@@ -589,19 +599,31 @@ class GaladrielAgent:
             except Exception as e:
                 log.warning(f"Output-ceiling warning callback failed: {e}")
 
-    def set_model(self, model: str) -> None:
-        """Switch the agent model at runtime and persist the choice in MongoDB."""
+    def model_for_channel(self, channel_id: str) -> str:
+        """Return the model used for API calls on this channel."""
+        if channel_id == WORKER_CHANNEL_ID:
+            return self._channel_models.get(WORKER_CHANNEL_ID, self.model)
+        return self._channel_models.get(MAIN_CHANNEL_ID, self.model)
+
+    def set_model(self, model: str, channel: str = MAIN_CHANNEL_ID) -> None:
+        """Switch a channel's model at runtime and persist the choice in MongoDB."""
+        if channel not in tower_settings.CONFIGURABLE_CHANNELS:
+            raise ValueError(f"Unsupported channel: {channel}")
         if model not in tower_settings.AGENT_MODEL_OPTIONS:
             raise ValueError(f"Unsupported model: {model}")
-        self.model = model
+        self._channel_models[channel] = model
+        if channel == MAIN_CHANNEL_ID:
+            self.model = model
+            self.context_window = _resolve_context_window(self.model)
         self.provider = model_registry.build_provider(model_registry.GEMINI)
         self.provider_name = model_registry.GEMINI
-        self.context_window = _resolve_context_window(self.model)
         try:
-            tower_settings.set_agent_model(model)
+            tower_settings.set_channel_model(channel, model)
         except RuntimeError:
-            log.warning("Agent model changed but not persisted — MongoDB not configured")
-        log.info(f"Agent model set to {model}")
+            log.warning(
+                f"Channel {channel} model changed but not persisted — MongoDB not configured"
+            )
+        log.info(f"Channel {channel} model set to {model}")
 
     def _log_usage(self, response, channel_id: str):
         """Log token usage fields so caching behavior is observable, and record
@@ -622,7 +644,10 @@ class GaladrielAgent:
                 f"Tokens | input={inp} cache_read={cr} cache_write={cw} output={out}"
             )
             self.last_usage = {"input": inp, "cache_read": cr, "cache_write": cw, "output": out}
-            cost_tracker.log_call(channel_id, "agent", self.provider_name, self.model, self.last_usage)
+            cost_tracker.log_call(
+                channel_id, "agent", self.provider_name,
+                self.model_for_channel(channel_id), self.last_usage,
+            )
         except Exception:
             log.debug("Could not log usage fields", exc_info=True)
 
@@ -947,10 +972,11 @@ class GaladrielAgent:
             # grows, giving hits within tool_use cascades.
             messages_for_api = _attach_trailing_cache_control(messages)
             turn_thought = ""
+            channel_model = self.model_for_channel(channel_id)
             if emit is not None:
                 response = None
                 async for kind, payload in self.provider.stream_message(
-                    model=self.model,
+                    model=channel_model,
                     max_tokens=self.max_tokens,
                     system=system_blocks,
                     tools=self.tools,
@@ -966,7 +992,7 @@ class GaladrielAgent:
                         await emit({"type": kind, "text": payload})
             else:
                 response = await self.provider.create_message(
-                    model=self.model,
+                    model=channel_model,
                     max_tokens=self.max_tokens,
                     system=system_blocks,
                     tools=self.tools,

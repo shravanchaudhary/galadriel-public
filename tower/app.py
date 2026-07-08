@@ -9,7 +9,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify, Response
-from harness.agent import MAIN_CHANNEL_ID
+from harness.agent import MAIN_CHANNEL_ID, WORKER_CHANNEL_ID
 from harness import tower_settings
 
 log = logging.getLogger("galadriel.tower")
@@ -87,6 +87,7 @@ def create_tower(agent, scheduler=None) -> Flask:
         return render_template(
             "index.html",
             model=agent.model,
+            worker_model=agent.model_for_channel(WORKER_CHANNEL_ID),
             model_options=tower_settings.AGENT_MODEL_OPTIONS,
             model_persisted=tower_settings.is_configured(),
             channels=channels,
@@ -273,8 +274,22 @@ def create_tower(agent, scheduler=None) -> Flask:
 
     @app.route("/api/model", methods=["GET"])
     def api_model_get():
+        channel = (request.args.get("channel") or "").strip()
+        if channel:
+            if channel not in tower_settings.CONFIGURABLE_CHANNELS:
+                return jsonify({"error": "Invalid channel"}), 400
+            return jsonify({
+                "channel": channel,
+                "model": agent.model_for_channel(channel),
+                "options": list(tower_settings.AGENT_MODEL_OPTIONS),
+                "persisted": tower_settings.is_configured(),
+            })
         return jsonify({
             "model": agent.model,
+            "models": {
+                ch: agent.model_for_channel(ch)
+                for ch in tower_settings.CONFIGURABLE_CHANNELS
+            },
             "options": list(tower_settings.AGENT_MODEL_OPTIONS),
             "persisted": tower_settings.is_configured(),
         })
@@ -283,14 +298,22 @@ def create_tower(agent, scheduler=None) -> Flask:
     def api_model_set():
         data = request.json or {}
         model = (data.get("model") or "").strip()
+        channel = (data.get("channel") or MAIN_CHANNEL_ID).strip()
+        if channel not in tower_settings.CONFIGURABLE_CHANNELS:
+            return jsonify({"error": "Invalid channel"}), 400
         if model not in tower_settings.AGENT_MODEL_OPTIONS:
             return jsonify({"error": "Invalid model"}), 400
         try:
-            agent.set_model(model)
+            agent.set_model(model, channel=channel)
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
         return jsonify({
-            "model": agent.model,
+            "channel": channel,
+            "model": agent.model_for_channel(channel),
+            "models": {
+                ch: agent.model_for_channel(ch)
+                for ch in tower_settings.CONFIGURABLE_CHANNELS
+            },
             "persisted": tower_settings.is_configured(),
         })
 

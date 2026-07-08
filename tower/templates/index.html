@@ -6,9 +6,9 @@
 {% block content %}
 <div class="status-grid">
     <div class="card">
-        <div class="card-label">Model</div>
+        <div class="card-label">Main Model</div>
         <div class="model-controls">
-            <select id="model-select" class="interval-select" onchange="changeModel()">
+            <select id="model-select" class="interval-select" onchange="changeModel('main')">
                 {% for m in model_options %}
                 <option value="{{ m }}" {% if m == model %}selected{% endif %}>{{ m }}</option>
                 {% endfor %}
@@ -16,6 +16,17 @@
             {% if not model_persisted %}
             <div class="model-note muted">Set MONGO_URI / MONGO_DB to persist across restarts</div>
             {% endif %}
+        </div>
+    </div>
+    <div class="card">
+        <div class="card-label">Worker Model</div>
+        <div class="model-controls">
+            <select id="worker-model-select" class="interval-select" onchange="changeModel('worker')">
+                {% for m in model_options %}
+                <option value="{{ m }}" {% if m == worker_model %}selected{% endif %}>{{ m }}</option>
+                {% endfor %}
+            </select>
+            <div class="model-note muted">Background worker loop only</div>
         </div>
     </div>
     <div class="card">
@@ -104,23 +115,26 @@
 
 {% block scripts %}
 <script>
-async function changeModel() {
-    const select = document.getElementById('model-select');
+async function changeModel(channel) {
+    const selectId = channel === 'worker' ? 'worker-model-select' : 'model-select';
+    const select = document.getElementById(selectId);
     const model = select.value;
     try {
         const res = await fetch('/api/model', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ model }),
+            body: JSON.stringify({ model, channel }),
         });
         const data = await res.json();
         if (!res.ok) {
             throw new Error(data.error || 'Failed to set model');
         }
-        const wfc = document.getElementById('wfc-model-select');
-        if (wfc) {
-            wfc.value = model;
-            wfc.dataset.current = model;
+        if (channel === 'main') {
+            const wfc = document.getElementById('wfc-model-select');
+            if (wfc) {
+                wfc.value = model;
+                wfc.dataset.current = model;
+            }
         }
     } catch (err) {
         console.error('Failed to set model:', err);
