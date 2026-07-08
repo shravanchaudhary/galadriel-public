@@ -21,10 +21,12 @@ _CHANNEL_DOC_IDS = {
     "worker": WORKER_MODEL_DOC_ID,
 }
 
-# Selectable agent models in Tower. Both are Gemini — provider stays fixed.
+# Selectable agent models in Tower. Provider is resolved from the model name
+# via model_registry.provider_for_model (gemini-* → Gemini, *:tag → Ollama).
 AGENT_MODEL_OPTIONS: tuple[str, ...] = (
     "gemini-3.1-pro-preview",
     "gemini-3.5-flash",
+    "qwen3-vl:8b",
 )
 
 _sync_db = None

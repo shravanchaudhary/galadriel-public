@@ -23,6 +23,8 @@ RATES: dict[str, dict[str, float]] = {
     "claude-opus-4-8": {"input": 5.00, "output": 25.00, "cache_read": 0.50, "cache_write": 6.25},
     "claude-haiku-4-5-20251001": {"input": 1.00, "output": 5.00, "cache_read": 0.10, "cache_write": 1.25},
     "claude-sonnet-4-6": {"input": 3.00, "output": 15.00, "cache_read": 0.30, "cache_write": 3.75},
+    # Ollama — local inference, $0 (priced so the cost board doesn't flag unpriced).
+    "qwen3-vl:8b": {"input": 0.0, "output": 0.0, "cache_read": 0.0, "cache_write": 0.0},
 }
 
 

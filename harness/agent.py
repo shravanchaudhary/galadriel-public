@@ -77,6 +77,9 @@ CONTEXT_WINDOW_OVERRIDES = {
     "gemini-3.1-pro-preview": 1_000_000,
     "gemini-2.5-pro": 1_000_000,
     "gemini-2.5-flash": 1_000_000,
+    # Ollama — serving window is options.num_ctx (OLLAMA_NUM_CTX, default 65536),
+    # not the model's native 256K. Keep this in sync with OllamaProvider.num_ctx.
+    "qwen3-vl:8b": int(os.environ.get("OLLAMA_NUM_CTX") or 65_536),
 }
 
 WARN_TIER_ATTENTION = "attention"  # 90%
@@ -285,7 +288,12 @@ class GaladrielAgent:
         debug_dir: str = "debug",
         provider: BaseModelProvider = None,
     ):
-        self.provider = provider or model_registry.get_provider("agent", api_key=api_key)
+        # Explicitly-injected provider (tests) always wins; otherwise providers
+        # are resolved per-model so main/worker can sit on different backends
+        # and mid-chat Gemini ↔ Ollama switches stay safe.
+        self._injected_provider = provider
+        self._provider_cache: dict[str, BaseModelProvider] = {}
+        self._api_key = api_key
         default_model = model or model_registry.model_for("agent")
         self._channel_models: dict[str, str] = {}
         if provider is None and model is None:
@@ -296,11 +304,10 @@ class GaladrielAgent:
         self.model = self._channel_models.get(MAIN_CHANNEL_ID, default_model)
         self._channel_models.setdefault(MAIN_CHANNEL_ID, self.model)
         self._channel_models.setdefault(WORKER_CHANNEL_ID, self.model)
-        if provider is None and model is None and self._channel_models:
-            self.provider = model_registry.build_provider(model_registry.GEMINI)
+        self.provider = provider or self._provider_for(self.model)
         # Best-effort provider id for cost logging (matches model_registry's
-        # ANTHROPIC/GEMINI strings even when a custom `provider` is injected).
-        self.provider_name = type(self.provider).__name__.replace("Provider", "").lower()
+        # ANTHROPIC/GEMINI/OLLAMA strings even when a custom `provider` is injected).
+        self.provider_name = model_registry.provider_for_model(self.model)
         self.max_tokens = max_tokens or int(os.environ.get("AGENT_MAX_TOKENS", "8192"))
         self.memory = MemoryManager(config_dir=config_dir, memory_dir=memory_dir)
         self.working_dir = working_dir or os.getcwd()
@@ -605,8 +612,31 @@ class GaladrielAgent:
             return self._channel_models.get(WORKER_CHANNEL_ID, self.model)
         return self._channel_models.get(MAIN_CHANNEL_ID, self.model)
 
+    def _provider_for(self, model: str) -> BaseModelProvider:
+        """Return (and memoize) the provider for `model`.
+
+        An explicitly-injected provider always wins so tests stay isolated.
+        Otherwise provider follows the model name via
+        `model_registry.provider_for_model`.
+        """
+        if self._injected_provider is not None:
+            return self._injected_provider
+        name = model_registry.provider_for_model(model)
+        cached = self._provider_cache.get(name)
+        if cached is not None:
+            return cached
+        provider = model_registry.build_provider(
+            name, api_key=self._api_key if name == model_registry.ANTHROPIC else None,
+        )
+        self._provider_cache[name] = provider
+        return provider
+
     def set_model(self, model: str, channel: str = MAIN_CHANNEL_ID) -> None:
-        """Switch a channel's model at runtime and persist the choice in MongoDB."""
+        """Switch a channel's model at runtime and persist the choice in MongoDB.
+
+        Provider follows the model (Gemini ↔ Ollama mid-chat is safe because
+        history is stored in Anthropic format and each provider translates).
+        """
         if channel not in tower_settings.CONFIGURABLE_CHANNELS:
             raise ValueError(f"Unsupported channel: {channel}")
         if model not in tower_settings.AGENT_MODEL_OPTIONS:
@@ -615,15 +645,18 @@ class GaladrielAgent:
         if channel == MAIN_CHANNEL_ID:
             self.model = model
             self.context_window = _resolve_context_window(self.model)
-        self.provider = model_registry.build_provider(model_registry.GEMINI)
-        self.provider_name = model_registry.GEMINI
+            self.provider = self._provider_for(model)
+            self.provider_name = model_registry.provider_for_model(model)
         try:
             tower_settings.set_channel_model(channel, model)
         except RuntimeError:
             log.warning(
                 f"Channel {channel} model changed but not persisted — MongoDB not configured"
             )
-        log.info(f"Channel {channel} model set to {model}")
+        log.info(
+            f"Channel {channel} model set to {model} "
+            f"(provider={model_registry.provider_for_model(model)})"
+        )
 
     def _log_usage(self, response, channel_id: str):
         """Log token usage fields so caching behavior is observable, and record
@@ -644,9 +677,11 @@ class GaladrielAgent:
                 f"Tokens | input={inp} cache_read={cr} cache_write={cw} output={out}"
             )
             self.last_usage = {"input": inp, "cache_read": cr, "cache_write": cw, "output": out}
+            channel_model = self.model_for_channel(channel_id)
             cost_tracker.log_call(
-                channel_id, "agent", self.provider_name,
-                self.model_for_channel(channel_id), self.last_usage,
+                channel_id, "agent",
+                model_registry.provider_for_model(channel_model),
+                channel_model, self.last_usage,
             )
         except Exception:
             log.debug("Could not log usage fields", exc_info=True)
@@ -973,9 +1008,10 @@ class GaladrielAgent:
             messages_for_api = _attach_trailing_cache_control(messages)
             turn_thought = ""
             channel_model = self.model_for_channel(channel_id)
+            provider = self._provider_for(channel_model)
             if emit is not None:
                 response = None
-                async for kind, payload in self.provider.stream_message(
+                async for kind, payload in provider.stream_message(
                     model=channel_model,
                     max_tokens=self.max_tokens,
                     system=system_blocks,
@@ -991,7 +1027,7 @@ class GaladrielAgent:
                     else:  # "text"
                         await emit({"type": kind, "text": payload})
             else:
-                response = await self.provider.create_message(
+                response = await provider.create_message(
                     model=channel_model,
                     max_tokens=self.max_tokens,
                     system=system_blocks,
