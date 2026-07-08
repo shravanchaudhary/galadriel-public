@@ -376,6 +376,17 @@ def _new_tool_id() -> str:
     return f"call_{uuid.uuid4().hex[:24]}"
 
 
+
+def _recursive_dict(obj):
+    if isinstance(obj, dict):
+        return {k: _recursive_dict(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_recursive_dict(x) for x in obj]
+    if hasattr(obj, "items"):
+        return {k: _recursive_dict(v) for k, v in obj.items()}
+    return obj
+
+
 def _parts_to_blocks(parts) -> tuple[list, bool]:
     """Convert Gemini content parts to Anthropic content blocks.
 
@@ -398,7 +409,7 @@ def _parts_to_blocks(parts) -> tuple[list, bool]:
                 _ToolUseBlock(
                     id=getattr(function_call, "id", None) or _new_tool_id(),
                     name=function_call.name,
-                    input=dict(function_call.args) if function_call.args else {},
+                    input=_recursive_dict(function_call.args) if function_call.args else {},
                     thought_signature=base64.b64encode(sig).decode() if sig else None,
                 )
             )
