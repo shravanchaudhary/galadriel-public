@@ -68,7 +68,7 @@ async def _trafilatura_get_text(url: str, timeout: float = 10.0) -> Optional[str
 async def fetch_url_data(url: str) -> Optional[str]:
     """Waterfall page extraction. Returns the first extractor's usable text/markdown,
     or None if all failed (caller should fall back to the cloud browser)."""
-    for extractor in (_trafilatura_get_text):
+    for extractor in (_trafilatura_get_text,):
         content = await extractor(url)
         if content and content.strip():
             logger.info(f"fetch_url_data: {extractor.__name__} extracted {url}")
