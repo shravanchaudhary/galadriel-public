@@ -34,6 +34,7 @@ from .providers import BaseModelProvider
 from . import model_registry
 from . import conversation_store
 from . import cost_tracker
+from . import headroom_compress
 from . import tower_settings
 
 log = logging.getLogger("galadriel")
@@ -1005,7 +1006,17 @@ class GaladrielAgent:
             # Attach cache_control to the last block of the last message.
             # This advances the messages-cache breakpoint as the conversation
             # grows, giving hits within tool_use cascades.
-            messages_for_api = _attach_trailing_cache_control(messages)
+            # Prune old screenshot base64 from the API-bound copy only
+            # (keep last 3). Never mutates stored conversation history.
+            messages_for_api, prune_stats = headroom_compress.prepare_messages_for_api(
+                messages
+            )
+            if prune_stats.images_pruned:
+                log.info(
+                    f"Screenshot prune | kept={prune_stats.images_kept} "
+                    f"pruned={prune_stats.images_pruned}"
+                )
+            messages_for_api = _attach_trailing_cache_control(messages_for_api)
             turn_thought = ""
             channel_model = self.model_for_channel(channel_id)
             provider = self._provider_for(channel_model)

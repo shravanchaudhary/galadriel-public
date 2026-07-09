@@ -1292,6 +1292,8 @@ def _split_browser_commands(args: str) -> tuple[list[list[str]], str | None]:
 # so the harness can read them back and hand the pixels to the model.
 _SCREENSHOT_DIR = Path("state/screenshots")
 _MAX_SCREENSHOT_BYTES = 5 * 1024 * 1024  # per-image cap, same as chat uploads
+# Anthropic computer-use guidance: ~1280px longest side balances fidelity vs tokens.
+_MAX_SCREENSHOT_EDGE = 1280
 
 
 def _ensure_screenshot_paths(commands: list[list[str]]) -> list[str]:
@@ -1316,9 +1318,48 @@ def _screenshot_media_type(raw: bytes) -> str:
     return "image/jpeg" if raw.startswith(b"\xff\xd8\xff") else "image/png"
 
 
+def _downscale_screenshot_bytes(raw: bytes, max_edge: int = _MAX_SCREENSHOT_EDGE) -> tuple[bytes, str]:
+    """Resize for the vision attachment only; disk file stays full-res.
+
+    Returns (encoded_bytes, media_type). On any failure, returns the original
+    bytes with the detected media type.
+    """
+    media_type = _screenshot_media_type(raw)
+    try:
+        from io import BytesIO
+        from PIL import Image
+
+        img = Image.open(BytesIO(raw))
+        img.load()
+        w, h = img.size
+        longest = max(w, h)
+        if longest <= max_edge:
+            return raw, media_type
+        scale = max_edge / float(longest)
+        new_size = (max(1, int(w * scale)), max(1, int(h * scale)))
+        img = img.resize(new_size, Image.Resampling.LANCZOS)
+        buf = BytesIO()
+        if media_type == "image/jpeg":
+            if img.mode not in ("RGB", "L"):
+                img = img.convert("RGB")
+            img.save(buf, format="JPEG", quality=85, optimize=True)
+        else:
+            if img.mode not in ("RGB", "RGBA", "L", "P"):
+                img = img.convert("RGBA")
+            img.save(buf, format="PNG", optimize=True)
+            media_type = "image/png"
+        return buf.getvalue(), media_type
+    except Exception:
+        return raw, media_type
+
+
 def _attach_screenshots(text: str, paths: list[str]) -> str | list:
     """Turn captured screenshot files into content blocks so the model can
-    SEE them. Returns the plain text unchanged when nothing was captured."""
+    SEE them. Returns the plain text unchanged when nothing was captured.
+
+    Disk files stay full-res; attached vision blocks are downscaled so each
+    screenshot costs fewer provider vision tokens.
+    """
     blocks = []
     for path in paths:
         try:
@@ -1328,12 +1369,16 @@ def _attach_screenshots(text: str, paths: list[str]) -> str | list:
         if len(raw) > _MAX_SCREENSHOT_BYTES:
             text += f"\n[screenshot {path} too large to attach ({len(raw) // (1024 * 1024)}MB > 5MB) — saved to disk only]"
             continue
+        attach_bytes, media_type = _downscale_screenshot_bytes(raw)
+        if len(attach_bytes) > _MAX_SCREENSHOT_BYTES:
+            text += f"\n[screenshot {path} too large to attach after downscale — saved to disk only]"
+            continue
         blocks.append({
             "type": "image",
             "source": {
                 "type": "base64",
-                "media_type": _screenshot_media_type(raw),
-                "data": base64.b64encode(raw).decode("utf-8"),
+                "media_type": media_type,
+                "data": base64.b64encode(attach_bytes).decode("utf-8"),
             },
         })
     if not blocks:
