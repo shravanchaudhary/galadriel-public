@@ -1,1 +1,16 @@
-# Browser Tabs > Read before ANY browser work. main channel worker drive **same** browser (per profile). Every browser command runs on tab you pass `tab=<index>` — harness switches atomically. table single source truth tabs currently IN USE. ## Contract - **One channel = own tab.** Never navigate, act on, or close tab actively owned another row. - **Pass `tab=<your tab_index>` on every acting call** (`open`, `state`, `click`, `input`, `keys`, …). Omit `tab` ONLY tab-management calls (`tab list`, `tab new`). - **DO NOT CLOSE TABS WHEN DONE.** all tabs close, browser exits requires manual user restart. Instead, just release tab by removing your row from file. becomes "free" tab. ## To claim tab (start browser work) 1. `read_file` file. 2. `browser("tab list", profile=...)`. Compare open tabs rows below. 3. "free" tab (an index in `tab list` not claimed below), you claim it: just `write_file` new row assigning index yourself, then `open <url>` on it. 4. If no tabs free, `browser("tab new <url>", profile=...)` create one, verify index via `tab list`, add row here. ## release tab (work unit fully done) 1. **DO NOT run `tab close`.** (Closing last tab kills browser session). 2. Just `write_file` file back your row removed. tab now free next channel pick up. ## Channel names Use `main` interactive chat channel, `worker" worker loop. | channel | profile | tab_index | url | purpose | |---|---|---|---|---|
+# Browser Tabs
+
+Read before browser work. The main and worker channels share each browser
+profile. Every acting browser call must pass its claimed `tab` index.
+
+## Contract
+
+- One channel owns a tab at a time; never act on another channel's tab.
+- Use `browser("tab list", profile=...)`, then claim an unlisted tab below.
+- Pass `tab=<index>` on `open`, `state`, `click`, `input`, `keys`, and similar calls.
+- Omit `tab` only for tab-management calls such as `tab list` or `tab new`.
+- Do not close tabs when finished; remove the claim row so the tab becomes free.
+- Tab indices can shift. Re-check `tab list` before each work unit.
+
+| channel | profile | tab_index | url | purpose |
+|---|---|---:|---|---|
