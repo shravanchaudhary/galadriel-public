@@ -27,4 +27,4 @@ spec drives both the backend rules and the screens. Specs are read fresh from
 disk on every use, so a newly authored spec is picked up without a restart.
 
 The agent authors these files by co-designing the workflow with the user in
-chat — see `config/WORKFLOWS.md`.
+chat — see `knowledge/reference/workflows.md`.

@@ -6,7 +6,7 @@ narration pipelines, batch jobs) write a JSON completion marker to
 pushes a Discord notification through the agent.
 
 This is DISTINCT from the agent's own job *board* (`jobs/` + `state/`, the
-background worker — see config/CONTEXT.md §5). This watcher only reports the
+background worker — see knowledge/reference/architecture.md §5). This watcher only reports the
 completion of out-of-band shell processes; it does not pick or perform work.
 
 Architecture:

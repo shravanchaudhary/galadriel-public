@@ -8,7 +8,7 @@ API call actually happens: `GaladrielAgent._log_usage()` and
 
 Writes are fire-and-forget (`asyncio.create_task`, wrapped in try/except) so a
 Mongo hiccup never breaks an agent turn — this is a cost register, not the
-operational system of record covered by config/DATA.md.
+operational system of record covered by knowledge/reference/data.md.
 """
 
 import asyncio

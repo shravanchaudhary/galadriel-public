@@ -110,7 +110,7 @@ def _build_loops(scheduler, agent, today: str) -> list[dict]:
             "source": "harness/loop_prompts.py → reflection_prompt()",
             "editable": False,
             "prompt": reflection_prompt(today),
-            "note": "Files to palace, updates LESSONS.md, audits worker, appends steering.md, posts status summary.",
+            "note": "Files knowledge entries + palace room=knowledge, audits worker, appends steering.md, posts status summary.",
         },
         {
             "id": "goodnight",

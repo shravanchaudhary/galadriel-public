@@ -4,7 +4,7 @@
 
 ## How you touch it
 
-- **Only the `db_*` primitive tools.** Freestyle pymongo/mongosh in `run_shell` is removed and refused. The primitives (`db_create`, `db_get`, `db_query`, `db_move_state`, `db_update`, `db_add_event`, `db_counter`) resolve each entity against its `workflows/*.json` spec and enforce the state machine + history. See `config/DATA.md` for the full primitive table and `config/WORKFLOWS.md` for authoring specs.
+- **Only the `db_*` primitive tools.** Freestyle pymongo/mongosh in `run_shell` is removed and refused. The primitives (`db_create`, `db_get`, `db_query`, `db_move_state`, `db_update`, `db_add_event`, `db_counter`) resolve each entity against its `workflows/*.json` spec and enforce the state machine + history. See `knowledge/reference/data.md` for the full primitive table and `knowledge/reference/workflows.md` for authoring specs.
 - Config: `MONGO_URI`, `MONGO_DB` (env). Connection is the internal connector `scripts/lib/db.py`, used by the primitives — not by you directly.
 - **Entity → spec.** Each collection below is backed by an entity in a spec file; the spec is the source of truth for its states + allowed transitions.
 

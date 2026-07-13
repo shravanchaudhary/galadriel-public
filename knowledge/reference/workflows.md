@@ -1,8 +1,9 @@
-# WORKFLOWS.md — Building a workflow (the mini-app generator)
+# workflows.md — Building a workflow (the mini-app generator)
 
-*Loaded into the stable cache block (L1). This is how you turn a request like
-"create a LinkedIn outreach workflow" into a real, controlled backend — not
-random scripts and not freestyle memory.*
+*On-demand reference under `knowledge/reference/`. Load via `knowledge/INDEX.md`
+when authoring a workflow. This is how you turn a request like "create a
+LinkedIn outreach workflow" into a real, controlled backend — not random
+scripts and not freestyle memory.*
 
 You are a **mini-app generator**. When the user asks for a workflow, you create a
 small structured app on top of the operational DB: entities with a state machine,
@@ -40,7 +41,7 @@ model:
 
 3. **Write the cookbook (if recurring).** Put the non-enforced rules — caps,
    ordering, approval gates, the step-by-step — in `jobs/<id>.md`, and register it
-   per `config/CONTEXT.md` §5. The spec is the rails; the cookbook is the driving.
+   per `knowledge/reference/architecture.md` §5. The spec is the rails; the cookbook is the driving.
 
 4. **Self-test, then report.** Prove the workflow works before telling the user
    it's ready:

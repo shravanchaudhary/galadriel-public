@@ -2,8 +2,8 @@
 
 System prompt is structured for prompt caching:
 
-    [STABLE BLOCK]  ← SOUL.md + MEMORY.md + any other *.md in config/
-                      (e.g. CONTEXT.md, your project notes).
+    [STABLE BLOCK]  ← Explicit allowlist: identity, safety, recall routing,
+                      and the worker's ritual index.
                       Marked with cache_control → 90% discount on repeat calls.
 
     [DYNAMIC BLOCK] ← Daily logs + current timestamp.
@@ -20,18 +20,24 @@ minimum cacheable prefix:
     - Opus 4.7 / Sonnet 4.6:                2048 tokens
     - Opus 4.8 / Sonnet 4.5 / 4:            1024 tokens
 
-CONTEXT.md (in config/) is the recommended way to keep the stable block
-above the cache threshold. Fill it with your project details — architecture,
-goals, known issues, key paths. See CACHING.md for the full breakdown.
+Detailed procedures and reference material live under knowledge/ and jobs/ and
+are loaded on demand. See CACHING.md for the full breakdown.
 """
 
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
-# Files that are ALWAYS in the stable block, in this exact order.
-CORE_IDENTITY_FILES = ("SOUL.md",)
-LONG_TERM_MEMORY_FILE = "MEMORY.md"
+# Files that are ALWAYS in the stable block, in this exact order. Adding a
+# config markdown file does not make it prompt context; this tuple is the only
+# stable-file contract.
+STABLE_FILES = (
+    "SOUL.md",
+    "MEMORY.md",
+    "GUARDRAILS.md",
+    "RECALL.md",
+    "JOBS.md",
+)
 VISIONS_DIR = "visions"
 ACTIVE_VISION_FILE = "active_vision.txt"
 
@@ -48,29 +54,6 @@ class MemoryManager:
         if path.exists():
             return path.read_text(encoding="utf-8")
         return None
-
-    def _load_extra_context_files(self) -> str:
-        """Load any *.md files in config/ that are NOT core identity/memory files.
-
-        Anything you drop into config/ (CONTEXT.md, project notes, architecture
-        docs, etc.) is automatically picked up here and folded into the cached
-        stable block. This means:
-
-          - Galadriel always has your project context without needing tool calls.
-          - The stable block stays well over the 4K cache minimum for gemini-3.1-pro-preview.
-          - Adding a new .md to config/ costs one cache write on the next call,
-            then reads at 10% cost until it changes.
-        """
-        excluded = set(CORE_IDENTITY_FILES) | {LONG_TERM_MEMORY_FILE}
-        parts = []
-        if self.config_dir.is_dir():
-            for md_file in sorted(self.config_dir.glob("*.md")):
-                if md_file.name in excluded:
-                    continue
-                content = self._read_file(md_file)
-                if content:
-                    parts.append(f"## {md_file.name}\n\n{content}")
-        return "\n\n".join(parts)
 
     def _load_active_vision(self) -> str | None:
         """Load the currently active VISION (project focus).
@@ -110,22 +93,15 @@ class MemoryManager:
         """Assemble the cacheable portion of the system prompt."""
         parts: list[str] = []
 
-        for fname in CORE_IDENTITY_FILES:
+        for fname in STABLE_FILES:
             content = self._read_file(self.config_dir / fname)
             if content:
-                parts.append(content)
-
-        vision = self._load_active_vision()
-        if vision:
-            parts.append(f"# Active Vision\n\n{vision}")
-
-        memory = self._read_file(self.config_dir / LONG_TERM_MEMORY_FILE)
-        if memory:
-            parts.append(f"# Long-Term Memory\n\n{memory}")
-
-        extras = self._load_extra_context_files()
-        if extras:
-            parts.append(f"# Project Context\n\n{extras}")
+                label = "Long-Term Memory" if fname == "MEMORY.md" else fname
+                parts.append(f"# {label}\n\n{content}")
+            if fname == "SOUL.md":
+                vision = self._load_active_vision()
+                if vision:
+                    parts.append(f"# Active Vision\n\n{vision}")
 
         if not parts:
             return "You are Galadriel, a helpful AI assistant."
@@ -141,8 +117,7 @@ class MemoryManager:
 
         The active-project banner is a tiny per-turn pointer to the currently
         selected project. It lives here (not stable) so toggling it via Tower
-        is instantly visible without a cache invalidation, and so it can carry
-        a palace-scoping hint the model reads fresh each turn.
+        is instantly visible without a cache invalidation.
 
         Wake-up is a compact L0/L1 snapshot from the memory palace (MemPalace),
         regenerated whenever the palace mines new content. Lives in the
@@ -152,18 +127,15 @@ class MemoryManager:
         """
         parts: list[str] = []
 
-        # Active-project banner (per-turn, cheap). Names the current focus and
-        # tells the model to scope palace queries to the matching hall first.
+        # Active-project banner (per-turn, cheap). Halls are MemPalace's
+        # auto-topic dimension, so project names belong in the query, not hall=.
         project = self._active_project_name()
         if project:
-            # hall names use snake_case, so hyphens → underscores.
-            hall_key = project.replace("-", "_")
             parts.append(
                 f"# Active Project: `{project}`\n\n"
-                f"Scope your palace queries when this project is in play: "
-                f"`palace_search(query=..., hall=\"{hall_key}\")` or "
-                f"`palace_search(query=..., room=<relevant>)`. "
-                f"Cast wider only if the scoped search returns nothing."
+                f"Include `{project}` in palace queries when project-specific "
+                f"history matters. Use room filters by memory type, never a "
+                f"project name as a hall."
             )
 
         # Wake-up injection (opt-out via env). Fails silently if mempalace

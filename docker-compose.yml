@@ -7,7 +7,8 @@
 # First boot, seed the memory palace once (otherwise palace_* tools report
 # "palace unavailable" until there is something to search):
 #   docker compose exec galadriel mempalace init
-#   docker compose exec galadriel mempalace mine    # optional: index your config/ + memory/
+#   docker compose exec galadriel mempalace init    # create ~/.mempalace/
+
 
 services:
   galadriel:

@@ -144,13 +144,13 @@ MemPalace organizes memory the way a human would organize a library, and the age
 | Metaphor | What it is | Example |
 |---|---|---|
 | **Drawer** | A single chunk of content — the atomic unit. ~200–1000 tokens, a verbatim slice of something the agent (or you) wrote. | One paragraph of a daily log. One decision note. One archived Discord exchange. |
-| **Room** | A folder-based grouping of drawers. Every drawer belongs to exactly one room. | `room=memory` (daily logs), `room=harness` (her own code), `room=tower` (the web UI), `room=discord_bot`, `room=cmd`, `room=configuration`, `room=general`. |
-| **Wing** | The top-level namespace. Usually one per agent. | `wing=agent` is the default. |
-| **Hall** | A **keyword-based, auto-classified topic** that cross-cuts rooms. A drawer about a bug in harness code lives in `room=harness` AND `hall=problems`. | `hall=decisions`, `hall=problems`, `hall=milestones`. |
+| **Room** | A purpose grouping inside the `agent` wing. Every drawer belongs to exactly one room. | `conversations` (verbatim chat), `knowledge` (durable facts), `episodes` (daily recaps), `diary` (first-person reflection). |
+| **Wing** | The top-level namespace. Lived memory uses one wing only. | `wing=agent` |
+| **Hall** | MemPalace's keyword auto-topic dimension (not a project ID). | `hall=decisions`, `hall=problems`, `hall=milestones`. |
 
-Why this matters: **rooms** let you say *"look only in the code area"*, **halls** let you say *"look only at things tagged as problems"*, and you can compose both. A search like `palace_search("retry logic", room="harness", hall="problems", k=10)` reads as "give me bug-tagged content from the code room" — which is exactly how a human would ask a librarian.
+Why this matters: **rooms** let you say *"look only at chat archives"* or *"only durable knowledge"*, **halls** let you say *"look only at things tagged as problems"*, and you can compose both. A search like `palace_search("retry logic", room="knowledge", hall="problems", k=10)` reads as "give me bug-tagged durable knowledge" — which is exactly how a human would ask a librarian.
 
-The agent's **diary** is a separate wing — her own journal, written at end-of-session, read at wake-up. Her own voice to her future self, not mixed with operational logs.
+The agent's **diary** is a room inside the same `agent` wing — her own journal, written at end-of-session, read at wake-up. Her own voice to her future self, not mixed with operational logs.
 
 The **knowledge graph** sits alongside the drawers. Where drawers are prose, the KG is relational: `gemini-3.1-pro-preview --[supports]--> implicit_caching` with `valid_from=2026-03-01`. When a fact changes you don't delete the old triple, you invalidate it. History is preserved; the timeline is queryable.
 
@@ -166,13 +166,12 @@ pip install -r requirements.txt
 cp mempalace.yaml.example mempalace.yaml
 
 # 3. Initialize palace storage (defaults to ~/.mempalace/)
+# Lived memory is filed by the harness (conversation archives,
+# palace_add_drawer, diary). Do not mine the whole repo into the palace.
 mempalace init
-
-# 4. Seed the palace with everything you've got
-mempalace mine .
 ```
 
-That's it. The harness picks it up automatically on next start. `palace_search` works immediately; the wake-up snapshot appears in the next API call.
+That's it. The harness picks it up automatically on next start. `palace_search` works as soon as drawers exist; the wake-up snapshot appears after the first mine.
 
 ### Env vars (all optional)
 
@@ -255,9 +254,13 @@ Prompt caching has a **minimum prefix length** before it engages. If your stable
 
 *(Sources: [Google AI caching docs](https://ai.google.dev/gemini-api/docs/interactions/caching), [Anthropic prompt-caching docs](https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching). Verify against the live table for your exact model.)*
 
-Out of the box, `config/SOUL.md` + `config/MEMORY.md` together are roughly 500–800 tokens. **That is below every threshold above** — including the 4,096-token floor for the default gemini-3.1-pro-preview agent. Caching will not engage until you cross it.
+Out of the box, the stable allowlist (`SOUL.md` + `MEMORY.md` + `GUARDRAILS.md` +
+`RECALL.md` + `JOBS.md`) is sized to clear the cache floor for the default Gemini
+agent. Detailed procedures and project reference live under `knowledge/` and load
+on demand via `knowledge/INDEX.md` — they are **not** auto-injected into L1.
 
-**The fix:** fill in `config/CONTEXT.md`. Drop your project's architecture, goals, key file paths, known quirks, and current status into it. Any `*.md` file you place in `config/` is automatically loaded into the stable cache block — so adding content there is all it takes. A reasonably filled CONTEXT.md (1–2 pages of project notes) pushes the total well past the 4,096-token agent floor — and past the lower 2,048-token floor for gemini-2.5-flash compaction or Claude Sonnet 4.6 if you switch providers.
+**The simple rule:** stable core → deterministic file index (`knowledge/INDEX.md`)
+→ MemPalace detail (`room=knowledge` / `episodes` / `conversations` / `diary`).
 
 Once you're over the threshold, verify it's working:
 
@@ -270,9 +273,9 @@ Look for lines like:
 Tokens | input=60 cache_read=5800 cache_write=0 output=240
 ```
 
-`cache_read` climbing and `cache_write` near zero after the first call = caching is engaged and you're paying 10 cents on the dollar for that context. (On Gemini, `cache_write` is always 0 — implicit caching has no write surcharge.) If `cache_read` stays at 0, add more content to `config/CONTEXT.md`. See `CACHING.md` for the full breakdown and worked cost examples for both providers.
+`cache_read` climbing and `cache_write` near zero after the first call = caching is engaged and you're paying 10 cents on the dollar for that context. (On Gemini, `cache_write` is always 0 — implicit caching has no write surcharge.) If `cache_read` stays at 0, thicken lean always-on facts in the allowlisted stable files (`MEMORY.md` / `GUARDRAILS.md` / `RECALL.md` / `JOBS.md`) — not by dumping reference manuals into `config/`. See `CACHING.md` for the full breakdown.
 
-> **gemini-2.5-flash / Claude Sonnet 4.6 users:** your floor is only 2,048 tokens — a modestly filled SOUL.md + MEMORY.md + CONTEXT.md crosses it easily. Filling CONTEXT.md is worthwhile regardless: the agent gets your project context without spending tool calls to find it.
+> Deep project manuals now live under `knowledge/reference/` and are loaded on demand. Keep the stable allowlist small and high-signal.
 
 ---
 
@@ -325,10 +328,10 @@ pip install -r requirements.txt
 cp .env.example .env
 # Edit .env — set GEMINI_API_KEY (or GOOGLE_API_KEY) at minimum
 
-# 4. (Optional but recommended) Seed the memory palace
+# 4. (Optional but recommended) Initialize the memory palace
 cp mempalace.yaml.example mempalace.yaml
 mempalace init              # creates ~/.mempalace/
-mempalace mine .            # indexes this repo into the palace
+# Do not `mempalace mine .` the whole repo — lived memory is filed by the harness.
 
 # 5. Run
 python main.py
@@ -338,7 +341,7 @@ python main.py
 
 **Full mode:** Set `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) and `DISCORD_BOT_TOKEN`, **or** `SLACK_BOT_TOKEN` + `SLACK_APP_TOKEN` for a shared team channel instead — see [Slack](#slack).
 
-**Skipping step 4?** That's fine — the harness runs normally and palace tools just return `[palace unavailable]` until you seed. You can do it any time.
+**Skipping step 4?** That's fine — the harness runs normally and palace tools just return `[palace unavailable]` until drawers exist. You can initialize any time.
 
 ---
 
@@ -361,7 +364,7 @@ docker compose logs -f
 
 ```bash
 docker compose exec galadriel mempalace init
-docker compose exec galadriel mempalace mine .   # optional: index the repo
+# Lived memory is filed by the harness; do not mine the whole repo.
 ```
 
 ### What persists
@@ -420,14 +423,17 @@ workflows/                Declarative workflow specs (*.json) — entity state m
 config/
   SOUL.md                 Agent personality and values (your main customization point)
   MEMORY.md               Long-term memory (agent-maintained)
-  CONTEXT.md              Your project context — fill this in to activate caching
   GUARDRAILS.md           Hard operating rules (cookbook is truth, verify before claiming done)
   RECALL.md               Reflex index — operation → what to load/recall first
-  TOOLS.md                Tool reference (palace + db_* primitives) + decision matrix
-  WORKFLOWS.md            How to build & self-test a workflow (the mini-app generator)
+  JOBS.md                 Ritual / background-job goals (stable allowlist)
   visions/                Optional per-project context files
-memory/                   Daily logs — auto-generated, gitignored
-mempalace.yaml.example    Room-structure template for `mempalace init` (copy to mempalace.yaml)
+knowledge/
+  INDEX.md                Deterministic procedure/skill/reference index
+  procedures/             Operational failure recovery steps
+  skills/                 Technical discoveries
+  reference/              Architecture, tools, DB, workflows, coding principles
+memory/                   Daily logs — auto-generated, gitignored (hot dynamic index only)
+mempalace.yaml.example    Agent-wing room template for `mempalace init` (copy to mempalace.yaml)
 ~/.mempalace/             Palace storage (created by `mempalace init`) — overridable via MEMPALACE_PATH
 ```
 
@@ -463,9 +469,13 @@ When you're ready to make her your own: edit the name, rewrite the vibe, change 
 
 Fill in your real values and she'll orient herself correctly from the first message of every session.
 
-### CONTEXT.md — your project, always in context
+### Knowledge — procedures and reference, on demand
 
-`config/CONTEXT.md` is where you describe what you're building. It loads into the stable cache block alongside SOUL.md and MEMORY.md, so Galadriel always has your project's architecture, goals, and known quirks available without needing tool calls to find them. It's also what pushes the stable block over the cache minimum for your configured model — see the warning above.
+`knowledge/INDEX.md` is the deterministic lookup table for reusable procedures,
+skills, and reference manuals (`architecture`, `tools`, `data`, `workflows`,
+`coding_principles`). The agent loads a row when RECALL says to — it is not part
+of the stable cache block. Richer incident detail goes to MemPalace
+`room=knowledge`; daily recaps go to `room=episodes`.
 
 ---
 
@@ -870,15 +880,15 @@ All changes are additive and gracefully degrade. If MemPalace isn't installed, t
 
 **10 new tools, 14 total.** The agent now has a local semantic memory palace ([MemPalace](https://github.com/MemPalace/mempalace)) wired into the harness as first-class tools: `palace_search`, `palace_add_drawer`, `palace_wake_up`, `palace_taxonomy`, `palace_kg_add / kg_query / kg_invalidate / kg_timeline`, `palace_diary_write / diary_read`. All retrieval runs locally in ChromaDB + SQLite — **zero Anthropic tokens spent on any palace operation**, including multi-hop knowledge-graph traversals that would otherwise cost real money through conversation history.
 
-**Lifecycle hooks.** `/new`, `!new`, and `!clear` now archive the conversation to the palace *before* clearing it (via a new `GaladrielAgent.pop_and_archive_history()`), so nothing is lost at the moment of wipe. Goodnight (21:00 CET) fires `palace.archive_daily_logs()` so today's log becomes searchable overnight. `/compact` and context compaction file verbatim tool_results to the palace before they're replaced with Haiku summaries.
+**Lifecycle hooks.** `/new`, `!new`, and `!clear` now archive the conversation to the palace *before* clearing it (via a new `GaladrielAgent.pop_and_archive_history()`), so nothing is lost at the moment of wipe. Goodnight files a durable `daily-recap` to `room=episodes`; truncated daily markdown stays as the hot dynamic index only. `/compact` and context compaction file verbatim conversations to the palace before they're replaced with Haiku summaries.
 
 **Wake-up injection.** A compact L0+L1 snapshot (~800 tokens, cached to `~/.mempalace/wake_up.md` by a subprocess that keeps chromadb out of the main process) rides in the dynamic system-prompt block on every API call. Disable with `PALACE_WAKE_UP_INJECT=0` if you want to dial back per-call overhead.
 
 **Cache impact, measured.** 14 consecutive calls on a real deployment: 86.5% cache hit ratio, 71.2% total-input token savings vs. no caching. The 90% cache-read discount is intact — integration costs ~1.5 percentage points of cache hit ratio (one extra wake-up snapshot in dynamic, 10 more tool schemas in the tools-layer cache). Estimated annual overhead: ~$95.
 
-**Graceful degradation.** If MemPalace isn't installed, all palace tools return `[palace unavailable]` at dispatch time; the rest of the harness runs normally. Upgrade path is `pip install mempalace>=3.3.2,<3.4` + `mempalace init` + `mempalace mine .`.
+**Graceful degradation.** If MemPalace isn't installed, all palace tools return `[palace unavailable]` at dispatch time; the rest of the harness runs normally. Upgrade path is `pip install mempalace>=3.3.2,<3.4` + `mempalace init`.
 
-**Palace Protocol** codified in `SOUL.md` — 5 non-negotiable rules: verify before speaking, say "let me check" when unsure, diary at session-end, invalidate-then-add when facts change. See `config/TOOLS.md` for the full decision matrix (memory_log vs palace_add_drawer vs palace_kg_add vs palace_diary_write).
+**Palace Protocol** codified in `SOUL.md` — 5 non-negotiable rules: verify before speaking, say "let me check" when unsure, diary at session-end, invalidate-then-add when facts change. See `knowledge/reference/tools.md` for the full decision matrix (memory_log vs palace_add_drawer vs palace_kg_add vs palace_diary_write).
 
 All credit for the underlying memory system goes to the [MemPalace](https://github.com/MemPalace/mempalace) team. This release is the harness integration; MemPalace is the engine.
 

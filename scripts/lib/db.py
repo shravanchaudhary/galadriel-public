@@ -8,7 +8,7 @@ PyMongo's native async client (`AsyncMongoClient`); `motor` is end-of-life as of
 
 This module is ONLY the connection — no query/transition helpers. The primitives
 in `harness/db_ops.py` compose the operations and enforce the workflow spec
-(state machine + history), per the doctrine in config/DATA.md and
+(state machine + history), per the doctrine in knowledge/reference/data.md and
 state/db_index.md.
 
 Connection comes from the environment, inherited from the harness:

@@ -1,4 +1,7 @@
-# CODING_PRINCIPLES.md
+# coding_principles.md
+
+*On-demand reference under `knowledge/reference/`. Load via `knowledge/INDEX.md`
+before non-trivial self-edits.*
 
 Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
 
@@ -43,7 +46,7 @@ When your changes create orphans:
 ### Clean-up of Test Files
 
 - **Clean Up Your Mess:** Always delete any temporary test scripts, scratch files (`test_*.py`, `tmp_*.py`, etc.) immediately after troubleshooting or testing an issue. Do not leave behind test files that bloat the repository.
-- **Skill Memorization:** If a test script contains a valuable trick, skill, or codebase discovery, document it at appropriate place. If essential to living, document it in `config/MEMORY.md`, if it is about a particualar subject dedicated note under `sme/`, or simply archive it to the memory palace (`palace_add_drawer`) so it can be recalled on demand, rather than keeping the file itself.
+- **Skill Memorization:** If a test script contains a valuable trick, skill, or codebase discovery, document it under `knowledge/skills/` (and add an INDEX row), or file it to the palace with `palace_add_drawer(..., room="knowledge")`. Only put essentials that must be present every turn in `config/MEMORY.md`.
 
 The test: Every changed line should trace directly to the user's request.
 

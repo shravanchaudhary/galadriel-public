@@ -1,9 +1,9 @@
 """MemPalace integration — semantic search + verbatim archival.
 
 Thin wrapper around `mempalace.searcher.search_memories`. The palace itself
-lives at `MEMPALACE_PATH` (default `~/.mempalace/palace`). Seeded out-of-band
-via `mempalace mine` — run that once against your `config/` and `memory/`
-directories after install.
+lives at `MEMPALACE_PATH` (default `~/.mempalace/palace`). Lived memory uses a
+single `agent` wing with purpose rooms: conversations, knowledge, episodes,
+diary. Do not mine the whole repo into the palace.
 
 Imports of `mempalace` are deferred until first call so cold harness startup
 does not pay ChromaDB + onnxruntime load cost when no palace tool is invoked.
@@ -40,11 +40,16 @@ DEFAULT_PALACE_PATH = str(Path.home() / ".mempalace" / "palace")
 DEFAULT_ARCHIVE_ROOT = str(Path.home() / ".mempalace" / "archive")
 DEFAULT_WAKE_UP_FILE = str(Path.home() / ".mempalace" / "wake_up.md")
 DEFAULT_WING = "agent"
-# Single wing for ALL agent memory — conversations, daily logs, diary, and
-# agent-filed drawers. The agent never has to choose a wing to store or fetch;
-# `DEFAULT_WING` is the one and only memory wing. (The codebase lives in its own
-# `galadriel_public` wing, mined out-of-band from the repo `mempalace.yaml`.)
+# Single wing for ALL agent memory — conversations, knowledge, episodes, and
+# diary. The agent never chooses a wing to store or fetch; `DEFAULT_WING` is
+# the one and only memory wing. Repo-wide code mining is not used.
 CONVERSATION_ROOM = "conversations"
+KNOWLEDGE_ROOM = "knowledge"
+EPISODES_ROOM = "episodes"
+DIARY_ROOM = "diary"
+DEFAULT_DRAWER_ROOM = KNOWLEDGE_ROOM
+# Legacy archive channel tags that predate channel+kind naming.
+_LEGACY_ARCHIVE_KIND_PREFIXES = ("checkpoint", "compact", "max_tokens")
 MINE_TIMEOUT_SEC = 90
 WAKE_UP_TIMEOUT_SEC = 30
 
@@ -99,8 +104,9 @@ def search(
       - None / ``semantic`` (default): hybrid vector + BM25 ranking on ``query``.
       - ``recency``: latest distinct archive sessions by ``filed_at`` DESC.
         ``query`` is optional — when set, only sessions containing that text
-        are considered. ``channel`` optionally filters to
-        ``conversation_{channel}_*`` source files (e.g. ``main``).
+        are considered. ``channel`` optionally filters to that real channel
+        (e.g. ``main``), matching both new ``conversation_{channel}_{kind}_*``
+        archives and legacy ``conversation_{kind}_{channel}_*`` names.
 
     Filters (both modes):
       - wing, room, hall: metadata scoping.
@@ -225,8 +231,14 @@ def _recent_sessions(
 
     if channel:
         safe = _safe_channel(channel)
-        filters.append("em_sf.string_value LIKE ?")
+        # New archives: conversation_{channel}_{kind}_*
+        # Legacy archives: conversation_{kind}_{channel}_* and conversation_{channel}_*
+        channel_clauses = ["em_sf.string_value LIKE ?"]
         params.append(f"%conversation_{safe}_%")
+        for kind in _LEGACY_ARCHIVE_KIND_PREFIXES:
+            channel_clauses.append("em_sf.string_value LIKE ?")
+            params.append(f"%conversation_{kind}_{safe}_%")
+        filters.append("(" + " OR ".join(channel_clauses) + ")")
 
     if query:
         filters.append(
@@ -514,18 +526,24 @@ def _serialize_message(msg: dict) -> str:
     return "\n\n".join(parts)
 
 
-async def archive_conversation(channel_id: str, messages: list[dict]) -> None:
+async def archive_conversation(
+    channel_id: str,
+    messages: list[dict],
+    *,
+    kind: str = "full",
+) -> None:
     """Archive a full conversation to the palace before it's wiped (`/new`).
 
     Writes a single timestamped .md file per conversation (mempalace chunks
-    internally). Uses convos-mode + general extraction so the archive gets
-    auto-classified into 5 memory types (decisions, preferences, milestones,
-    problems, emotional). Fire-and-forget from callers; failure never raises.
+    internally). ``kind`` records why the archive was created (full / checkpoint /
+    compact / max_tokens) while preserving the real ``channel_id`` for recall.
     """
     if not messages:
         return
 
-    batch_dir = _write_conversation_batch(_archive_root(), channel_id, messages)
+    batch_dir = _write_conversation_batch(
+        _archive_root(), channel_id, messages, kind=kind,
+    )
     if batch_dir is None:
         return
 
@@ -535,12 +553,17 @@ async def archive_conversation(channel_id: str, messages: list[dict]) -> None:
     ok = await mine_batch_dir(batch_dir, agent="new-clear")
     if ok:
         log.info(
-            f"Palace conversation archive: channel={channel_id} "
+            f"Palace conversation archive: channel={channel_id} kind={kind} "
             f"messages={len(messages)} dir={batch_dir}"
         )
 
 
-def archive_conversation_durable(channel_id: str, messages: list[dict]) -> Path | None:
+def archive_conversation_durable(
+    channel_id: str,
+    messages: list[dict],
+    *,
+    kind: str = "full",
+) -> Path | None:
     """Synchronously stage a full conversation to the archive root and return the
     batch dir, leaving the (slow) `mempalace mine` to the caller in the background.
 
@@ -549,23 +572,40 @@ def archive_conversation_durable(channel_id: str, messages: list[dict]) -> Path 
     caller schedules `mine_batch_dir(batch_dir, ...)` as a background task.
     Returns None on empty input / write error.
     """
-    return _write_conversation_batch(_archive_root(), channel_id, messages)
+    return _write_conversation_batch(
+        _archive_root(), channel_id, messages, kind=kind,
+    )
 
 
 def _safe_channel(channel_id: str) -> str:
     return "".join(c if c.isalnum() or c in "-_" else "_" for c in str(channel_id))
 
 
-def _write_conversation_batch(root: Path, channel_id: str, messages: list[dict]) -> Path | None:
+def _safe_archive_kind(kind: str | None) -> str:
+    safe = _safe_channel(kind or "full")
+    return safe or "full"
+
+
+def _write_conversation_batch(
+    root: Path,
+    channel_id: str,
+    messages: list[dict],
+    *,
+    kind: str = "full",
+) -> Path | None:
     """Write a conversation as a single timestamped .md inside a fresh batch dir
     under `root`. Pure file I/O (no subprocess) so it is safe to call from a
     signal handler. Returns the batch dir, or None on empty input / write error.
+
+    Filename/metadata keep the real channel and a separate archive kind so
+    ``channel=main`` recency searches see checkpoint/compact/recovery archives.
     """
     if not messages:
         return None
     ts = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
     safe_channel = _safe_channel(channel_id)
-    batch_dir = root / f"conversation_{safe_channel}_{ts}"
+    safe_kind = _safe_archive_kind(kind)
+    batch_dir = root / f"conversation_{safe_channel}_{safe_kind}_{ts}"
     try:
         # The .md goes in a `conversations/` subfolder and a per-batch
         # mempalace.yaml sits at the batch root, so a plain mine deterministically
@@ -576,6 +616,8 @@ def _write_conversation_batch(root: Path, channel_id: str, messages: list[dict])
         sections = [
             f"# Conversation archive — channel {channel_id}\n",
             f"- archived: {ts}",
+            f"- channel: {channel_id}",
+            f"- archive_kind: {safe_kind}",
             f"- message count: {len(messages)}\n",
             "---\n",
         ]
@@ -583,7 +625,7 @@ def _write_conversation_batch(root: Path, channel_id: str, messages: list[dict])
             sections.append(f"<!-- message {i} -->")
             sections.append(_serialize_message(msg))
             sections.append("")
-        (conv_dir / f"conversation_{safe_channel}_{ts}.md").write_text(
+        (conv_dir / f"conversation_{safe_channel}_{safe_kind}_{ts}.md").write_text(
             "\n".join(sections), encoding="utf-8"
         )
     except Exception as e:
@@ -592,7 +634,12 @@ def _write_conversation_batch(root: Path, channel_id: str, messages: list[dict])
     return batch_dir
 
 
-def write_conversation_archive_sync(channel_id: str, messages: list[dict]) -> Path | None:
+def write_conversation_archive_sync(
+    channel_id: str,
+    messages: list[dict],
+    *,
+    kind: str = "full",
+) -> Path | None:
     """Synchronously stage a conversation for archival without mining.
 
     Safe to call from a signal handler / atexit at shutdown: it only does a file
@@ -600,7 +647,9 @@ def write_conversation_archive_sync(channel_id: str, messages: list[dict]) -> Pa
     grace window). The staged dir is mined into the palace — and then deleted —
     on the next startup via mine_pending_shutdown_archives().
     """
-    return _write_conversation_batch(_pending_shutdown_root(), channel_id, messages)
+    return _write_conversation_batch(
+        _pending_shutdown_root(), channel_id, messages, kind=kind,
+    )
 
 
 async def mine_pending_shutdown_archives() -> int:
@@ -666,19 +715,16 @@ def close() -> None:
 
 
 async def archive_daily_logs(memory_dir: str = "memory") -> None:
-    """Mine the daily-log directory so today's entries become palace-searchable.
-    Typically called at the goodnight tick.
+    """Deprecated no-op.
 
-    Uses mempalace's natural deduplication (mtime-based) so re-mining the
-    same dir only files new content. No need to track state separately.
+    Truncated daily logs stay as the hot dynamic index only. Durable end-of-day
+    narrative is filed explicitly to ``room=episodes`` by the goodnight prompt.
+    Kept as a stub so older callers/imports do not break.
     """
-    memory_path = Path(memory_dir)
-    if not memory_path.is_dir():
-        log.warning(f"Daily-log archive: {memory_dir} does not exist, skipping")
-        return
-    ok = await mine_batch_dir(memory_path, agent="goodnight")
-    if ok:
-        log.info(f"Palace daily-log mine complete: {memory_dir}")
+    log.info(
+        "archive_daily_logs skipped — daily markdown is an index only; "
+        f"requested dir={memory_dir}"
+    )
 
 
 # ─── Wake-up injection ─────────────────────────────────────────────
@@ -731,24 +777,25 @@ async def add_drawer(
     One-shot: writes a single .md file into the archive tree, runs mempalace
     mine on it. Returns a human-readable status string for the tool result.
 
-    When `room` is given, the drawer is routed to that room (the relational
-    layer). mempalace's `detect_room` reads room from the folder path first
-    (Priority 1), so we place the .md inside a subfolder named after the room.
-    Without `room`, behaviour is unchanged (mempalace falls back to its
-    default room).
+    Defaults to ``room=knowledge`` for durable facts. Pass ``episodes`` for
+    daily recaps / operational narratives. mempalace's `detect_room` reads
+    room from the folder path first (Priority 1), so we place the .md inside
+    a subfolder named after the room.
     """
     if not content or not content.strip():
         return "[palace add] empty content — nothing filed."
 
     ts = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
     slug = _slug(topic) if topic else _slug(content.strip().split("\n", 1)[0])
-    room_slug = _slug(room) if room else None
+    resolved_room = room or DEFAULT_DRAWER_ROOM
+    room_slug = _slug(resolved_room)
     batch_dir = _archive_root() / f"agent_add_{ts}_{slug}"
     fname = f"{ts}_{slug}.md"
 
     # Place the .md inside a room-named subfolder so detect_room Priority 1
     # (folder path match) fires deterministically.
-    target_dir = batch_dir / room_slug if room_slug else batch_dir
+    target_dir = batch_dir / room_slug
+    room = resolved_room
 
     header = [f"# Agent-filed drawer", ""]
     header.append(f"- filed: {ts}")
@@ -1034,53 +1081,104 @@ def diary_read(last_n: int = 10, agent_name: str = DEFAULT_DIARY_AGENT) -> str:
 
 # ─── Taxonomy ──────────────────────────────────────────────────────
 
+def _drawers_sqlite_conn():
+    """Open the palace Chroma SQLite DB read-only. Returns None if missing."""
+    db = _chroma_sqlite_path()
+    if not db.is_file():
+        return None
+    return sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+
+
+def _taxonomy_from_sqlite() -> dict:
+    """Aggregate wing/room/hall counts via SQL.
+
+    Chroma's ``collection.get(include=["metadatas"])`` loads every drawer and
+    blows past SQLite's variable limit once the palace grows past a few tens
+    of thousands of drawers — which is why Tower showed an empty palace even
+    though search still worked.
+    """
+    from collections import Counter
+
+    conn = _drawers_sqlite_conn()
+    if conn is None:
+        return {"total": 0, "wings": {}, "halls": {}}
+
+    wing_room_counts: dict[str, Counter] = {}
+    hall_counts: Counter = Counter()
+    total = 0
+    try:
+        rows = conn.execute(
+            """
+            SELECT em_w.string_value AS wing,
+                   COALESCE(em_r.string_value, '?') AS room,
+                   COUNT(*) AS n
+            FROM embeddings e
+            JOIN segments s ON s.id = e.segment_id
+            JOIN collections c ON c.id = s.collection
+                 AND c.name = 'mempalace_drawers'
+            JOIN embedding_metadata em_w
+                 ON em_w.id = e.id AND em_w.key = 'wing'
+            LEFT JOIN embedding_metadata em_r
+                 ON em_r.id = e.id AND em_r.key = 'room'
+            GROUP BY wing, room
+            """
+        ).fetchall()
+        for wing, room, n in rows:
+            wing_room_counts.setdefault(wing or "?", Counter())[room or "?"] += n
+            total += n
+
+        for hall, n in conn.execute(
+            """
+            SELECT COALESCE(em_h.string_value, '?') AS hall, COUNT(*) AS n
+            FROM embeddings e
+            JOIN segments s ON s.id = e.segment_id
+            JOIN collections c ON c.id = s.collection
+                 AND c.name = 'mempalace_drawers'
+            JOIN embedding_metadata em_h
+                 ON em_h.id = e.id AND em_h.key = 'hall'
+            GROUP BY hall
+            """
+        ).fetchall():
+            hall_counts[hall or "?"] += n
+    finally:
+        conn.close()
+
+    return {
+        "total": total,
+        "wings": {w: dict(c) for w, c in wing_room_counts.items()},
+        "halls": dict(hall_counts),
+    }
+
+
 def taxonomy() -> str:
     """Return wing → room breakdown with drawer counts.
 
-    Reads metadata directly from the palace collection. Used by the agent to
-    discover how memory is organized before narrowing a search.
+    Used by the agent to discover how memory is organized before narrowing
+    a search. Aggregates via SQLite so large palaces stay readable.
     """
-    try:
-        from mempalace.backends.chroma import ChromaBackend
-    except ImportError as e:
-        return f"[taxonomy] mempalace not installed: {e}"
-
     path = _palace_path()
     if not os.path.isdir(path):
         return f"[taxonomy] no palace at {path}"
 
     try:
-        backend = ChromaBackend()
-        coll = backend.get_collection(path, "mempalace_drawers")
-        data = coll._collection.get(include=["metadatas"])
+        data = _taxonomy_from_sqlite()
     except Exception as e:
         return f"[taxonomy] {type(e).__name__}: {e}"
 
-    from collections import Counter
-    wing_room_counts: dict[str, Counter] = {}
-    hall_counts: Counter = Counter()
-    for m in data.get("metadatas") or []:
-        if not m:
-            continue
-        w = m.get("wing", "?")
-        r = m.get("room", "?")
-        h = m.get("hall", "?")
-        wing_room_counts.setdefault(w, Counter())[r] += 1
-        hall_counts[h] += 1
-
-    total = len(data.get("metadatas") or [])
+    total = data.get("total", 0)
     if total == 0:
         return "Palace is empty."
 
     lines = [f"**Palace taxonomy** — {total} drawers total", ""]
-    for wing in sorted(wing_room_counts):
-        wtotal = sum(wing_room_counts[wing].values())
+    for wing in sorted(data.get("wings") or {}):
+        rooms = data["wings"][wing]
+        wtotal = sum(rooms.values())
         lines.append(f"- **Wing `{wing}`** ({wtotal} drawer(s)):")
-        for room, n in sorted(wing_room_counts[wing].items(), key=lambda x: -x[1]):
+        for room, n in sorted(rooms.items(), key=lambda x: -x[1]):
             lines.append(f"    - room `{room}`: {n}")
     lines.append("")
     lines.append("**Halls** (topic auto-classification):")
-    for hall, n in hall_counts.most_common():
+    for hall, n in sorted((data.get("halls") or {}).items(), key=lambda x: -x[1]):
         lines.append(f"  - `{hall}`: {n}")
     return "\n".join(lines)
 
@@ -1163,32 +1261,14 @@ def taxonomy_data() -> dict:
     """Structured wing → room → count + hall counts, for the Tower taxonomy
     view. Same underlying data as taxonomy(), returned as a dict instead of
     pre-formatted markdown."""
-    coll = _drawers_collection()
-    if coll is None:
+    path = _palace_path()
+    if not os.path.isdir(path):
         return {"total": 0, "wings": {}, "halls": {}}
     try:
-        data = coll.get(include=["metadatas"])
+        return _taxonomy_from_sqlite()
     except Exception as e:
         log.warning(f"Palace taxonomy_data failed: {e}")
         return {"total": 0, "wings": {}, "halls": {}}
-
-    from collections import Counter
-    wing_room_counts: dict[str, Counter] = {}
-    hall_counts: Counter = Counter()
-    for m in data.get("metadatas") or []:
-        if not m:
-            continue
-        w = m.get("wing", "?")
-        r = m.get("room", "?")
-        h = m.get("hall", "?")
-        wing_room_counts.setdefault(w, Counter())[r] += 1
-        hall_counts[h] += 1
-
-    return {
-        "total": len(data.get("metadatas") or []),
-        "wings": {w: dict(c) for w, c in wing_room_counts.items()},
-        "halls": dict(hall_counts),
-    }
 
 
 def _drawer_from_row(drawer_id: str, doc: str, metadata: dict | None) -> dict:
@@ -1213,34 +1293,78 @@ def list_drawers(
 ) -> dict:
     """Paginated, filterable drawer listing for the Tower palace browser.
 
-    Returns {"total": <matching count>, "drawers": [...]}. Read-only —
-    no embeddings computed, just a metadata-filtered Chroma `.get()`.
+    Returns {"total": <matching count>, "drawers": [...]}. Uses SQLite so large
+    rooms (tens of thousands of drawers) do not trip Chroma's bulk ``.get()``.
     """
-    coll = _drawers_collection()
-    if coll is None:
+    conn = _drawers_sqlite_conn()
+    if conn is None:
         return {"total": 0, "drawers": []}
 
-    clauses = [{"wing": wing}, {"room": room}, {"hall": hall}]
-    clauses = [c for c in clauses if next(iter(c.values())) is not None]
-    where = None
-    if len(clauses) == 1:
-        where = clauses[0]
-    elif len(clauses) > 1:
-        where = {"$and": clauses}
+    filters = [
+        "c.name = 'mempalace_drawers'",
+    ]
+    params: list = []
+    for key, val in (("wing", wing), ("room", room), ("hall", hall)):
+        if val:
+            filters.append(
+                "EXISTS (SELECT 1 FROM embedding_metadata em_x "
+                "WHERE em_x.id = e.id AND em_x.key = ? AND em_x.string_value = ?)"
+            )
+            params.extend([key, val])
+    where_sql = " AND ".join(filters)
 
     try:
-        total = len(coll.get(where=where, include=[]).get("ids") or [])
-        res = coll.get(where=where, include=["documents", "metadatas"], limit=limit, offset=offset)
+        total = conn.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM embeddings e
+            JOIN segments s ON s.id = e.segment_id
+            JOIN collections c ON c.id = s.collection
+            WHERE {where_sql}
+            """,
+            params,
+        ).fetchone()[0]
+
+        rows = conn.execute(
+            f"""
+            SELECT e.embedding_id,
+                   COALESCE(em_doc.string_value, '') AS doc,
+                   COALESCE(em_w.string_value, '?') AS wing,
+                   COALESCE(em_r.string_value, '?') AS room,
+                   COALESCE(em_h.string_value, '?') AS hall,
+                   COALESCE(em_sf.string_value, '') AS source_file
+            FROM embeddings e
+            JOIN segments s ON s.id = e.segment_id
+            JOIN collections c ON c.id = s.collection
+            LEFT JOIN embedding_metadata em_doc
+                 ON em_doc.id = e.id AND em_doc.key = 'chroma:document'
+            LEFT JOIN embedding_metadata em_w
+                 ON em_w.id = e.id AND em_w.key = 'wing'
+            LEFT JOIN embedding_metadata em_r
+                 ON em_r.id = e.id AND em_r.key = 'room'
+            LEFT JOIN embedding_metadata em_h
+                 ON em_h.id = e.id AND em_h.key = 'hall'
+            LEFT JOIN embedding_metadata em_sf
+                 ON em_sf.id = e.id AND em_sf.key = 'source_file'
+            WHERE {where_sql}
+            ORDER BY e.id DESC
+            LIMIT ? OFFSET ?
+            """,
+            [*params, max(1, limit), max(0, offset)],
+        ).fetchall()
     except Exception as e:
         log.warning(f"Palace list_drawers failed: {e}")
         return {"total": 0, "drawers": []}
+    finally:
+        conn.close()
 
-    ids = res.get("ids") or []
-    docs = res.get("documents") or []
-    metas = res.get("metadatas") or []
     drawers = [
-        _drawer_from_row(did, docs[i] if i < len(docs) else "", metas[i] if i < len(metas) else {})
-        for i, did in enumerate(ids)
+        _drawer_from_row(
+            did,
+            doc,
+            {"wing": w, "room": r, "hall": h, "source_file": src},
+        )
+        for did, doc, w, r, h, src in rows
     ]
     return {"total": total, "drawers": drawers}
 

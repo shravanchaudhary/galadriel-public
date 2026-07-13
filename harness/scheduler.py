@@ -594,9 +594,8 @@ class Scheduler:
     async def _goodnight_routine(self):
         """Goodnight — 21:00 CET, then REST.
 
-        Also fires a palace sync: today's completed daily log gets mined so
-        it becomes searchable overnight. Fire-and-forget — if the mine fails
-        (e.g. mempalace not installed), goodnight delivery is unaffected.
+        Daily markdown logs stay as the hot dynamic index only. The agent's
+        goodnight prompt files the durable recap to palace room=episodes.
         """
         log.info("Goodnight routine starting...")
         today = datetime.now(CET).strftime("%Y-%m-%d")
@@ -607,14 +606,6 @@ class Scheduler:
         await self._checkpoint("goodnight")
         # Disable heartbeat
         self.rest()
-
-        # Sync today's daily logs into the palace before the day closes
-        try:
-            from . import palace
-            asyncio.ensure_future(palace.archive_daily_logs("memory"))
-            log.info("Goodnight: palace daily-log mine scheduled")
-        except Exception as e:
-            log.warning(f"Goodnight: could not schedule palace mine: {e}")
 
     # ── Palace checkpointing ─────────────────────────────────────
 

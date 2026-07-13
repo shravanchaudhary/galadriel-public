@@ -1,6 +1,7 @@
-# DATA.md — State, memory, and the system of record
+# data.md — State, memory, and the system of record
 
-*Reference for the agent. Loaded into the stable cache block alongside SOUL.md and MEMORY.md. Keep it lean — this file is doctrine only.*
+*On-demand reference under `knowledge/reference/`. Load via `knowledge/INDEX.md`
+when doing DB work. Keep it lean — this file is doctrine only.*
 
 ---
 
@@ -43,7 +44,7 @@ What the primitives guarantee so you don't have to hand-roll it:
 
 What is **not** enforced in code (the lighter model): caps, ordering, and approval gates. Those stay as prose in the job cookbooks — `db_counter` tells you the count and whether the cap is hit; the cookbook decides to stop. Approval = move into the spec's `approval_state` and wait for sign-off.
 
-New kind of state? You don't add tools or scripts — you **author a workflow spec** (`workflows/<name>.json`) defining the entity, its states, and allowed transitions. See `config/WORKFLOWS.md` for the build-and-self-test flow.
+New kind of state? You don't add tools or scripts — you **author a workflow spec** (`workflows/<name>.json`) defining the entity, its states, and allowed transitions. See `knowledge/reference/workflows.md` for the build-and-self-test flow.
 
 ## The index file — read it every time
 

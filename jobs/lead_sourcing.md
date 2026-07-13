@@ -2,7 +2,7 @@
 
 **North Star:** A short list of *apt*, ICP-matching leads (companies + decision makers) with evidence for why each one fits — not a big noisy list.
 
-**Engine:** the `explorium_*` tools (see `config/TOOLS.md` → Explorium) over the 100M+ company/prospect DB, with `google_search` + `fetch_url_data` + `browser` as the web fallback. Structured DB first, web second. All Explorium results cache 60 days, so repeats are free.
+**Engine:** the `explorium_*` tools (see `knowledge/reference/tools.md` → Explorium) over the 100M+ company/prospect DB, with `google_search` + `fetch_url_data` + `browser` as the web fallback. Structured DB first, web second. All Explorium results cache 60 days, so repeats are free.
 
 **Spend autonomy:** these APIs cost money, but they run **without approval** — call `explorium_*`, `fetch_email`, and `fetch_phone` freely to get the job done. No confirmation gate before a paid search or enrichment. Be *sensible*, not timid: use the free `explorium_business_statistics` to pick a good filter plan before a paid search, prefer cached hits, and don't re-fetch what you already have — but never stop to ask permission to spend.
 

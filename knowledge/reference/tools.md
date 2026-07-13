@@ -1,6 +1,7 @@
-# TOOLS.md — How to use your tool surface
+# tools.md — How to use your tool surface
 
-*Reference for the agent. Loaded into the stable cache block alongside SOUL.md and MEMORY.md.*
+*On-demand reference under `knowledge/reference/`. Load via `knowledge/INDEX.md`
+when you need the tool matrix — not part of the stable prompt.*
 
 ---
 
@@ -26,9 +27,13 @@ Supported: PNG, JPEG, GIF, WebP, up to 5MB each. When someone sends a screenshot
 ### The structure — wings, rooms, halls, drawers
 
 - **Drawer** — a single chunk of content (~200–1000 tokens). The atomic unit of palace memory.
-- **Room** — a grouping within a wing (e.g. `conversations` for verbatim chat, `diary`, `general`).
-- **Wing** — the top-level namespace. **All your memory is the single `agent` wing — you never choose a wing to store or fetch.** (Repo code is a separate `galadriel_public` wing, not your lived memory.)
-- **Hall** — a keyword-based auto-classification that cross-cuts rooms. Examples: `decisions`, `problems`, `milestones`. A drawer in `room=harness` might also sit in `hall=problems` if it discusses a bug.
+- **Room** — a purpose grouping within the `agent` wing:
+  - `conversations` — verbatim chat archives only
+  - `knowledge` — durable reusable / personal learned facts
+  - `episodes` — daily recaps and operational narratives
+  - `diary` — first-person reflection
+- **Wing** — the top-level namespace. **All your lived memory is the single `agent` wing — you never choose a wing to store or fetch.**
+- **Hall** — MemPalace's keyword auto-topic dimension (e.g. `decisions`, `problems`, `milestones`). Halls are NOT project IDs; put project names in the query text.
 
 So a single drawer has: a wing, a room, optionally a hall, and verbatim content.
 
@@ -54,8 +59,8 @@ palace_search(order="recency", room="conversations", channel="main", k=5)  # lat
 
 - `query` — full phrases beat keywords. `"cost of Polly standard voice per million chars"` outperforms `"Polly cost"`.
 - `wing` — **leave `None`.** Your memory is one wing; a global search always covers it. Don't pass a wing.
-- `room` — optional filter (e.g. `room="conversations"` to recall past chat verbatim, `room="harness"` for code-related drawers).
-- `hall` — filter by topic (e.g. `hall="decisions"` for cross-cutting recorded decisions).
+- `room` — optional filter (e.g. `room="conversations"`, `room="knowledge"`, `room="episodes"`, `room="diary"`).
+- `hall` — optional auto-topic filter (not a project name).
 - `k` — 5 is usually enough; bump to 10–20 for broader sweeps.
 
 ### Reading the distance score
@@ -76,12 +81,13 @@ You have four ways to persist information. Choose by **intent and durability**.
 
 | What you want to save | Use | Becomes palace-searchable |
 |---|---|---|
-| A raw observation, a progress tick, a timestamp, a quick note | `memory_log(entry)` | After next goodnight mine (21:00 CET) |
-| A durable verbatim fact — something future-you will want to grep for word-for-word | `palace_add_drawer(content, topic)` | Immediately |
+| A raw observation, a progress tick, a timestamp, a quick note | `memory_log(entry)` | Hot daily index only (today/yesterday markdown). Not mined into a separate palace `memory` room. |
+| A durable verbatim fact — something future-you will want to grep for word-for-word | `palace_add_drawer(content, topic, room="knowledge")` | Immediately (`room=knowledge` is the default) |
+| A daily recap / operational narrative | `palace_add_drawer(..., room="episodes")` | Immediately — goodnight uses this for `daily-recap-YYYY-MM-DD` |
 | A structured relational fact — *X is-a Y*, *A prefers B*, *service runs_on EC2* | `palace_kg_add(subject, predicate, object)` | Immediately, via the knowledge graph |
 | A reflection in your own voice — end-of-session recap, lesson learned, a thought worth keeping | `palace_diary_write(entry, topic)` | Immediately, into your diary |
 
-**Don't** duplicate. If you log it in the daily log, don't also `palace_add_drawer` it — it'll be mined automatically tonight. If you `palace_kg_add` a triple, you don't also need to `palace_add_drawer` the same content.
+**Don't** duplicate. If you `palace_kg_add` a triple, you don't also need to `palace_add_drawer` the same content. Daily-log lines are an index pointer — durable facts still need an explicit palace write.
 
 ### Reading from the palace
 
@@ -120,7 +126,7 @@ All palace tools (`palace_search`, `palace_add_drawer`, `palace_wake_up`, `palac
 
 ## 🗄️ The operational DB — the `db_*` primitives
 
-*Your system of record (MongoDB). The single source of truth for operational state — what is true right now, what's been done, what's due next. **You touch it ONLY through these primitives.** Freestyle pymongo/mongosh in `run_shell` is removed and refused. Doctrine: `config/DATA.md`. The map of collections: `state/db_index.md`.*
+*Your system of record (MongoDB). The single source of truth for operational state — what is true right now, what's been done, what's due next. **You touch it ONLY through these primitives.** Freestyle pymongo/mongosh in `run_shell` is removed and refused. Doctrine: `knowledge/reference/data.md`. The map of collections: `state/db_index.md`.*
 
 Every entity is defined in a `workflows/*.json` spec (its collection, unique key, states, allowed transitions). The primitives resolve the entity against that spec and enforce it, so you can't make an illegal move or forget the audit trail.
 
@@ -137,7 +143,7 @@ Every entity is defined in a `workflows/*.json` spec (its collection, unique key
 Rules of thumb:
 - **Exact lookups, never search**, for state — `db_get`/`db_query`, not `palace_search`. (The palace is for meaning/learning; the DB is for "did I already message Alice?")
 - **Caps & approvals are prose, not code.** The primitives enforce the state machine + history; they do **not** enforce daily caps, ordering, or approval gates. Those live in the job cookbook — check `db_counter` and honor the gate yourself.
-- **No new tool for new state.** Need a new entity or status? Author a `workflows/*.json` spec — see `config/WORKFLOWS.md`. Then the same primitives + the Tower UI work on it for free.
+- **No new tool for new state.** Need a new entity or status? Author a `workflows/*.json` spec — see `knowledge/reference/workflows.md`. Then the same primitives + the Tower UI work on it for free.
 - **Secrets:** read credentials with `db_get(entity="credential", key="<name>")`; **mask** (`****`) whenever you echo them. The `credential` entity is hidden from the Tower UI.
 
 ---
@@ -303,7 +309,7 @@ Install the CLI once on the host: `pip install "browser-use[core]" && browser-us
 
 **Durability across turns/restarts:** `state/browser_profiles.md` is the durable record of which profiles exist and why — you don't need to "remember" this in-context. Read it rather than guessing from recall.
 
-**Scope note:** today's `jobs/accept_linkedin_invites.md`, `jobs/lead_sourcing.md`, `jobs/outbound_sales_engine.md`, and the `workflows/linkedin_outreach.json` spec all assume the single `main` profile / single `"linkedin"` credential and are unaffected by any of this — they keep working exactly as before. A workflow that actually needs multiple accounts (e.g. round-robining outreach across two LinkedIn logins) should be co-designed fresh per `config/WORKFLOWS.md`.
+**Scope note:** today's `jobs/accept_linkedin_invites.md`, `jobs/lead_sourcing.md`, `jobs/outbound_sales_engine.md`, and the `workflows/linkedin_outreach.json` spec all assume the single `main` profile / single `"linkedin"` credential and are unaffected by any of this — they keep working exactly as before. A workflow that actually needs multiple accounts (e.g. round-robining outreach across two LinkedIn logins) should be co-designed fresh per `knowledge/reference/workflows.md`.
 
 ---
 
@@ -422,7 +428,7 @@ The **heartbeat** monitors one task you launched *now*. The **background worker*
 autonomously between conversations, on a second `worker` channel. The full model
 — the two hats, the board files (`jobs/` + `state/`), the
 shared work ledger (`state/progress/`, one file per day, with the DB as the authority behind it),
-rituals vs projects, and verify-with-evidence — lives in `config/CONTEXT.md` §5;
+rituals vs projects, and verify-with-evidence — lives in `knowledge/reference/architecture.md` §5;
 it is not restated here. Two operational reminders worth keeping at hand:
 
 - **Start / stop:** set the first line of `state/worker_control.md` to `active`

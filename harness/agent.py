@@ -507,9 +507,11 @@ class GaladrielAgent:
             return
         try:
             from . import palace
-            tag = f"max_tokens_{channel_id}"
+            tag = f"{channel_id}:max_tokens"
             snapshot = list(messages)  # defensive copy
-            asyncio.create_task(palace.archive_conversation(tag, snapshot))
+            asyncio.create_task(
+                palace.archive_conversation(channel_id, snapshot, kind="max_tokens")
+            )
             self._post_recovery_archive_tag[channel_id] = tag
             log.info(f"Recovery archive queued ({len(snapshot)} msgs, tag={tag})")
         except Exception as e:
@@ -743,7 +745,9 @@ class GaladrielAgent:
         #    palace, and mining can take a while, so we cannot fire-and-forget.
         try:
             from . import palace
-            batch_dir = palace.archive_conversation_durable(f"compact_{channel_id}", snapshot_msgs)
+            batch_dir = palace.archive_conversation_durable(
+                channel_id, snapshot_msgs, kind="compact",
+            )
             if batch_dir is not None:
                 await palace.mine_batch_dir(batch_dir, agent="compaction")
         except Exception as e:
@@ -794,7 +798,9 @@ class GaladrielAgent:
         # palace, and mining can take a while, so we cannot fire-and-forget.
         try:
             from . import palace
-            batch_dir = palace.archive_conversation_durable(f"compact_{channel_id}", snapshot_msgs)
+            batch_dir = palace.archive_conversation_durable(
+                channel_id, snapshot_msgs, kind="compact",
+            )
             if batch_dir is not None:
                 await palace.mine_batch_dir(batch_dir, agent="compaction")
         except Exception as e:
@@ -849,7 +855,9 @@ class GaladrielAgent:
         new_slice = list(messages[start:])
         try:
             from . import palace
-            batch_dir = palace.archive_conversation_durable(f"checkpoint_{channel_id}", new_slice)
+            batch_dir = palace.archive_conversation_durable(
+                channel_id, new_slice, kind="checkpoint",
+            )
             if batch_dir is None:
                 return 0
             await palace.mine_batch_dir(batch_dir, agent="checkpoint")

@@ -2,8 +2,9 @@
 
 Read/edit surface for every *.md file the agent actually consults:
 
-  - config/*.md   — always in the system prompt (identity + instructions)
+  - selected config/*.md — explicit stable prompt allowlist
   - jobs/*.md     — playbooks, read on demand by the worker/scheduler
+  - knowledge/*.md — indexed procedures and reference, read on demand
   - state/*.md    — board files (plan, progress, steering, backlog, ...)
   - sme/*.md      — subject-matter knowledge, mined into the palace
 
@@ -14,7 +15,7 @@ here is exactly what the agent sees on its next call — no restart needed.
 Editing writes straight to the working tree, then auto-commits so every
 change lands in git history without a separate step.
 
-Files are only reachable through a server-side enumeration of the four
+Files are only reachable through a server-side enumeration of the configured
 directories above (`_all_editable()`), never through a raw filesystem path
 taken from the request — that enumeration IS the whitelist.
 """
@@ -25,6 +26,8 @@ from pathlib import Path
 
 from flask import Blueprint, abort, redirect, render_template, request, url_for
 
+from harness.memory import STABLE_FILES
+
 from . import ui_context as ui_ctx
 
 log = logging.getLogger("galadriel.tower.config")
@@ -33,19 +36,14 @@ CONFIG_DIR = Path("config")
 JOBS_DIR = Path("jobs")
 STATE_DIR = Path("state")
 SME_DIR = Path("sme")
-
-# Mirrors harness/memory.py CORE_IDENTITY_FILES + LONG_TERM_MEMORY_FILE —
-# the exact order MemoryManager assembles the stable block in.
-_IDENTITY_FIRST = ("SOUL.md", "MEMORY.md")
+KNOWLEDGE_DIR = Path("knowledge")
 
 
 def _identity_files() -> list[Path]:
-    """config/*.md in the order MemoryManager actually assembles them."""
+    """Explicit stable files in MemoryManager assembly order."""
     if not CONFIG_DIR.is_dir():
         return []
-    first = [CONFIG_DIR / f for f in _IDENTITY_FIRST if (CONFIG_DIR / f).is_file()]
-    rest = sorted(p for p in CONFIG_DIR.glob("*.md") if p.name not in _IDENTITY_FIRST)
-    return first + rest
+    return [CONFIG_DIR / f for f in STABLE_FILES if (CONFIG_DIR / f).is_file()]
 
 
 def _job_files() -> list[Path]:
@@ -60,10 +58,20 @@ def _sme_files() -> list[Path]:
     return sorted(SME_DIR.rglob("*.md")) if SME_DIR.is_dir() else []
 
 
+def _knowledge_files() -> list[Path]:
+    return sorted(KNOWLEDGE_DIR.rglob("*.md")) if KNOWLEDGE_DIR.is_dir() else []
+
+
 def _all_editable() -> dict[str, Path]:
     """relpath (posix string) -> Path for every file this UI may view/edit.
     Recomputed per request; a path is only ever opened if it appears here."""
-    files = _identity_files() + _job_files() + _state_files() + _sme_files()
+    files = (
+        _identity_files()
+        + _job_files()
+        + _knowledge_files()
+        + _state_files()
+        + _sme_files()
+    )
     return {p.as_posix(): p for p in files}
 
 
@@ -75,8 +83,9 @@ def _file_meta(p: Path) -> dict:
 # key -> (label, note, base dir, whitelist function). Order here is the
 # order the 4 category tiles are shown in on /config.
 CATEGORIES = {
-    "identity": ("Identity & Instructions", "always in the prompt (cached)", CONFIG_DIR, _identity_files),
+    "identity": ("Stable Core", "explicitly allowlisted in the cached prompt", CONFIG_DIR, _identity_files),
     "jobs": ("Playbooks", "read on demand by the worker/scheduler", JOBS_DIR, _job_files),
+    "knowledge": ("Knowledge", "indexed procedures and reference, read on demand", KNOWLEDGE_DIR, _knowledge_files),
     "state": ("Board / State", "read on demand", STATE_DIR, _state_files),
     "sme": ("SME Knowledge", "mined into the palace, not in the prompt", SME_DIR, _sme_files),
 }

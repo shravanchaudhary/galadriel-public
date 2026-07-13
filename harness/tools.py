@@ -249,12 +249,12 @@ TOOL_DEFINITIONS = [
         "name": "palace_add_drawer",
         "description": (
             "File a verbatim fact or memory directly into the palace *right now*. "
-            "Unlike memory_log (which only writes to today's daily log and isn't "
-            "palace-searchable until the next mine), this tool makes the content "
-            "immediately retrievable via palace_search. "
+            "Unlike memory_log (which only writes to today's daily log as a hot "
+            "index), this tool makes the content immediately retrievable via "
+            "palace_search. "
             "Use sparingly — only for facts worth remembering across sessions "
-            "(decisions, discoveries, one-off configuration, durable context). "
-            "Everyday chatter belongs in the daily log."
+            "(decisions, discoveries, durable context). Defaults to room=knowledge; "
+            "use room=episodes for daily recaps."
         ),
         "input_schema": {
             "type": "object",
@@ -270,16 +270,16 @@ TOOL_DEFINITIONS = [
                 "room": {
                     "type": "string",
                     "description": (
-                        "Optional room to route this drawer to (the relational "
-                        "layer). Use a room name to group related drawers — e.g. "
-                        "'dialogue' for notable exchanges, 'open_questions' for "
-                        "unresolved threads. Omit for durable facts (defaults to "
-                        "the palace's general room)."
+                        "Room inside the agent wing. Defaults to 'knowledge' for "
+                        "durable reusable facts. Use 'episodes' for daily recaps / "
+                        "operational narratives, 'conversations' only for verbatim "
+                        "chat archives (prefer the archive helpers), 'diary' via "
+                        "palace_diary_write instead."
                     ),
                 },
                 "wing": {
                     "type": "string",
-                    "description": "Wing to file under (default 'agent').",
+                    "description": "Wing to file under (default 'agent' — the only lived-memory wing).",
                 },
             },
             "required": ["content"],
@@ -479,7 +479,7 @@ TOOL_DEFINITIONS = [
             "Create a new entity document in the operational DB (MongoDB). This is "
             "the ONLY sanctioned way to insert operational state — never write "
             "freestyle pymongo. The entity must be defined in a workflows/*.json "
-            "spec (see config/WORKFLOWS.md). The doc's status is set to the spec's "
+            "spec (see knowledge/reference/workflows.md). The doc's status is set to the spec's "
             "initial state automatically, history[] is initialized, and the unique "
             "key dedups: if a doc with that key already exists, nothing is created."
         ),
@@ -831,8 +831,8 @@ async def _execute_tool_impl(
                 "[blocked] Freestyle MongoDB access via run_shell is not allowed. "
                 "Use the db_* primitive tools (db_create, db_get, db_query, "
                 "db_move_state, db_update, db_delete, db_add_event, db_counter) "
-                "instead — they enforce the workflow spec. See config/WORKFLOWS.md "
-                "and config/DATA.md."
+                "instead — they enforce the workflow spec. See knowledge/reference/workflows.md "
+                "and knowledge/reference/data.md."
             )
         return await _run_shell(inputs["command"], inputs.get("working_dir", working_dir))
     elif name == "read_file":

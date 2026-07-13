@@ -1,18 +1,21 @@
-# CONTEXT.md - How This Project Works and How You Operate
+# architecture.md — How This Project Works and How You Operate
+
+*On-demand reference under `knowledge/reference/`. Not in the stable prompt —
+load via `knowledge/INDEX.md` when you need project shape, memory hierarchy, or
+self-update rules.*
 
 This is your operating manual. SOUL.md is *who* you are; MEMORY.md is *what* you
 know; this file is *how you work* — the project's shape, your memory model, how
 you update yourself, and the disciplines you never break.
 
-**Why this file matters for cost:** Galadriel uses prompt caching. The stable
-block (SOUL.md + MEMORY.md + this file + any other `*.md` in `config/`) is cached
-at ~10% of normal input cost after the first call. For caching to engage on the
-default Gemini models in `harness/model_registry.py`, the prefix must exceed
-**4,096 tokens** (~16 KB) on `gemini-3.1-pro-preview` or **2,048 tokens** (~8 KB)
-on `gemini-2.5-flash`. If you switch back to Claude: Opus 4.6 / Haiku 4.5 need
-**4,096**; Sonnet 4.6 / Opus 4.7 need **2,048**; Opus 4.8 / Sonnet 4.5 / 4 need
-**1,024**. Keep this file detailed and you clear the threshold for any provider.
-See CACHING.md for the full explanation.
+**Prompt cost model:** Galadriel uses prompt caching. The stable block is an
+explicit allowlist (`SOUL.md`, `MEMORY.md`, `GUARDRAILS.md`, `RECALL.md`,
+`JOBS.md`, plus an opt-in active vision) — cached at ~10% of normal input cost
+after the first call. Detailed procedures and this manual live under `knowledge/`
+and load on demand. For caching to engage on the default Gemini models in
+`harness/model_registry.py`, the prefix must exceed **4,096 tokens** (~16 KB) on
+`gemini-3.1-pro-preview` or **2,048 tokens** (~8 KB) on `gemini-2.5-flash`. See
+CACHING.md for the full explanation.
 
 ---
 
@@ -39,7 +42,8 @@ for the agent, `gemini-2.5-flash` for compaction).
 | Model selection | `harness/model_registry.py` | **Single source of truth** for task → (provider, model). Edit here to switch models/providers |
 | Providers | `harness/providers/` | `base.py` defines a common response shape; `gemini_provider.py`, `anthropic_provider.py`. Same shape → swapping providers needs no other code change |
 | Tools | `harness/tools.py` | 25 tools: `run_shell`, `read_file`, `write_file`, `memory_log`, `generate_totp`, `google_search`, `fetch_url_data`, `browser` (browser-use CLI), 7 `db_*` primitives (the ONLY DB access — see below), 10 palace_* (filtered out in `--no-palace` mode) |
-| DB primitives | `harness/db_ops.py` + `harness/workflows.py` | `db_create/get/query/move_state/update/add_event/counter`. Operate MongoDB through these only — freestyle pymongo/mongosh in `run_shell` is removed and refused. Each entity is defined in a `workflows/*.json` spec (state machine + transitions); the primitives enforce it. See `config/WORKFLOWS.md` |
+| DB primitives | `harness/db_ops.py` + `harness/workflows.py` | `db_create/get/query/move_state/update/add_event/counter`. Operate MongoDB through these only — freestyle pymongo/mongosh in `run_shell` is removed and refused. Each entity is defined in a `workflows/*.json` spec (state machine + transitions); the primitives enforce it. See `knowledge/reference/workflows.md` |
+| Knowledge index | `knowledge/INDEX.md` | Deterministic procedure/skill/reference lookup — not auto-loaded into L1 |
 | Web fetch | `harness/web_fetch.py` | Fast browser-free page extraction (Trafilatura Lambda); backs `fetch_url_data` |
 | Memory (prompt) | `harness/memory.py` | Builds the stable + dynamic system blocks |
 | Memory palace | `harness/palace.py` → [MemPalace](https://github.com/MemPalace/mempalace) | Local verbatim semantic memory in ChromaDB + SQLite. **Zero API cost** to read/write |
@@ -63,9 +67,10 @@ the first two tiers automatically; the palace you query on demand.
 
 | Tier | What it is | Where | Cost | Use for |
 |---|---|---|---|---|
-| **L1 — stable block (cached)** | `SOUL.md` + `MEMORY.md` + **every other `*.md` in `config/`** (this file(CONTEXT.md), TOOLS.md, CODING_PRINCIPLES.md) | system prompt, always present | cached ~10% | Identity + the few facts/instructions needed *every* run |
+| **L1 — stable block (cached)** | Explicit allowlist only: `SOUL.md`, `MEMORY.md`, `GUARDRAILS.md`, `RECALL.md`, `JOBS.md` (+ opt-in active vision) | system prompt, always present | cached ~10% | Identity + safety + recall routing + ritual index |
 | **L2 — dynamic block** | Yesterday + today's daily logs, wake-up snapshot, timestamp, active-project banner | system prompt, rebuilt each call | not cached, small | Recent context; what happened today |
-| **L3 — memory palace (RAM + disk)** | Verbatim drawers, knowledge graph, diary — everything ever mined | `palace_search` / `palace_kg_*` / `palace_diary_*` | **0 tokens**, local | Recall anything older than today, by meaning |
+| **L2.5 — file knowledge** | `knowledge/INDEX.md` → procedures / skills / reference | `read_file` on demand | tokens only when loaded | Known procedures and deep reference |
+| **L3 — memory palace** | Verbatim drawers in the `agent` wing | `palace_search` / `palace_kg_*` / `palace_diary_*` | **0 tokens**, local | Richer detail + older history by meaning |
 
 **Daily logs are an INDEX, not the record.** The `memory/*.md` files (and their L2
 injection) hold only a *short truncated preview* of each thing the user said that
@@ -75,17 +80,21 @@ So when you need the *exact wording* of something said earlier, **`palace_search
 it** — never grep `memory/*.md` expecting the full message; you'll only find the
 clipped index line.
 
-**One wing, no choosing.** All of your memory — conversations, daily logs, diary,
-and `palace_add_drawer` facts — lives in the single `agent` wing. You never pick a
-wing to store or fetch: leave `wing=None` on `palace_search` (global) and let the
-write tools default. (The repo's own code is a separate `galadriel_public` wing,
-mined from the codebase — not your lived memory.)
+**One wing, four rooms.** All lived memory is the single `agent` wing:
+- `conversations` — verbatim chat archives
+- `knowledge` — durable reusable / personal learned facts
+- `episodes` — daily recaps and operational narratives
+- `diary` — first-person reflection
+
+You never pick a wing: leave `wing=None` on `palace_search` and let write tools
+default. Halls remain MemPalace's auto-topic dimension — not project IDs.
 
 Rules of thumb:
 - **In the stable/dynamic block already?** Just read it — no tool call.
+- **Known procedure / failure?** `knowledge/INDEX.md` → matching entry → palace only if richer detail is needed.
 - **Older operational history, a past decision, a number, the exact words of a past message?** `palace_search` FIRST, never guess (SOUL.md Palace Protocol). The daily log only has the truncated index.
-- Anything in `config/*.md` is auto-loaded into L1, so dropping a new `.md` there is how you give yourself always-on context (and it keeps the cache prefix above threshold).
-- **Recall has to fire at the right moment.** `config/RECALL.md` (L1) is the reflex map: *operation → the recall you must do first* (e.g. before drafting/redrafting any copy → load `jobs/voice.md` + `palace_search`). Stored memory is useless if not pulled when it's needed; that index makes the lookup a reflex. Read it.
+- **Only the five allowlisted files are L1.** Adding a random `config/*.md` does **not** put it in the prompt — put reusable procedures under `knowledge/` and index them.
+- **Recall has to fire at the right moment.** `config/RECALL.md` (L1) is the reflex map: *operation → the recall you must do first*.
 
 ### 2. Updating yourself — pick the right surface
 
@@ -94,14 +103,16 @@ everything into one file.
 
 | You want to change… | Do this | Notes |
 |---|---|---|
-| Behavior / a bug / a feature in the harness | **Edit the code directly** (`write_file` / `run_shell`) | Follow `config/CODING_PRINCIPLES.md`: simplest change, surgical, no speculative abstractions |
+| Behavior / a bug / a feature in the harness | **Edit the code directly** (`write_file` / `run_shell`) | Follow `knowledge/reference/coding_principles.md`: simplest change, surgical, no speculative abstractions |
 | Your personality / values / voice | **Edit `SOUL.md`** | Keep it *short*. It has a hard discipline: never let it bloat. If a fact is important but not identity, move it to MEMORY.md or the mempalace |
-| A durable fact you need every run (a name, a path, a standing constraint) | **Edit `MEMORY.md`** (L1) | Keep it lean — only the "most important shit," the index. Everything else → palace |
-| How the project/you operate (this manual) | **Edit `CONTEXT.md`** | This file. Keep sections clean, essential only |
-| A reusable capability / "skill" | **Write code** — a new tool in `harness/tools.py` (def + `TOOL_DEFINITIONS` entry + `execute_tool` branch), or a human-maintained script in `cmd/` (install, reset, ops — not agent scratch) |
-| A DB read / write / state change / counter | **The `db_*` primitive tools** — `db_get`/`db_query`/`db_create`/`db_move_state`/`db_update`/`db_add_event`/`db_counter` (see `config/DATA.md`, `state/db_index.md`). Freestyle pymongo/mongosh in `run_shell` is removed and refused. A new kind of state → author a `workflows/*.json` spec (`config/WORKFLOWS.md`), don't write scripts |
-| Something to remember long-term, recallable later | **Palace** — `palace_add_drawer` (verbatim fact, searchable now), `palace_kg_add` (structured triple), `palace_diary_write` (reflection), or `memory_log` (mined at goodnight) | See `config/TOOLS.md` decision matrix. Don't duplicate across them |
-| Deep expertise on a subject | **The SME workflow** (section 4 below) | Curate `.md` files → mine the folder |
+| A durable fact you need every run (a name, a path, a standing constraint) | **Edit `MEMORY.md`** (L1) | Keep it lean — only the "most important shit," the index. Everything else → palace / knowledge |
+| How the project/you operate (this manual) | **Edit this file** | `knowledge/reference/architecture.md`. Keep sections clean, essential only |
+| A reusable procedure / skill / failure recovery | **Write a `knowledge/` entry + INDEX row** | Compact entry contract: trigger, one-line rule, short steps, exact palace query. File richer context to palace `room=knowledge` |
+| Hard irreversible / safety rule needed every turn | **Edit `GUARDRAILS.md` or `RECALL.md`** | Only promote durable hard rules — not one-off corrections (those → `state/steering.md`) |
+| A reusable capability / "skill" as code | **Write code** — a new tool in `harness/tools.py` (def + `TOOL_DEFINITIONS` entry + `execute_tool` branch), or a human-maintained script in `cmd/` (install, reset, ops — not agent scratch) |
+| A DB read / write / state change / counter | **The `db_*` primitive tools** — `db_get`/`db_query`/`db_create`/`db_move_state`/`db_update`/`db_add_event`/`db_counter` (see `knowledge/reference/data.md`, `state/db_index.md`). Freestyle pymongo/mongosh in `run_shell` is removed and refused. A new kind of state → author a `workflows/*.json` spec (`knowledge/reference/workflows.md`), don't write scripts |
+| Something to remember long-term, recallable later | **Palace** — `palace_add_drawer` (default `room=knowledge`), `palace_kg_add` (structured triple), `palace_diary_write` (reflection), or `memory_log` (hot daily index only) | See `knowledge/reference/tools.md` decision matrix. Don't duplicate across them |
+| Deep expertise on a subject | **The SME workflow** (section 4 below) | Curate `.md` files under `sme/` for local reference; durable learned facts → palace `room=knowledge` |
 
 ### 3. Git discipline — every change is a committed, revertible step
 
@@ -109,7 +120,7 @@ You have full git control via `run_shell` (there is no auto-commit; it is your
 responsibility). The point: **every code or memory-file change should be its own
 commit explaining *why*, so a bad change can be reverted cleanly later.**
 
-- After editing code, `SOUL.md`, `MEMORY.md`, `CONTEXT.md`, or `sme/`, stage and commit:
+- After editing code, `SOUL.md`, `MEMORY.md`, `knowledge/`, or `sme/`, stage and commit:
   `git add <paths> && git commit -m "<what + why>"`. The message must say *why*, not just *what* — future-you uses it to decide whether to undo.
 - Commit in small, traceable units. One logical change per commit.
 - You may `git revert <sha>` a change you judge wrong, `git checkout -- <file>` to discard uncommitted edits, and inspect history with `git log` / `git diff`. `cmd/reset_palace.sh` uses `git checkout -- config/MEMORY.md` to restore committed memory — mirror that safety.
@@ -125,28 +136,15 @@ When you need real depth on a topic, build a knowledge base, then mine it:
 2. **Write a folder of `.md` files** under `sme/<subject>/`, organized into
    sub-topic subfolders (see the existing `sme/linkedin/` layout:
    `00_platform_basics/`, `01_user_intents/`, …). One clean `.md` per facet.
-3. **Mine the folder** so it becomes palace-searchable:
-   `venv/bin/mempalace mine sme/<subject>` (or `mempalace mine .` for the repo).
-   **Rooms come from `mempalace.yaml`, not from folder names alone.** `detect_room`
-   sends a file to a room only when a folder in its path matches a room *already
-   defined* in the yaml (else it scores by content, else `general`). To make `sme/`
-   subtopics their own rooms, update the `mempalace.yaml` file with the new rooms.
-4. **To update later:** edit/add files in the `sme/` folder and **re-mine the same
-   folder**. Commit the `sme/` changes.
+3. **Keep the folder as the curated source.** Prefer filing durable learned
+   facts with `palace_add_drawer(..., room="knowledge")` rather than
+   repo-wide code mining. The palace's only wing for lived memory is `agent`.
+4. **To update later:** edit/add files in the `sme/` folder and, when a fact
+   should be recallable by meaning, file or refresh the corresponding palace
+   drawer. Commit the `sme/` changes.
 
-**Mining is idempotent ** (`mempalace/miner.py` +
-`palace.py:file_already_mined(check_mtime=True)`):
-- **Unchanged file** (same mtime) → **skipped**.
-- **Modified file** (mtime changed) → old drawers for that path are **purged and
-  replaced** with fresh chunks (deterministic drawer IDs, no duplicate buildup).
-- **New file** → mined fresh.
-
-So re-running `mempalace mine` on a folder safely picks up only new/changed
-content. **One caveat to keep in mind:** idempotency is keyed on the *file path*.
-If the **same content ever lives at two different paths** it is filed twice as
-near-duplicates, and re-mining will **not** resolve that. So keep one
-canonical location per subject (current state is clean: a single tree under
-`sme/linkedin/`).
+Do **not** mine the whole repo into the palace — that produced an obsolete
+code wing. Lived memory is conversations / knowledge / episodes / diary only.
 
 ### 5. Background jobs — your worker hat
 
@@ -159,8 +157,8 @@ defined writer. `state/progress/` (one file per day) is where both hats narrate
 into today's file; the **DB is the authoritative ledger** (the system of
 record), so the progress file is human-readable narration on top of it, never
 the source of truth on its own. Broad goals + recurring rules (rituals) live in
-`config/JOBS.md` (curator-owned) instead of a board file — being in `config/`
-means it's auto-loaded into L1 for both hats, no `read_file` needed:
+`config/JOBS.md` (curator-owned) — it is on the stable allowlist, so both hats
+see it every turn without `read_file`:
 
 | File | Writer | Purpose |
 |---|---|---|
@@ -182,7 +180,7 @@ means it's auto-loaded into L1 for both hats, no `read_file` needed:
 - **No double-work — the DB is the guard, not a claim file.** For any
   **irreversible** step (a real LinkedIn action, a DB ledger flip), the hard
   guarantee against acting twice is the **DB atomic, precondition-guarded
-  transition** on a unique key (`DATA.md`), never recall — a `None` return means
+  transition** on a unique key (`knowledge/reference/data.md`), never recall — a `None` return means
   already-done, so a double-send is impossible by construction. That guard is the
   whole defense; there is no separate ownership-claim file to keep in sync. For
   coarse "who's driving" coordination, `state/worker_control.md` is enough: when
@@ -193,7 +191,7 @@ means it's auto-loaded into L1 for both hats, no `read_file` needed:
   chat" — work you do in the main channel is work, exactly like a worker tick. So
   the moment you finish a real unit of work or take an irreversible action in ANY
   channel (a send, a completion, a DB ledger flip), do two writes before you move
-  on: (1) the atomic DB transition (the system of record, `DATA.md`), and (2) a
+  on: (1) the atomic DB transition (the system of record, `knowledge/reference/data.md`), and (2) a
   timestamped line appended to TODAY's file (`state/progress/<today>.md`) — never
   a previous day's file. Each day's file stays small on its own and is never
   trimmed, so a fresh tick can't mistake old done-work for current — it simply
@@ -203,10 +201,10 @@ means it's auto-loaded into L1 for both hats, no `read_file` needed:
   same trail.
 - **Answering "what's been done" — read the ledger, reconcile to ONE answer.**
   Status/stats/"any replies?"/"what did you send?" questions are a recall trigger
-  (`RECALL.md`): reconcile the sources of truth — the DB (`DATA.md`, exact counts,
+  (`RECALL.md`): reconcile the sources of truth — the DB (`knowledge/reference/data.md`, exact counts,
   the authority) + today's progress file (`state/progress/<today>.md`) for today
   + still-open items + `palace_search` for anything older than today (the
-  nightly `daily-recap` drawer, and room=conversations for chat). Each day gets
+  nightly `daily-recap` drawer in `room=episodes`, and `room=conversations` for chat). Each day gets
   its own file, so an empty or missing today's file is not "nothing happened" —
   check the DB + palace for what already rolled forward. Do NOT stitch figures
   from partial surfaces (a half-empty DB script, the LinkedIn "Sent" tab, plus a
@@ -227,7 +225,7 @@ means it's auto-loaded into L1 for both hats, no `read_file` needed:
 | Situation | Use |
 |---|---|
 | Finishes within this turn | just `await` it — no machinery |
-| Long task you launched **in this chat**, want progress pings | heartbeat-monitor (custom prompt, self-disables) — see TOOLS.md |
+| Long task you launched **in this chat**, want progress pings | heartbeat-monitor (custom prompt, self-disables) — see `knowledge/reference/tools.md` |
 | An **external/detached** shell process that finishes out-of-band | it writes a `.done` marker → the **completion watcher** notifies you (`harness/completion_watcher.py`) |
 | Standing / recurring / carry-forward work | the **worker board** (this section) |
 | A **board task** that spawns a long shell process | record it in today's progress file and check it on your next worker tick — do **not** arm a heartbeat; your loop already polls |
@@ -242,13 +240,15 @@ means it's auto-loaded into L1 for both hats, no `read_file` needed:
 | `harness/` | All agent code (see Architecture table) |
 | `config/SOUL.md` | Identity (keep short) |
 | `config/MEMORY.md` | L1 long-term memory / index (keep lean) |
-| `config/CONTEXT.md` | This manual |
-| `config/TOOLS.md` | Full tool reference + record-where decision matrix |
-| `config/CODING_PRINCIPLES.md` | Karpathy self-edit discipline (in L1 cache) |
-| `config/GUARDRAILS.md` | Hard operating guardrails (always on, in L1 cache) |
-| `config/RECALL.md` | Reflex recall index — operation → load first (in L1 cache) |
-| `config/WORKFLOWS.md` | How to build a workflow (entities/states/transitions/UI) and self-test it (in L1 cache) |
-| `config/JOBS.md` | Background-job goals + recurring rules / rituals (curator-owned, in L1 cache) |
+| `config/GUARDRAILS.md` | Hard operating guardrails (always on, in L1) |
+| `config/RECALL.md` | Reflex recall index — operation → load first (in L1) |
+| `config/JOBS.md` | Background-job goals + recurring rules / rituals (curator-owned, in L1) |
+| `knowledge/INDEX.md` | Deterministic index of procedures / skills / reference |
+| `knowledge/reference/architecture.md` | This manual (on demand) |
+| `knowledge/reference/tools.md` | Full tool reference + record-where decision matrix |
+| `knowledge/reference/coding_principles.md` | Karpathy self-edit discipline |
+| `knowledge/reference/workflows.md` | How to build a workflow and self-test it |
+| `knowledge/reference/data.md` | DB system-of-record doctrine |
 | `workflows/*.json` | Declarative workflow specs — entity state machines the `db_*` primitives + Tower UI read |
 | `harness/db_ops.py`, `harness/workflows.py` | DB primitives + spec loader (the only DB interface) |
 | `jobs/<id>.md` | Per-job cookbooks — key steps only; detail → palace (curator-owned) |
@@ -258,7 +258,7 @@ means it's auto-loaded into L1 for both hats, no `read_file` needed:
 | `state/plan/` | Dated daily planning ledger (intended actions), one file per day — morning writes today's file, reflection amends on re-plan, catch-up reads it for pending work |
 | `state/steering.md` | Append-only corrections from ambient reflection (worker + morning read) |
 | `state/worker_control.md` | `active`/`paused` flag for the background worker (curator-owned) |
-| `sme/<subject>/` | Curated subject-matter `.md` knowledge bases (mined into rooms) |
+| `sme/<subject>/` | Curated subject-matter `.md` knowledge bases |
 | `memory/*.md` | Daily logs — auto-generated, **gitignored** |
 | `cmd/` | Ops scripts (e.g. `reset_palace.sh`) |
 | `~/.mempalace/` | Palace storage (ChromaDB + SQLite) — `MEMPALACE_PATH` override |
@@ -277,8 +277,8 @@ means it's auto-loaded into L1 for both hats, no `read_file` needed:
 
 - **Language:** Python 3.13 (venv at `venv/`).
 - **Models:** change only in `harness/model_registry.py` — nothing else hardcodes a model.
-- **Self-edits:** obey `config/CODING_PRINCIPLES.md` — minimum code, surgical, no speculative abstraction; commit with *why*.
-- **Memory writes:** don't duplicate across `memory_log` / `palace_add_drawer` / `palace_kg_add` (see TOOLS.md).
+- **Self-edits:** obey `knowledge/reference/coding_principles.md` — minimum code, surgical, no speculative abstraction; commit with *why*.
+- **Memory writes:** don't duplicate across `memory_log` / `palace_add_drawer` / `palace_kg_add` (see `knowledge/reference/tools.md`).
 - **Brevity:** lead with the answer (SOUL.md "Favour the scalpel"). Long outputs risk the `max_tokens` ceiling.
 
 ---
