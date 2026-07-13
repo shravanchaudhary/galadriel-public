@@ -13,6 +13,7 @@ COLLECTION = "tower_settings"
 AGENT_MODEL_DOC_ID = "agent_model"  # legacy — migrated to main_model on read
 MAIN_MODEL_DOC_ID = "main_model"
 WORKER_MODEL_DOC_ID = "worker_model"
+HEADROOM_DOC_ID = "headroom"
 
 # Channels with a user-selectable model in Tower.
 CONFIGURABLE_CHANNELS: tuple[str, ...] = ("main", "worker")
@@ -99,3 +100,28 @@ def get_agent_model() -> str | None:
 def set_agent_model(model: str) -> None:
     """Persist the main-channel model (legacy alias)."""
     set_channel_model("main", model)
+
+
+def get_headroom_enabled() -> bool:
+    """Return whether in-agent Headroom compression is enabled (default False)."""
+    db = _db()
+    if db is None:
+        return False
+    doc = db[COLLECTION].find_one({"_id": HEADROOM_DOC_ID})
+    return bool((doc or {}).get("enabled", False))
+
+
+def set_headroom_enabled(enabled: bool) -> None:
+    """Persist the Headroom ON/OFF toggle. Raises if Mongo is unavailable."""
+    db = _db()
+    if db is None:
+        raise RuntimeError("MONGO_URI / MONGO_DB not configured")
+    db[COLLECTION].replace_one(
+        {"_id": HEADROOM_DOC_ID},
+        {
+            "_id": HEADROOM_DOC_ID,
+            "enabled": bool(enabled),
+            "updated_at": datetime.now(timezone.utc),
+        },
+        upsert=True,
+    )

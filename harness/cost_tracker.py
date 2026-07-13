@@ -32,11 +32,26 @@ if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
 
-def log_call(channel_id: str, task: str, provider: str, model: str, usage: dict) -> None:
+def log_call(
+    channel_id: str,
+    task: str,
+    provider: str,
+    model: str,
+    usage: dict,
+    *,
+    headroom_enabled: bool = False,
+    headroom_tokens_before: int = 0,
+    headroom_tokens_after: int = 0,
+    headroom_tokens_saved: int = 0,
+) -> None:
     """Fire-and-forget: cost a call's usage and insert it into `llm_calls`.
 
     `usage` is the same shape as `GaladrielAgent.last_usage`:
     {"input": int, "cache_read": int, "cache_write": int, "output": int}.
+
+    Headroom fields are always written (zeros when OFF / unavailable) so the
+    Costs ON-vs-OFF aggregation stays simple. Legacy docs without these fields
+    are treated as headroom_enabled=false.
     Never raises — a logging failure must not break the turn.
     """
     try:
@@ -51,6 +66,10 @@ def log_call(channel_id: str, task: str, provider: str, model: str, usage: dict)
             "cache_read_tokens": usage.get("cache_read", 0),
             "cache_write_tokens": usage.get("cache_write", 0),
             "output_tokens": usage.get("output", 0),
+            "headroom_enabled": bool(headroom_enabled),
+            "headroom_tokens_before": int(headroom_tokens_before or 0),
+            "headroom_tokens_after": int(headroom_tokens_after or 0),
+            "headroom_tokens_saved": int(headroom_tokens_saved or 0),
             **cost,
         }
         asyncio.create_task(_insert(doc))
@@ -232,3 +251,60 @@ def total_cost(since: datetime | None = None, models: list[str] | None = None) -
     ]
     rows = list(db[COLLECTION].aggregate(pipeline))
     return rows[0]["cost_total"] if rows else 0.0
+
+
+def _empty_headroom_row(enabled: bool) -> dict:
+    return {
+        "headroom_enabled": enabled,
+        "calls": 0,
+        "cost_total": 0.0,
+        "input_tokens": 0,
+        "avg_input_tokens": 0.0,
+        "headroom_tokens_saved": 0,
+    }
+
+
+def headroom_totals(
+    since: datetime | None = None,
+    models: list[str] | None = None,
+) -> list[dict]:
+    """Aggregate llm_calls by headroom_enabled for the Costs ON-vs-OFF card.
+
+    Returns a 2-row list [ON, OFF], always — zero-filled when a bucket has no
+    calls. Legacy docs missing `headroom_enabled` count as OFF.
+    """
+    on = _empty_headroom_row(True)
+    off = _empty_headroom_row(False)
+    db = _db()
+    if db is None:
+        return [on, off]
+    match = _match_stage(since, models)
+    pipeline = [
+        *([{"$match": match}] if match else []),
+        {"$group": {
+            "_id": {"$ifNull": ["$headroom_enabled", False]},
+            "calls": {"$sum": 1},
+            "cost_total": {"$sum": {"$ifNull": ["$cost_total", 0]}},
+            "input_tokens": {"$sum": {"$ifNull": ["$input_tokens", 0]}},
+            "headroom_tokens_saved": {
+                "$sum": {"$ifNull": ["$headroom_tokens_saved", 0]},
+            },
+        }},
+    ]
+    for row in db[COLLECTION].aggregate(pipeline):
+        enabled = bool(row.get("_id"))
+        calls = int(row.get("calls") or 0)
+        input_tokens = int(row.get("input_tokens") or 0)
+        bucket = {
+            "headroom_enabled": enabled,
+            "calls": calls,
+            "cost_total": float(row.get("cost_total") or 0.0),
+            "input_tokens": input_tokens,
+            "avg_input_tokens": (input_tokens / calls) if calls else 0.0,
+            "headroom_tokens_saved": int(row.get("headroom_tokens_saved") or 0),
+        }
+        if enabled:
+            on = bucket
+        else:
+            off = bucket
+    return [on, off]

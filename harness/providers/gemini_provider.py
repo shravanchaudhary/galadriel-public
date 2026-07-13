@@ -39,6 +39,7 @@ from google import genai
 from google.genai import types
 
 from .base import BaseModelProvider
+from .llm_retry import stream_with_llm_retry, with_llm_retry
 
 
 # ─── Anthropic-shaped response objects ───────────────────────────────
@@ -462,6 +463,9 @@ def _response_to_message(response) -> _Message:
 class GeminiProvider(BaseModelProvider):
     def __init__(self, api_key: str = None):
         key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        # Leave SDK HttpRetryOptions unset (google-genai defaults to no retry).
+        # Transient 429/5xx/timeouts are handled by with_llm_retry /
+        # stream_with_llm_retry so Retry-After is honoured in one place.
         self.client = genai.Client(api_key=key)
 
     def _thinking_config(self, model: str) -> types.ThinkingConfig | None:
@@ -498,12 +502,18 @@ class GeminiProvider(BaseModelProvider):
         self, *, model, max_tokens, messages, system=None, tools=None
     ):
         stable, dynamic = _split_system(system)
-        response = await self.client.aio.models.generate_content(
-            model=model,
-            contents=_messages_to_contents(messages, trailing_text=dynamic),
-            config=self._build_config(model, stable, tools, max_tokens),
-        )
-        return _response_to_message(response)
+        contents = _messages_to_contents(messages, trailing_text=dynamic)
+        config = self._build_config(model, stable, tools, max_tokens)
+
+        async def _once():
+            response = await self.client.aio.models.generate_content(
+                model=model,
+                contents=contents,
+                config=config,
+            )
+            return _response_to_message(response)
+
+        return await with_llm_retry(_once)
 
     async def stream_message(
         self, *, model, max_tokens, messages, system=None, tools=None
@@ -513,39 +523,46 @@ class GeminiProvider(BaseModelProvider):
         the agent loop sees the same response shape as `create_message`.
         """
         stable, dynamic = _split_system(system)
-        stream = await self.client.aio.models.generate_content_stream(
-            model=model,
-            contents=_messages_to_contents(messages, trailing_text=dynamic),
-            config=self._build_config(model, stable, tools, max_tokens),
-        )
+        contents = _messages_to_contents(messages, trailing_text=dynamic)
+        config = self._build_config(model, stable, tools, max_tokens)
 
-        all_parts = []
-        usage_metadata = None
-        finish_reason = None
+        async def _stream_once():
+            stream = await self.client.aio.models.generate_content_stream(
+                model=model,
+                contents=contents,
+                config=config,
+            )
 
-        async for chunk in stream:
-            candidates = getattr(chunk, "candidates", None)
-            candidate = candidates[0] if candidates else None
-            if candidate is not None:
-                content = getattr(candidate, "content", None)
-                for part in (getattr(content, "parts", None) or []):
-                    all_parts.append(part)
-                    text = getattr(part, "text", None)
-                    if text:
-                        kind = "thought" if getattr(part, "thought", False) else "text"
-                        yield (kind, text)
-                fr = getattr(candidate, "finish_reason", None)
-                if fr is not None:
-                    finish_reason = fr
-            if getattr(chunk, "usage_metadata", None) is not None:
-                usage_metadata = chunk.usage_metadata
+            all_parts = []
+            usage_metadata = None
+            finish_reason = None
 
-        blocks, has_tool_call = _parts_to_blocks(all_parts)
-        if has_tool_call:
-            stop_reason = "tool_use"
-        elif _finish_reason_name(finish_reason) == "MAX_TOKENS":
-            stop_reason = "max_tokens"
-        else:
-            stop_reason = "end_turn"
+            async for chunk in stream:
+                candidates = getattr(chunk, "candidates", None)
+                candidate = candidates[0] if candidates else None
+                if candidate is not None:
+                    content = getattr(candidate, "content", None)
+                    for part in (getattr(content, "parts", None) or []):
+                        all_parts.append(part)
+                        text = getattr(part, "text", None)
+                        if text:
+                            kind = "thought" if getattr(part, "thought", False) else "text"
+                            yield (kind, text)
+                    fr = getattr(candidate, "finish_reason", None)
+                    if fr is not None:
+                        finish_reason = fr
+                if getattr(chunk, "usage_metadata", None) is not None:
+                    usage_metadata = chunk.usage_metadata
 
-        yield ("message", _Message(blocks, _map_usage(usage_metadata), stop_reason))
+            blocks, has_tool_call = _parts_to_blocks(all_parts)
+            if has_tool_call:
+                stop_reason = "tool_use"
+            elif _finish_reason_name(finish_reason) == "MAX_TOKENS":
+                stop_reason = "max_tokens"
+            else:
+                stop_reason = "end_turn"
+
+            yield ("message", _Message(blocks, _map_usage(usage_metadata), stop_reason))
+
+        async for item in stream_with_llm_retry(_stream_once):
+            yield item

@@ -3,9 +3,12 @@
 import asyncio
 import base64
 import json
+import logging
 import os
 from datetime import datetime
 from pathlib import Path
+
+log = logging.getLogger("galadriel.tools")
 
 from .explorium_tools import (
     EXPLORIUM_TOOL_DEFINITIONS,
@@ -777,7 +780,47 @@ def visible_tool_definitions() -> list:
 async def execute_tool(name: str, inputs: dict, memory_manager=None, working_dir: str = None) -> str | list:
     """Execute a tool and return the result. Usually a string; the browser
     tool's `screenshot` returns a list of content blocks (text + image) so the
-    captured page reaches the model as vision input. Non-blocking."""
+    captured page reaches the model as vision input. Non-blocking.
+
+    Never raises into the agent loop: missing args / tool bugs come back as a
+    `[tool error] …` string so the model can correct and retry.
+    """
+    if not isinstance(inputs, dict):
+        return (
+            f"[tool error] {name} expected a dict of arguments, "
+            f"got {type(inputs).__name__}. Call again with the schema fields."
+        )
+    try:
+        return await _execute_tool_impl(
+            name, inputs,
+            memory_manager=memory_manager,
+            working_dir=working_dir,
+        )
+    except KeyError as e:
+        missing = e.args[0] if e.args else "?"
+        got = sorted(inputs.keys())
+        log.warning(
+            f"tool {name} missing arg {missing!r} (got keys={got})"
+        )
+        return (
+            f"[tool error] {name} missing required argument: {missing!r}. "
+            f"Got keys: {got}. Pass the required fields from the tool schema "
+            "and call again."
+        )
+    except Exception as e:
+        log.warning(f"tool {name} raised: {e}", exc_info=True)
+        return (
+            f"[tool error] {name} failed: {type(e).__name__}: {e}. "
+            "Fix the arguments (or try another approach) and call again."
+        )
+
+
+async def _execute_tool_impl(
+    name: str,
+    inputs: dict,
+    memory_manager=None,
+    working_dir: str = None,
+) -> str | list:
     # Stateless mode: refuse palace calls clearly.
     if palace_disabled() and name in _PALACE_TOOL_NAMES:
         return "[stateless session] palace memory is disabled (--no-palace); this tool is unavailable."

@@ -309,6 +309,8 @@ class GaladrielAgent:
         # Best-effort provider id for cost logging (matches model_registry's
         # ANTHROPIC/GEMINI/OLLAMA strings even when a custom `provider` is injected).
         self.provider_name = model_registry.provider_for_model(self.model)
+        # In-process Headroom compression (Tower toggle). Default off.
+        self.headroom_enabled = tower_settings.get_headroom_enabled()
         self.max_tokens = max_tokens or int(os.environ.get("AGENT_MAX_TOKENS", "8192"))
         self.memory = MemoryManager(config_dir=config_dir, memory_dir=memory_dir)
         self.working_dir = working_dir or os.getcwd()
@@ -659,7 +661,19 @@ class GaladrielAgent:
             f"(provider={model_registry.provider_for_model(model)})"
         )
 
-    def _log_usage(self, response, channel_id: str):
+    def set_headroom_enabled(self, enabled: bool) -> None:
+        """Enable/disable in-process Headroom compression and persist in MongoDB.
+
+        Takes effect on the next API call in the agent loop (including mid-cascade).
+        """
+        self.headroom_enabled = bool(enabled)
+        try:
+            tower_settings.set_headroom_enabled(self.headroom_enabled)
+        except RuntimeError:
+            log.warning("Headroom toggle changed but not persisted — MongoDB not configured")
+        log.info(f"Headroom compression {'ENABLED' if self.headroom_enabled else 'DISABLED'}")
+
+    def _log_usage(self, response, channel_id: str, headroom_metrics: dict | None = None):
         """Log token usage fields so caching behavior is observable, and record
         the call's cost (tagged by channel) for the Tower cost dashboard.
 
@@ -679,10 +693,15 @@ class GaladrielAgent:
             )
             self.last_usage = {"input": inp, "cache_read": cr, "cache_write": cw, "output": out}
             channel_model = self.model_for_channel(channel_id)
+            hr = headroom_metrics or {}
             cost_tracker.log_call(
                 channel_id, "agent",
                 model_registry.provider_for_model(channel_model),
                 channel_model, self.last_usage,
+                headroom_enabled=bool(hr.get("enabled", False)),
+                headroom_tokens_before=int(hr.get("tokens_before", 0)),
+                headroom_tokens_after=int(hr.get("tokens_after", 0)),
+                headroom_tokens_saved=int(hr.get("tokens_saved", 0)),
             )
         except Exception:
             log.debug("Could not log usage fields", exc_info=True)
@@ -990,6 +1009,11 @@ class GaladrielAgent:
 
         max_tokens_retries = 0  # Track consecutive max_tokens hits
         turn_thought = ""  # Accumulated thought deltas for the current API response
+        # Turn-local API message list. When Headroom is ON we accumulate the
+        # *compressed* bytes already sent so the provider prefix stays
+        # byte-identical across the tool cascade. Stored history (`messages`)
+        # stays original. Reset each turn / after compaction rebuilds.
+        api_messages: list | None = None
 
         while True:
             self._check_cancelled(channel_id)
@@ -1003,23 +1027,63 @@ class GaladrielAgent:
                 messages.append({"role": "user", "content": user_message})
 
             log.info(f"API call with {len(messages)} messages, last role: {messages[-1]['role']}")
+            channel_model = self.model_for_channel(channel_id)
+            provider = self._provider_for(channel_model)
+
+            # API-bound copy only (never mutate self.conversations).
+            # Order: screenshot prune → headroom → cache_control.
+            headroom_metrics = {
+                "enabled": False,
+                "tokens_before": 0,
+                "tokens_after": 0,
+                "tokens_saved": 0,
+                "images_kept": 0,
+                "images_pruned": 0,
+            }
+            if self.headroom_enabled:
+                frozen = len(api_messages) if api_messages is not None else 0
+                if api_messages is None:
+                    to_compress = messages
+                else:
+                    # Reuse compressed prefix; only compress newly appended msgs.
+                    to_compress = list(api_messages) + messages[frozen:]
+                compressed, hr = await headroom_compress.compress_for_api(
+                    to_compress,
+                    model=channel_model,
+                    frozen_message_count=frozen,
+                    model_limit=self.context_window,
+                )
+                api_messages = list(compressed)
+                messages_for_api = api_messages
+                headroom_metrics = {
+                    "enabled": True,
+                    "tokens_before": hr.tokens_before,
+                    "tokens_after": hr.tokens_after,
+                    "tokens_saved": hr.tokens_saved,
+                    "images_kept": hr.images_kept,
+                    "images_pruned": hr.images_pruned,
+                }
+                if hr.tokens_saved > 0 or hr.images_pruned > 0:
+                    log.info(
+                        f"Headroom | before={hr.tokens_before} after={hr.tokens_after} "
+                        f"saved={hr.tokens_saved} frozen={frozen} "
+                        f"images_kept={hr.images_kept} images_pruned={hr.images_pruned}"
+                    )
+            else:
+                # Still prune old screenshots so Headroom-off browser sessions
+                # do not send every historical base64 image to the provider.
+                api_messages = None
+                messages_for_api, prune_stats = headroom_compress.prepare_messages_for_api(
+                    messages
+                )
+                headroom_metrics["images_kept"] = prune_stats.images_kept
+                headroom_metrics["images_pruned"] = prune_stats.images_pruned
+
             # Attach cache_control to the last block of the last message.
             # This advances the messages-cache breakpoint as the conversation
             # grows, giving hits within tool_use cascades.
-            # Prune old screenshot base64 from the API-bound copy only
-            # (keep last 3). Never mutates stored conversation history.
-            messages_for_api, prune_stats = headroom_compress.prepare_messages_for_api(
-                messages
-            )
-            if prune_stats.images_pruned:
-                log.info(
-                    f"Screenshot prune | kept={prune_stats.images_kept} "
-                    f"pruned={prune_stats.images_pruned}"
-                )
             messages_for_api = _attach_trailing_cache_control(messages_for_api)
             turn_thought = ""
-            channel_model = self.model_for_channel(channel_id)
-            provider = self._provider_for(channel_model)
             if emit is not None:
                 response = None
                 async for kind, payload in provider.stream_message(
@@ -1048,7 +1112,7 @@ class GaladrielAgent:
 
             self._check_cancelled(channel_id)
 
-            self._log_usage(response, channel_id)
+            self._log_usage(response, channel_id, headroom_metrics=headroom_metrics)
             self._record_input_tokens(response, channel_id)
             await self._maybe_warn_context(response, channel_id)
             await self._maybe_warn_output_ceiling(response, channel_id)
@@ -1152,6 +1216,8 @@ class GaladrielAgent:
                 if not messages or messages[-1].get("role") != "user":
                     messages.append({"role": "user", "content": user_message})
 
+                # Buffer was rebuilt by compaction/reset — drop compressed prefix.
+                api_messages = None
                 continue
 
             if response.stop_reason == "tool_use":
@@ -1168,7 +1234,7 @@ class GaladrielAgent:
                     self._check_cancelled(channel_id)
 
                     tool_name = block.name
-                    tool_input = block.input
+                    tool_input = block.input if isinstance(block.input, dict) else {}
                     tool_id = block.id
 
                     if emit is not None:
@@ -1210,16 +1276,23 @@ class GaladrielAgent:
 
                     is_new_file = (
                         tool_name == "write_file"
+                        and bool(tool_input.get("path"))
                         and not os.path.exists(os.path.join(self.working_dir, tool_input.get("path", "")))
                     )
 
+                    # execute_tool never raises — missing args / tool bugs come
+                    # back as "[tool error] …" so the model can correct + retry.
                     result = await execute_tool(
                         tool_name, tool_input,
                         memory_manager=self.memory,
                         working_dir=self.working_dir,
                     )
 
-                    if is_new_file and result.startswith("Written "):
+                    if (
+                        is_new_file
+                        and isinstance(result, str)
+                        and result.startswith("Written ")
+                    ):
                         resolved = os.path.normpath(os.path.join(self.working_dir, tool_input["path"]))
                         self._created_files.add(resolved)
                     elif tool_name == "run_shell" and tier == "green":
@@ -1281,6 +1354,8 @@ class GaladrielAgent:
                         system_blocks = self._with_overlay(
                             self._assemble_system_blocks(channel_id), overlay_context,
                         )
+                        # Buffer was rebuilt — drop compressed API prefix.
+                        api_messages = None
                     except Exception as e:
                         log.warning(f"Mid-loop compaction failed ({e}); proceeding with full context")
 

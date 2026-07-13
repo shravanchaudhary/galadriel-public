@@ -75,6 +75,24 @@
         </div>
 
         <div class="card scheduler-card">
+            <div class="card-label">Headroom</div>
+            <div class="heartbeat-controls">
+                <div class="toggle-row">
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="headroom-toggle"
+                            {% if headroom_enabled %}checked{% endif %}
+                            onchange="toggleHeadroom()">
+                        <span class="toggle-slider"></span>
+                    </label>
+                    <span id="headroom-status" class="heartbeat-status {{ 'status-on' if headroom_enabled else 'status-off' }}">
+                        {{ 'ON' if headroom_enabled else 'Off' }}
+                    </span>
+                </div>
+            </div>
+            <div class="cron-note">Compress tool outputs before each API call (cache-safe freeze during cascades)</div>
+        </div>
+
+        <div class="card scheduler-card">
             <div class="card-label">Morning Greeting</div>
             <div class="card-value cron-info">
                 <span class="cron-label">Daily</span>
@@ -164,6 +182,30 @@ async function toggleHeartbeat() {
     } catch (err) {
         console.error('Failed to toggle heartbeat:', err);
         toggle.checked = !toggle.checked;
+    }
+}
+
+async function toggleHeadroom() {
+    const toggle = document.getElementById('headroom-toggle');
+    const enabled = toggle.checked;
+    try {
+        const res = await fetch('/api/headroom', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ enabled }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            throw new Error(data.error || 'Failed to set headroom');
+        }
+        const status = document.getElementById('headroom-status');
+        status.textContent = data.enabled ? 'ON' : 'Off';
+        status.className = 'heartbeat-status ' + (data.enabled ? 'status-on' : 'status-off');
+        toggle.checked = !!data.enabled;
+    } catch (err) {
+        console.error('Failed to toggle headroom:', err);
+        toggle.checked = !toggle.checked;
+        alert(err.message || 'Failed to toggle headroom');
     }
 }
 

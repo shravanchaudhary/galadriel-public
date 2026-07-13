@@ -90,6 +90,7 @@ def create_tower(agent, scheduler=None) -> Flask:
             worker_model=agent.model_for_channel(WORKER_CHANNEL_ID),
             model_options=tower_settings.AGENT_MODEL_OPTIONS,
             model_persisted=tower_settings.is_configured(),
+            headroom_enabled=getattr(agent, "headroom_enabled", False),
             channels=channels,
             total_msgs=total_msgs,
             recent_memories=recent_memories,
@@ -314,6 +315,29 @@ def create_tower(agent, scheduler=None) -> Flask:
                 ch: agent.model_for_channel(ch)
                 for ch in tower_settings.CONFIGURABLE_CHANNELS
             },
+            "persisted": tower_settings.is_configured(),
+        })
+
+    # ── Headroom compression API ─────────────────────────────────
+
+    @app.route("/api/headroom", methods=["GET"])
+    def api_headroom_get():
+        return jsonify({
+            "enabled": bool(getattr(agent, "headroom_enabled", False)),
+            "persisted": tower_settings.is_configured(),
+        })
+
+    @app.route("/api/headroom", methods=["POST"])
+    def api_headroom_set():
+        data = request.json or {}
+        if "enabled" not in data:
+            return jsonify({"error": "Missing 'enabled' field"}), 400
+        try:
+            agent.set_headroom_enabled(bool(data.get("enabled")))
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+        return jsonify({
+            "enabled": bool(agent.headroom_enabled),
             "persisted": tower_settings.is_configured(),
         })
 

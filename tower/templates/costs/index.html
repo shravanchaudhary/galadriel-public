@@ -45,6 +45,42 @@
 {% endif %}
 
 <section class="costs-section">
+    <h2>Headroom ON vs OFF</h2>
+    <p class="muted" style="margin-bottom:0.75rem">
+        Compare billed input tokens and cost when in-process Headroom compression
+        was enabled vs disabled (same range / model filter as below).
+    </p>
+    {% if headroom_rows %}
+    <table class="wf-table">
+        <thead>
+            <tr>
+                <th>Mode</th>
+                <th>Calls</th>
+                <th>Avg input tok</th>
+                <th>Input tok</th>
+                <th>Tokens saved (est.)</th>
+                <th>Cost</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in headroom_rows %}
+            <tr>
+                <td><span class="badge">{{ 'ON' if row.headroom_enabled else 'OFF' }}</span></td>
+                <td>{{ row.calls | default(0) }}</td>
+                <td>{{ "{:,.0f}".format(row.avg_input_tokens | default(0)) }}</td>
+                <td>{{ "{:,}".format(row.input_tokens | default(0)) }}</td>
+                <td>{{ "{:,}".format(row.headroom_tokens_saved | default(0)) }}</td>
+                <td>{{ (row.cost_total | default(0)) | usd }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="empty-state">No calls logged in this range yet.</p>
+    {% endif %}
+</section>
+
+<section class="costs-section">
     <h2>By day</h2>
     {% if daily_rows %}
     <table class="wf-table">

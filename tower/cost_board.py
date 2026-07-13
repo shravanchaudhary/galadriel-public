@@ -71,6 +71,7 @@ def register_cost_board(app):
         month_start = today_start.replace(day=1)
 
         query_suffix = _costs_query_suffix(selected_models, all_models)
+        headroom_rows = cost_tracker.headroom_totals(since=since, models=model_filter)
 
         return render_template(
             "costs/index.html",
@@ -89,6 +90,7 @@ def register_cost_board(app):
                 models=model_filter,
                 include_models=all_models,
             ),
+            headroom_rows=headroom_rows,
             page_context=ui_ctx.costs_index(range_key),
         )
 
