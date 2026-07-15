@@ -122,7 +122,15 @@ data "aws_iam_policy_document" "pipeline" {
     resources = [var.github_connection_arn]
   }
   statement {
-    actions   = ["ecs:DescribeServices", "ecs:DescribeTaskDefinition", "ecs:UpdateService"]
+    actions = [
+      "ecs:DescribeServices",
+      "ecs:DescribeTaskDefinition",
+      "ecs:DescribeTasks",
+      "ecs:ListTasks",
+      "ecs:RegisterTaskDefinition",
+      "ecs:TagResource",
+      "ecs:UpdateService",
+    ]
     resources = ["*"]
   }
   statement {

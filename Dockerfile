@@ -65,6 +65,7 @@ RUN mkdir -p /opt/galadriel-defaults \
     done \
     && rm -rf /data \
     && ln -s /mnt/efs/data /data \
+    && ln -s /etc/ssl/certs/rds-global-bundle.pem /app/global-bundle.pem \
     && chown -R galadriel:galadriel /app /opt/galadriel-defaults
 
 # Palace lives under the user's home on the volume. These are the public
