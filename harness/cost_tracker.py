@@ -43,6 +43,13 @@ def log_call(
     headroom_tokens_before: int = 0,
     headroom_tokens_after: int = 0,
     headroom_tokens_saved: int = 0,
+    tick_id: str | None = None,
+    run_id: str | None = None,
+    turn_id: str | None = None,
+    event_sequence: int | None = None,
+    call_index: int | None = None,
+    duration_ms: int | None = None,
+    stop_reason: str | None = None,
 ) -> None:
     """Fire-and-forget: cost a call's usage and insert it into `llm_calls`.
 
@@ -72,6 +79,20 @@ def log_call(
             "headroom_tokens_saved": int(headroom_tokens_saved or 0),
             **cost,
         }
+        if tick_id is not None:
+            doc["tick_id"] = tick_id
+        if run_id is not None:
+            doc["run_id"] = run_id
+        if turn_id is not None:
+            doc["turn_id"] = turn_id
+        if event_sequence is not None:
+            doc["event_sequence"] = int(event_sequence)
+        if call_index is not None:
+            doc["call_index"] = int(call_index)
+        if duration_ms is not None:
+            doc["duration_ms"] = int(duration_ms)
+        if stop_reason is not None:
+            doc["stop_reason"] = stop_reason
         asyncio.create_task(_insert(doc))
     except Exception as e:
         log.warning(f"Cost logging failed (channel={channel_id}): {e}")

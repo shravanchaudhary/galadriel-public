@@ -295,7 +295,12 @@ def create_bot(agent: GaladrielAgent, scheduler=None) -> AsyncApp:
 
         log.info(f"📥 Processing Slack message from {display_name} in {channel_id}: {clean_text[:80]}")
         try:
-            response = await agent.respond(user_input, channel_id=agent_channel_id())
+            response = await agent.respond(
+                user_input,
+                channel_id=agent_channel_id(),
+                run_source="slack",
+                client_dedup_key=f"slack:{channel_id}:{event.get('ts', '')}",
+            )
             if not response.strip():
                 response = "🌙 *(nothing to add — acknowledged.)*"
         except Exception as e:

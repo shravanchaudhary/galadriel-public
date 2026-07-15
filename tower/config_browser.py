@@ -22,11 +22,22 @@ taken from the request — that enumeration IS the whitelist.
 
 import logging
 import subprocess
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from flask import Blueprint, abort, redirect, render_template, request, url_for
 
 from harness.memory import STABLE_FILES
+from harness.loop_prompts import (
+    DEFAULT_HEARTBEAT_PROMPT,
+    PROCESS_COMPLETE_EXAMPLE,
+    WORKER_CLOCK_SUFFIX,
+    WORKER_PROMPT,
+    goodnight_prompt,
+    morning_prompt,
+    reflection_prompt,
+)
 
 from . import ui_context as ui_ctx
 
@@ -37,6 +48,18 @@ JOBS_DIR = Path("jobs")
 STATE_DIR = Path("state")
 SME_DIR = Path("sme")
 KNOWLEDGE_DIR = Path("knowledge")
+CET = ZoneInfo("Europe/Stockholm")
+
+PROMPT_CHANNELS = (
+    ("main", "Main conversation"),
+    ("worker", "Background worker"),
+    ("heartbeat", "Heartbeat"),
+    ("wake", "One-shot wake"),
+    ("morning", "Morning routine"),
+    ("reflection", "Ambient reflection"),
+    ("goodnight", "Goodnight routine"),
+    ("completions", "Process completion"),
+)
 
 
 def _identity_files() -> list[Path]:
@@ -161,7 +184,52 @@ def _browse_url_for_relpath(relpath: str) -> str:
     return "/config"
 
 
-def register_config_browser(app, agent):
+def _preview_trigger(channel: str, scheduler) -> tuple[str, str]:
+    """Return the next user-message shape for a channel's API request."""
+    today = datetime.now(CET).strftime("%Y-%m-%d")
+
+    if channel == "main":
+        return (
+            "(The next message received from Discord, Slack, or Tower.)",
+            "The live conversation buffer is appended before this message.",
+        )
+    if channel == "worker":
+        return (
+            f"{WORKER_PROMPT}\n\n{WORKER_CLOCK_SUFFIX}",
+            "The clock placeholders are filled at tick time; the worker clears its "
+            "conversation buffer before every tick.",
+        )
+    if channel == "heartbeat":
+        custom = getattr(scheduler, "heartbeat_prompt", None) if scheduler else None
+        return (
+            custom or DEFAULT_HEARTBEAT_PROMPT,
+            "Shows the active custom prompt when configured; otherwise the built-in default.",
+        )
+    if channel == "wake":
+        pending = getattr(scheduler, "pending_wake", None) if scheduler else None
+        return (
+            pending or "(No one-shot wake is armed.)",
+            "This message is sent once on the next scheduler start, then cleared.",
+        )
+    if channel == "morning":
+        return (
+            morning_prompt(today),
+            "The missed-morning catch-up uses this same channel with an additional "
+            "reconciliation prefix.",
+        )
+    if channel == "reflection":
+        return reflection_prompt(today), "The date-specific paths are generated for today."
+    if channel == "goodnight":
+        return goodnight_prompt(today), "The date-specific paths are generated for today."
+    if channel == "completions":
+        return (
+            PROCESS_COMPLETE_EXAMPLE,
+            "Example only — the actual message is built from the completed process's JSON marker.",
+        )
+    raise ValueError(f"Unsupported prompt-preview channel: {channel}")
+
+
+def register_config_browser(app, agent, scheduler=None):
     """Register the Brain (configuration) UI routes on the Flask app."""
     bp = Blueprint("config_browser", __name__)
 
@@ -253,10 +321,20 @@ def register_config_browser(app, agent):
 
     @bp.route("/config/preview")
     def config_preview():
+        channel = request.args.get("channel", "main")
+        channel_ids = {channel_id for channel_id, _label in PROMPT_CHANNELS}
+        if channel not in channel_ids:
+            abort(404)
+        trigger, trigger_note = _preview_trigger(channel, scheduler)
+        messages = agent.conversations.get(channel, [])
         return render_template(
             "config/preview.html",
-            stable=agent.memory.build_stable_text(),
-            dynamic=agent.memory.build_dynamic_text(),
+            channels=PROMPT_CHANNELS,
+            selected_channel=channel,
+            system_blocks=agent._assemble_system_blocks(channel),
+            trigger=trigger,
+            trigger_note=trigger_note,
+            history_count=len(messages),
             page_context=ui_ctx.config_preview(),
         )
 

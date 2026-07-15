@@ -100,7 +100,10 @@ def _render_transcript(messages: list) -> str:
     return "\n".join(lines)
 
 
-def _log_compaction_cost(response, provider: BaseModelProvider, model: str, channel_id: str) -> None:
+def _log_compaction_cost(
+    response, provider: BaseModelProvider, model: str, channel_id: str,
+    run_id: str | None = None,
+) -> None:
     try:
         usage = response.usage
         provider_name = type(provider).__name__.replace("Provider", "").lower()
@@ -110,7 +113,10 @@ def _log_compaction_cost(response, provider: BaseModelProvider, model: str, chan
             "cache_write": getattr(usage, "cache_creation_input_tokens", 0),
             "output": usage.output_tokens,
         }
-        cost_tracker.log_call(f"compaction:{channel_id}", "compaction", provider_name, model, usage_dict)
+        cost_tracker.log_call(
+            f"compaction:{channel_id}", "compaction", provider_name, model, usage_dict,
+            run_id=run_id, stop_reason=getattr(response, "stop_reason", "end_turn"),
+        )
     except Exception:
         log.debug("Could not log compaction usage", exc_info=True)
 
@@ -121,6 +127,7 @@ async def compact_to_snapshot(
     api_key: str = None,
     provider: BaseModelProvider = None,
     channel_id: str = "compaction",
+    run_id: str | None = None,
 ) -> dict:
     """Compress an entire conversation into one structured memory snapshot.
 
@@ -160,7 +167,7 @@ async def compact_to_snapshot(
         max_tokens=SNAPSHOT_MAX_TOKENS,
         messages=[{"role": "user", "content": "".join(user_parts)}],
     )
-    _log_compaction_cost(response, provider, model, channel_id)
+    _log_compaction_cost(response, provider, model, channel_id, run_id=run_id)
     text_parts = [
         b.text for b in (response.content or [])
         if hasattr(b, "text") and getattr(b, "text", None)

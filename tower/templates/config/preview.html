@@ -1,20 +1,47 @@
 {% extends "config/base.html" %}
-{% block title %}Assembled Prompt{% endblock %}
-{% block heading %}Assembled Prompt{% endblock %}
-{% block subtitle %}Exactly what the agent sends as its system prompt on the next call{% endblock %}
+{% block title %}Prompt Construction{% endblock %}
+{% block heading %}Prompt Construction{% endblock %}
+{% block subtitle %}Live system blocks and the channel-specific next message{% endblock %}
 
 {% block cfg_content %}
 <div class="wf-toolbar">
     <a href="/config" class="btn btn-small btn-secondary">← Configuration</a>
 </div>
 
-<section class="memory-section">
-    <h2>Stable Block <span class="muted" style="font-weight:400;">— cached explicit core (SOUL, MEMORY, GUARDRAILS, RECALL, JOBS)</span></h2>
-    <pre class="runs-log">{{ stable }}</pre>
-</section>
+<form class="wf-toolbar" method="get" action="/config/preview">
+    <label for="channel">Channel</label>
+    <select id="channel" name="channel" onchange="this.form.submit()">
+        {% for channel, label in channels %}
+        <option value="{{ channel }}" {% if channel == selected_channel %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+    </select>
+    <noscript><button class="btn btn-small" type="submit">Show</button></noscript>
+</form>
 
 <section class="memory-section">
-    <h2>Dynamic Block <span class="muted" style="font-weight:400;">— not cached, changes every call</span></h2>
-    <pre class="runs-log">{{ dynamic }}</pre>
+    <h2>Construction order</h2>
+    <p class="muted">The agent combines the system blocks below with this channel's prior conversation ({{ history_count }} message{% if history_count != 1 %}s{% endif %}) and its next message. Providers serialize that construction differently; Gemini moves non-cached blocks into a closing context turn to preserve its stable cache prefix.</p>
+</section>
+
+{% for block in system_blocks %}
+<section class="memory-section">
+    <h2>
+        System block {{ loop.index }}
+        {% if loop.index == 1 %}
+        <span class="muted" style="font-weight:400;">— stable core (cached)</span>
+        {% elif loop.index == 2 %}
+        <span class="muted" style="font-weight:400;">— dynamic memory</span>
+        {% else %}
+        <span class="muted" style="font-weight:400;">— channel/runtime context</span>
+        {% endif %}
+    </h2>
+    <pre class="runs-log">{{ block.text }}</pre>
+</section>
+{% endfor %}
+
+<section class="memory-section">
+    <h2>Next channel message <span class="muted" style="font-weight:400;">— appended after conversation history</span></h2>
+    <pre class="runs-log">{{ trigger }}</pre>
+    <p class="muted">{{ trigger_note }}</p>
 </section>
 {% endblock %}

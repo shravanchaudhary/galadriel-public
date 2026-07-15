@@ -279,6 +279,19 @@ class Scheduler:
             palace.schedule_mine_pending_shutdown_archives()
         except Exception as e:
             log.warning(f"Could not schedule background palace mine: {e}")
+        try:
+            from harness.conversation_run_store import mark_active_runs_interrupted
+            from harness.memory_sync import drain_outbox
+
+            async def _reconcile_conversation_runs():
+                await mark_active_runs_interrupted()
+                mined = await drain_outbox()
+                if mined:
+                    log.info(f"Reconciled {mined} pending conversation archive batch(es).")
+
+            asyncio.ensure_future(_reconcile_conversation_runs())
+        except Exception as e:
+            log.warning(f"Could not reconcile conversation run state: {e}")
 
         # Always start morning + goodnight watchers
         self._morning_task = asyncio.ensure_future(self._cron_loop(
@@ -626,6 +639,11 @@ class Scheduler:
         Called (blocking) before reflection so the agent's own scheduler channels
         — handled by their own routines — are skipped to avoid double work.
         """
+        try:
+            from .memory_sync import drain_outbox
+            await drain_outbox()
+        except Exception as e:
+            log.warning(f"Conversation outbox drain failed: {e}")
         for cid in list(self.agent.conversations.keys()):
             if cid in SCHEDULER_CHANNELS:
                 continue

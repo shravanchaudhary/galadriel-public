@@ -7,6 +7,8 @@
         <nav class="site-nav" aria-label="Main">
             <a href="/" class="{{ 'active' if request.path == '/' }}">Dashboard</a>
             <a href="/actions" class="{{ 'active' if request.path.startswith('/actions') }}">Actions</a>
+            <a href="/runs" class="{{ 'active' if request.path.startswith('/runs') }}">Runs</a>
+            <a href="/worker-runs" class="{{ 'active' if request.path.startswith('/worker-runs') }}">Worker Runs</a>
             <a href="/loops" class="{{ 'active' if request.path.startswith('/loops') }}">Loops</a>
             <a href="/workflows" class="{{ 'active' if request.path.startswith('/workflows') or request.path.startswith('/w/') or request.path.startswith('/approvals') }}">Workflows</a>
             <a href="/config" class="{{ 'active' if request.path.startswith('/config') }}">Configuration</a>

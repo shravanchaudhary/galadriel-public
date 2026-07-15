@@ -45,6 +45,9 @@
         {% if item.note %}
         <p class="loops-note muted">{{ item.note }}</p>
         {% endif %}
+        {% if item.id == 'worker' %}
+        <div class="wf-toolbar"><a href="/worker-runs" class="btn btn-small">View recorded runs →</a></div>
+        {% endif %}
         <div class="muted loops-source">Source: {{ item.source }}</div>
 
         {% if item.editable and item.editable_kind == 'heartbeat' %}

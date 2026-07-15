@@ -25,7 +25,7 @@ import asyncio
 import os
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from .memory import MemoryManager
 from .tools import TOOL_DEFINITIONS, execute_tool
@@ -323,6 +323,16 @@ class GaladrielAgent:
                 f"Restored {len(restored)} conversation buffer(s) "
                 f"({total} message(s)) from disk."
             )
+        self._pending_run_recovery = None
+        # Mongo is the canonical active user-run record when configured. The
+        # actual state is applied after per-channel compaction fields initialize.
+        try:
+            from .conversation_run_store import recovery_state
+            _run, tail, checkpoint = recovery_state(MAIN_CHANNEL_ID)
+            if _run is not None:
+                self._pending_run_recovery = (_run, tail, checkpoint)
+        except Exception as e:
+            log.warning("Mongo conversation recovery unavailable; using local buffer (%s)", e)
         # One lock per channel_id, created lazily. Serializes respond() calls on
         # the SAME channel so two near-simultaneous turns (e.g. from different
         # gateways sharing MAIN_CHANNEL_ID) can't interleave mid-turn and break
@@ -366,6 +376,19 @@ class GaladrielAgent:
         self.compact_threshold = int(os.environ.get("AGENT_COMPACT_THRESHOLD", "180000"))
         self._last_input_tokens: dict[str, int] = {}  # channel_id -> last measured input tokens
         self._compaction_summary: dict[str, str] = {}  # channel_id -> latest snapshot (folds cumulatively)
+        if self._pending_run_recovery is not None:
+            run, tail, checkpoint = self._pending_run_recovery
+            self.conversations[MAIN_CHANNEL_ID] = [
+                {"role": event["role"], "content": event.get("content")}
+                for event in tail
+                if event.get("role") and event.get("content") is not None
+            ]
+            if checkpoint and checkpoint.get("summary"):
+                self._compaction_summary[MAIN_CHANNEL_ID] = checkpoint["summary"]
+            log.info(
+                "Restored active conversation run %s (%d protocol events after checkpoint).",
+                run["run_id"], len(tail),
+            )
 
         # Non-destructive checkpointing. Tracks how many messages of each channel
         # have already been mined to the palace, so periodic checkpoints (driven
@@ -675,7 +698,19 @@ class GaladrielAgent:
             log.warning("Headroom toggle changed but not persisted — MongoDB not configured")
         log.info(f"Headroom compression {'ENABLED' if self.headroom_enabled else 'DISABLED'}")
 
-    def _log_usage(self, response, channel_id: str, headroom_metrics: dict | None = None):
+    def _log_usage(
+        self,
+        response,
+        channel_id: str,
+        headroom_metrics: dict | None = None,
+        *,
+        tick_id: str | None = None,
+        run_id: str | None = None,
+        turn_id: str | None = None,
+        event_sequence: int | None = None,
+        call_index: int | None = None,
+        duration_ms: int | None = None,
+    ) -> dict:
         """Log token usage fields so caching behavior is observable, and record
         the call's cost (tagged by channel) for the Tower cost dashboard.
 
@@ -704,9 +739,18 @@ class GaladrielAgent:
                 headroom_tokens_before=int(hr.get("tokens_before", 0)),
                 headroom_tokens_after=int(hr.get("tokens_after", 0)),
                 headroom_tokens_saved=int(hr.get("tokens_saved", 0)),
+                tick_id=tick_id,
+                run_id=run_id,
+                turn_id=turn_id,
+                event_sequence=event_sequence,
+                call_index=call_index,
+                duration_ms=duration_ms,
+                stop_reason=getattr(response, "stop_reason", None),
             )
+            return dict(self.last_usage)
         except Exception:
             log.debug("Could not log usage fields", exc_info=True)
+            return {}
 
     def _record_input_tokens(self, response, channel_id: str):
         """Store the actual input context size the model processed this turn, so
@@ -737,6 +781,10 @@ class GaladrielAgent:
         messages = self.conversations.get(channel_id)
         if not messages:
             return {"compacted": False, "messages_before": 0}
+        run_recorder = None
+        if channel_id == MAIN_CHANNEL_ID:
+            from .conversation_run_store import ConversationRunRecorder
+            run_recorder = await ConversationRunRecorder.for_active(channel_id, source="compaction")
 
         snapshot_msgs = list(messages)  # defensive copy before reset
 
@@ -744,20 +792,39 @@ class GaladrielAgent:
         #    complete before this returns: the next task may recall from the
         #    palace, and mining can take a while, so we cannot fire-and-forget.
         try:
-            from . import palace
-            batch_dir = palace.archive_conversation_durable(
-                channel_id, snapshot_msgs, kind="compact",
-            )
-            if batch_dir is not None:
-                await palace.mine_batch_dir(batch_dir, agent="compaction")
+            if run_recorder is not None:
+                from .memory_sync import stage_and_mine_main
+                await stage_and_mine_main(
+                    run_recorder.run_id, snapshot_msgs, kind="compact", agent="compaction",
+                )
+            else:
+                from . import palace
+                batch_dir = palace.archive_conversation_durable(
+                    channel_id, snapshot_msgs, kind="compact",
+                )
+                if batch_dir is not None:
+                    await palace.mine_batch_dir(batch_dir, agent="compaction")
         except Exception as e:
             log.warning(f"Compaction archive failed (channel={channel_id}): {e}")
 
         # 2. Snapshot — fold in any prior snapshot for this channel.
         from .compaction import compact_to_snapshot
         prior = self._compaction_summary.get(channel_id, "")
-        result = await compact_to_snapshot(snapshot_msgs, prior_snapshot=prior, channel_id=channel_id)
+        result = await compact_to_snapshot(
+            snapshot_msgs,
+            prior_snapshot=prior,
+            channel_id=channel_id,
+            run_id=getattr(run_recorder, "run_id", None),
+        )
         self._compaction_summary[channel_id] = result["snapshot"]
+        if run_recorder is not None:
+            await run_recorder.record_checkpoint({
+                "kind": "compact",
+                "summary": result["snapshot"],
+                "messages_before": result["messages_before"],
+                "tokens_before": result["tokens_before"],
+                "tokens_after": result["tokens_after"],
+            })
 
         # 3. Reset history. The snapshot (injected as a system block) carries
         #    everything prior; new turns accumulate fresh after it.
@@ -790,6 +857,10 @@ class GaladrielAgent:
         messages = self.conversations.get(channel_id)
         if not messages:
             return
+        run_recorder = None
+        if channel_id == MAIN_CHANNEL_ID:
+            from .conversation_run_store import ConversationRunRecorder
+            run_recorder = await ConversationRunRecorder.for_active(channel_id, source="compaction")
 
         snapshot_msgs = list(messages)  # defensive copy before reset
 
@@ -797,19 +868,30 @@ class GaladrielAgent:
         # complete before the loop resumes: the continuation may recall from the
         # palace, and mining can take a while, so we cannot fire-and-forget.
         try:
-            from . import palace
-            batch_dir = palace.archive_conversation_durable(
-                channel_id, snapshot_msgs, kind="compact",
-            )
-            if batch_dir is not None:
-                await palace.mine_batch_dir(batch_dir, agent="compaction")
+            if run_recorder is not None:
+                from .memory_sync import stage_and_mine_main
+                await stage_and_mine_main(
+                    run_recorder.run_id, snapshot_msgs, kind="compact", agent="compaction",
+                )
+            else:
+                from . import palace
+                batch_dir = palace.archive_conversation_durable(
+                    channel_id, snapshot_msgs, kind="compact",
+                )
+                if batch_dir is not None:
+                    await palace.mine_batch_dir(batch_dir, agent="compaction")
         except Exception as e:
             log.warning(f"Mid-loop compaction archive failed (channel={channel_id}): {e}")
 
         # Snapshot — fold in any prior system-block snapshot, then drop it.
         from .compaction import compact_to_snapshot
         prior = self._compaction_summary.get(channel_id, "")
-        result = await compact_to_snapshot(snapshot_msgs, prior_snapshot=prior, channel_id=channel_id)
+        result = await compact_to_snapshot(
+            snapshot_msgs,
+            prior_snapshot=prior,
+            channel_id=channel_id,
+            run_id=getattr(run_recorder, "run_id", None),
+        )
         self._compaction_summary.pop(channel_id, None)
 
         # Rebuild the live conversation: task → progress → resume nudge.
@@ -828,6 +910,14 @@ class GaladrielAgent:
             "role": "user",
             "content": "Continue toward the goal using the compacted progress above.",
         })
+        if run_recorder is not None:
+            await run_recorder.record_checkpoint({
+                "kind": "midloop_compact",
+                "summary": result["snapshot"],
+                "messages_before": result["messages_before"],
+                "tokens_before": result["tokens_before"],
+                "tokens_after": result["tokens_after"],
+            })
         self._last_input_tokens.pop(channel_id, None)
         # Full conversation was just archived; the 3 rebuilt msgs are synthetic
         # (task + derived summary), so baseline the checkpoint past them.
@@ -854,13 +944,33 @@ class GaladrielAgent:
 
         new_slice = list(messages[start:])
         try:
-            from . import palace
-            batch_dir = palace.archive_conversation_durable(
-                channel_id, new_slice, kind="checkpoint",
-            )
-            if batch_dir is None:
-                return 0
-            await palace.mine_batch_dir(batch_dir, agent="checkpoint")
+            if channel_id == MAIN_CHANNEL_ID:
+                from .conversation_run_store import ConversationRunRecorder
+                from .memory_sync import stage_and_mine_main
+                recorder = await ConversationRunRecorder.for_active(channel_id, source="checkpoint")
+                if recorder is not None:
+                    ok = await stage_and_mine_main(
+                        recorder.run_id, new_slice, kind="checkpoint", agent="checkpoint",
+                    )
+                    if not ok:
+                        return 0
+                    await recorder.record_checkpoint({
+                        "kind": "checkpoint", "messages_before": len(new_slice),
+                    })
+                else:
+                    from . import palace
+                    batch_dir = palace.archive_conversation_durable(
+                        channel_id, new_slice, kind="checkpoint",
+                    )
+                    if batch_dir is None or not await palace.mine_batch_dir(batch_dir, agent="checkpoint"):
+                        return 0
+            else:
+                from . import palace
+                batch_dir = palace.archive_conversation_durable(
+                    channel_id, new_slice, kind="checkpoint",
+                )
+                if batch_dir is None or not await palace.mine_batch_dir(batch_dir, agent="checkpoint"):
+                    return 0
         except Exception as e:
             log.warning(f"Checkpoint failed (channel={channel_id}): {e}")
             return 0
@@ -925,6 +1035,9 @@ class GaladrielAgent:
         channel_id: str = "default",
         emit=None,
         overlay_context: str | None = None,
+        tick_recorder=None,
+        run_source: str | None = None,
+        client_dedup_key: str | None = None,
     ) -> str:
         """Run the agentic loop and return the final assistant text.
 
@@ -941,7 +1054,8 @@ class GaladrielAgent:
         """
         async with self._lock_for(channel_id):
             return await self._respond_locked(
-                user_message, channel_id, emit, overlay_context,
+                user_message, channel_id, emit, overlay_context, tick_recorder,
+                run_source, client_dedup_key,
             )
 
     @staticmethod
@@ -958,10 +1072,14 @@ class GaladrielAgent:
         channel_id: str,
         emit,
         overlay_context: str | None = None,
+        tick_recorder=None,
+        run_source: str | None = None,
+        client_dedup_key: str | None = None,
     ) -> str:
         cancel_ev = asyncio.Event()
         self._turn_cancel[channel_id] = cancel_ev
         pending_holder = {"blocks": None, "results": []}
+        run_holder = {"recorder": None}
 
         try:
             return await self._respond_locked_inner(
@@ -970,15 +1088,28 @@ class GaladrielAgent:
                 emit,
                 overlay_context,
                 pending_holder,
+                tick_recorder,
+                run_source,
+                client_dedup_key,
+                run_holder,
             )
         except TurnCancelled:
-            return await self._finalize_cancelled_turn(
+            result = await self._finalize_cancelled_turn(
                 channel_id,
                 self._get_messages(channel_id),
                 emit,
                 tool_blocks=pending_holder["blocks"],
                 tool_results=pending_holder["results"],
             )
+            recorder = run_holder["recorder"]
+            if recorder is not None:
+                await recorder.finalize_turn(state="cancelled")
+            return result
+        except Exception as exc:
+            recorder = run_holder["recorder"]
+            if recorder is not None:
+                await recorder.finalize_turn(state="error", error=str(exc))
+            raise
         finally:
             self._turn_cancel.pop(channel_id, None)
 
@@ -989,8 +1120,28 @@ class GaladrielAgent:
         emit,
         overlay_context: str | None = None,
         pending_tool_results_holder: dict | None = None,
+        tick_recorder=None,
+        run_source: str | None = None,
+        client_dedup_key: str | None = None,
+        run_holder: dict | None = None,
     ) -> str:
         messages = self._get_messages(channel_id)
+        run_recorder = None
+        if channel_id == MAIN_CHANNEL_ID:
+            from .conversation_run_store import ConversationRunRecorder
+            model = self.model_for_channel(channel_id)
+            run_recorder = await ConversationRunRecorder.start(
+                channel_id,
+                source=run_source or "direct",
+                model=model,
+                provider=model_registry.provider_for_model(model),
+                headroom_enabled=bool(self.headroom_enabled),
+                client_dedup_key=client_dedup_key,
+            )
+            if run_recorder is not None:
+                await run_recorder.begin_turn(client_dedup_key)
+                if run_holder is not None:
+                    run_holder["recorder"] = run_recorder
 
         # Auto-compaction: if the last measured input context for this channel
         # crossed the threshold, snapshot+archive the whole conversation. This
@@ -1007,6 +1158,12 @@ class GaladrielAgent:
         # message exactly once — compaction never double-logs. Context size is
         # managed solely by compaction (no routine message-count trim).
         messages.append({"role": "user", "content": user_message})
+        if tick_recorder is not None:
+            await tick_recorder.record_message(messages[-1])
+        if run_recorder is not None:
+            await run_recorder.record_message(
+                messages[-1], visibility="user", kind="direct_user",
+            )
 
         # System blocks: stable + dynamic + snapshot + advisory. Rebuilt after
         # any mid-loop / max_tokens compaction so it never goes stale.
@@ -1014,6 +1171,7 @@ class GaladrielAgent:
         system_blocks = self._with_overlay(
             self._assemble_system_blocks(channel_id), overlay_context,
         )
+        call_index = 0
 
         max_tokens_retries = 0  # Track consecutive max_tokens hits
         turn_thought = ""  # Accumulated thought deltas for the current API response
@@ -1092,6 +1250,11 @@ class GaladrielAgent:
             # grows, giving hits within tool_use cascades.
             messages_for_api = _attach_trailing_cache_control(messages_for_api)
             turn_thought = ""
+            if tick_recorder is not None:
+                await tick_recorder.record_system_blocks(system_blocks)
+            if run_recorder is not None:
+                await run_recorder.record_system_blocks(system_blocks)
+            call_started_at = datetime.now(timezone.utc)
             if emit is not None:
                 response = None
                 async for kind, payload in provider.stream_message(
@@ -1117,10 +1280,41 @@ class GaladrielAgent:
                     tools=self.tools,
                     messages=messages_for_api,
                 )
+            call_duration_ms = int(
+                (datetime.now(timezone.utc) - call_started_at).total_seconds() * 1000
+            )
 
             self._check_cancelled(channel_id)
 
-            self._log_usage(response, channel_id, headroom_metrics=headroom_metrics)
+            usage = self._log_usage(
+                response,
+                channel_id,
+                headroom_metrics=headroom_metrics,
+                tick_id=getattr(tick_recorder, "tick_id", None),
+                run_id=getattr(run_recorder, "run_id", None),
+                turn_id=getattr(run_recorder, "turn_id", None),
+                call_index=call_index if tick_recorder is not None else None,
+                duration_ms=call_duration_ms if tick_recorder is not None else None,
+            )
+            if tick_recorder is not None:
+                await tick_recorder.record_call(
+                    usage,
+                    call_index=call_index,
+                    duration_ms=call_duration_ms,
+                    stop_reason=response.stop_reason,
+                    headroom_metrics=headroom_metrics,
+                )
+                call_index += 1
+            if run_recorder is not None:
+                await run_recorder.record_call(
+                    usage,
+                    call_index=call_index - 1 if tick_recorder is not None else call_index,
+                    duration_ms=call_duration_ms,
+                    stop_reason=response.stop_reason,
+                    headroom_metrics=headroom_metrics,
+                )
+                if tick_recorder is None:
+                    call_index += 1
             self._record_input_tokens(response, channel_id)
             await self._maybe_warn_context(response, channel_id)
             await self._maybe_warn_output_ceiling(response, channel_id)
@@ -1138,6 +1332,10 @@ class GaladrielAgent:
             if turn_thought.strip():
                 assistant_msg["_thought"] = turn_thought.strip()
             messages.append(assistant_msg)
+            if tick_recorder is not None:
+                await tick_recorder.record_message(assistant_msg)
+            if run_recorder is not None:
+                await run_recorder.record_message(assistant_msg)
             log.info(f"Response stop_reason: {response.stop_reason}")
             self._check_cancelled(channel_id)
 
@@ -1159,6 +1357,9 @@ class GaladrielAgent:
                     f"[chat:{channel_id}] User: {user_summary}..."
                 )
                 conversation_store.save_channel(self.working_dir, channel_id, messages)
+                if run_recorder is not None:
+                    await run_recorder.record_direct_reply(final_text)
+                    await run_recorder.finalize_turn(state="completed")
                 return final_text
 
             if response.stop_reason == "max_tokens":
@@ -1346,6 +1547,10 @@ class GaladrielAgent:
                         })
 
                 messages.append({"role": "user", "content": tool_results})
+                if tick_recorder is not None:
+                    await tick_recorder.record_message(messages[-1])
+                if run_recorder is not None:
+                    await run_recorder.record_message(messages[-1])
 
                 # Mid-loop auto-compaction: if the input context measured during
                 # this cascade already crossed the threshold, compact in place so
@@ -1381,7 +1586,7 @@ class GaladrielAgent:
         self._last_input_tokens.pop(channel_id, None)
         self._last_archived_len.pop(channel_id, None)
 
-    async def pop_and_archive_history(self, channel_id: str = "default") -> int:
+    async def pop_and_archive_history(self, channel_id: str = "default", reason: str = "new") -> int:
         """Archive the channel's conversation to the palace, then clear it.
 
         Used by Discord `/new` / `!new` / `!clear`. Returns the number of
@@ -1393,7 +1598,21 @@ class GaladrielAgent:
         Silent fallback if mempalace isn't installed: history is still
         cleared, just not archived.
         """
-        messages = self.conversations.pop(channel_id, None)
+        messages = self.conversations.get(channel_id)
+        if not messages:
+            return 0
+        if channel_id == MAIN_CHANNEL_ID:
+            try:
+                from .conversation_run_store import ConversationRunRecorder
+                from .memory_sync import stage_and_mine_main
+                recorder = await ConversationRunRecorder.for_active(channel_id, source="clear")
+                if recorder is not None:
+                    await stage_and_mine_main(
+                        recorder.run_id, list(messages), kind="full", agent="new-clear",
+                    )
+            except Exception as e:
+                log.warning(f"Conversation outbox archive failed on /new: {e}")
+        self.conversations.pop(channel_id, None)
         conversation_store.delete_channel(self.working_dir, channel_id)
         # Clear per-channel transient state alongside the history.
         self._post_recovery_archive_tag.pop(channel_id, None)
@@ -1401,13 +1620,15 @@ class GaladrielAgent:
         self._compaction_summary.pop(channel_id, None)
         self._last_input_tokens.pop(channel_id, None)
         self._last_archived_len.pop(channel_id, None)
-        if not messages:
-            return 0
         try:
-            from . import palace
-            await palace.archive_conversation(channel_id, messages)
+            if channel_id != MAIN_CHANNEL_ID:
+                from . import palace
+                await palace.archive_conversation(channel_id, messages)
         except Exception as e:
             log.warning(f"Conversation archive failed on /new: {e}")
+        if channel_id == MAIN_CHANNEL_ID:
+            from .conversation_run_store import end_active_run
+            await end_active_run(channel_id, reason)
         return len(messages)
 
     def archive_conversations_on_shutdown(self) -> int:

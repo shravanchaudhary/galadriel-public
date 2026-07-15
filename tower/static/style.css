@@ -1299,6 +1299,31 @@ body.wfc-resizing * { cursor: inherit !important; }
 .actions-worker-badge.worker-active { border-color: var(--success); color: var(--success); }
 .actions-worker-badge.worker-paused { border-color: var(--warning); color: var(--warning); }
 
+/* ── Worker run audit ────────────────────────────────────────── */
+.worker-runs-table { margin-top: 1.25rem; }
+.worker-note { max-width: 22rem; white-space: normal; }
+.worker-state-completed { border-color: var(--success); color: var(--success); }
+.worker-state-error, .worker-state-interrupted { border-color: var(--danger); color: var(--danger); }
+.worker-state-running { border-color: var(--warning); color: var(--warning); }
+.worker-system-version { margin: 0.65rem 0; }
+.worker-system-version summary { cursor: pointer; color: var(--muted); }
+.run-state-active, .run-state-completed { border-color: var(--success); color: var(--success); }
+.run-state-ended { border-color: var(--muted); color: var(--muted); }
+.run-state-error, .run-state-interrupted, .run-state-cancelled { border-color: var(--danger); color: var(--danger); }
+
+/* Conversation / worker run transcripts — match live chat console bubbles */
+.run-chat-log {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+    height: auto;
+    max-height: 62vh;
+}
+.run-chat-log .wfc-msg { font-size: 0.9rem; line-height: 1.5; }
+.run-chat-log .wfc-msg-user { align-self: flex-end; }
+.run-chat-log .wfc-msg-assistant { align-self: flex-start; }
+.runs-active { margin: 1rem 0; }
+
 .actions-board-meta {
     font-size: 0.85rem;
     margin-bottom: 1rem;

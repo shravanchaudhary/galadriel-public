@@ -122,6 +122,8 @@ def create_tower(agent, scheduler=None) -> Flask:
                     user_message,
                     channel_id=MAIN_CHANNEL_ID,
                     overlay_context=overlay,
+                    run_source="tower",
+                    client_dedup_key=request.headers.get("X-Request-Id"),
                 ),
                 scheduler._loop,
             )
@@ -140,6 +142,8 @@ def create_tower(agent, scheduler=None) -> Flask:
                         user_message,
                         channel_id=MAIN_CHANNEL_ID,
                         overlay_context=overlay,
+                        run_source="tower",
+                        client_dedup_key=request.headers.get("X-Request-Id"),
                     )
                 )
                 return jsonify({"response": response})
@@ -171,6 +175,7 @@ def create_tower(agent, scheduler=None) -> Flask:
 
         context = data.get("context")
         overlay = format_overlay_system_block(context)
+        request_id = request.headers.get("X-Request-Id")
 
         loop = scheduler._loop if scheduler else None
         if not (loop and loop.is_running()):
@@ -188,6 +193,8 @@ def create_tower(agent, scheduler=None) -> Flask:
                     channel_id=MAIN_CHANNEL_ID,
                     emit=emit,
                     overlay_context=overlay,
+                    run_source="tower",
+                    client_dedup_key=request_id,
                 )
                 events.put({"type": "done", "text": final})
             except Exception as e:
@@ -234,7 +241,26 @@ def create_tower(agent, scheduler=None) -> Flask:
     def api_history():
         channel = request.args.get("channel", MAIN_CHANNEL_ID)
         from .ui_context import serialize_chat_history
-
+        if channel == MAIN_CHANNEL_ID:
+            run = None
+            try:
+                from harness import conversation_run_store
+                run = conversation_run_store.active_run(channel)
+                if run:
+                    events = conversation_run_store.events_for_run(
+                        run["run_id"], visibility="user",
+                    )
+                    history = [
+                        {
+                            "role": event.get("role", "assistant"),
+                            "text": event.get("content", ""),
+                        }
+                        for event in events
+                        if isinstance(event.get("content"), str)
+                    ]
+                    return jsonify({"history": history, "run_id": run["run_id"]})
+            except Exception:
+                log.debug("Mongo conversation history unavailable", exc_info=True)
         messages = agent.conversations.get(channel, [])
         return jsonify({"history": serialize_chat_history(messages)})
 
@@ -246,7 +272,7 @@ def create_tower(agent, scheduler=None) -> Flask:
         loop = scheduler._loop if scheduler else None
         if loop and loop.is_running():
             future = asyncio.run_coroutine_threadsafe(
-                agent.pop_and_archive_history(channel), loop,
+                agent.pop_and_archive_history(channel, reason="clear"), loop,
             )
             try:
                 archived = future.result(timeout=120)
@@ -447,9 +473,16 @@ def create_tower(agent, scheduler=None) -> Flask:
     from .loops_board import register_loops_board
     register_loops_board(app, scheduler=scheduler, agent=agent)
 
+    # Worker Runs — durable per-tick telemetry and transcript audit.
+    from .worker_ticks_board import register_worker_ticks_board
+    register_worker_ticks_board(app)
+
+    from .runs_board import register_runs_board
+    register_runs_board(app)
+
     # "Brain" — live agent configuration browser (config/jobs/state/sme).
     from .config_browser import register_config_browser
-    register_config_browser(app, agent)
+    register_config_browser(app, agent, scheduler=scheduler)
 
     # "Palace" — memory palace browser (wings/rooms/halls/drawers/KG/diary).
     from .palace_browser import register_palace_browser

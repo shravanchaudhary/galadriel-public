@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Worker Runs{% endblock %}
+{% block container_class %}wf-container{% endblock %}
+{% block heading %}Worker Runs{% endblock %}
+{% block subtitle %}Auditable background-worker turns for a selected CET day{% endblock %}
+
+{% block content %}
+{% if not db_configured %}
+<p class="empty-state">MONGO_URI / MONGO_DB not configured — worker runs cannot be recorded or displayed.</p>
+{% else %}
+<form method="get" action="/worker-runs" class="wf-toolbar">
+    <label for="worker-date" class="muted">Day (CET)</label>
+    <input id="worker-date" name="date" type="date" value="{{ date }}" onchange="this.form.submit()">
+    <a href="/worker-runs?date={{ previous_date }}" class="btn btn-small">← Previous</a>
+    <a href="/worker-runs?date={{ today }}" class="btn btn-small {{ 'btn-danger' if date == today else '' }}">Today</a>
+    <a href="/worker-runs?date={{ next_date }}" class="btn btn-small">Next →</a>
+</form>
+
+<div class="status-grid">
+    <div class="card"><div class="card-label">Ticks</div><div class="card-value">{{ totals.ticks }}</div></div>
+    <div class="card"><div class="card-label">Model calls</div><div class="card-value">{{ totals.calls }}</div></div>
+    <div class="card"><div class="card-label">Tokens</div><div class="card-value">{{ "{:,}".format(totals.tokens) }}</div></div>
+    <div class="card"><div class="card-label">Cost</div><div class="card-value">{{ totals.cost | usd }}</div></div>
+</div>
+
+{% if ticks %}
+<table class="wf-table worker-runs-table">
+    <thead>
+        <tr>
+            <th>Started</th><th>Outcome</th><th>Elapsed</th><th>Model calls</th>
+            <th>Tools</th><th>Tokens</th><th>Cost</th><th>Model</th><th>What happened</th><th></th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for tick in ticks %}
+        <tr>
+            <td>{{ tick.started_at | utc_cet_time }}</td>
+            <td><span class="badge worker-state-{{ tick.state }}">{{ tick.worker_status or tick.state }}</span></td>
+            <td>{{ tick.duration_ms | duration }}</td>
+            <td>{{ tick.llm_call_count | default(0) }}</td>
+            <td>{{ tick.tool_call_count | default(0) }}</td>
+            <td>{{ "{:,}".format(tick.token_total | default(0)) }}</td>
+            <td>{{ tick.cost_total | usd }}</td>
+            <td>{{ tick.model }}</td>
+            <td class="worker-note">{{ tick.notification or tick.error or "No user-facing update." }}</td>
+            <td><a href="/worker-runs/{{ tick.tick_id }}">open →</a></td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p class="empty-state">No worker ticks were recorded on {{ date }}. Detailed history begins after this observability feature is deployed.</p>
+{% endif %}
+{% endif %}
+{% endblock %}

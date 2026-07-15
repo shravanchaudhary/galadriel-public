@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% block title %}Conversation Run{% endblock %}
+{% block container_class %}wf-container{% endblock %}
+{% block heading %}Conversation Run{% endblock %}
+{% block subtitle %}<span class="badge run-state-{{ run.state }}">{{ run.state }}</span> · {{ run.sources | default([]) | join(', ') }}{% endblock %}
+
+{% block content %}
+<div class="wf-toolbar">
+    <a href="/runs" class="btn btn-small">← Runs</a>
+    <button type="button" class="btn btn-small" id="toggle-system" {% if not system_versions %}disabled{% endif %}>
+        Show system messages
+    </button>
+</div>
+
+<div class="status-grid">
+    <div class="card"><div class="card-label">Events</div><div class="card-value">{{ run.event_count | default(0) }}</div></div>
+    <div class="card"><div class="card-label">Model calls</div><div class="card-value">{{ run.llm_call_count | default(0) }}</div></div>
+    <div class="card"><div class="card-label">Tokens</div><div class="card-value">{{ "{:,}".format(run.token_total | default(0)) }}</div></div>
+    <div class="card"><div class="card-label">Cost</div><div class="card-value">{{ run.cost_total | usd }}</div></div>
+</div>
+
+<section class="memory-section" id="run-system" hidden>
+    <h2>System messages used</h2>
+    {% if system_versions %}
+    {% for version in system_versions %}
+    <details class="worker-system-version" {% if loop.first %}open{% endif %}>
+        <summary>Version {{ loop.index }} · {{ version.recorded_at | run_time }} · {{ (version.hash or '')[:12] }}</summary>
+        {% for block in version.blocks or [] %}
+        <h3 class="muted" style="font-weight:500;font-size:0.85rem;margin:0.85rem 0 0.35rem;">
+            System block {{ loop.index }}
+            {% if loop.index == 1 %}— stable core{% elif loop.index == 2 %}— dynamic memory{% else %}— channel/runtime{% endif %}
+        </h3>
+        <pre class="runs-log">{{ block.text if block is mapping else block }}</pre>
+        {% endfor %}
+    </details>
+    {% endfor %}
+    {% else %}
+    <p class="muted">No system prompt snapshot was recorded for this run.</p>
+    {% endif %}
+</section>
+
+<section class="memory-section">
+    <h2>Direct conversation</h2>
+    {% if direct %}
+    <div id="run-direct" class="chat-log run-chat-log"></div>
+    <script id="run-direct-data" type="application/json">{{ direct | tojson }}</script>
+    {% else %}<p class="muted">No direct user-visible messages have been recorded.</p>{% endif %}
+</section>
+
+<section class="memory-section">
+    <h2>Checkpoint timeline</h2>
+    {% if checkpoints %}
+    <ul class="timeline">{% for checkpoint in checkpoints %}
+        <li><div class="ts">{{ checkpoint.created_at | run_time }}</div><div class="ev"><strong>{{ checkpoint.kind }}</strong> · {{ checkpoint.messages_before | default(0) }} messages
+        <details><summary>Summary</summary><pre class="runs-log">{{ checkpoint.summary | default('No summary') }}</pre></details></div></li>
+    {% endfor %}</ul>
+    {% else %}<p class="muted">No compaction or checkpoint boundaries yet.</p>{% endif %}
+</section>
+
+<section class="memory-section">
+    <h2>Model protocol and tools</h2>
+    {% if history %}<div id="run-protocol" class="chat-log run-chat-log"></div><script id="run-protocol-data" type="application/json">{{ history | tojson }}</script>
+    {% else %}<p class="muted">No internal protocol events recorded.</p>{% endif %}
+</section>
+
+<section class="memory-section">
+    <h2>Per-call metrics</h2>
+    {% if calls %}<table class="wf-table"><thead><tr><th>#</th><th>Latency</th><th>Stop</th><th>Input</th><th>Cache read</th><th>Output</th><th>Cost</th></tr></thead><tbody>
+    {% for call in calls %}<tr><td>{{ call.call_index | default(loop.index0) }}</td><td>{{ call.duration_ms | run_duration }}</td><td>{{ call.stop_reason }}</td><td>{{ "{:,}".format(call.input_tokens | default(0)) }}</td><td>{{ "{:,}".format(call.cache_read_tokens | default(0)) }}</td><td>{{ "{:,}".format(call.output_tokens | default(0)) }}</td><td>{{ call.cost_total | usd }}</td></tr>{% endfor %}
+    </tbody></table>{% else %}<p class="muted">No correlated calls yet.</p>{% endif %}
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/chat_render.js"></script>
+<script>
+const CHAT_OPTS = {
+    userClass: 'wfc-msg wfc-msg-user',
+    assistantClass: 'wfc-msg wfc-msg-assistant',
+    userTextClass: 'wfc-msg-text',
+};
+const direct = document.getElementById('run-direct-data');
+if (direct) ChatRender.hydrateHistory(document.getElementById('run-direct'), JSON.parse(direct.textContent), CHAT_OPTS);
+const protocol = document.getElementById('run-protocol-data');
+if (protocol) ChatRender.hydrateHistory(
+    document.getElementById('run-protocol'),
+    JSON.parse(protocol.textContent),
+    Object.assign({}, CHAT_OPTS, {userLabel: 'Context', assistantLabel: 'Agent'})
+);
+const systemSection = document.getElementById('run-system');
+const toggleSystem = document.getElementById('toggle-system');
+if (toggleSystem && systemSection) {
+    toggleSystem.addEventListener('click', () => {
+        const open = systemSection.hasAttribute('hidden');
+        if (open) systemSection.removeAttribute('hidden');
+        else systemSection.setAttribute('hidden', '');
+        toggleSystem.textContent = open ? 'Hide system messages' : 'Show system messages';
+    });
+}
+</script>
+{% endblock %}

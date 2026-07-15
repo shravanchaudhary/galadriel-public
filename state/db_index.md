@@ -61,5 +61,39 @@
 ### llm_calls (no spec — infra log, insert-only, written directly by `harness/cost_tracker.py`)
 - Purpose: cost/token ledger for every LLM API call, tagged by channel, for the Tower `/costs` dashboard.
 - No unique key — one doc appended per call, never updated.
-- Fields: `ts`, `channel_id`, `task` (`agent`|`compaction`), `provider`, `model`, `input_tokens`, `cache_read_tokens`, `cache_write_tokens`, `output_tokens`, `cost_input`, `cost_output`, `cost_cache_read`, `cost_cache_write`, `cost_total`, `priced`
+- Fields: `ts`, `channel_id`, `task` (`agent`|`compaction`), `provider`, `model`, `input_tokens`, `cache_read_tokens`, `cache_write_tokens`, `output_tokens`, `cost_input`, `cost_output`, `cost_cache_read`, `cost_cache_write`, `cost_total`, `priced`; worker calls also carry `tick_id`, `call_index`, `duration_ms`, and `stop_reason`.
 - Not a workflow entity (no state machine) — not touched via the `db_*` primitives.
+
+### worker_ticks (no spec — infra audit log, direct harness write)
+- Purpose: durable summary for each actual background-worker model turn, shown in Tower `/worker-runs`.
+- Unique key/index: `tick_id`; index `{day_cet: 1, started_at: -1}` for CET day browsing.
+- Fields: lifecycle (`state`, `worker_status`, notification/error), CET/UTC timing, model/provider/headroom/tool count, exact worker trigger, system-prompt versions/hashes, API/tool/event counts, token/cache/cost rollups, and redaction/image-omission counters.
+- Created as `running`, updated through the turn, and terminal as `completed`, `error`, or restart-recovered `interrupted`. Retained indefinitely until an explicit retention policy is adopted.
+- Not a workflow entity and never exposed through `db_*` primitives.
+
+### worker_tick_events (no spec — infra audit log, direct harness write)
+- Purpose: ordered, sanitized transcript events for `worker_ticks`, split from summaries to avoid Mongo document-size limits.
+- Unique key/index: `{tick_id, sequence}`.
+- Fields: `tick_id`, `sequence`, `ts`, `role`, content, and optional model thought text. Raw binary images are omitted and known secret values are redacted before insertion.
+- Retained with its parent tick; Tower loads it only for a specific `/worker-runs/<tick_id>` detail view.
+
+### conversation_runs (no spec — infra audit/recovery log)
+- Purpose: one shared direct-user conversation from its first Slack/Discord/Tower message until explicit `/new` or `/clear`.
+- Unique key/index: `run_id`; one partial-unique active run per `channel_id` (`main`).
+- Fields: lifecycle/timestamps/end reason, source gateways, active turn state, prompt versions, token/cost/tool rollups, latest checkpoint pointer, and Palace sync cursor.
+- Mongo is the user-facing audit/recovery record. It is not exposed through `db_*` tools.
+
+### conversation_events (no spec — infra audit log)
+- Purpose: ordered sanitized direct transcript plus model protocol/tool/recovery events for a `conversation_runs` row.
+- Unique key/index: `{run_id, sequence}`.
+- Fields: `run_id`, `turn_id`, `sequence`, `kind`, `visibility`, source, role, content, thought, and lifecycle metadata.
+- Tower renders `visibility=user` as the direct conversation and keeps internal protocol/tool events separate.
+
+### conversation_checkpoints (no spec — infra context boundary log)
+- Purpose: immutable compaction/checkpoint summaries used to restore the active context as stable/dynamic system blocks plus the post-checkpoint protocol tail.
+- Fields: `checkpoint_id`, `run_id`, summary/hash, source sizes, model metrics, and checkpoint event linkage.
+
+### palace_outbox (no spec — infra delivery log)
+- Purpose: idempotent staging/mining records that link a Mongo conversation range to a MemPalace archive batch.
+- Unique key/index: `batch_key`; fields include run/channel, archive kind/path, state (`staged|failed|mined`), attempts, error, and timestamps.
+- The scheduler retries pending entries; Palace remains the agent-only semantic recall source.

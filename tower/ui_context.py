@@ -440,3 +440,30 @@ def loops_index() -> dict:
 
 def costs_index(range_key: str) -> dict:
     return _ptr("costs_index", f"costs · {range_key}", reload=False, range=range_key)
+
+
+def worker_ticks_index(date: str, tick_ids: list[str]) -> dict:
+    return _ptr(
+        "worker_ticks_index",
+        f"worker runs · {date}",
+        reload=False,
+        date=date,
+        tick_ids=tick_ids,
+    )
+
+
+def worker_tick_detail(tick_id: str, date: str) -> dict:
+    return _ptr(
+        "worker_tick_detail",
+        f"worker run · {tick_id}",
+        tick_id=tick_id,
+        date=date,
+    )
+
+
+def runs_index(date: str, run_ids: list[str]) -> dict:
+    return _ptr("runs_index", f"runs · {date}", reload=False, date=date, run_ids=run_ids)
+
+
+def run_detail(run_id: str) -> dict:
+    return _ptr("run_detail", f"run · {run_id}", run_id=run_id)

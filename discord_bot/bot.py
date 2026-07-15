@@ -538,7 +538,12 @@ def create_bot(agent: GaladrielAgent, scheduler=None, completion_watcher=None, w
         log.info(f"📥 Processing message from {message.author} in {message.channel.id}: {content[:80]}")
         async with message.channel.typing():
             try:
-                response = await agent.respond(user_input, channel_id=MAIN_CHANNEL_ID)
+                response = await agent.respond(
+                    user_input,
+                    channel_id=MAIN_CHANNEL_ID,
+                    run_source="discord",
+                    client_dedup_key=f"discord:{message.id}",
+                )
                 log.info(f"📤 Agent response ready ({len(response)} chars), sending to Discord...")
                 if not response.strip():
                     log.info("Agent returned empty response — substituting placeholder")
@@ -554,7 +559,7 @@ def create_bot(agent: GaladrielAgent, scheduler=None, completion_watcher=None, w
         """Clear the shared conversation history (archives to palace first)."""
         if ctx.author.id != AUTHORIZED_USER_ID:
             return
-        archived = await agent.pop_and_archive_history(MAIN_CHANNEL_ID)
+        archived = await agent.pop_and_archive_history(MAIN_CHANNEL_ID, reason="clear")
         suffix = f" ({archived} msgs filed to palace)" if archived else ""
         await ctx.reply(f"🧹 Conversation history cleared.{suffix}")
 

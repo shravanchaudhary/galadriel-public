@@ -35,11 +35,14 @@ GALADRIEL_WORKER=1 to enable.
 import asyncio
 import logging
 import re
+import uuid
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from .loop_prompts import WORKER_PROMPT
+from . import worker_tick_store
+from . import model_registry
 
 log = logging.getLogger("galadriel.worker")
 
@@ -84,6 +87,7 @@ class WorkerLoop:
 
     async def _loop(self):
         try:
+            await worker_tick_store.mark_running_ticks_interrupted()
             while True:
                 if self._paused():
                     log.info("Worker paused (control flag) — idle poll.")
@@ -111,13 +115,40 @@ class WorkerLoop:
         # never poisons the next.
         self.agent.reset_channel(WORKER_CHANNEL)
         prompt = WORKER_PROMPT + "\n\n" + self._build_clock()
+        started_at = datetime.now(CET)
+        tick_id = str(uuid.uuid4())
+        model = self.agent.model_for_channel(WORKER_CHANNEL)
+        recorder = worker_tick_store.WorkerTickRecorder(
+            tick_id,
+            started_at.strftime("%Y-%m-%d"),
+            started_at,
+            prompt,
+            model=model,
+            provider=model_registry.provider_for_model(model),
+            headroom_enabled=bool(getattr(self.agent, "headroom_enabled", False)),
+            tools_count=len(getattr(self.agent, "tools", [])),
+        )
+        await recorder.start()
         try:
-            text = await self.agent.respond(prompt, channel_id=WORKER_CHANNEL)
+            text = await self.agent.respond(
+                prompt, channel_id=WORKER_CHANNEL, tick_recorder=recorder,
+            )
         except Exception as e:
             log.exception(f"Worker turn error: {e}")
+            await recorder.finalize(
+                state="error",
+                finished_at=datetime.now(CET),
+                error=str(e),
+            )
             return "idle"
 
         status, note = self._parse(text)
+        await recorder.finalize(
+            state="completed",
+            finished_at=datetime.now(CET),
+            worker_status=status,
+            notification=note,
+        )
         # Rising edge into a work burst (idle/paused → working): ping once so the
         # user sees the worker pick up a task. Subsequent worked ticks in the same
         # burst don't re-ping; an idle/paused tick resets the edge.

@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}Runs{% endblock %}
+{% block container_class %}wf-container{% endblock %}
+{% block heading %}Runs{% endblock %}
+{% block subtitle %}Shared direct conversations and background-worker audit history{% endblock %}
+
+{% block content %}
+{% if not db_configured %}
+<p class="empty-state">MONGO_URI / MONGO_DB not configured — durable conversation runs are unavailable.</p>
+{% else %}
+<div class="wf-toolbar">
+    <form method="get" action="/runs">
+        <label for="run-date" class="muted">Day (CET)</label>
+        <input id="run-date" name="date" type="date" value="{{ date }}" onchange="this.form.submit()">
+    </form>
+    <a href="/runs?date={{ previous_date }}" class="btn btn-small">← Previous</a>
+    <a href="/runs?date={{ today }}" class="btn btn-small {{ 'btn-danger' if date == today else '' }}">Today</a>
+    <a href="/runs?date={{ next_date }}" class="btn btn-small">Next →</a>
+    <span class="spacer"></span>
+    <a href="/worker-runs" class="btn btn-small">Worker ticks →</a>
+</div>
+
+{% if active %}
+<p class="runs-active"><span class="badge run-state-active">ACTIVE</span> Current shared conversation: <a href="/runs/user/{{ active.run_id }}">{{ active.run_id }}</a></p>
+{% endif %}
+
+{% if runs %}
+<table class="wf-table">
+    <thead><tr><th>Started</th><th>State</th><th>Sources</th><th>Events</th><th>Calls</th><th>Tokens</th><th>Cost</th><th>Ended</th><th></th></tr></thead>
+    <tbody>
+    {% for run in runs %}
+    <tr>
+        <td>{{ run.started_at | run_time }}</td>
+        <td><span class="badge run-state-{{ run.state }}">{{ run.state }}</span></td>
+        <td>{{ run.sources | default([]) | join(', ') }}</td>
+        <td>{{ run.event_count | default(0) }}</td>
+        <td>{{ run.llm_call_count | default(0) }}</td>
+        <td>{{ "{:,}".format(run.token_total | default(0)) }}</td>
+        <td>{{ run.cost_total | usd }}</td>
+        <td>{{ run.end_reason or '—' }}</td>
+        <td><a href="/runs/user/{{ run.run_id }}">open →</a></td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p class="empty-state">No user runs recorded for {{ date }}. New conversations are recorded from the next direct message onward.</p>
+{% endif %}
+{% endif %}
+{% endblock %}
