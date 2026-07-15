@@ -1,4 +1,7 @@
 .env
+.cursor/
+infra/terraform/.terraform/
+infra/terraform/*.tfstate*
 __pycache__/
 *.pyc
 *.pyo

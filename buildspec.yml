@@ -1,0 +1,21 @@
+version: 0.2
+
+phases:
+  pre_build:
+    commands:
+      - set -eu
+      - AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+      - IMAGE_TAG="${CODEBUILD_RESOLVED_SOURCE_VERSION:-$CODEBUILD_BUILD_NUMBER}"
+      - IMAGE_TAG="${IMAGE_TAG:0:12}"
+      - aws ecr get-login-password --region "$AWS_DEFAULT_REGION" | docker login --username AWS --password-stdin "$AWS_ACCOUNT_ID.dkr.ecr.$AWS_DEFAULT_REGION.amazonaws.com"
+  build:
+    commands:
+      - docker build --platform linux/amd64 --tag "$ECR_REPOSITORY_URL:$IMAGE_TAG" .
+      - docker push "$ECR_REPOSITORY_URL:$IMAGE_TAG"
+  post_build:
+    commands:
+      - printf '[{"name":"clyra","imageUri":"%s"}]' "$ECR_REPOSITORY_URL:$IMAGE_TAG" > imagedefinitions.json
+
+artifacts:
+  files:
+    - imagedefinitions.json

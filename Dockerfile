@@ -15,7 +15,7 @@
 #   docker buildx build --platform linux/amd64,linux/arm64 -t <repo> --push .
 
 # ---------- builder: compile wheels ----------
-FROM python:3.12-slim AS builder
+FROM public.ecr.aws/docker/library/python:3.12-slim AS builder
 WORKDIR /build
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential git \
@@ -24,14 +24,21 @@ COPY requirements.txt .
 RUN pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.txt
 
 # ---------- runtime: slim final image ----------
-FROM python:3.12-slim
+FROM public.ecr.aws/docker/library/python:3.12-slim
 LABEL org.opencontainers.image.title="Galadriel" \
       org.opencontainers.image.source="https://github.com/avasol/galadriel-public" \
       org.opencontainers.image.description="A persistent, self-hosted Claude agent with a verbatim memory palace."
 
-# onnxruntime (transitive dep of mempalace) needs libgomp at runtime.
+# onnxruntime (transitive dep of mempalace) needs libgomp at runtime. iptables
+# is used only by the ECS task's short-lived network init sidecar, never by the
+# unprivileged application container.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libgomp1 \
+        ca-certificates curl libgomp1 iptables \
+    && curl --fail --silent --show-error \
+        --output /etc/ssl/certs/rds-global-bundle.pem \
+        https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem \
+    && apt-get purge -y curl \
+    && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Non-root user. Its home is /data so the palace defaults (~/.mempalace) land
@@ -46,19 +53,27 @@ RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.t
 
 # Application code. .dockerignore keeps keys/, .env, memory logs and bloat out.
 COPY . .
-RUN chown -R galadriel:galadriel /app /data
 
-# Persistent state — mount these as volumes so they survive `docker compose down`:
-#   /data            → the memory palace + archive (~/.mempalace), owned by the user
-#   /app/memory      → daily memory logs (markdown)
-#   /app/config      → scheduler_state.json, ambient_state.json, active_vision.txt
-VOLUME ["/data", "/app/memory", "/app/config"]
+# Keep immutable first-boot defaults separately from EFS-backed runtime paths.
+# The entrypoint copies only absent files, so upgrades never overwrite state.
+RUN mkdir -p /opt/galadriel-defaults \
+    && for dir in config memory state jobs workflows; do \
+        mkdir -p "/app/$dir"; \
+        cp -a "/app/$dir/." "/opt/galadriel-defaults/$dir/"; \
+        rm -rf "/app/$dir"; \
+        ln -s "/mnt/efs/$dir" "/app/$dir"; \
+    done \
+    && rm -rf /data \
+    && ln -s /mnt/efs/data /data \
+    && chown -R galadriel:galadriel /app /opt/galadriel-defaults
 
 # Palace lives under the user's home on the volume. These are the public
 # defaults already (~/.mempalace), set explicitly here for clarity.
 ENV MEMPALACE_PATH=/data/.mempalace/palace \
     PALACE_ARCHIVE_ROOT=/data/.mempalace/archive \
     PALACE_WAKE_UP_FILE=/data/.mempalace/wake_up.md \
+    GALADRIEL_EFS_ROOT=/mnt/efs \
+    BROWSER_BACKEND=bce \
     TOWER_HOST=0.0.0.0 \
     TOWER_PORT=8080 \
     PYTHONUNBUFFERED=1
@@ -68,4 +83,5 @@ ENV MEMPALACE_PATH=/data/.mempalace/palace \
 EXPOSE 8080
 
 USER galadriel
+ENTRYPOINT ["./docker/entrypoint.sh"]
 CMD ["python", "main.py"]

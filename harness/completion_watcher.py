@@ -1,17 +1,17 @@
 """Completion Watcher — reports when external/detached shell processes finish.
 
 Long shell processes the agent launches but cannot `await` in one turn (e.g.
-narration pipelines, batch jobs) write a JSON completion marker to
-/tmp/galadriel-jobs/ when they finish. This watcher polls for those markers and
-pushes a Discord notification through the agent.
+narration pipelines, batch jobs) write a JSON completion marker to the
+configured marker directory. This watcher polls for those markers and pushes a
+Discord notification through the agent.
 
 This is DISTINCT from the agent's own job *board* (`jobs/` + `state/`, the
 background worker — see knowledge/reference/architecture.md §5). This watcher only reports the
 completion of out-of-band shell processes; it does not pick or perform work.
 
 Architecture:
-  - Marker dir: /tmp/galadriel-jobs/  (legacy path, kept as an external contract:
-    scripts the agent writes drop markers here)
+  - Marker dir: /tmp/galadriel-jobs/ by default (set
+    GALADRIEL_COMPLETION_MARKER_DIR to the EFS-backed path in ECS)
   - Each process writes <name>.done with JSON status on completion
   - Watcher polls every 15 seconds
   - On detection: reads marker, formats message, sends via agent+Discord, archives marker
@@ -20,13 +20,14 @@ Architecture:
 import asyncio
 import json
 import logging
+import os
 from pathlib import Path
 
 from .loop_prompts import process_complete_prompt
 
 log = logging.getLogger("galadriel.completion_watcher")
 
-MARKER_DIR = Path("/tmp/galadriel-jobs")
+MARKER_DIR = Path(os.environ.get("GALADRIEL_COMPLETION_MARKER_DIR", "/tmp/galadriel-jobs"))
 POLL_INTERVAL = 15  # seconds
 MARKER_SUFFIX = ".done"
 

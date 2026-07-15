@@ -1,6 +1,8 @@
 # Keep secrets, local state, and bloat out of the build context / image.
 .git
 .gitignore
+infra/terraform/.terraform/
+infra/terraform/*.tfstate*
 
 # Secrets — never bake into an image
 .env
@@ -31,8 +33,7 @@ build/
 .venv/
 venv/
 
-# Docs / media that don't belong in the runtime image
+# Media does not belong in the runtime image. Operational markdown is retained
+# because the EFS entrypoint seeds config, jobs, state, and knowledge defaults.
 img/
 ext_images_provided/
-*.md
-!README.md

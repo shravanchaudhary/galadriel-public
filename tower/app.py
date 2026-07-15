@@ -4,6 +4,8 @@ import os
 import json
 import queue
 import base64
+import binascii
+import hmac
 import asyncio
 import logging
 from datetime import datetime
@@ -63,6 +65,56 @@ def create_tower(agent, scheduler=None) -> Flask:
         static_folder=str(Path(__file__).parent / "static"),
     )
     app.secret_key = os.environ.get("TOWER_SECRET_KEY", "change-me")
+
+    def _tower_auth_configured() -> bool:
+        return bool(os.environ.get("TOWER_AUTH_TOKEN"))
+
+    @app.before_request
+    def _require_tower_auth():
+        # ALB health checks stay public; every other Tower route, including
+        # static assets and blueprint routes registered below, is authenticated.
+        if request.path in {"/healthz", "/readyz"}:
+            return None
+        if os.environ.get("TOWER_AUTH_REQUIRED", "").lower() not in {"1", "true", "yes"}:
+            return None
+        token = os.environ.get("TOWER_AUTH_TOKEN", "")
+        if not token:
+            return jsonify({"error": "Tower authentication is misconfigured"}), 503
+        authorization = request.headers.get("Authorization", "")
+        supplied = authorization.removeprefix("Bearer ").strip()
+        if authorization.startswith("Basic "):
+            try:
+                decoded = base64.b64decode(authorization[6:], validate=True).decode("utf-8")
+                username, supplied = decoded.split(":", 1)
+            except (ValueError, UnicodeDecodeError, binascii.Error):
+                username, supplied = "", ""
+            if username != os.environ.get("TOWER_AUTH_USERNAME", "clyra"):
+                supplied = ""
+        if not supplied or not hmac.compare_digest(supplied, token):
+            return jsonify({"error": "Unauthorized"}), 401, {
+                "WWW-Authenticate": 'Basic realm="Clyra Tower", Bearer',
+            }
+        return None
+
+    @app.route("/healthz", methods=["GET"])
+    def healthz():
+        return jsonify({"status": "ok"}), 200
+
+    @app.route("/readyz", methods=["GET"])
+    def readyz():
+        if not app.config.get("GALADRIEL_READY", False):
+            return jsonify({"status": "starting"}), 503
+        if (
+            os.environ.get("TOWER_AUTH_REQUIRED", "").lower() in {"1", "true", "yes"}
+            and not _tower_auth_configured()
+        ):
+            return jsonify({"status": "misconfigured"}), 503
+        from harness.runtime_dependencies import readiness_error
+
+        dependency_error = readiness_error()
+        if dependency_error:
+            return jsonify({"status": "unready", "error": dependency_error}), 503
+        return jsonify({"status": "ready"}), 200
 
     @app.context_processor
     def _inject_page_context():
@@ -492,4 +544,5 @@ def create_tower(agent, scheduler=None) -> Flask:
     from .cost_board import register_cost_board
     register_cost_board(app)
 
+    app.config["GALADRIEL_READY"] = True
     return app

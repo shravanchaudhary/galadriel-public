@@ -24,14 +24,16 @@ log = logging.getLogger("galadriel")
 
 
 def start_tower(agent, scheduler):
-    """Run the Tower Flask app in a background thread."""
+    """Run the Tower Flask app with a bounded production WSGI server."""
     from tower.app import create_tower
+    from waitress import serve
 
     app = create_tower(agent, scheduler)
     host = os.environ.get("TOWER_HOST", "0.0.0.0")
     port = int(os.environ.get("TOWER_PORT", "8080"))
+    threads = int(os.environ.get("TOWER_THREADS", "8"))
     log.info(f"Tower UI starting on http://{host}:{port}")
-    app.run(host=host, port=port, use_reloader=False)
+    serve(app, host=host, port=port, threads=threads)
 
 
 def _install_shutdown_archive(agent):
