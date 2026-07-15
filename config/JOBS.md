@@ -26,6 +26,8 @@ today's instance is enough. They never carry forward or accumulate.
 | Content Pipeline Check & Nudge | 11:00 Mon/Wed/Fri | `jobs/content_drafting.md` (Check `post_draft` DB; if <2 approved/drafting per person this week, nudge in chat) |
 | Inbound Engagement & Lead Extraction | 12:00, 16:00 daily| `jobs/inbound_engagement.md` |
 
+| End of Day State Commit | 23:55 daily | `jobs/daily_state_commit.md` (Commits state/ memory/ config/ jobs/ using git) |
+
 ## Notes
 
 - Projects (one-offs) live in `state/backlog.md`, not here.
