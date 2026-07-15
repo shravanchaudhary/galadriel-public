@@ -187,7 +187,10 @@ resource "aws_codepipeline" "clyra" {
       input_artifacts = ["build"]
       configuration = {
         ClusterName = data.aws_ecs_cluster.staging.cluster_name
-        ServiceName = aws_ecs_service.clyra.name
+        # Intentionally use the configured name rather than a resource
+        # reference so the first pipeline execution can publish the bootstrap
+        # image before the ECS service exists.
+        ServiceName = var.service_name
         FileName    = "imagedefinitions.json"
       }
     }
