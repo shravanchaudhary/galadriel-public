@@ -30,7 +30,34 @@ variable "ecs_cluster_name" {
   type    = string
   default = "clodexa-stag-cluster"
 }
-variable "capacity_provider_name" { type = string }
+variable "candidate_image_uri" {
+  description = "Immutable image URI for initial Fargate registration and the storage canary. CodePipeline owns live service image revisions."
+  type        = string
+  default     = null
+}
+variable "palace_backend" {
+  description = "Memory storage backend: chroma, mongo, or documentdb."
+  type        = string
+  default     = "chroma"
+  validation {
+    condition     = contains(["chroma", "mongo", "documentdb"], var.palace_backend)
+    error_message = "palace_backend must be chroma, mongo, or documentdb."
+  }
+}
+variable "fargate_ephemeral_storage_gib" {
+  description = "Ephemeral storage for the 6.5 GiB image and writable layers."
+  type        = number
+  default     = 40
+  validation {
+    condition     = var.fargate_ephemeral_storage_gib >= 30 && var.fargate_ephemeral_storage_gib <= 200
+    error_message = "Fargate ephemeral storage must be between 30 and 200 GiB."
+  }
+}
+variable "s3_state_noncurrent_version_expiration_days" {
+  description = "Retention period for rollback versions in the S3 Files backing bucket."
+  type        = number
+  default     = 90
+}
 variable "listener_rule_priority" { type = number }
 variable "github_connection_arn" { type = string }
 variable "appconfig_application_id" {
@@ -82,7 +109,7 @@ variable "environment" {
     BCE_BASE_URL                    = ""
     BCE_TIMEOUT_MS                  = "10000"
     GALADRIEL_COMPLETION_MARKER_DIR = "/mnt/efs/completion-markers"
-    GALADRIEL_EFS_ROOT              = "/mnt/efs"
+    GALADRIEL_STORAGE_ROOT          = "/mnt/efs"
     GALADRIEL_REFLECTION            = "1"
     GALADRIEL_WORKER                = "1"
     DAILY_COST_LIMIT_USD            = "5.00"

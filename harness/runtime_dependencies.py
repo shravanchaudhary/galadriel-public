@@ -4,7 +4,7 @@ import os
 
 
 def readiness_error() -> str | None:
-    """Return a concise error when configured Valkey or DocumentDB is unavailable."""
+    """Return a concise error when configured Valkey or Mongo-compatible DB is unavailable."""
     redis_url = os.environ.get("REDIS_URL")
     if redis_url:
         try:
@@ -29,6 +29,6 @@ def readiness_error() -> str | None:
                 connectTimeoutMS=1000,
             ).admin.command("ping")
         except Exception:
-            return "DocumentDB unavailable"
+            return "MongoDB/DocumentDB unavailable"
 
     return None

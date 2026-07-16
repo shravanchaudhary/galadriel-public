@@ -76,6 +76,16 @@ _CONVERSATION_PALACE_YAML = (
 MEMPALACE_BIN = str(Path(sys.executable).parent / "mempalace")
 
 
+def _uses_documentdb() -> bool:
+    return os.environ.get("PALACE_BACKEND", "chroma").lower() in {"mongo", "documentdb"}
+
+
+def _documentdb():
+    from . import mongo_palace
+
+    return mongo_palace
+
+
 def _palace_path() -> str:
     return os.environ.get("MEMPALACE_PATH", DEFAULT_PALACE_PATH)
 
@@ -111,6 +121,12 @@ def search(
     Filters (both modes):
       - wing, room, hall: metadata scoping.
     """
+    if _uses_documentdb():
+        return _documentdb().search_markdown(
+            query=query, wing=wing, room=room, hall=hall, k=k,
+            order=order, channel=channel,
+        )
+
     path = _palace_path()
     if not os.path.isdir(path):
         return f"[palace unavailable] no palace at {path} — run `mempalace init` + `mine` first"
@@ -451,6 +467,16 @@ async def mine_batch_dir(
     5 memory types) is no longer used by the harness: it sprayed a single chat
     session across many rooms. The args remain for ad-hoc/manual callers.
     """
+    if _uses_documentdb():
+        try:
+            ok = await asyncio.to_thread(_documentdb().mine_directory, batch_dir, agent=agent)
+            if ok:
+                asyncio.ensure_future(refresh_wake_up_cache())
+            return ok
+        except Exception as e:
+            log.warning(f"Mongo-compatible palace mine failed at {batch_dir}: {e}")
+            return False
+
     cmd = [MEMPALACE_BIN, "mine", str(batch_dir),
            "--wing", DEFAULT_WING, "--agent", agent]
     if mode:
@@ -687,6 +713,10 @@ def close() -> None:
     clients here is the fix: it forces the flush so recall stays intact across
     restarts. Call from the shutdown path (atexit / SIGTERM).
     """
+    if _uses_documentdb():
+        _documentdb().close()
+        return
+
     path = _palace_path()
     if not os.path.isdir(path):
         return
@@ -784,6 +814,24 @@ async def add_drawer(
     """
     if not content or not content.strip():
         return "[palace add] empty content — nothing filed."
+    if _uses_documentdb():
+        resolved_room = room or DEFAULT_DRAWER_ROOM
+        try:
+            _documentdb().upsert_drawer(
+                content,
+                wing=wing,
+                room=resolved_room,
+                hall=topic or "general",
+                topic=topic,
+                source_file="agent:add",
+            )
+            await refresh_wake_up_cache()
+            return (
+                f"Filed to palace: wing=`{wing}`, room=`{resolved_room}`"
+                + (f", topic=`{topic}`" if topic else "")
+            )
+        except Exception as e:
+            return f"[palace add] {type(e).__name__}: {e}"
 
     ts = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
     slug = _slug(topic) if topic else _slug(content.strip().split("\n", 1)[0])
@@ -835,6 +883,12 @@ async def wake_up(wing: str | None = None) -> str:
     `mempalace wake-up` with an optional --wing filter *right now*,
     so the agent can pull a targeted palace overview mid-conversation.
     """
+    if _uses_documentdb():
+        try:
+            return await asyncio.to_thread(_documentdb().wake_up_text)
+        except Exception as e:
+            return f"[palace wake-up] {type(e).__name__}: {e}"
+
     args = [MEMPALACE_BIN, "wake-up"]
     if wing:
         args += ["--wing", wing]
@@ -872,6 +926,15 @@ async def refresh_wake_up_cache() -> bool:
     the current palace state.
     """
     out_path = _wake_up_file()
+    if _uses_documentdb():
+        try:
+            text = await asyncio.to_thread(_documentdb().wake_up_text)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(text, encoding="utf-8")
+            return True
+        except Exception as e:
+            log.warning(f"Mongo-compatible wake-up refresh failed: {e}")
+            return False
     try:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         proc = await asyncio.create_subprocess_exec(
@@ -915,6 +978,11 @@ def kg_add(
     """
     if not subject or not predicate or not object:
         return "[kg add] subject, predicate, and object are required."
+    if _uses_documentdb():
+        try:
+            return _documentdb().kg_add(subject, predicate, object, valid_from)
+        except Exception as e:
+            return f"[kg add] {type(e).__name__}: {e}"
     try:
         from mempalace.knowledge_graph import KnowledgeGraph
         kg = KnowledgeGraph()
@@ -958,6 +1026,14 @@ def kg_query(
     """
     if not subject and not predicate and not object:
         return "[kg query] give at least one of subject, predicate, object."
+    if _uses_documentdb():
+        try:
+            rows = _documentdb().kg_query_rows(subject, predicate, object)
+        except Exception as e:
+            return f"[kg query] {type(e).__name__}: {e}"
+        if not rows:
+            return "No KG facts matched the requested filters."
+        return "\n".join([f"**KG query** ({len(rows)} fact(s)):", "", *(_fmt_triple(row) for row in rows)])
     try:
         from mempalace.knowledge_graph import KnowledgeGraph
         kg = KnowledgeGraph()
@@ -994,6 +1070,11 @@ def kg_query(
 
 def kg_invalidate(subject: str, predicate: str, object: str, ended: str | None = None) -> str:
     """Mark a KG fact as no longer valid (sets valid_to date)."""
+    if _uses_documentdb():
+        try:
+            return _documentdb().kg_invalidate(subject, predicate, object, ended)
+        except Exception as e:
+            return f"[kg invalidate] {type(e).__name__}: {e}"
     try:
         from mempalace.knowledge_graph import KnowledgeGraph
         kg = KnowledgeGraph()
@@ -1005,12 +1086,20 @@ def kg_invalidate(subject: str, predicate: str, object: str, ended: str | None =
 
 def kg_timeline(entity: str) -> str:
     """Return chronological history of all facts touching an entity."""
-    try:
-        from mempalace.knowledge_graph import KnowledgeGraph
-        kg = KnowledgeGraph()
-        facts = kg.timeline(entity_name=entity) or []
-    except Exception as e:
-        return f"[kg timeline] {type(e).__name__}: {e}"
+    if _uses_documentdb():
+        try:
+            outgoing = _documentdb().kg_query_rows(subject=entity)
+            incoming = _documentdb().kg_query_rows(object=entity)
+            facts = outgoing + [row for row in incoming if row not in outgoing]
+        except Exception as e:
+            return f"[kg timeline] {type(e).__name__}: {e}"
+    else:
+        try:
+            from mempalace.knowledge_graph import KnowledgeGraph
+            kg = KnowledgeGraph()
+            facts = kg.timeline(entity_name=entity) or []
+        except Exception as e:
+            return f"[kg timeline] {type(e).__name__}: {e}"
 
     if not facts:
         return f"No KG history for `{entity}`."
@@ -1043,6 +1132,11 @@ def diary_write(entry: str, topic: str = "general", agent_name: str = DEFAULT_DI
     """
     if not entry or not entry.strip():
         return "[diary write] empty entry — nothing saved."
+    if _uses_documentdb():
+        try:
+            return _documentdb().diary_write(entry, topic, agent_name)
+        except Exception as e:
+            return f"[diary write] {type(e).__name__}: {e}"
     try:
         from mempalace.mcp_server import tool_diary_write as _dw
         result = _dw(agent_name=agent_name, entry=entry, topic=topic, wing=DEFAULT_WING)
@@ -1055,6 +1149,11 @@ def diary_write(entry: str, topic: str = "general", agent_name: str = DEFAULT_DI
 
 def diary_read(last_n: int = 10, agent_name: str = DEFAULT_DIARY_AGENT) -> str:
     """Read the most recent N diary entries for an agent."""
+    if _uses_documentdb():
+        try:
+            return _documentdb().diary_read(last_n, agent_name)
+        except Exception as e:
+            return f"[diary read] {type(e).__name__}: {e}"
     try:
         from mempalace.mcp_server import tool_diary_read as _dr
         result = _dr(agent_name=agent_name, last_n=max(1, min(last_n, 50)))
@@ -1156,6 +1255,19 @@ def taxonomy() -> str:
     Used by the agent to discover how memory is organized before narrowing
     a search. Aggregates via SQLite so large palaces stay readable.
     """
+    if _uses_documentdb():
+        data = _documentdb().taxonomy_data()
+        total = data.get("total", 0)
+        if total == 0:
+            return "Palace is empty."
+        lines = [f"**Palace taxonomy** — {total} drawers total", ""]
+        for wing in sorted(data.get("wings") or {}):
+            rooms = data["wings"][wing]
+            lines.append(f"- **Wing `{wing}`** ({sum(rooms.values())} drawer(s)):")
+            for room, count in sorted(rooms.items(), key=lambda item: -item[1]):
+                lines.append(f"    - room `{room}`: {count}")
+        return "\n".join(lines)
+
     path = _palace_path()
     if not os.path.isdir(path):
         return f"[taxonomy] no palace at {path}"
@@ -1201,6 +1313,8 @@ def search_data(query: str, wing: str | None = None, room: str | None = None,
     of a pre-formatted markdown blob, and never touches the agent-tool-facing
     search() function.
     """
+    if _uses_documentdb():
+        return _documentdb().search_data(query, wing=wing, room=room, hall=hall, k=k)
     path = _palace_path()
     if not os.path.isdir(path):
         return []
@@ -1261,6 +1375,8 @@ def taxonomy_data() -> dict:
     """Structured wing → room → count + hall counts, for the Tower taxonomy
     view. Same underlying data as taxonomy(), returned as a dict instead of
     pre-formatted markdown."""
+    if _uses_documentdb():
+        return _documentdb().taxonomy_data()
     path = _palace_path()
     if not os.path.isdir(path):
         return {"total": 0, "wings": {}, "halls": {}}
@@ -1296,6 +1412,8 @@ def list_drawers(
     Returns {"total": <matching count>, "drawers": [...]}. Uses SQLite so large
     rooms (tens of thousands of drawers) do not trip Chroma's bulk ``.get()``.
     """
+    if _uses_documentdb():
+        return _documentdb().list_drawers(wing, room, hall, limit, offset)
     conn = _drawers_sqlite_conn()
     if conn is None:
         return {"total": 0, "drawers": []}
@@ -1371,6 +1489,8 @@ def list_drawers(
 
 def get_drawer(drawer_id: str) -> dict | None:
     """Fetch a single drawer by id, or None if it doesn't exist."""
+    if _uses_documentdb():
+        return _documentdb().get_drawer(drawer_id)
     coll = _drawers_collection()
     if coll is None:
         return None
@@ -1404,6 +1524,8 @@ def update_drawer(
     `mempalace mine` re-index is needed. Metadata-only edits (wing/room/hall)
     skip embedding recompute entirely — only `documents` writes trigger it.
     """
+    if _uses_documentdb():
+        return _documentdb().update_drawer(drawer_id, text, wing, room, hall)
     coll = _drawers_collection()
     if coll is None:
         return "[palace edit] no palace found"
@@ -1443,6 +1565,8 @@ def update_drawer(
 def delete_drawer(drawer_id: str) -> str:
     """Remove one drawer from Chroma. Call reconcile_sync() afterward to flush
     HNSW and refresh the wake-up cache."""
+    if _uses_documentdb():
+        return _documentdb().delete_drawer(drawer_id)
     coll = _drawers_collection()
     if coll is None:
         return "[palace delete] no palace found"
@@ -1466,6 +1590,8 @@ def create_drawer(
     {"error": "..."}."""
     if not text or not text.strip():
         return {"error": "empty content"}
+    if _uses_documentdb():
+        return _documentdb().create_drawer(text, wing, room, hall)
     coll = _drawers_collection()
     if coll is None:
         return {"error": "no palace found"}
@@ -1495,6 +1621,16 @@ def reconcile_sync() -> dict:
     Does NOT run `mempalace repair` — that is for index corruption, not
     routine edits. Returns {"ok": bool, "steps": [str, ...]}.
     """
+    if _uses_documentdb():
+        try:
+            text = _documentdb().wake_up_text()
+            out_path = _wake_up_file()
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(text, encoding="utf-8")
+            return {"ok": True, "steps": ["Mongo-compatible writes durable", "wake-up cache refreshed"]}
+        except Exception as e:
+            return {"ok": False, "steps": [f"Mongo-compatible reconcile failed: {type(e).__name__}: {e}"]}
+
     steps: list[str] = []
     close()
     steps.append("HNSW flushed to disk")
@@ -1534,6 +1670,12 @@ def kg_list(limit: int = 200) -> list[dict]:
     (subject/predicate/object/valid_from/valid_to) — verify against the
     actually-installed mempalace version and adjust if the schema differs.
     """
+    if _uses_documentdb():
+        try:
+            return _documentdb().kg_query_rows(limit=limit)
+        except Exception as e:
+            log.warning(f"KG list (Mongo-compatible) failed: {e}")
+            return []
     try:
         from mempalace.knowledge_graph import KnowledgeGraph
         kg = KnowledgeGraph()

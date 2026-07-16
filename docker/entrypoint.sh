@@ -1,7 +1,8 @@
 #!/bin/sh
 set -eu
 
-efs_root="${GALADRIEL_EFS_ROOT:-/mnt/efs}"
+storage_root="${GALADRIEL_STORAGE_ROOT:-${GALADRIEL_EFS_ROOT:-/mnt/efs}}"
+defaults_root="${GALADRIEL_DEFAULTS_ROOT:-/opt/galadriel-defaults}"
 
 if [ "${APPCONFIG_REQUIRED:-false}" = "true" ]; then
     : "${APPCONFIG_APPLICATION:?APPCONFIG_APPLICATION is required}"
@@ -47,15 +48,28 @@ PY
     set +a
 fi
 
-for dir in data memory config state jobs workflows completion-markers; do
-    mkdir -p "$efs_root/$dir"
+for dir in data memory config knowledge state jobs workflows completion-markers; do
+    mkdir -p "$storage_root/$dir"
 done
 
 # Seed files added by a new image without overwriting state already persisted
-# on EFS. `cp -an` is deliberately idempotent across task replacements.
-for dir in config memory state jobs workflows; do
-    if [ -d "/opt/galadriel-defaults/$dir" ]; then
-        cp -an "/opt/galadriel-defaults/$dir/." "$efs_root/$dir/"
+# on persistent storage. `cp -an` is deliberately idempotent across replacements.
+for dir in config knowledge memory state jobs workflows; do
+    if [ -d "$defaults_root/$dir" ]; then
+        python3 - "$defaults_root/$dir" "$storage_root/$dir" <<'PY'
+import shutil
+import sys
+from pathlib import Path
+
+source_root, target_root = map(Path, sys.argv[1:])
+for source in source_root.rglob("*"):
+    target = target_root / source.relative_to(source_root)
+    if source.is_dir():
+        target.mkdir(parents=True, exist_ok=True)
+    elif not target.exists():
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+PY
     fi
 done
 

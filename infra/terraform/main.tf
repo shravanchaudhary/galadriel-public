@@ -7,14 +7,16 @@ data "aws_lb_listener" "https" {
 }
 
 locals {
-  name        = var.service_name
-  image_uri   = "${aws_ecr_repository.clyra.repository_url}:bootstrap"
-  secret_list = [for name, arn in var.secret_arns : { name = name, valueFrom = arn }]
+  name                = var.service_name
+  image_uri           = "${aws_ecr_repository.clyra.repository_url}:bootstrap"
+  candidate_image_uri = coalesce(var.candidate_image_uri, local.image_uri)
+  secret_list         = [for name, arn in var.secret_arns : { name = name, valueFrom = arn }]
   environment_list = [
     for name, value in merge(var.environment, {
       APPCONFIG_APPLICATION   = var.appconfig_application_id
       APPCONFIG_ENVIRONMENT   = var.appconfig_environment_id
       APPCONFIG_CONFIGURATION = var.appconfig_configuration_id
+      PALACE_BACKEND          = var.palace_backend
     }) : { name = name, value = value }
   ]
 }
@@ -62,19 +64,6 @@ resource "aws_security_group" "task" {
   lifecycle { create_before_destroy = true }
 }
 
-resource "aws_security_group" "efs" {
-  name_prefix = "${local.name}-efs-"
-  vpc_id      = var.vpc_id
-  ingress {
-    description     = "NFS only from Clyra tasks"
-    protocol        = "tcp"
-    from_port       = 2049
-    to_port         = 2049
-    security_groups = [aws_security_group.task.id]
-  }
-  lifecycle { create_before_destroy = true }
-}
-
 resource "aws_vpc_security_group_ingress_rule" "documentdb" {
   count                        = var.documentdb_security_group_id == null ? 0 : 1
   security_group_id            = var.documentdb_security_group_id
@@ -95,39 +84,196 @@ resource "aws_vpc_security_group_ingress_rule" "valkey" {
   description                  = "Clyra ECS task access"
 }
 
-resource "aws_efs_file_system" "clyra" {
-  encrypted = true
-  lifecycle_policy { transition_to_ia = "AFTER_30_DAYS" }
-  lifecycle_policy { transition_to_primary_storage_class = "AFTER_1_ACCESS" }
-  tags = { Name = "${local.name}-state" }
+resource "aws_s3_bucket" "state" {
+  bucket_prefix = "${local.name}-state-"
+  force_destroy = false
+  tags          = { Name = "${local.name}-state" }
 }
 
-resource "aws_efs_backup_policy" "clyra" {
-  file_system_id = aws_efs_file_system.clyra.id
-  backup_policy { status = "ENABLED" }
+resource "aws_s3_bucket_public_access_block" "state" {
+  bucket                  = aws_s3_bucket.state.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
 }
 
-resource "aws_efs_mount_target" "clyra" {
+resource "aws_s3_bucket_versioning" "state" {
+  bucket = aws_s3_bucket.state.id
+  versioning_configuration { status = "Enabled" }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "state" {
+  bucket = aws_s3_bucket.state.id
+  rule {
+    apply_server_side_encryption_by_default { sse_algorithm = "AES256" }
+  }
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "state" {
+  bucket = aws_s3_bucket.state.id
+  rule {
+    id     = "retain-rollback-versions"
+    status = "Enabled"
+    filter {}
+    noncurrent_version_expiration {
+      noncurrent_days = var.s3_state_noncurrent_version_expiration_days
+    }
+  }
+  depends_on = [aws_s3_bucket_versioning.state]
+}
+
+data "aws_iam_policy_document" "s3files_assume" {
+  statement {
+    sid     = "AllowS3FilesAssumeRole"
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["elasticfilesystem.amazonaws.com"]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [data.aws_caller_identity.current.account_id]
+    }
+    condition {
+      test     = "ArnLike"
+      variable = "aws:SourceArn"
+      values   = ["arn:aws:s3files:${var.aws_region}:${data.aws_caller_identity.current.account_id}:file-system/*"]
+    }
+  }
+}
+
+resource "aws_iam_role" "s3files" {
+  name               = "${local.name}-s3files"
+  assume_role_policy = data.aws_iam_policy_document.s3files_assume.json
+}
+
+data "aws_iam_policy_document" "s3files" {
+  statement {
+    sid       = "S3BucketPermissions"
+    actions   = ["s3:ListBucket", "s3:ListBucketVersions"]
+    resources = [aws_s3_bucket.state.arn]
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceAccount"
+      values   = [data.aws_caller_identity.current.account_id]
+    }
+  }
+  statement {
+    sid = "S3ObjectPermissions"
+    actions = [
+      "s3:AbortMultipartUpload", "s3:DeleteObject*", "s3:GetObject*",
+      "s3:List*", "s3:PutObject*",
+    ]
+    resources = ["${aws_s3_bucket.state.arn}/*"]
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceAccount"
+      values   = [data.aws_caller_identity.current.account_id]
+    }
+  }
+  statement {
+    sid = "EventBridgeManage"
+    actions = [
+      "events:DeleteRule", "events:DisableRule", "events:EnableRule",
+      "events:PutRule", "events:PutTargets", "events:RemoveTargets",
+    ]
+    resources = ["arn:aws:events:*:*:rule/DO-NOT-DELETE-S3-Files*"]
+    condition {
+      test     = "StringEquals"
+      variable = "events:ManagedBy"
+      values   = ["elasticfilesystem.amazonaws.com"]
+    }
+  }
+  statement {
+    sid       = "EventBridgeRead"
+    actions   = ["events:DescribeRule", "events:ListRuleNamesByTarget", "events:ListRules", "events:ListTargetsByRule"]
+    resources = ["arn:aws:events:*:*:rule/*"]
+  }
+}
+
+resource "aws_iam_role_policy" "s3files" {
+  name   = "bucket-sync"
+  role   = aws_iam_role.s3files.id
+  policy = data.aws_iam_policy_document.s3files.json
+}
+
+resource "aws_s3files_file_system" "clyra" {
+  bucket   = aws_s3_bucket.state.arn
+  role_arn = aws_iam_role.s3files.arn
+  tags     = { Name = "${local.name}-state" }
+  depends_on = [
+    aws_iam_role_policy.s3files,
+    aws_s3_bucket_public_access_block.state,
+    aws_s3_bucket_server_side_encryption_configuration.state,
+    aws_s3_bucket_versioning.state,
+  ]
+}
+
+resource "aws_security_group" "s3files" {
+  name_prefix = "${local.name}-s3files-"
+  vpc_id      = var.vpc_id
+  ingress {
+    description     = "NFS only from Clyra tasks"
+    protocol        = "tcp"
+    from_port       = 2049
+    to_port         = 2049
+    security_groups = [aws_security_group.task.id]
+  }
+  lifecycle { create_before_destroy = true }
+}
+
+resource "aws_s3files_mount_target" "clyra" {
   for_each        = var.private_subnet_ids
-  file_system_id  = aws_efs_file_system.clyra.id
+  file_system_id  = aws_s3files_file_system.clyra.id
   subnet_id       = each.value
-  security_groups = [aws_security_group.efs.id]
+  security_groups = [aws_security_group.s3files.id]
 }
 
-resource "aws_efs_access_point" "clyra" {
-  file_system_id = aws_efs_file_system.clyra.id
+resource "aws_s3files_access_point" "clyra" {
+  file_system_id = aws_s3files_file_system.clyra.id
   posix_user {
     uid = 1000
     gid = 1000
   }
   root_directory {
     path = "/clyra"
-    creation_info {
+    creation_permissions {
       owner_uid   = 1000
       owner_gid   = 1000
-      permissions = "750"
+      permissions = "0750"
     }
   }
+}
+
+resource "aws_s3files_file_system_policy" "clyra" {
+  file_system_id = aws_s3files_file_system.clyra.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "AllowClyraOnlyViaAccessPoint"
+        Effect    = "Allow"
+        Principal = { AWS = aws_iam_role.task.arn }
+        Action    = ["s3files:ClientMount", "s3files:ClientWrite"]
+        Resource  = aws_s3files_file_system.clyra.arn
+        Condition = {
+          StringEquals = { "s3files:AccessPointArn" = aws_s3files_access_point.clyra.arn }
+        }
+      },
+      {
+        Sid       = "DenyClyraViaAnyOtherAccessPoint"
+        Effect    = "Deny"
+        Principal = { AWS = aws_iam_role.task.arn }
+        Action    = "s3files:Client*"
+        Resource  = aws_s3files_file_system.clyra.arn
+        Condition = {
+          StringNotEquals = { "s3files:AccessPointArn" = aws_s3files_access_point.clyra.arn }
+        }
+      },
+    ]
+  })
 }
 
 data "aws_iam_policy_document" "execution_assume" {
@@ -169,22 +315,30 @@ resource "aws_iam_role" "task" {
   assume_role_policy = data.aws_iam_policy_document.execution_assume.json
 }
 
-data "aws_iam_policy_document" "task_efs" {
+data "aws_iam_policy_document" "task_s3files" {
   statement {
-    actions   = ["elasticfilesystem:ClientMount", "elasticfilesystem:ClientWrite"]
-    resources = [aws_efs_file_system.clyra.arn]
+    actions   = ["s3files:ClientMount", "s3files:ClientWrite"]
+    resources = [aws_s3files_file_system.clyra.arn]
     condition {
       test     = "StringEquals"
-      variable = "elasticfilesystem:AccessPointArn"
-      values   = [aws_efs_access_point.clyra.arn]
+      variable = "s3files:AccessPointArn"
+      values   = [aws_s3files_access_point.clyra.arn]
     }
+  }
+  statement {
+    actions   = ["s3:GetObject", "s3:GetObjectVersion"]
+    resources = ["${aws_s3_bucket.state.arn}/*"]
+  }
+  statement {
+    actions   = ["s3:ListBucket"]
+    resources = [aws_s3_bucket.state.arn]
   }
 }
 
-resource "aws_iam_role_policy" "task_efs" {
-  name   = "efs-state"
+resource "aws_iam_role_policy" "task_s3files" {
+  name   = "s3files-state"
   role   = aws_iam_role.task.id
-  policy = data.aws_iam_policy_document.task_efs.json
+  policy = data.aws_iam_policy_document.task_s3files.json
 }
 
 data "aws_iam_policy_document" "task_appconfig" {
@@ -236,35 +390,43 @@ resource "aws_lb_listener_rule" "clyra" {
   }
 }
 
-resource "aws_ecs_task_definition" "clyra" {
-  family                   = local.name
-  requires_compatibilities = ["EC2"]
+resource "aws_ecs_task_definition" "clyra_fargate" {
+  family                   = "${local.name}-fargate"
+  requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
   cpu                      = "2048"
   memory                   = "4096"
   execution_role_arn       = aws_iam_role.execution.arn
   task_role_arn            = aws_iam_role.task.arn
+  track_latest             = true
+  enable_fault_injection   = false
+  tags                     = {}
   runtime_platform {
     operating_system_family = "LINUX"
     cpu_architecture        = "X86_64"
   }
+  ephemeral_storage { size_in_gib = var.fargate_ephemeral_storage_gib }
   volume {
-    name = "state"
-    efs_volume_configuration {
-      file_system_id     = aws_efs_file_system.clyra.id
-      transit_encryption = "ENABLED"
-      authorization_config {
-        access_point_id = aws_efs_access_point.clyra.id
-        iam             = "ENABLED"
-      }
+    name                = "state"
+    configure_at_launch = false
+    s3files_volume_configuration {
+      file_system_arn         = aws_s3files_file_system.clyra.arn
+      access_point_arn        = aws_s3files_access_point.clyra.arn
+      root_directory          = "/"
+      transit_encryption_port = 0
     }
   }
   container_definitions = jsonencode([
     {
-      name        = "appconfig"
-      image       = "public.ecr.aws/aws-appconfig/aws-appconfig-agent:2.x"
-      essential   = true
-      environment = [{ name = "SERVICE_REGION", value = var.aws_region }]
+      name           = "appconfig"
+      image          = "public.ecr.aws/aws-appconfig/aws-appconfig-agent:2.x"
+      cpu            = 0
+      essential      = true
+      environment    = [{ name = "SERVICE_REGION", value = var.aws_region }]
+      portMappings   = []
+      mountPoints    = []
+      volumesFrom    = []
+      systemControls = []
       logConfiguration = {
         logDriver = "awslogs"
         options = {
@@ -275,28 +437,20 @@ resource "aws_ecs_task_definition" "clyra" {
       }
     },
     {
-      name            = "imds-firewall"
-      image           = local.image_uri
-      essential       = false
-      privileged      = true
-      user            = "0"
-      entryPoint      = ["/bin/sh", "-c"]
-      command         = ["iptables -A OUTPUT -d 169.254.169.254 -j REJECT"]
-      linuxParameters = { capabilities = { add = ["NET_ADMIN"] } }
-    },
-    {
       name      = "clyra"
-      image     = local.image_uri
+      image     = local.candidate_image_uri
+      cpu       = 0
       essential = true
       user      = "1000"
       dependsOn = [
-        { containerName = "imds-firewall", condition = "SUCCESS" },
         { containerName = "appconfig", condition = "START" },
       ]
       portMappings    = [{ containerPort = 8080, hostPort = 8080, protocol = "tcp" }]
       environment     = local.environment_list
       secrets         = local.secret_list
       mountPoints     = [{ sourceVolume = "state", containerPath = "/mnt/efs", readOnly = false }]
+      volumesFrom     = []
+      systemControls  = []
       linuxParameters = { capabilities = { drop = ["ALL"] } }
       logConfiguration = {
         logDriver = "awslogs"
@@ -315,25 +469,79 @@ resource "aws_ecs_task_definition" "clyra" {
       }
     }
   ])
+  lifecycle {
+    # CodePipeline owns application image revisions. Infrastructure applies
+    # must not replace a known-good deployed image with the bootstrap value.
+    ignore_changes = [container_definitions]
+  }
+}
+
+resource "aws_ecs_task_definition" "clyra_canary" {
+  family                   = "${local.name}-storage-canary"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = "2048"
+  memory                   = "4096"
+  execution_role_arn       = aws_iam_role.execution.arn
+  task_role_arn            = aws_iam_role.task.arn
+  enable_fault_injection   = false
+  tags                     = {}
+  runtime_platform {
+    operating_system_family = "LINUX"
+    cpu_architecture        = "X86_64"
+  }
+  ephemeral_storage { size_in_gib = var.fargate_ephemeral_storage_gib }
+  volume {
+    name                = "state"
+    configure_at_launch = false
+    s3files_volume_configuration {
+      file_system_arn         = aws_s3files_file_system.clyra.arn
+      access_point_arn        = aws_s3files_access_point.clyra.arn
+      root_directory          = "/"
+      transit_encryption_port = 0
+    }
+  }
+  container_definitions = jsonencode([{
+    name       = "canary"
+    image      = local.candidate_image_uri
+    cpu        = 0
+    essential  = true
+    user       = "1000"
+    entryPoint = ["python", "/app/scripts/clyra_storage_acceptance.py"]
+    command    = ["--root", "/mnt/efs", "--palace", "/mnt/efs/data/.mempalace/palace"]
+    mountPoints = [
+      { sourceVolume = "state", containerPath = "/mnt/efs", readOnly = false },
+    ]
+    environment     = []
+    portMappings    = []
+    volumesFrom     = []
+    systemControls  = []
+    linuxParameters = { capabilities = { add = [], drop = ["ALL"] } }
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        awslogs-group         = aws_cloudwatch_log_group.clyra.name
+        awslogs-region        = var.aws_region
+        awslogs-stream-prefix = "storage-canary"
+      }
+    }
+  }])
 }
 
 resource "aws_ecs_service" "clyra" {
   name                               = local.name
   cluster                            = data.aws_ecs_cluster.staging.arn
-  task_definition                    = aws_ecs_task_definition.clyra.arn
+  task_definition                    = aws_ecs_task_definition.clyra_fargate.arn
   desired_count                      = 1
-  launch_type                        = null
+  launch_type                        = "FARGATE"
   deployment_minimum_healthy_percent = 0
   deployment_maximum_percent         = 100
   health_check_grace_period_seconds  = 90
   enable_execute_command             = true
+  force_new_deployment               = true
   deployment_circuit_breaker {
     enable   = true
     rollback = true
-  }
-  capacity_provider_strategy {
-    capacity_provider = var.capacity_provider_name
-    weight            = 1
   }
   network_configuration {
     subnets          = tolist(var.private_subnet_ids)
@@ -345,5 +553,25 @@ resource "aws_ecs_service" "clyra" {
     container_name   = "clyra"
     container_port   = 8080
   }
-  depends_on = [aws_efs_mount_target.clyra, aws_lb_listener_rule.clyra]
+  depends_on = [
+    aws_s3files_mount_target.clyra,
+    aws_s3files_file_system_policy.clyra,
+    aws_lb_listener_rule.clyra,
+  ]
+}
+
+resource "aws_cloudwatch_metric_alarm" "s3files_failures" {
+  for_each = toset(["ImportFailures", "ExportFailures", "LostAndFoundFiles"])
+
+  alarm_name          = "${local.name}-s3files-${lower(each.value)}"
+  alarm_description   = "S3 Files reported ${each.value}; investigate before cutover or rollback."
+  namespace           = "AWS/S3/Files"
+  metric_name         = each.value
+  statistic           = "Sum"
+  period              = 60
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  dimensions          = { FileSystemId = aws_s3files_file_system.clyra.id }
 }

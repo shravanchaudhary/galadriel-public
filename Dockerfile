@@ -54,10 +54,10 @@ RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.t
 # Application code. .dockerignore keeps keys/, .env, memory logs and bloat out.
 COPY . .
 
-# Keep immutable first-boot defaults separately from EFS-backed runtime paths.
+# Keep immutable first-boot defaults separately from persisted runtime paths.
 # The entrypoint copies only absent files, so upgrades never overwrite state.
 RUN mkdir -p /opt/galadriel-defaults \
-    && for dir in config memory state jobs workflows; do \
+    && for dir in config knowledge memory state jobs workflows; do \
         mkdir -p "/app/$dir"; \
         cp -a "/app/$dir/." "/opt/galadriel-defaults/$dir/"; \
         rm -rf "/app/$dir"; \
@@ -73,7 +73,7 @@ RUN mkdir -p /opt/galadriel-defaults \
 ENV MEMPALACE_PATH=/data/.mempalace/palace \
     PALACE_ARCHIVE_ROOT=/data/.mempalace/archive \
     PALACE_WAKE_UP_FILE=/data/.mempalace/wake_up.md \
-    GALADRIEL_EFS_ROOT=/mnt/efs \
+    GALADRIEL_STORAGE_ROOT=/mnt/efs \
     BROWSER_BACKEND=bce \
     TOWER_HOST=0.0.0.0 \
     TOWER_PORT=8080 \

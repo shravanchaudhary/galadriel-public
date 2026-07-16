@@ -6,8 +6,24 @@ output "ecs_service_name" {
   value = aws_ecs_service.clyra.name
 }
 
-output "efs_file_system_id" {
-  value = aws_efs_file_system.clyra.id
+output "s3_state_bucket" {
+  value = aws_s3_bucket.state.id
+}
+
+output "s3files_file_system_id" {
+  value = aws_s3files_file_system.clyra.id
+}
+
+output "s3files_access_point_arn" {
+  value = aws_s3files_access_point.clyra.arn
+}
+
+output "canary_task_definition_arn" {
+  value = aws_ecs_task_definition.clyra_canary.arn
+}
+
+output "fargate_task_definition_arn" {
+  value = aws_ecs_task_definition.clyra_fargate.arn
 }
 
 output "target_group_arn" {

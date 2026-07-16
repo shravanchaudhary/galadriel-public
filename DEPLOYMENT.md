@@ -1,69 +1,81 @@
 # Clyra staging ECS runbook
 
-This service is a singleton `EC2`-launch-type ECS task on
-`clodexa-stag-cluster`. It uses the existing staging VPC, private subnets,
-capacity provider, and `STAG-ALB`; Terraform creates only Clyra-owned
-resources in `infra/terraform`.
+Clyra runs as a singleton Fargate service on `clodexa-stag-cluster`. Amazon S3
+Files is mounted at `/mnt/efs`; there is no EFS or ECS EC2 rollback path.
+Application code comes only from the immutable ECR image.
 
 ## Prerequisites
 
-1. The task reads runtime settings from the existing staging AppConfig profile
-   through the AppConfig Agent sidecar. Populate that profile with
-   `GEMINI_API_KEY`, `MONGO_URI`, `REDIS_URL`, `TOWER_AUTH_TOKEN`,
-   `BCE_API_KEY`, and the selected chat-gateway token. Do not put values in
-   Terraform, `tfvars`, Docker build arguments, or source control.
-2. Use the deployed DocumentDB endpoint in `MONGO_URI`, with
+1. Store runtime settings in the staging AppConfig profile. It supplies
+   `GEMINI_API_KEY`, `MONGO_URI`, `MONGO_DB`, `REDIS_URL`,
+   `TOWER_AUTH_TOKEN`, browser credentials, and the chat-gateway token.
+2. For AWS DocumentDB, set `PALACE_BACKEND=documentdb` and include
    `tls=true`, `replicaSet=rs0`, `retryWrites=false`, and
-   `tlsCAFile=/etc/ssl/certs/rds-global-bundle.pem`. Use the deployed
-   ElastiCache Valkey TLS endpoint in `REDIS_URL` (`rediss://...`).
-   Neither service is created by Docker Compose or this stack.
-3. Copy `infra/terraform/staging.tfvars.example` to a secure local file and
-   supply the shared-infrastructure IDs, unused ALB listener-rule priority,
-   CodeConnection ARN, and any Secrets Manager ARNs used in addition to
-   AppConfig.
+   `tlsCAFile=/etc/ssl/certs/rds-global-bundle.pem` in `MONGO_URI`.
+   `PALACE_BACKEND=mongo` uses the same adapter with exact cosine plus BM25
+   when native vector search is unavailable. `chroma` remains the default.
+3. Copy `infra/terraform/staging.tfvars.example` to a secure location and fill
+   in shared VPC, subnet, ALB, database/cache security-group, listener-priority,
+   and CodeConnection values. Never commit the populated file.
 
-## Deploy
+## Infrastructure and deployment
 
 ```sh
 cd infra/terraform
 terraform init
+terraform fmt -check
+terraform validate
+terraform plan -var-file=/secure/path/staging.tfvars
 terraform apply -var-file=/secure/path/staging.tfvars
 ```
 
-The first apply registers the `bootstrap` image reference so the service may
-briefly fail to start until the first CodePipeline execution finishes. Trigger
-the `clyra-stag` pipeline (or push to the `clyra` branch), then confirm the
-deployment circuit breaker reaches `COMPLETED`.
+CodePipeline builds immutable amd64 images from the `clyra` branch and deploys
+them to the existing Fargate service. ECS task replacement, not `git pull`,
+deploys code. The runtime image has no `.git` directory and does not run
+`systemctl`. `candidate_image_uri` is only for initial task registration and
+the isolated storage canary; Terraform ignores live container-definition drift
+so an infrastructure apply cannot roll back CodePipeline's image.
 
-Create the external DNS CNAME `clyra-stag.clodexa.com` to the existing staging
-ALB. DNS is external to this AWS account. The ALB's existing wildcard
-certificate terminates TLS; the host-header rule forwards only to port 8080.
+## Persistence contract
 
-## Verification
+The S3 Files mount persists:
 
-- Confirm ECR scan results and an amd64 image; inspect that `.env` is absent.
-- Confirm ECS runs as UID 1000, `/healthz` returns 200 without credentials,
-  `/readyz` returns 200 only after Valkey and DocumentDB respond, and all other
-  Tower endpoints return 401 without Tower authentication.
-- Force-stop the task, then confirm palace, config, state, jobs, workflows,
-  memory, and completion markers remain on the EFS access point.
-- From ECS Exec, verify `curl --connect-timeout 2 169.254.169.254` fails and
-  the task role has only EFS client permissions. The privileged firewall init
-  container is the sole exception.
-- Verify BCE, DocumentDB, Valkey, the configured Discord or Slack gateway,
-  scheduler, worker, and CloudWatch logs. Perform a deliberately invalid-image
-  deployment to confirm the circuit breaker rolls back; singleton rolling
-  settings intentionally allow a brief outage rather than two agent brains.
+- `/data`
+- `/app/config`
+- `/app/knowledge`
+- `/app/memory`
+- `/app/state`
+- `/app/jobs`
+- `/app/workflows`
+- `/mnt/efs/completion-markers`
 
-`jobs/daily_state_commit.md` currently makes remote pushes explicitly optional,
-and the image excludes `.git`; therefore no automatic self-push can be
-validated from this ECS image. This is intentional until a separate,
-explicitly approved Git credential and remote-push policy is introduced.
+The entrypoint seeds image defaults only when a target file is absent. Runtime
+changes in AWS are durable across task replacement but are not Git commits.
+Export and review them explicitly before adding them to the repository.
 
-## Accepted host-isolation risk
+Local Compose bind-mounts the six repository-backed mutable `/app` directories
+so edits are visible to Git on the host. `/data` remains a named volume.
+To run a local MongoDB palace:
 
-The task-level IMDS firewall prevents the application container from reaching
-IMDS, but the staging EC2 hosts remain shared and their instance role is
-over-privileged. This reduces exposure; it does not eliminate host or kernel
-escape risk. A dedicated hardened capacity provider is required to remove that
-residual risk.
+```sh
+docker compose --profile mongo up -d mongo
+# Set PALACE_BACKEND=mongo, MONGO_URI=mongodb://mongo:27017, MONGO_DB=galadriel
+docker compose up -d --build galadriel
+```
+
+For private staging database access, set the environment variables documented
+by `scripts/stag_tunnel.sh` and run that script. It contains no hosts, keys, or
+credentials.
+
+## Verification and rollback
+
+- Require ECS deployment rollout `COMPLETED`, desired/running `1/1`, healthy
+  ALB target, `/healthz` 200, and `/readyz` 200.
+- Verify unauthenticated Tower routes return 401.
+- Create a unique palace drawer and knowledge file, force-stop the running
+  task, wait for its replacement, then verify both remain.
+- Verify S3 Files import/export/lost-and-found alarms remain `OK`.
+- Verify the task runs as UID 1000 with all Linux capabilities dropped.
+
+Rollback means redeploying a previously known-good immutable ECR digest to the
+same Fargate/S3 Files service. EFS and EC2 task definitions no longer exist.

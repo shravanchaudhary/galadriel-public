@@ -25,7 +25,21 @@ services:
       - palace:/data                 # memory palace + archive (persists)
       - ./memory:/app/memory         # daily memory logs (visible on host)
       - ./config:/app/config         # scheduler/ambient state + active_vision
+      - ./knowledge:/app/knowledge   # agent-authored durable knowledge
+      - ./state:/app/state           # worker/runtime state
+      - ./jobs:/app/jobs             # agent job board
+      - ./workflows:/app/workflows   # agent-authored workflows
+    restart: unless-stopped
+
+  mongo:
+    image: mongo:8
+    profiles: ["mongo"]
+    ports:
+      - "127.0.0.1:27017:27017"
+    volumes:
+      - mongo-data:/data/db
     restart: unless-stopped
 
 volumes:
   palace:
+  mongo-data:

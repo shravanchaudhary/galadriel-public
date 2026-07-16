@@ -34,6 +34,6 @@ build/
 venv/
 
 # Media does not belong in the runtime image. Operational markdown is retained
-# because the EFS entrypoint seeds config, jobs, state, and knowledge defaults.
+# because the storage entrypoint seeds config, jobs, state, and knowledge defaults.
 img/
 ext_images_provided/
