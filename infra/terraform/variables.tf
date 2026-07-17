@@ -115,6 +115,7 @@ variable "environment" {
     DAILY_COST_LIMIT_USD            = "5.00"
     TOWER_AUTH_REQUIRED             = "true"
     TOWER_AUTH_USERNAME             = "clyra"
+    TOWER_COOKIE_SECURE             = "true"
     TOWER_HOST                      = "0.0.0.0"
     TOWER_PORT                      = "8080"
     TOWER_THREADS                   = "8"

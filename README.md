@@ -380,9 +380,11 @@ forget anything:
 
 ### Notes
 
-- **The Tower UI has no authentication.** The compose file binds it to
-  `127.0.0.1:8080` deliberately. Do **not** expose it on `0.0.0.0` on a public
-  host without an authenticated reverse proxy or SSH tunnel in front.
+- **Tower UI authentication.** Set `TOWER_AUTH_REQUIRED=true` with
+  `TOWER_AUTH_USERNAME`, `TOWER_AUTH_TOKEN`, and a strong `TOWER_SECRET_KEY`
+  to enable the `/login` form and session cookies (Basic/Bearer headers still
+  work for scripts). The compose file binds to `127.0.0.1:8080` deliberately;
+  do **not** expose it on `0.0.0.0` on a public host without auth enabled.
 - **Image size is ~1.3 GB** — onnxruntime (a transitive dependency of the
   memory palace) is the bulk. That's the cost of zero-API-cost semantic recall.
 - **Multi-arch:** `python:3.12-slim` is published for amd64 and arm64, so a
@@ -701,7 +703,11 @@ See `.env.example` for the full list with inline documentation.
 | `SLACK_APP_TOKEN` | No | App-level token (`connections:write` scope) for Slack Socket Mode |
 | `TOWER_HOST` | No | Tower bind address (default: `127.0.0.1`) |
 | `TOWER_PORT` | No | Tower port (default: `8080`) |
-| `TOWER_SECRET_KEY` | No | Flask session secret — change this |
+| `TOWER_SECRET_KEY` | Yes* | Flask session-signing key (*required when `TOWER_AUTH_REQUIRED=true`; must not be the default) |
+| `TOWER_AUTH_REQUIRED` | No | Set `true` to require Tower login / Basic / Bearer auth |
+| `TOWER_AUTH_USERNAME` | No | Login username (default: `clyra`) |
+| `TOWER_AUTH_TOKEN` | No | Login password and legacy Bearer token |
+| `TOWER_COOKIE_SECURE` | No | Secure session cookies (`true` by default when auth is required) |
 | Model selection | — | Edit `TASKS` in `harness/model_registry.py` (default: gemini-3.1-pro-preview agent, gemini-2.5-flash compaction; copy from `ANTHROPIC_DEFAULTS` to switch back to Claude Opus / Haiku) |
 | `AGENT_MAX_TOKENS` | No | Max output tokens per call (default: `8192`) |
 | `MEMPALACE_PATH` | No | Palace directory — read by the [MemPalace](https://github.com/MemPalace/mempalace) library itself (default: `~/.mempalace/palace`) |
@@ -717,7 +723,7 @@ See `.env.example` for the full list with inline documentation.
 
 **Before running on a public server, read this.**
 
-**Tower UI has no authentication.** It's designed to run on `127.0.0.1` and be accessed via SSH tunnel. Binding it to `0.0.0.0` on a server with an open port gives anyone who can reach that port full agent access — which includes shell execution.
+**Tower UI authentication.** When `TOWER_AUTH_REQUIRED=true`, browsers sign in at `/login` (session cookie) and scripts may use `Authorization: Basic` or `Bearer` with `TOWER_AUTH_TOKEN`. Without auth enabled, Tower is designed for `127.0.0.1` behind an SSH tunnel — binding `0.0.0.0` with auth off gives anyone who can reach the port full agent access, including shell execution.
 
 > Access Tower over SSH tunnel: `ssh -L 8080:localhost:8080 user@host` — keep `TOWER_HOST=127.0.0.1`.
 

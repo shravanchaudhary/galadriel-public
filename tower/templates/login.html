@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#ede8df">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Google+Sans+Flex:opsz,wght@6..144,400;6..144,500;6..144,600;6..144,700&display=swap" rel="stylesheet">
+    <link rel="icon" type="image/png" href="/static/img/clodexa-logo.png">
+    <link rel="stylesheet" href="/static/style.css">
+    <title>Sign in — Clyra Console</title>
+</head>
+<body class="login-body">
+    <main class="login-shell">
+        <section class="login-card" aria-labelledby="login-heading">
+            <div class="login-brand">
+                <img src="/static/img/clodexa-logo.png" alt="Clodexa" class="site-logo">
+                <span class="site-brand-text">Clyra Console</span>
+            </div>
+            <h1 id="login-heading">Sign in</h1>
+            <p class="login-subtitle">Use your Tower credentials to continue.</p>
+            {% if error %}
+            <p class="login-error" role="alert">{{ error }}</p>
+            {% endif %}
+            <form method="post" action="{{ url_for('login') }}" class="login-form" autocomplete="on">
+                <input type="hidden" name="next" value="{{ next_path }}">
+                <label class="login-label" for="username">Username</label>
+                <input
+                    id="username"
+                    class="login-input"
+                    type="text"
+                    name="username"
+                    autocomplete="username"
+                    required
+                    autofocus
+                >
+                <label class="login-label" for="password">Password</label>
+                <input
+                    id="password"
+                    class="login-input"
+                    type="password"
+                    name="password"
+                    autocomplete="current-password"
+                    required
+                >
+                <button type="submit" class="btn login-submit">Sign in</button>
+            </form>
+        </section>
+    </main>
+</body>
+</html>

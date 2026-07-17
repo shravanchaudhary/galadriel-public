@@ -17,9 +17,9 @@ services:
     container_name: galadriel
     env_file: .env
     ports:
-      # SECURITY: the Tower UI has NO authentication. It is bound to localhost
-      # only. Do NOT change this to "8080:8080" (which listens on 0.0.0.0) on a
-      # public server — put an authenticated reverse proxy or SSH tunnel in front.
+      # SECURITY: enable TOWER_AUTH_REQUIRED + TOWER_AUTH_TOKEN + TOWER_SECRET_KEY
+      # for form/session auth. Still bound to localhost by default; do NOT change
+      # this to "8080:8080" on a public host without auth (or a reverse proxy).
       - "127.0.0.1:8080:8080"
     volumes:
       - palace:/data                 # memory palace + archive (persists)

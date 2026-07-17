@@ -4,15 +4,14 @@ import os
 import json
 import queue
 import base64
-import binascii
-import hmac
 import asyncio
 import logging
 from datetime import datetime
 from pathlib import Path
-from flask import Flask, render_template, request, jsonify, Response
+from flask import Flask, render_template, request, jsonify, Response, redirect, url_for
 from harness.agent import MAIN_CHANNEL_ID, WORKER_CHANNEL_ID
 from harness import tower_settings
+from . import auth as tower_auth
 
 log = logging.getLogger("galadriel.tower")
 
@@ -64,36 +63,28 @@ def create_tower(agent, scheduler=None) -> Flask:
         template_folder=str(Path(__file__).parent / "templates"),
         static_folder=str(Path(__file__).parent / "static"),
     )
-    app.secret_key = os.environ.get("TOWER_SECRET_KEY", "change-me")
-
-    def _tower_auth_configured() -> bool:
-        return bool(os.environ.get("TOWER_AUTH_TOKEN"))
+    tower_auth.configure_app_sessions(app)
 
     @app.before_request
     def _require_tower_auth():
-        # ALB health checks stay public; every other Tower route, including
-        # static assets and blueprint routes registered below, is authenticated.
-        if request.path in {"/healthz", "/readyz"}:
+        # Health checks, login/logout, and login-page static assets stay public.
+        if tower_auth.public_path(request.path):
             return None
-        if os.environ.get("TOWER_AUTH_REQUIRED", "").lower() not in {"1", "true", "yes"}:
+        if not tower_auth.auth_required():
             return None
-        token = os.environ.get("TOWER_AUTH_TOKEN", "")
-        if not token:
+        if not tower_auth.auth_ready():
             return jsonify({"error": "Tower authentication is misconfigured"}), 503
-        authorization = request.headers.get("Authorization", "")
-        supplied = authorization.removeprefix("Bearer ").strip()
-        if authorization.startswith("Basic "):
-            try:
-                decoded = base64.b64decode(authorization[6:], validate=True).decode("utf-8")
-                username, supplied = decoded.split(":", 1)
-            except (ValueError, UnicodeDecodeError, binascii.Error):
-                username, supplied = "", ""
-            if username != os.environ.get("TOWER_AUTH_USERNAME", "clyra"):
-                supplied = ""
-        if not supplied or not hmac.compare_digest(supplied, token):
-            return jsonify({"error": "Unauthorized"}), 401, {
-                "WWW-Authenticate": 'Basic realm="Clyra Tower", Bearer',
-            }
+
+        result = tower_auth.authenticate_request()
+        if result is None:
+            return tower_auth.unauthorized_response()
+
+        if (
+            result.method == "session"
+            and request.method not in {"GET", "HEAD", "OPTIONS"}
+            and not tower_auth.same_origin_ok()
+        ):
+            return jsonify({"error": "Cross-origin request rejected"}), 403
         return None
 
     @app.route("/healthz", methods=["GET"])
@@ -104,17 +95,44 @@ def create_tower(agent, scheduler=None) -> Flask:
     def readyz():
         if not app.config.get("GALADRIEL_READY", False):
             return jsonify({"status": "starting"}), 503
-        if (
-            os.environ.get("TOWER_AUTH_REQUIRED", "").lower() in {"1", "true", "yes"}
-            and not _tower_auth_configured()
-        ):
-            return jsonify({"status": "misconfigured"}), 503
+        reason = tower_auth.auth_misconfigured_reason()
+        if reason:
+            return jsonify({"status": "misconfigured", "error": reason}), 503
         from harness.runtime_dependencies import readiness_error
 
         dependency_error = readiness_error()
         if dependency_error:
             return jsonify({"status": "unready", "error": dependency_error}), 503
         return jsonify({"status": "ready"}), 200
+
+    @app.route("/login", methods=["GET", "POST"])
+    def login():
+        next_path = tower_auth.safe_next_url(
+            request.values.get("next") or request.args.get("next")
+        )
+        if not tower_auth.auth_required():
+            return redirect(next_path)
+
+        if tower_auth.authenticate_request() is not None:
+            return redirect(next_path)
+
+        error = None
+        if request.method == "POST":
+            username = (request.form.get("username") or "").strip()
+            password = request.form.get("password") or ""
+            if tower_auth.credentials_match(username, password):
+                tower_auth.establish_session(username)
+                return redirect(next_path)
+            error = "Invalid username or password"
+
+        return render_template("login.html", error=error, next_path=next_path), (
+            401 if error else 200
+        )
+
+    @app.route("/logout", methods=["POST"])
+    def logout():
+        tower_auth.clear_session()
+        return redirect(url_for("login"))
 
     @app.context_processor
     def _inject_page_context():

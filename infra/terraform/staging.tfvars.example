@@ -22,6 +22,10 @@ environment = {
   APPCONFIG_REQUIRED   = "true"
   TOWER_AUTH_REQUIRED  = "true"
   TOWER_AUTH_USERNAME  = "clyra"
+  TOWER_COOKIE_SECURE  = "true"
   GALADRIEL_WORKER     = "1"
   GALADRIEL_REFLECTION = "1"
 }
+
+# Secrets (TOWER_AUTH_TOKEN, TOWER_SECRET_KEY, API keys, etc.) belong in the
+# staging AppConfig profile — never in tfvars.

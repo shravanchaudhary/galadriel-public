@@ -79,8 +79,8 @@ ENV MEMPALACE_PATH=/data/.mempalace/palace \
     TOWER_PORT=8080 \
     PYTHONUNBUFFERED=1
 
-# The Tower UI has NO built-in auth. Only ever publish this port to localhost
-# or behind an authenticated reverse proxy. See docker-compose.yml.
+# Tower form/session auth (TOWER_AUTH_*) protects the UI when enabled. Prefer
+# binding to localhost or an authenticated edge; see docker-compose.yml.
 EXPOSE 8080
 
 USER galadriel

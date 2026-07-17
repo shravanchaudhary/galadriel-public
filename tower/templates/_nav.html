@@ -15,6 +15,9 @@
             <a href="/palace" class="{{ 'active' if request.path.startswith('/palace') }}">Memory</a>
             <a href="/costs" class="{{ 'active' if request.path.startswith('/costs') }}">Costs</a>
             <a href="#" class="site-nav-cta" id="site-nav-chat" role="button">Chat</a>
+            <form method="post" action="/logout" class="site-nav-logout">
+                <button type="submit" class="site-nav-logout-btn">Log out</button>
+            </form>
         </nav>
     </div>
 </header>
