@@ -2,6 +2,7 @@
 .cursor/
 infra/terraform/.terraform/
 infra/terraform/*.tfstate*
+infra/terraform/.replika-provisioner.zip
 __pycache__/
 *.pyc
 *.pyo

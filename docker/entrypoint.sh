@@ -48,9 +48,21 @@ PY
     set +a
 fi
 
-for dir in data memory config knowledge state jobs workflows completion-markers; do
+if [ -n "${REPLIKA_TENANT_ID:-}" ] && [ "${REPLIKA_TENANT_ID}" != "default" ]; then
+    tenant_db_id="$(printf '%s' "$REPLIKA_TENANT_ID" | tr -cd 'A-Za-z0-9_-')"
+    if [ -z "$tenant_db_id" ]; then
+        echo "REPLIKA_TENANT_ID cannot produce a safe tenant database name" >&2
+        exit 1
+    fi
+    MONGO_DB="${REPLIKA_MONGO_DB_PREFIX:-replika_}${tenant_db_id}"
+    export MONGO_DB
+fi
+
+for dir in data memory config knowledge state jobs workflows personal-tools completion-markers; do
     mkdir -p "$storage_root/$dir"
 done
+
+python3 /app/scripts/migrate_replika_state.py --root "$storage_root"
 
 # Seed files added by a new image without overwriting state already persisted
 # on persistent storage. `cp -an` is deliberately idempotent across replacements.

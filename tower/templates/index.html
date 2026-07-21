@@ -119,6 +119,23 @@
 {% endif %}
 
 <section class="memory-section">
+    <h2>Model providers</h2>
+    <div class="status-grid" id="provider-key-cards">
+        {% for provider in ("anthropic", "gemini") %}
+        <div class="card" data-provider="{{ provider }}">
+            <div class="card-label">{{ provider|capitalize }}</div>
+            <div class="model-controls">
+                <input type="password" autocomplete="off" placeholder="Paste API key">
+                <button type="button" onclick="saveProviderKey('{{ provider }}')">Save</button>
+                <button type="button" onclick="deleteProviderKey('{{ provider }}')">Remove</button>
+            </div>
+            <div class="model-note muted provider-key-status">Not configured</div>
+        </div>
+        {% endfor %}
+    </div>
+</section>
+
+<section class="memory-section">
     <h2>Recent Memory Logs</h2>
     <ul class="memory-list">
         {% for date in recent_memories %}
@@ -238,6 +255,47 @@ function updateHeartbeatUI(data) {
         status.className = 'heartbeat-status status-off';
     }
 }
+
+async function refreshProviderKeys() {
+    const response = await fetch('/api/provider-keys');
+    if (!response.ok) return;
+    const data = await response.json();
+    const configured = Object.fromEntries((data.providers || []).map(row => [row.provider, row]));
+    document.querySelectorAll('[data-provider]').forEach(card => {
+        const row = configured[card.dataset.provider];
+        card.querySelector('.provider-key-status').textContent =
+            row ? `Configured ${row.masked}` : 'Not configured';
+    });
+}
+
+async function saveProviderKey(provider) {
+    const card = document.querySelector(`[data-provider="${provider}"]`);
+    const input = card.querySelector('input');
+    const response = await fetch(`/api/provider-keys/${provider}`, {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({api_key: input.value}),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+        alert(data.error || 'Could not save that provider key');
+        return;
+    }
+    input.value = '';
+    await refreshProviderKeys();
+}
+
+async function deleteProviderKey(provider) {
+    const response = await fetch(`/api/provider-keys/${provider}`, {method: 'DELETE'});
+    const data = await response.json();
+    if (!response.ok) {
+        alert(data.error || 'Could not remove that provider key');
+        return;
+    }
+    await refreshProviderKeys();
+}
+
+refreshProviderKeys();
 
 setInterval(async () => {
     try {

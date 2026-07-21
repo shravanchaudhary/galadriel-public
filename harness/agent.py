@@ -305,7 +305,9 @@ class GaladrielAgent:
         self.model = self._channel_models.get(MAIN_CHANNEL_ID, default_model)
         self._channel_models.setdefault(MAIN_CHANNEL_ID, self.model)
         self._channel_models.setdefault(WORKER_CHANNEL_ID, self.model)
-        self.provider = provider or self._provider_for(self.model)
+        # Provider clients are resolved lazily on the first turn. Managed
+        # Replikas can therefore boot their settings UI before a BYOM key exists.
+        self.provider = provider
         # Best-effort provider id for cost logging (matches model_registry's
         # ANTHROPIC/GEMINI/OLLAMA strings even when a custom `provider` is injected).
         self.provider_name = model_registry.provider_for_model(self.model)

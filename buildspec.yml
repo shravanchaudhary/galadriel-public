@@ -19,3 +19,4 @@ phases:
 artifacts:
   files:
     - imagedefinitions.json
+    - scripts/deploy_replika_fleet.py

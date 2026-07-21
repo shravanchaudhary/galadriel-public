@@ -25,9 +25,9 @@ TOOL_DEFINITIONS = [
     {
         "name": "run_shell",
         "description": (
-            "Execute a shell command on the EC2 instance. "
-            "Use for AWS CLI, git, file operations, system commands, python scripts, etc. "
-            "Commands run in the project working directory."
+            "Execute a shell command inside the Replika runtime. "
+            "Use for approved file operations, system commands, and personal scripts. "
+            "The managed core is immutable; durable work belongs in persistent Replika paths."
         ),
         "input_schema": {
             "type": "object",
@@ -740,6 +740,10 @@ def visible_tool_definitions() -> list:
         if palace_disabled()
         else list(TOOL_DEFINITIONS)
     )
+    from .path_policy import managed_runtime
+
+    if managed_runtime():
+        tools = [tool for tool in tools if tool["name"] != "run_shell"]
     if _browser_backend() == "bce":
         patched = []
         for t in tools:
@@ -825,6 +829,10 @@ async def _execute_tool_impl(
     if palace_disabled() and name in _PALACE_TOOL_NAMES:
         return "[stateless session] palace memory is disabled (--no-palace); this tool is unavailable."
     if name == "run_shell":
+        from .path_policy import managed_runtime
+
+        if managed_runtime():
+            return "[blocked] Shell access is disabled in managed Replika runtimes."
         from .safety import is_db_freestyle
         if is_db_freestyle(inputs["command"]):
             return (
@@ -1617,7 +1625,9 @@ async def _read_file(path: str) -> str:
 
 def _read_file_sync(path: str) -> str:
     """Synchronous file read, run in executor."""
-    p = Path(path).expanduser()
+    from .path_policy import assert_agent_readable
+
+    p = assert_agent_readable(path)
     if not p.exists():
         return f"[error] File not found: {path}"
     if p.stat().st_size > 500_000:
@@ -1636,7 +1646,9 @@ async def _write_file(path: str, content: str) -> str:
 
 def _write_file_sync(path: str, content: str) -> str:
     """Synchronous file write, run in executor."""
-    p = Path(path).expanduser()
+    from .path_policy import assert_agent_writable
+
+    p = assert_agent_writable(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(content, encoding="utf-8")
     return f"Written {len(content)} bytes to {path}"

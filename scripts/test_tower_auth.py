@@ -192,8 +192,50 @@ bearer_api = client.post(
 _assert(bearer_api.status_code == 400, f"Bearer API should reach handler, got {bearer_api.status_code}")
 
 
+# --- ALB identity becomes a tenant-scoped cross-subdomain session ------------
+_, client = _make_client(
+    REPLIKA_TRUST_ALB_IDENTITY="true",
+    REPLIKA_TENANT_ID="default",
+    REPLIKA_COOKIE_DOMAIN=".replika.example",
+    REPLIKA_CONTROL_PLANE_URL="https://app.replika.example",
+)
+control_plane = client.get(
+    "/",
+    base_url="https://app.replika.example",
+    headers={"x-amzn-oidc-identity": "account-123"},
+)
+_assert(control_plane.status_code == 200, "ALB identity should enter control plane")
+shared_cookie = control_plane.headers.get("Set-Cookie", "")
+_assert(
+    "Domain=replika.example" in shared_cookie,
+    f"control plane must issue a shared product-domain cookie: {shared_cookie}",
+)
+
+os.environ["REPLIKA_TENANT_ID"] = "account-123"
+tenant = client.get("/", base_url="https://alice.replika.example")
+_assert(tenant.status_code == 200, "matching tenant should accept shared session")
+
+os.environ["REPLIKA_TENANT_ID"] = "account-456"
+wrong_tenant = client.get(
+    "/",
+    base_url="https://bob.replika.example",
+    follow_redirects=False,
+)
+_assert(wrong_tenant.status_code == 302, "cross-tenant session must be rejected")
+_assert(
+    wrong_tenant.headers.get("Location") == "https://app.replika.example/replika",
+    "rejected tenant session should return to the control plane",
+)
+
+
 # --- Auth-disabled local mode ------------------------------------------------
-_, client = _make_client(TOWER_AUTH_REQUIRED="false")
+_, client = _make_client(
+    TOWER_AUTH_REQUIRED="false",
+    REPLIKA_TRUST_ALB_IDENTITY=None,
+    REPLIKA_TENANT_ID=None,
+    REPLIKA_COOKIE_DOMAIN=None,
+    REPLIKA_CONTROL_PLANE_URL=None,
+)
 open_dash = client.get("/")
 _assert(open_dash.status_code == 200, f"auth-disabled / should be open, got {open_dash.status_code}")
 

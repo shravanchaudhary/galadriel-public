@@ -25,12 +25,21 @@ _CHANNEL_DOC_IDS = {
 # Selectable agent models in Tower. Provider is resolved from the model name
 # via model_registry.provider_for_model (gemini-* → Gemini, *:tag → Ollama).
 AGENT_MODEL_OPTIONS: tuple[str, ...] = (
+    "claude-opus-4-8",
     "gemini-3.1-pro-preview",
     "gemini-3.5-flash",
     "qwen3-vl:8b",
 )
 
 _sync_db = None
+
+
+def _tenant_id() -> str:
+    return os.environ.get("REPLIKA_TENANT_ID", "default").strip() or "default"
+
+
+def _doc_id(setting: str) -> str:
+    return f"{_tenant_id()}:{setting}"
 
 
 def _db():
@@ -62,11 +71,14 @@ def get_channel_model(channel: str) -> str | None:
     db = _db()
     if db is None:
         return None
-    doc = db[COLLECTION].find_one({"_id": _CHANNEL_DOC_IDS[channel]})
+    setting_id = _CHANNEL_DOC_IDS[channel]
+    doc = db[COLLECTION].find_one(
+        {"_id": _doc_id(setting_id), "tenant_id": _tenant_id()}
+    )
     model = _valid_model((doc or {}).get("model"))
     if model:
         return model
-    if channel == "main":
+    if channel == "main" and _tenant_id() == "default":
         legacy = db[COLLECTION].find_one({"_id": AGENT_MODEL_DOC_ID})
         return _valid_model((legacy or {}).get("model"))
     return None
@@ -82,9 +94,10 @@ def set_channel_model(channel: str, model: str) -> None:
     if db is None:
         raise RuntimeError("MONGO_URI / MONGO_DB not configured")
     db[COLLECTION].replace_one(
-        {"_id": _CHANNEL_DOC_IDS[channel]},
+        {"_id": _doc_id(_CHANNEL_DOC_IDS[channel])},
         {
-            "_id": _CHANNEL_DOC_IDS[channel],
+            "_id": _doc_id(_CHANNEL_DOC_IDS[channel]),
+            "tenant_id": _tenant_id(),
             "model": model,
             "updated_at": datetime.now(timezone.utc),
         },
@@ -107,7 +120,9 @@ def get_headroom_enabled() -> bool:
     db = _db()
     if db is None:
         return False
-    doc = db[COLLECTION].find_one({"_id": HEADROOM_DOC_ID})
+    doc = db[COLLECTION].find_one(
+        {"_id": _doc_id(HEADROOM_DOC_ID), "tenant_id": _tenant_id()}
+    )
     return bool((doc or {}).get("enabled", False))
 
 
@@ -117,9 +132,10 @@ def set_headroom_enabled(enabled: bool) -> None:
     if db is None:
         raise RuntimeError("MONGO_URI / MONGO_DB not configured")
     db[COLLECTION].replace_one(
-        {"_id": HEADROOM_DOC_ID},
+        {"_id": _doc_id(HEADROOM_DOC_ID)},
         {
-            "_id": HEADROOM_DOC_ID,
+            "_id": _doc_id(HEADROOM_DOC_ID),
+            "tenant_id": _tenant_id(),
             "enabled": bool(enabled),
             "updated_at": datetime.now(timezone.utc),
         },

@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %}Your Replika{% endblock %}
+{% block heading %}Your Replika{% endblock %}
+{% block subtitle %}Choose the address for your personal AI{% endblock %}
+
+{% block content %}
+<section class="card" style="max-width: 640px;">
+    <div id="replika-ready" {% if not replika %}hidden{% endif %}>
+        <div class="card-label">Your address</div>
+        <div class="card-value" id="replika-url">{{ replika.url if replika else "" }}</div>
+        <p id="replika-status">{{ replika.status|capitalize if replika else "" }}</p>
+        <a id="replika-open" href="{{ replika.url if replika else '#' }}">Open Replika</a>
+    </div>
+
+    <form id="replika-form" {% if replika %}hidden{% endif %}>
+        <label for="replika-username">Username</label>
+        <div class="model-controls">
+            <input
+                id="replika-username"
+                name="username"
+                minlength="3"
+                maxlength="32"
+                pattern="[a-z0-9](?:[a-z0-9-]{1,30}[a-z0-9])?"
+                autocomplete="off"
+                required
+                placeholder="your-name"
+            >
+            <span class="muted" id="replika-domain"></span>
+        </div>
+        <p id="replika-message" class="muted">Lowercase letters, numbers, and hyphens.</p>
+        <button type="submit">Create your Replika</button>
+    </form>
+</section>
+{% endblock %}
+
+{% block chat_widget %}{% endblock %}
+{% block scripts %}
+<script>
+const form = document.getElementById('replika-form');
+const input = document.getElementById('replika-username');
+const message = document.getElementById('replika-message');
+let availabilityTimer;
+
+function showReplika(replika) {
+    form.hidden = true;
+    document.getElementById('replika-ready').hidden = false;
+    document.getElementById('replika-url').textContent = replika.url;
+    document.getElementById('replika-status').textContent =
+        replika.status === 'ready' ? 'Ready' :
+        replika.status === 'creating' ? 'Creating your Replika…' :
+        (replika.message || 'Temporarily unavailable');
+    const link = document.getElementById('replika-open');
+    link.href = replika.url;
+    link.hidden = replika.status !== 'ready';
+    if (replika.status === 'creating') {
+        setTimeout(refreshStatus, 2000);
+    }
+}
+
+async function refreshStatus() {
+    const response = await fetch('/api/replika');
+    const data = await response.json();
+    if (response.ok && data.replika) showReplika(data.replika);
+}
+
+if (input) {
+    input.addEventListener('input', () => {
+        clearTimeout(availabilityTimer);
+        const username = input.value.trim().toLowerCase();
+        input.value = username;
+        if (username.length < 3) {
+            message.textContent = 'Lowercase letters, numbers, and hyphens.';
+            return;
+        }
+        availabilityTimer = setTimeout(async () => {
+            const response = await fetch(`/api/replika/username/${encodeURIComponent(username)}`);
+            const data = await response.json();
+            message.textContent = data.available ? 'Available' : (data.error || 'Not available');
+        }, 250);
+    });
+
+    form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        message.textContent = 'Creating your Replika…';
+        const response = await fetch('/api/replika', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({username: input.value}),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+            message.textContent = data.error || 'Please try again.';
+            return;
+        }
+        showReplika(data.replika);
+    });
+}
+</script>
+{% endblock %}

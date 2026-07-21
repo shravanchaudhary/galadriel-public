@@ -65,6 +65,7 @@ def log_call(
         cost = estimate_cost(model, usage)
         doc = {
             "ts": datetime.now(timezone.utc),
+            "tenant_id": os.environ.get("REPLIKA_TENANT_ID", "default"),
             "channel_id": channel_id,
             "task": task,
             "provider": provider,
@@ -134,7 +135,7 @@ def is_configured() -> bool:
 
 def _match_stage(since: datetime | None, models: list[str] | None) -> dict | None:
     """Build a $match stage from optional time and model filters."""
-    clauses = []
+    clauses = [{"tenant_id": os.environ.get("REPLIKA_TENANT_ID", "default")}]
     if since:
         clauses.append({"ts": {"$gte": since}})
     if models:
@@ -185,7 +186,10 @@ def distinct_models(known_models: list[str] | tuple[str, ...] | None = None) -> 
     db = _db()
     seen: set[str] = set(known_models or [])
     if db is not None:
-        for row in db[COLLECTION].distinct("model"):
+        for row in db[COLLECTION].distinct(
+            "model",
+            {"tenant_id": os.environ.get("REPLIKA_TENANT_ID", "default")},
+        ):
             if row:
                 seen.add(row)
     return sorted(seen)

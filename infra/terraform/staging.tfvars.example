@@ -10,11 +10,19 @@ listener_rule_priority = 123
 github_connection_arn  = "arn:aws:codestar-connections:ap-south-1:ACCOUNT:connection/..."
 palace_backend         = "documentdb"
 candidate_image_uri    = "ACCOUNT.dkr.ecr.REGION.amazonaws.com/stag-clyra@sha256:DIGEST"
+host_name               = "app.replika.example.com"
+replika_product_domain  = "replika.example.com"
+replika_route53_zone_id = "Z..."
+enable_replika_managed_auth = true
+replika_control_plane_only  = true
+replika_callback_token_secret_arn = "arn:aws:secretsmanager:REGION:ACCOUNT:secret:replika/provisioner-callback"
 
 # Optional existing Secrets Manager ARNs, never secret values. The staging
 # AppConfig profile is the standard runtime configuration source.
 secret_arns = {
-  # EXTRA_SECRET = "arn:aws:secretsmanager:ap-south-1:ACCOUNT:secret:clyra/extra"
+  MONGO_URI        = "arn:aws:secretsmanager:ap-south-1:ACCOUNT:secret:replika/mongo-uri"
+  REDIS_URL        = "arn:aws:secretsmanager:ap-south-1:ACCOUNT:secret:replika/redis-url"
+  TOWER_SECRET_KEY = "arn:aws:secretsmanager:ap-south-1:ACCOUNT:secret:replika/session-key"
 }
 
 environment = {

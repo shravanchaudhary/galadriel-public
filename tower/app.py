@@ -6,9 +6,11 @@ import queue
 import base64
 import asyncio
 import logging
+import signal
+import threading
 from datetime import datetime
 from pathlib import Path
-from flask import Flask, render_template, request, jsonify, Response, redirect, url_for
+from flask import Flask, render_template, request, jsonify, Response, redirect, url_for, g
 from harness.agent import MAIN_CHANNEL_ID, WORKER_CHANNEL_ID
 from harness import tower_settings
 from . import auth as tower_auth
@@ -67,6 +69,17 @@ def create_tower(agent, scheduler=None) -> Flask:
 
     @app.before_request
     def _require_tower_auth():
+        if os.environ.get("REPLIKA_CONTROL_PLANE_ONLY", "").lower() in {
+            "1", "true", "yes",
+        }:
+            allowed = (
+                request.path in {"/healthz", "/readyz", "/login", "/logout", "/replika"}
+                or request.path.startswith("/static/")
+                or request.path.startswith("/api/replika")
+                or request.path.startswith("/internal/replika/")
+            )
+            if not allowed:
+                return jsonify({"error": "Not found"}), 404
         # Health checks, login/logout, and login-page static assets stay public.
         if tower_auth.public_path(request.path):
             return None
@@ -78,6 +91,9 @@ def create_tower(agent, scheduler=None) -> Flask:
         result = tower_auth.authenticate_request()
         if result is None:
             return tower_auth.unauthorized_response()
+        g.tower_auth = result
+        if result.method == "alb":
+            tower_auth.establish_session(result.username)
 
         if (
             result.method == "session"
@@ -95,6 +111,17 @@ def create_tower(agent, scheduler=None) -> Flask:
     def readyz():
         if not app.config.get("GALADRIEL_READY", False):
             return jsonify({"status": "starting"}), 503
+        if (
+            os.environ.get("REPLIKA_CONTROL_PLANE_ONLY", "").lower()
+            in {"1", "true", "yes"}
+            and not os.environ.get("REPLIKA_PROVISIONER_FUNCTION_ARN")
+            and os.environ.get("REPLIKA_ALLOW_LOCAL_PROVISIONING", "").lower()
+            not in {"1", "true", "yes"}
+        ):
+            return jsonify({
+                "status": "misconfigured",
+                "error": "Replika provisioner is not configured",
+            }), 503
         reason = tower_auth.auth_misconfigured_reason()
         if reason:
             return jsonify({"status": "misconfigured", "error": reason}), 503
@@ -136,7 +163,15 @@ def create_tower(agent, scheduler=None) -> Flask:
 
     @app.context_processor
     def _inject_page_context():
-        return {"page_context": {}}
+        return {
+            "page_context": {},
+            "control_plane_only": os.environ.get(
+                "REPLIKA_CONTROL_PLANE_ONLY", ""
+            ).lower() in {"1", "true", "yes"},
+        }
+
+    from .replika_control_plane import register_replika_control_plane
+    register_replika_control_plane(app)
 
     @app.template_filter("truncate_label")
     def truncate_label(value, length=24):
@@ -414,6 +449,46 @@ def create_tower(agent, scheduler=None) -> Flask:
             "persisted": tower_settings.is_configured(),
         })
 
+    @app.route("/api/provider-keys", methods=["GET"])
+    def api_provider_keys_get():
+        from harness import provider_credentials
+
+        try:
+            return jsonify({"providers": provider_credentials.list_summaries()})
+        except RuntimeError:
+            return jsonify({"error": "Provider key storage is unavailable"}), 503
+
+    @app.route("/api/provider-keys/<provider>", methods=["PUT"])
+    def api_provider_key_put(provider: str):
+        from harness import provider_credentials
+
+        try:
+            result = provider_credentials.put(
+                provider,
+                (request.json or {}).get("api_key", ""),
+            )
+            agent._provider_cache.pop(provider, None)
+            return jsonify(result), 201
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except Exception:
+            log.exception("Failed to save provider key")
+            return jsonify({"error": "Could not save that provider key"}), 503
+
+    @app.route("/api/provider-keys/<provider>", methods=["DELETE"])
+    def api_provider_key_delete(provider: str):
+        from harness import provider_credentials
+
+        try:
+            deleted = provider_credentials.delete(provider)
+            agent._provider_cache.pop(provider, None)
+            return jsonify({"provider": provider, "configured": False, "deleted": deleted})
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except Exception:
+            log.exception("Failed to delete provider key")
+            return jsonify({"error": "Could not delete that provider key"}), 503
+
     # ── Headroom compression API ─────────────────────────────────
 
     @app.route("/api/headroom", methods=["GET"])
@@ -529,6 +604,22 @@ def create_tower(agent, scheduler=None) -> Flask:
             prompt = data.get("prompt", "")
             scheduler.arm_wake(prompt)
         return jsonify(scheduler.get_status())
+
+    @app.route("/api/runtime/restart", methods=["POST"])
+    def api_runtime_restart():
+        """Arm a durable wake and request a provider-controlled process restart."""
+        if not scheduler:
+            return jsonify({"error": "Scheduler not available"}), 503
+        if os.environ.get("GALADRIEL_SELF_RESTART_ENABLED", "").lower() not in {
+            "1", "true", "yes",
+        }:
+            return jsonify({"error": "Runtime restart is not enabled"}), 403
+        prompt = ((request.json or {}).get("prompt") or "").strip()
+        if not prompt:
+            return jsonify({"error": "A resume prompt is required"}), 400
+        scheduler.arm_wake(prompt)
+        threading.Timer(1.0, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
+        return jsonify({"status": "restarting"}), 202
 
     # Generic workflow screens (table / kanban / detail / approvals),
     # auto-rendered from the workflow specs + live MongoDB.

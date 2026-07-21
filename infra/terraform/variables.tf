@@ -81,6 +81,46 @@ variable "service_name" {
   type    = string
   default = "clyra-stag"
 }
+variable "replika_tenant_id" {
+  description = "Provider-owned immutable tenant identifier injected into this isolated runtime."
+  type        = string
+  default     = "default"
+}
+variable "replika_product_domain" {
+  description = "Public product domain used to generate customer-facing Replika URLs."
+  type        = string
+  default     = "replika.clodexa.com"
+}
+variable "replika_route53_zone_id" {
+  description = "Provider Route53 hosted zone used for the wildcard Replika product domain."
+  type        = string
+  default     = ""
+}
+variable "replika_provisioner_function_arn" {
+  description = "Private Lambda function used by the control plane to provision tenant runtimes."
+  type        = string
+  default     = ""
+}
+variable "replika_callback_token_secret_arn" {
+  description = "Secrets Manager ARN containing the private provisioning callback bearer token."
+  type        = string
+  default     = ""
+}
+variable "enable_replika_managed_auth" {
+  description = "Enable provider-managed Cognito authentication at the ALB."
+  type        = bool
+  default     = false
+}
+variable "replika_control_plane_only" {
+  description = "Expose only customer onboarding and lifecycle routes from this service."
+  type        = bool
+  default     = false
+}
+variable "replika_runtime_secret_names" {
+  description = "Provider infrastructure secrets exposed to tenant runtimes. Model API keys are intentionally excluded; customers configure BYOM."
+  type        = set(string)
+  default     = ["TOWER_SECRET_KEY"]
+}
 variable "host_name" {
   type    = string
   default = "clyra-stag.clodexa.com"
@@ -111,6 +151,7 @@ variable "environment" {
     GALADRIEL_COMPLETION_MARKER_DIR = "/mnt/efs/completion-markers"
     GALADRIEL_STORAGE_ROOT          = "/mnt/efs"
     GALADRIEL_REFLECTION            = "1"
+    GALADRIEL_SELF_RESTART_ENABLED  = "true"
     GALADRIEL_WORKER                = "1"
     DAILY_COST_LIMIT_USD            = "5.00"
     TOWER_AUTH_REQUIRED             = "true"
@@ -119,5 +160,16 @@ variable "environment" {
     TOWER_HOST                      = "0.0.0.0"
     TOWER_PORT                      = "8080"
     TOWER_THREADS                   = "8"
+  }
+}
+
+check "replika_cookie_domain" {
+  assert {
+    condition = (
+      !var.enable_replika_managed_auth
+      || var.host_name == var.replika_product_domain
+      || endswith(var.host_name, ".${var.replika_product_domain}")
+    )
+    error_message = "Managed auth requires host_name to be inside replika_product_domain so the control plane can issue tenant session cookies."
   }
 }

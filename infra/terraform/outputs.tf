@@ -29,3 +29,15 @@ output "fargate_task_definition_arn" {
 output "target_group_arn" {
   value = aws_lb_target_group.clyra.arn
 }
+
+output "replika_control_plane_url" {
+  value = "https://${var.host_name}/replika"
+}
+
+output "replika_product_url_pattern" {
+  value = "https://<username>.${var.replika_product_domain}"
+}
+
+output "replika_provisioner_function_arn" {
+  value = local.provisioner_function_arn
+}

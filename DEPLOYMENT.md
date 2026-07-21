@@ -1,16 +1,17 @@
-# Clyra staging ECS runbook
+# Replika provider ECS runbook
 
-Clyra runs as a singleton Fargate service on `clodexa-stag-cluster`. Amazon S3
-Files is mounted at `/mnt/efs`; there is no EFS or ECS EC2 rollback path.
-Application code comes only from the immutable ECR image.
+The customer experience is a managed product: customers authenticate, choose
+an available username, and receive `https://<username>.<product-domain>`.
+AWS resource names, regions, task state, and credentials are provider-only.
+The control plane provisions one isolated Fargate service and S3 Files access
+point per Replika. Application code comes only from immutable ECR images.
 
 ## Prerequisites
 
-1. Store runtime settings in the staging AppConfig profile. It supplies
-   `GEMINI_API_KEY`, `MONGO_URI`, `MONGO_DB`, `REDIS_URL`,
-   `TOWER_AUTH_TOKEN`, a strong `TOWER_SECRET_KEY` (session signing; must not
-   be the default `change-me`), browser credentials, and the chat-gateway
-   token. Tower serves a public `/login` form that validates
+1. Store non-secret control-plane settings in AppConfig. Put `MONGO_URI`,
+   `REDIS_URL`, and a strong shared `TOWER_SECRET_KEY` in Secrets Manager and
+   map their ARNs through `secret_arns`; isolated runtimes do not receive the
+   control plane's AppConfig profile. Tower serves a public `/login` form that validates
    `TOWER_AUTH_USERNAME` / `TOWER_AUTH_TOKEN` and issues a signed session
    cookie; protected HTML redirects to `/login`, APIs return 401, and
    `/healthz` + `/readyz` remain public.
@@ -19,7 +20,10 @@ Application code comes only from the immutable ECR image.
    `tlsCAFile=/etc/ssl/certs/rds-global-bundle.pem` in `MONGO_URI`.
    `PALACE_BACKEND=mongo` uses the same adapter with exact cosine plus BM25
    when native vector search is unavailable. `chroma` remains the default.
-3. Copy `infra/terraform/staging.tfvars.example` to a secure location and fill
+3. Store the provisioning callback token in Secrets Manager and pass only its
+   ARN as `replika_callback_token_secret_arn`. Customer provider keys are
+   encrypted with KMS through the product UI; they do not belong in AppConfig.
+4. Copy `infra/terraform/staging.tfvars.example` to a secure location and fill
    in shared VPC, subnet, ALB, database/cache security-group, listener-priority,
    and CodeConnection values. Never commit the populated file.
 
@@ -35,14 +39,10 @@ terraform apply -var-file=/secure/path/staging.tfvars
 ```
 
 CodePipeline builds immutable amd64 images from the `clyra` branch. Its deploy
-CodeBuild project clones the service's current task definition, changes only
-the `clyra` container image, registers the complete definition, updates the
-service, and waits for stability. This preserves the native S3 Files volume;
-do not replace it with CodePipeline's standard ECS deploy action, which drops
-unsupported task-definition fields. The deploy fails before updating the
-service unless S3 Files is present in both the source and registered task
-definitions. It also retries the singleton scheduler once if ECS drains the
-old task without starting its replacement.
+step discovers services tagged `ReplikaManaged=true`, clones each current task
+definition, changes only the application image, and waits for stability. A
+failed tenant rollout is returned to its previous task definition and tagged
+`ReplikaRollout=rolled-back`; other tenant rollouts continue.
 
 ECS task replacement, not `git pull`, deploys code. The runtime image has no
 `.git` directory and does not run `systemctl`. `candidate_image_uri` is only
@@ -61,11 +61,13 @@ The S3 Files mount persists:
 - `/app/state`
 - `/app/jobs`
 - `/app/workflows`
+- `/app/personal-tools`
 - `/mnt/efs/completion-markers`
 
-The entrypoint seeds image defaults only when a target file is absent. Runtime
-changes in AWS are durable across task replacement but are not Git commits.
-Export and review them explicitly before adding them to the repository.
+The entrypoint runs versioned, idempotent state migrations and seeds image
+defaults only when a target file is absent. The container root filesystem is
+read-only. Agent writes are restricted to persistent Replika paths; `main.py`
+and `harness/` remain developer-owned.
 
 Local Compose bind-mounts the six repository-backed mutable `/app` directories
 so edits are visible to Git on the host. `/data` remains a named volume.
@@ -85,13 +87,15 @@ credentials.
 
 - Require ECS deployment rollout `COMPLETED`, desired/running `1/1`, healthy
   ALB target, `/healthz` 200, and `/readyz` 200.
-- Verify unauthenticated HTML GETs redirect to `/login`, unauthenticated API
-  calls return 401 (no `WWW-Authenticate` browser prompt), and `/login`,
+- Verify unauthenticated HTML GETs enter provider-managed authentication,
+  cross-tenant identities are rejected, unauthenticated API calls return 401
+  (no `WWW-Authenticate` browser prompt), and `/login`,
   `/healthz`, and `/readyz` remain reachable without credentials.
 - Create a unique palace drawer and knowledge file, force-stop the running
   task, wait for its replacement, then verify both remain.
 - Verify S3 Files import/export/lost-and-found alarms remain `OK`.
 - Verify the task runs as UID 1000 with all Linux capabilities dropped.
 
-Rollback means redeploying a previously known-good immutable ECR digest to the
-same Fargate/S3 Files service. EFS and EC2 task definitions no longer exist.
+Rollback means redeploying a previously known-good immutable ECR digest while
+leaving each tenant access point, Markdown files, personal tools, vectors, and
+encrypted provider credentials in place.

@@ -10,13 +10,31 @@ locals {
   name                = var.service_name
   image_uri           = "${aws_ecr_repository.clyra.repository_url}:bootstrap"
   candidate_image_uri = coalesce(var.candidate_image_uri, local.image_uri)
-  secret_list         = [for name, arn in var.secret_arns : { name = name, valueFrom = arn }]
+  provisioner_function_arn = var.replika_provisioner_function_arn != "" ? var.replika_provisioner_function_arn : (
+    var.replika_callback_token_secret_arn != "" ? aws_lambda_function.replika_provisioner[0].arn : ""
+  )
+  runtime_secrets = merge(
+    var.secret_arns,
+    var.replika_callback_token_secret_arn == "" ? {} : {
+      REPLIKA_PROVISIONER_CALLBACK_TOKEN = var.replika_callback_token_secret_arn
+    }
+  )
+  secret_list = [for name, arn in local.runtime_secrets : { name = name, valueFrom = arn }]
   environment_list = [
     for name, value in merge(var.environment, {
-      APPCONFIG_APPLICATION   = var.appconfig_application_id
-      APPCONFIG_ENVIRONMENT   = var.appconfig_environment_id
-      APPCONFIG_CONFIGURATION = var.appconfig_configuration_id
-      PALACE_BACKEND          = var.palace_backend
+      APPCONFIG_APPLICATION            = var.appconfig_application_id
+      APPCONFIG_ENVIRONMENT            = var.appconfig_environment_id
+      APPCONFIG_CONFIGURATION          = var.appconfig_configuration_id
+      PALACE_BACKEND                   = var.palace_backend
+      REPLIKA_KMS_KEY_ID               = aws_kms_key.byom.arn
+      REPLIKA_CONTROL_PLANE_URL        = "https://${var.host_name}"
+      REPLIKA_CONTROL_PLANE_ONLY       = tostring(var.replika_control_plane_only)
+      REPLIKA_COOKIE_DOMAIN            = ".${var.replika_product_domain}"
+      REPLIKA_PRODUCT_DOMAIN           = var.replika_product_domain
+      REPLIKA_PROVISIONER_FUNCTION_ARN = local.provisioner_function_arn
+      REPLIKA_PROVISIONING_MODE        = local.provisioner_function_arn == "" ? "local" : "managed"
+      REPLIKA_TENANT_ID                = var.replika_tenant_id
+      REPLIKA_TRUST_ALB_IDENTITY       = tostring(var.enable_replika_managed_auth)
     }) : { name = name, value = value }
   ]
 }
@@ -43,6 +61,17 @@ resource "aws_ecr_lifecycle_policy" "clyra" {
 resource "aws_cloudwatch_log_group" "clyra" {
   name              = "/ecs/${local.name}"
   retention_in_days = var.log_retention_days
+}
+
+resource "aws_kms_key" "byom" {
+  description             = "Encrypt tenant BYOM credentials"
+  enable_key_rotation     = true
+  deletion_window_in_days = 30
+}
+
+resource "aws_kms_alias" "byom" {
+  name          = "alias/${local.name}-byom"
+  target_key_id = aws_kms_key.byom.key_id
 }
 
 resource "aws_security_group" "task" {
@@ -253,6 +282,18 @@ resource "aws_s3files_file_system_policy" "clyra" {
     Version = "2012-10-17"
     Statement = [
       {
+        Sid       = "AllowProviderManagedTenantRoles"
+        Effect    = "Allow"
+        Principal = { AWS = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root" }
+        Action    = ["s3files:ClientMount", "s3files:ClientWrite"]
+        Resource  = aws_s3files_file_system.clyra.arn
+        Condition = {
+          ArnLike = {
+            "aws:PrincipalArn" = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/replika-*"
+          }
+        }
+      },
+      {
         Sid       = "AllowClyraOnlyViaAccessPoint"
         Effect    = "Allow"
         Principal = { AWS = aws_iam_role.task.arn }
@@ -299,12 +340,12 @@ resource "aws_iam_role_policy_attachment" "execution" {
 data "aws_iam_policy_document" "execution_secrets" {
   statement {
     actions   = ["secretsmanager:GetSecretValue"]
-    resources = values(var.secret_arns)
+    resources = values(local.runtime_secrets)
   }
 }
 
 resource "aws_iam_role_policy" "execution_secrets" {
-  count  = length(var.secret_arns) > 0 ? 1 : 0
+  count  = length(local.runtime_secrets) > 0 ? 1 : 0
   name   = "runtime-secrets"
   role   = aws_iam_role.execution.id
   policy = data.aws_iam_policy_document.execution_secrets.json
@@ -360,6 +401,39 @@ resource "aws_iam_role_policy" "task_appconfig" {
   policy = data.aws_iam_policy_document.task_appconfig.json
 }
 
+data "aws_iam_policy_document" "task_byom" {
+  statement {
+    actions   = ["kms:Decrypt", "kms:Encrypt"]
+    resources = [aws_kms_key.byom.arn]
+    condition {
+      test     = "StringEquals"
+      variable = "kms:EncryptionContext:tenant_id"
+      values   = [var.replika_tenant_id]
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "task_byom" {
+  name   = "tenant-byom"
+  role   = aws_iam_role.task.id
+  policy = data.aws_iam_policy_document.task_byom.json
+}
+
+data "aws_iam_policy_document" "task_provisioner" {
+  count = local.provisioner_function_arn == "" ? 0 : 1
+  statement {
+    actions   = ["lambda:InvokeFunction"]
+    resources = [local.provisioner_function_arn]
+  }
+}
+
+resource "aws_iam_role_policy" "task_provisioner" {
+  count  = local.provisioner_function_arn == "" ? 0 : 1
+  name   = "replika-provisioner"
+  role   = aws_iam_role.task.id
+  policy = data.aws_iam_policy_document.task_provisioner[0].json
+}
+
 resource "aws_lb_target_group" "clyra" {
   name        = local.name
   port        = 8080
@@ -379,8 +453,21 @@ resource "aws_lb_target_group" "clyra" {
 resource "aws_lb_listener_rule" "clyra" {
   listener_arn = data.aws_lb_listener.https.arn
   priority     = var.listener_rule_priority
+  dynamic "action" {
+    for_each = var.enable_replika_managed_auth ? [1] : []
+    content {
+      type  = "authenticate-cognito"
+      order = 1
+      authenticate_cognito {
+        user_pool_arn       = aws_cognito_user_pool.replika[0].arn
+        user_pool_client_id = aws_cognito_user_pool_client.replika[0].id
+        user_pool_domain    = aws_cognito_user_pool_domain.replika[0].domain
+      }
+    }
+  }
   action {
     type             = "forward"
+    order            = var.enable_replika_managed_auth ? 2 : 1
     target_group_arn = aws_lb_target_group.clyra.arn
   }
   condition {
@@ -388,6 +475,53 @@ resource "aws_lb_listener_rule" "clyra" {
       values = [var.host_name]
     }
   }
+}
+
+resource "aws_route53_record" "replika_wildcard" {
+  count   = var.replika_route53_zone_id == "" ? 0 : 1
+  zone_id = var.replika_route53_zone_id
+  name    = "*.${var.replika_product_domain}"
+  type    = "A"
+  alias {
+    name                   = data.aws_lb.staging.dns_name
+    zone_id                = data.aws_lb.staging.zone_id
+    evaluate_target_health = true
+  }
+}
+
+resource "aws_acm_certificate" "replika_wildcard" {
+  count             = var.replika_route53_zone_id == "" ? 0 : 1
+  domain_name       = "*.${var.replika_product_domain}"
+  validation_method = "DNS"
+  lifecycle { create_before_destroy = true }
+}
+
+resource "aws_route53_record" "replika_certificate_validation" {
+  for_each = var.replika_route53_zone_id == "" ? {} : {
+    for option in aws_acm_certificate.replika_wildcard[0].domain_validation_options :
+    option.domain_name => {
+      name   = option.resource_record_name
+      record = option.resource_record_value
+      type   = option.resource_record_type
+    }
+  }
+  zone_id = var.replika_route53_zone_id
+  name    = each.value.name
+  type    = each.value.type
+  ttl     = 60
+  records = [each.value.record]
+}
+
+resource "aws_acm_certificate_validation" "replika_wildcard" {
+  count                   = var.replika_route53_zone_id == "" ? 0 : 1
+  certificate_arn         = aws_acm_certificate.replika_wildcard[0].arn
+  validation_record_fqdns = [for record in aws_route53_record.replika_certificate_validation : record.fqdn]
+}
+
+resource "aws_lb_listener_certificate" "replika_wildcard" {
+  count           = var.replika_route53_zone_id == "" ? 0 : 1
+  listener_arn    = data.aws_lb_listener.https.arn
+  certificate_arn = aws_acm_certificate_validation.replika_wildcard[0].certificate_arn
 }
 
 resource "aws_ecs_task_definition" "clyra_fargate" {
@@ -415,6 +549,9 @@ resource "aws_ecs_task_definition" "clyra_fargate" {
       root_directory          = "/"
       transit_encryption_port = 0
     }
+  }
+  volume {
+    name = "scratch"
   }
   container_definitions = jsonencode([
     {
@@ -445,12 +582,20 @@ resource "aws_ecs_task_definition" "clyra_fargate" {
       dependsOn = [
         { containerName = "appconfig", condition = "START" },
       ]
-      portMappings    = [{ containerPort = 8080, hostPort = 8080, protocol = "tcp" }]
-      environment     = local.environment_list
-      secrets         = local.secret_list
-      mountPoints     = [{ sourceVolume = "state", containerPath = "/mnt/efs", readOnly = false }]
-      volumesFrom     = []
-      systemControls  = []
+      portMappings = [{ containerPort = 8080, hostPort = 8080, protocol = "tcp" }]
+      environment  = local.environment_list
+      secrets      = local.secret_list
+      mountPoints = [
+        { sourceVolume = "state", containerPath = "/mnt/efs", readOnly = false },
+        { sourceVolume = "scratch", containerPath = "/tmp", readOnly = false },
+      ]
+      volumesFrom            = []
+      systemControls         = []
+      readonlyRootFilesystem = true
+      restartPolicy = {
+        enabled              = true
+        restartAttemptPeriod = 60
+      }
       linuxParameters = { capabilities = { drop = ["ALL"] } }
       logConfiguration = {
         logDriver = "awslogs"
@@ -539,6 +684,12 @@ resource "aws_ecs_service" "clyra" {
   health_check_grace_period_seconds  = 90
   enable_execute_command             = true
   force_new_deployment               = true
+  propagate_tags                     = "SERVICE"
+  tags = {
+    ReplikaManaged = "true"
+    ReplikaRelease = "bootstrap"
+    ReplikaRollout = "ready"
+  }
   deployment_circuit_breaker {
     enable   = true
     rollback = true

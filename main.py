@@ -71,11 +71,13 @@ def main():
 
     missing = missing_env_keys()
     if missing:
-        log.error(
+        log_method = log.warning if os.environ.get("REPLIKA_TENANT_ID") else log.error
+        log_method(
             f"Missing required env var(s): {', '.join(missing)}. "
-            "Copy .env.example to .env and fill it in."
+            "Configure a model provider key before starting an agent turn."
         )
-        sys.exit(1)
+        if not os.environ.get("REPLIKA_TENANT_ID"):
+            sys.exit(1)
 
     # Resolve config and memory paths relative to this file
     base_dir = os.path.dirname(os.path.abspath(__file__))

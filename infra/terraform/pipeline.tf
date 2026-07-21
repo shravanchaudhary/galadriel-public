@@ -54,6 +54,25 @@ data "aws_iam_policy_document" "codebuild" {
     actions   = ["s3:GetObject", "s3:GetObjectVersion", "s3:PutObject"]
     resources = ["${aws_s3_bucket.pipeline.arn}/*"]
   }
+  statement {
+    actions = [
+      "ecs:DescribeServices",
+      "ecs:DescribeTaskDefinition",
+      "ecs:ListServices",
+      "ecs:RegisterTaskDefinition",
+      "ecs:TagResource",
+      "ecs:UpdateService",
+    ]
+    resources = ["*"]
+  }
+  statement {
+    actions = ["iam:PassRole"]
+    resources = [
+      aws_iam_role.execution.arn,
+      aws_iam_role.task.arn,
+      "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/replika-*",
+    ]
+  }
 }
 
 resource "aws_iam_role_policy" "codebuild" {
@@ -93,6 +112,54 @@ resource "aws_codebuild_project" "clyra" {
   }
 }
 
+resource "aws_codebuild_project" "clyra_deploy" {
+  name          = "${local.name}-deploy"
+  service_role  = aws_iam_role.codebuild.arn
+  build_timeout = 30
+
+  artifacts { type = "CODEPIPELINE" }
+
+  environment {
+    compute_type                = "BUILD_GENERAL1_SMALL"
+    image                       = "aws/codebuild/standard:7.0"
+    type                        = "LINUX_CONTAINER"
+    image_pull_credentials_type = "CODEBUILD"
+
+    environment_variable {
+      name  = "ECS_CLUSTER"
+      value = data.aws_ecs_cluster.staging.cluster_name
+    }
+    environment_variable {
+      name  = "ECS_SERVICE"
+      value = var.service_name
+    }
+    environment_variable {
+      name  = "CONTAINER_NAME"
+      value = "clyra"
+    }
+  }
+
+  source {
+    type      = "CODEPIPELINE"
+    buildspec = <<-YAML
+      version: 0.2
+      phases:
+        build:
+          commands:
+            - set -eu
+            - IMAGE_URI="$(jq -er --arg name "$CONTAINER_NAME" '.[] | select(.name == $name) | .imageUri' imagedefinitions.json)"
+            - RELEASE_VERSION="$(printf '%s' "$IMAGE_URI" | awk -F: '{print $NF}')"
+            - python scripts/deploy_replika_fleet.py --cluster "$ECS_CLUSTER" --image "$IMAGE_URI" --container "$CONTAINER_NAME" --release "$RELEASE_VERSION"
+    YAML
+  }
+
+  logs_config {
+    cloudwatch_logs {
+      status = "ENABLED"
+    }
+  }
+}
+
 data "aws_iam_policy_document" "pipeline_assume" {
   statement {
     actions = ["sts:AssumeRole"]
@@ -114,28 +181,15 @@ data "aws_iam_policy_document" "pipeline" {
     resources = ["${aws_s3_bucket.pipeline.arn}/*"]
   }
   statement {
-    actions   = ["codebuild:StartBuild", "codebuild:BatchGetBuilds"]
-    resources = [aws_codebuild_project.clyra.arn]
+    actions = ["codebuild:StartBuild", "codebuild:BatchGetBuilds"]
+    resources = [
+      aws_codebuild_project.clyra.arn,
+      aws_codebuild_project.clyra_deploy.arn,
+    ]
   }
   statement {
     actions   = ["codestar-connections:UseConnection"]
     resources = [var.github_connection_arn]
-  }
-  statement {
-    actions = [
-      "ecs:DescribeServices",
-      "ecs:DescribeTaskDefinition",
-      "ecs:DescribeTasks",
-      "ecs:ListTasks",
-      "ecs:RegisterTaskDefinition",
-      "ecs:TagResource",
-      "ecs:UpdateService",
-    ]
-    resources = ["*"]
-  }
-  statement {
-    actions   = ["iam:PassRole"]
-    resources = [aws_iam_role.execution.arn, aws_iam_role.task.arn]
   }
 }
 
@@ -187,19 +241,14 @@ resource "aws_codepipeline" "clyra" {
   stage {
     name = "Deploy"
     action {
-      name            = "ECS"
-      category        = "Deploy"
+      name            = "DeployImage"
+      category        = "Build"
       owner           = "AWS"
-      provider        = "ECS"
+      provider        = "CodeBuild"
       version         = "1"
       input_artifacts = ["build"]
       configuration = {
-        ClusterName = data.aws_ecs_cluster.staging.cluster_name
-        # Intentionally use the configured name rather than a resource
-        # reference so the first pipeline execution can publish the bootstrap
-        # image before the ECS service exists.
-        ServiceName = var.service_name
-        FileName    = "imagedefinitions.json"
+        ProjectName = aws_codebuild_project.clyra_deploy.name
       }
     }
   }

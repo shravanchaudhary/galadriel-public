@@ -65,6 +65,8 @@ RUN mkdir -p /opt/galadriel-defaults \
     done \
     && rm -rf /data \
     && ln -s /mnt/efs/data /data \
+    && rm -rf /app/personal-tools \
+    && ln -s /mnt/efs/personal-tools /app/personal-tools \
     && ln -s /etc/ssl/certs/rds-global-bundle.pem /app/global-bundle.pem \
     && chown -R galadriel:galadriel /app /opt/galadriel-defaults
 
@@ -74,9 +76,11 @@ ENV MEMPALACE_PATH=/data/.mempalace/palace \
     PALACE_ARCHIVE_ROOT=/data/.mempalace/archive \
     PALACE_WAKE_UP_FILE=/data/.mempalace/wake_up.md \
     GALADRIEL_STORAGE_ROOT=/mnt/efs \
+    GALADRIEL_ENFORCE_WRITE_BOUNDARIES=true \
     BROWSER_BACKEND=bce \
     TOWER_HOST=0.0.0.0 \
     TOWER_PORT=8080 \
+    PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
 # Tower form/session auth (TOWER_AUTH_*) protects the UI when enabled. Prefer

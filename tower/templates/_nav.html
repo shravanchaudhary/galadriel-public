@@ -5,6 +5,9 @@
             <span class="site-brand-text">Clyra Console</span>
         </a>
         <nav class="site-nav" aria-label="Main">
+            {% if control_plane_only %}
+            <a href="/replika" class="{{ 'active' if request.path.startswith('/replika') }}">My Replika</a>
+            {% else %}
             <a href="/" class="{{ 'active' if request.path == '/' }}">Dashboard</a>
             <a href="/actions" class="{{ 'active' if request.path.startswith('/actions') }}">Actions</a>
             <a href="/runs" class="{{ 'active' if request.path.startswith('/runs') }}">Runs</a>
@@ -15,6 +18,7 @@
             <a href="/palace" class="{{ 'active' if request.path.startswith('/palace') }}">Memory</a>
             <a href="/costs" class="{{ 'active' if request.path.startswith('/costs') }}">Costs</a>
             <a href="#" class="site-nav-cta" id="site-nav-chat" role="button">Chat</a>
+            {% endif %}
             <form method="post" action="/logout" class="site-nav-logout">
                 <button type="submit" class="site-nav-logout-btn">Log out</button>
             </form>

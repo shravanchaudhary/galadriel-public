@@ -75,6 +75,10 @@ def build_provider(name: str, api_key: str | None = None) -> BaseModelProvider:
     """Instantiate a provider by id. Imports are lazy so that, e.g., running
     on Anthropic never requires the google-genai or ollama packages.
     """
+    if api_key is None and name != OLLAMA and os.environ.get("REPLIKA_TENANT_ID"):
+        from . import provider_credentials
+
+        api_key = provider_credentials.get(name)
     if name == GEMINI:
         from .providers import GeminiProvider
         return GeminiProvider(api_key=api_key)
@@ -94,7 +98,7 @@ def get_provider(task: str, api_key: str | None = None) -> BaseModelProvider:
     the wrong key into a Gemini client.
     """
     name = provider_name_for(task)
-    return build_provider(name, api_key=api_key if name == ANTHROPIC else None)
+    return build_provider(name, api_key=api_key)
 
 
 def _provider_key_present(provider: str) -> bool:
@@ -106,6 +110,13 @@ def _provider_key_present(provider: str) -> bool:
     # GeminiProvider also accepts GOOGLE_API_KEY.
     if provider == GEMINI and os.environ.get("GOOGLE_API_KEY"):
         return True
+    if os.environ.get("REPLIKA_TENANT_ID"):
+        try:
+            from . import provider_credentials
+
+            return bool(provider_credentials.get(provider))
+        except Exception:
+            return False
     return False
 
 

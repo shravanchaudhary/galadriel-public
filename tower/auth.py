@@ -22,7 +22,7 @@ SESSION_AUTH_KEY = "tower_authenticated"
 SESSION_USER_KEY = "tower_username"
 SESSION_LIFETIME_HOURS = 12
 
-AuthMethod = Literal["session", "basic", "bearer"]
+AuthMethod = Literal["session", "basic", "bearer", "alb"]
 
 
 @dataclass(frozen=True)
@@ -33,6 +33,14 @@ class AuthResult:
 
 def auth_required() -> bool:
     return os.environ.get("TOWER_AUTH_REQUIRED", "").lower() in {"1", "true", "yes"}
+
+
+def alb_identity_enabled() -> bool:
+    return os.environ.get("REPLIKA_TRUST_ALB_IDENTITY", "").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
 
 
 def auth_username() -> str:
@@ -68,11 +76,15 @@ def auth_ready() -> bool:
     """True when required auth has both a credential and a real signing key."""
     if not auth_required():
         return True
+    if alb_identity_enabled():
+        return True
     return credentials_configured() and secret_key_configured()
 
 
 def auth_misconfigured_reason() -> str | None:
     if not auth_required():
+        return None
+    if alb_identity_enabled():
         return None
     if not credentials_configured():
         return "TOWER_AUTH_TOKEN is not set"
@@ -82,7 +94,14 @@ def auth_misconfigured_reason() -> str | None:
 
 
 def public_path(path: str) -> bool:
-    if path in {"/healthz", "/readyz", "/login", "/logout"}:
+    if path in {
+        "/healthz",
+        "/readyz",
+        "/login",
+        "/logout",
+        "/internal/replika/provisioning",
+        "/internal/replika/database",
+    }:
         return True
     if path.startswith("/static/"):
         return True
@@ -127,9 +146,22 @@ def authenticate_request(req: Request | None = None) -> AuthResult | None:
     """Authenticate from session, then Basic, then Bearer."""
     req = req or request
 
+    if alb_identity_enabled():
+        identity = (req.headers.get("x-amzn-oidc-identity") or "").strip()
+        expected_tenant = os.environ.get("REPLIKA_TENANT_ID", "default")
+        if identity and (
+            expected_tenant == "default" or hmac.compare_digest(identity, expected_tenant)
+        ):
+            return AuthResult(method="alb", username=identity)
+
     if session.get(SESSION_AUTH_KEY) is True:
         username = session.get(SESSION_USER_KEY) or auth_username()
-        return AuthResult(method="session", username=username)
+        expected_tenant = os.environ.get("REPLIKA_TENANT_ID", "default")
+        if expected_tenant == "default" or hmac.compare_digest(
+            str(username), expected_tenant
+        ):
+            return AuthResult(method="session", username=username)
+        return None
 
     authorization = req.headers.get("Authorization", "")
     token = auth_token()
@@ -182,6 +214,9 @@ def unauthorized_response(req: Request | None = None):
     req = req or request
     if wants_json_unauthorized(req):
         return jsonify({"error": "Unauthorized"}), 401
+    control_plane_url = os.environ.get("REPLIKA_CONTROL_PLANE_URL", "").rstrip("/")
+    if alb_identity_enabled() and control_plane_url:
+        return redirect(f"{control_plane_url}/replika")
     next_path = safe_next_url(req.full_path if req.query_string else req.path)
     # full_path includes a trailing '?' when there is no query; strip it.
     if next_path.endswith("?"):
@@ -225,6 +260,7 @@ def configure_app_sessions(app) -> None:
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Lax",
         SESSION_COOKIE_SECURE=cookie_secure(),
+        SESSION_COOKIE_DOMAIN=os.environ.get("REPLIKA_COOKIE_DOMAIN") or None,
         PERMANENT_SESSION_LIFETIME=timedelta(hours=SESSION_LIFETIME_HOURS),
         SESSION_REFRESH_EACH_REQUEST=True,
     )
