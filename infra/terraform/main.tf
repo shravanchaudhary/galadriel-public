@@ -10,6 +10,10 @@ locals {
   name                = var.service_name
   image_uri           = "${aws_ecr_repository.clyra.repository_url}:bootstrap"
   candidate_image_uri = coalesce(var.candidate_image_uri, local.image_uri)
+  provisioner_enabled = (
+    var.replika_provisioner_function_arn != ""
+    || var.replika_callback_token_secret_arn != ""
+  )
   provisioner_function_arn = var.replika_provisioner_function_arn != "" ? var.replika_provisioner_function_arn : (
     var.replika_callback_token_secret_arn != "" ? aws_lambda_function.replika_provisioner[0].arn : ""
   )
@@ -35,6 +39,7 @@ locals {
       REPLIKA_PROVISIONING_MODE        = local.provisioner_function_arn == "" ? "local" : "managed"
       REPLIKA_TENANT_ID                = var.replika_tenant_id
       REPLIKA_TRUST_ALB_IDENTITY       = tostring(var.enable_replika_managed_auth)
+      TMPDIR                           = "/dev/shm"
     }) : { name = name, value = value }
   ]
 }
@@ -420,7 +425,7 @@ resource "aws_iam_role_policy" "task_byom" {
 }
 
 data "aws_iam_policy_document" "task_provisioner" {
-  count = local.provisioner_function_arn == "" ? 0 : 1
+  count = local.provisioner_enabled ? 1 : 0
   statement {
     actions   = ["lambda:InvokeFunction"]
     resources = [local.provisioner_function_arn]
@@ -428,7 +433,7 @@ data "aws_iam_policy_document" "task_provisioner" {
 }
 
 resource "aws_iam_role_policy" "task_provisioner" {
-  count  = local.provisioner_function_arn == "" ? 0 : 1
+  count  = local.provisioner_enabled ? 1 : 0
   name   = "replika-provisioner"
   role   = aws_iam_role.task.id
   policy = data.aws_iam_policy_document.task_provisioner[0].json
@@ -450,6 +455,31 @@ resource "aws_lb_target_group" "clyra" {
   }
 }
 
+resource "aws_lb_listener_rule" "clyra_health" {
+  count        = var.enable_replika_managed_auth ? 1 : 0
+  listener_arn = data.aws_lb_listener.https.arn
+  priority     = var.listener_rule_priority - 1
+  action {
+    type  = "forward"
+    order = 1
+    forward {
+      target_group {
+        arn = aws_lb_target_group.clyra.arn
+      }
+    }
+  }
+  condition {
+    host_header {
+      values = [var.host_name]
+    }
+  }
+  condition {
+    path_pattern {
+      values = ["/healthz", "/readyz"]
+    }
+  }
+}
+
 resource "aws_lb_listener_rule" "clyra" {
   listener_arn = data.aws_lb_listener.https.arn
   priority     = var.listener_rule_priority
@@ -466,9 +496,13 @@ resource "aws_lb_listener_rule" "clyra" {
     }
   }
   action {
-    type             = "forward"
-    order            = var.enable_replika_managed_auth ? 2 : 1
-    target_group_arn = aws_lb_target_group.clyra.arn
+    type  = "forward"
+    order = var.enable_replika_managed_auth ? 2 : 1
+    forward {
+      target_group {
+        arn = aws_lb_target_group.clyra.arn
+      }
+    }
   }
   condition {
     host_header {
@@ -550,9 +584,6 @@ resource "aws_ecs_task_definition" "clyra_fargate" {
       transit_encryption_port = 0
     }
   }
-  volume {
-    name = "scratch"
-  }
   container_definitions = jsonencode([
     {
       name           = "appconfig"
@@ -587,7 +618,6 @@ resource "aws_ecs_task_definition" "clyra_fargate" {
       secrets      = local.secret_list
       mountPoints = [
         { sourceVolume = "state", containerPath = "/mnt/efs", readOnly = false },
-        { sourceVolume = "scratch", containerPath = "/tmp", readOnly = false },
       ]
       volumesFrom            = []
       systemControls         = []
@@ -707,6 +737,7 @@ resource "aws_ecs_service" "clyra" {
   depends_on = [
     aws_s3files_mount_target.clyra,
     aws_s3files_file_system_policy.clyra,
+    aws_lb_listener_rule.clyra_health,
     aws_lb_listener_rule.clyra,
   ]
 }

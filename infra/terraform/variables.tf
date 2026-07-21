@@ -58,7 +58,14 @@ variable "s3_state_noncurrent_version_expiration_days" {
   type        = number
   default     = 90
 }
-variable "listener_rule_priority" { type = number }
+variable "listener_rule_priority" {
+  description = "ALB priority for the authenticated control-plane rule; the preceding priority is reserved for public health checks."
+  type        = number
+  validation {
+    condition     = var.listener_rule_priority >= 2 && var.listener_rule_priority <= 50000
+    error_message = "listener_rule_priority must be between 2 and 50000."
+  }
+}
 variable "github_connection_arn" { type = string }
 variable "appconfig_application_id" {
   type    = string

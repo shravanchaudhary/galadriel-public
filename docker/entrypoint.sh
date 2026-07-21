@@ -8,7 +8,7 @@ if [ "${APPCONFIG_REQUIRED:-false}" = "true" ]; then
     : "${APPCONFIG_APPLICATION:?APPCONFIG_APPLICATION is required}"
     : "${APPCONFIG_ENVIRONMENT:?APPCONFIG_ENVIRONMENT is required}"
     : "${APPCONFIG_CONFIGURATION:?APPCONFIG_CONFIGURATION is required}"
-    appconfig_file="/tmp/clyra-appconfig.env"
+    appconfig_file="${TMPDIR:-/tmp}/clyra-appconfig.env"
     appconfig_url="${APPCONFIG_AGENT_URL:-http://127.0.0.1:2772}/applications/${APPCONFIG_APPLICATION}/environments/${APPCONFIG_ENVIRONMENT}/configurations/${APPCONFIG_CONFIGURATION}"
     attempt=0
     until python3 - "$appconfig_url" "$appconfig_file" <<'PY'
