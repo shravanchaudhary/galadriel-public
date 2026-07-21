@@ -109,6 +109,20 @@ assert any(
     for tag in call["tags"]
 )
 
+
+class _EmptyTagECS(_ECS):
+    def describe_task_definition(self, **kwargs):
+        response = super().describe_task_definition(**kwargs)
+        response["tags"] = []
+        return response
+
+
+empty_tag_ecs = _EmptyTagECS()
+with patch("scripts.deploy_replika_fleet.boto3.client", return_value=empty_tag_ecs):
+    empty_tag_result = deploy("cluster", "immutable-image", "clyra", "release-2")
+assert empty_tag_result["results"][0]["status"] == "ready"
+assert "tags" not in empty_tag_ecs.registered, "ECS rejects an explicitly empty tag list"
+
 print("Replika fleet deployment checks passed.")
 
 spec = importlib.util.spec_from_file_location(

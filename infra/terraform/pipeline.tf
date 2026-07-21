@@ -140,17 +140,20 @@ resource "aws_codebuild_project" "clyra_deploy" {
   }
 
   source {
-    type      = "CODEPIPELINE"
-    buildspec = <<-YAML
-      version: 0.2
-      phases:
-        build:
-          commands:
-            - set -eu
-            - IMAGE_URI="$(jq -er --arg name "$CONTAINER_NAME" '.[] | select(.name == $name) | .imageUri' imagedefinitions.json)"
-            - RELEASE_VERSION="$(printf '%s' "$IMAGE_URI" | awk -F: '{print $NF}')"
-            - python scripts/deploy_replika_fleet.py --cluster "$ECS_CLUSTER" --image "$IMAGE_URI" --container "$CONTAINER_NAME" --release "$RELEASE_VERSION"
-    YAML
+    type = "CODEPIPELINE"
+    buildspec = jsonencode({
+      version = "0.2"
+      phases = {
+        build = {
+          commands = [
+            "set -eu",
+            "IMAGE_URI=\"$(jq -er --arg name \"$CONTAINER_NAME\" '.[] | select(.name == $name) | .imageUri' imagedefinitions.json)\"",
+            "RELEASE_VERSION=\"$(printf '%s' \"$IMAGE_URI\" | awk -F: '{print $NF}')\"",
+            "python scripts/deploy_replika_fleet.py --cluster \"$ECS_CLUSTER\" --image \"$IMAGE_URI\" --container \"$CONTAINER_NAME\" --release \"$RELEASE_VERSION\"",
+          ]
+        }
+      }
+    })
   }
 
   logs_config {

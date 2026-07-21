@@ -70,7 +70,8 @@ def _next_task_definition(ecs, task_definition_arn: str, image: str, container: 
             found = True
     if not found:
         raise RuntimeError(f"container {container!r} not found in {task_definition_arn}")
-    request["tags"] = current.get("tags", [])
+    if current.get("tags"):
+        request["tags"] = current["tags"]
     return ecs.register_task_definition(**request)["taskDefinition"]["taskDefinitionArn"]
 
 
