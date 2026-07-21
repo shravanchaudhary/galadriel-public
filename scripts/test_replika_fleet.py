@@ -20,7 +20,11 @@ class _Paginator:
 
 
 class _Waiter:
+    def __init__(self, calls):
+        self.calls = calls
+
     def wait(self, **_kwargs):
+        self.calls.append(_kwargs)
         return None
 
 
@@ -29,6 +33,7 @@ class _ECS:
         self.registered = None
         self.updates = []
         self.tags = []
+        self.wait_calls = []
 
     def get_paginator(self, name):
         assert name == "list_services"
@@ -88,7 +93,7 @@ class _ECS:
 
     def get_waiter(self, name):
         assert name == "services_stable"
-        return _Waiter()
+        return _Waiter(self.wait_calls)
 
 
 ecs = _ECS()
@@ -103,6 +108,7 @@ assert (
     == "ap-tenant-a"
 ), "fleet rollout must preserve the tenant access point"
 assert ecs.updates[0]["taskDefinition"] == "task:2"
+assert ecs.wait_calls[0]["WaiterConfig"]["MaxAttempts"] == 80
 assert any(
     tag["key"] == "ReplikaRollout" and tag["value"] == "ready"
     for call in ecs.tags

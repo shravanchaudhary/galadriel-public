@@ -12,6 +12,7 @@ import boto3
 MANAGED_TAG = "ReplikaManaged"
 RELEASE_TAG = "ReplikaRelease"
 ROLLOUT_TAG = "ReplikaRollout"
+WAITER_CONFIG = {"Delay": 15, "MaxAttempts": 80}
 REGISTERABLE_FIELDS = {
     "family",
     "taskRoleArn",
@@ -97,7 +98,11 @@ def deploy(cluster: str, image: str, container: str, release: str) -> dict:
                 taskDefinition=next_definition,
                 forceNewDeployment=True,
             )
-            ecs.get_waiter("services_stable").wait(cluster=cluster, services=[arn])
+            ecs.get_waiter("services_stable").wait(
+                cluster=cluster,
+                services=[arn],
+                WaiterConfig=WAITER_CONFIG,
+            )
             ecs.tag_resource(
                 resourceArn=arn,
                 tags=[{"key": ROLLOUT_TAG, "value": "ready"}],
@@ -110,11 +115,23 @@ def deploy(cluster: str, image: str, container: str, release: str) -> dict:
                 taskDefinition=previous,
                 forceNewDeployment=True,
             )
+            rollback_error = None
+            try:
+                ecs.get_waiter("services_stable").wait(
+                    cluster=cluster,
+                    services=[arn],
+                    WaiterConfig=WAITER_CONFIG,
+                )
+            except Exception as rollback_exc:
+                rollback_error = str(rollback_exc)
             ecs.tag_resource(
                 resourceArn=arn,
                 tags=[{"key": ROLLOUT_TAG, "value": "rolled-back"}],
             )
-            results.append({"service": arn, "status": "rolled-back", "error": str(exc)})
+            result = {"service": arn, "status": "rolled-back", "error": str(exc)}
+            if rollback_error:
+                result["rollbackError"] = rollback_error
+            results.append(result)
     return {
         "release": release,
         "image": image,
