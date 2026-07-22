@@ -89,24 +89,38 @@ def _database_identity(owner_id: str, task_role_arn: str) -> dict:
 
 
 def _create_access_point(s3files, owner_id: str) -> tuple[str, str]:
-    response = s3files.create_access_point(
-        fileSystemId=_required("S3FILES_FILE_SYSTEM_ID"),
-        clientToken=hashlib.sha256(owner_id.encode()).hexdigest(),
-        tags=[
-            {"key": "ReplikaManaged", "value": "true"},
-            {"key": "ReplikaTenant", "value": owner_id},
-        ],
-        posixUser={"uid": 1000, "gid": 1000},
-        rootDirectory={
-            "path": f"/tenants/{owner_id}",
-            "creationPermissions": {
-                "ownerUid": 1000,
-                "ownerGid": 1000,
-                "permissions": "0750",
+    file_system_id = _required("S3FILES_FILE_SYSTEM_ID")
+    path = f"/tenants/{owner_id}"
+    try:
+        response = s3files.create_access_point(
+            fileSystemId=file_system_id,
+            clientToken=hashlib.sha256(owner_id.encode()).hexdigest(),
+            tags=[
+                {"key": "ReplikaManaged", "value": "true"},
+                {"key": "ReplikaTenant", "value": owner_id},
+            ],
+            posixUser={"uid": 1000, "gid": 1000},
+            rootDirectory={
+                "path": path,
+                "creationPermissions": {
+                    "ownerUid": 1000,
+                    "ownerGid": 1000,
+                    "permissions": "0750",
+                },
             },
-        },
-    )
-    return response["accessPointArn"], response["accessPointId"]
+        )
+        return response["accessPointArn"], response["accessPointId"]
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ConflictException":
+            raise
+
+    for page in s3files.get_paginator("list_access_points").paginate(
+        fileSystemId=file_system_id
+    ):
+        for access_point in page.get("accessPoints", []):
+            if access_point.get("rootDirectory", {}).get("path") == path:
+                return access_point["accessPointArn"], access_point["accessPointId"]
+    raise RuntimeError(f"conflicting access point for tenant {owner_id} was not found")
 
 
 def _assume_policy() -> str:
@@ -210,18 +224,43 @@ def _listener_priority(elbv2, listener_arn: str, owner_id: str) -> int:
     return candidate
 
 
-def _ensure_rule(elbv2, username: str, owner_id: str, target_group_arn: str) -> None:
+def _cognito_client(cognito, username: str) -> str:
+    user_pool_id = _required("COGNITO_USER_POOL_ARN").rsplit("/", 1)[-1]
+    client_name = f"replika-{_slug(username)}"
+    next_token = None
+    while True:
+        request = {"UserPoolId": user_pool_id, "MaxResults": 60}
+        if next_token:
+            request["NextToken"] = next_token
+        response = cognito.list_user_pool_clients(**request)
+        for client in response.get("UserPoolClients", []):
+            if client.get("ClientName") == client_name:
+                return client["ClientId"]
+        next_token = response.get("NextToken")
+        if not next_token:
+            break
+
+    host = f"{username}.{_required('PRODUCT_DOMAIN')}"
+    response = cognito.create_user_pool_client(
+        UserPoolId=user_pool_id,
+        ClientName=client_name,
+        GenerateSecret=True,
+        AllowedOAuthFlowsUserPoolClient=True,
+        AllowedOAuthFlows=["code"],
+        AllowedOAuthScopes=["openid", "email", "profile"],
+        CallbackURLs=[f"https://{host}/oauth2/idpresponse"],
+        LogoutURLs=[f"https://{host}/login"],
+        SupportedIdentityProviders=["COGNITO"],
+        PreventUserExistenceErrors="ENABLED",
+    )
+    return response["UserPoolClient"]["ClientId"]
+
+
+def _ensure_rule(
+    elbv2, cognito, username: str, owner_id: str, target_group_arn: str
+) -> None:
     listener = _required("HTTPS_LISTENER_ARN")
     host = f"{username}.{_required('PRODUCT_DOMAIN')}"
-    for rule in elbv2.describe_rules(ListenerArn=listener)["Rules"]:
-        values = [
-            value
-            for condition in rule.get("Conditions", [])
-            if condition.get("Field") == "host-header"
-            for value in condition.get("Values", [])
-        ]
-        if host in values:
-            return
     actions = []
     if os.environ.get("MANAGED_AUTH_ENABLED", "").lower() == "true":
         actions.append(
@@ -230,7 +269,7 @@ def _ensure_rule(elbv2, username: str, owner_id: str, target_group_arn: str) -> 
                 "Order": 1,
                 "AuthenticateCognitoConfig": {
                     "UserPoolArn": _required("COGNITO_USER_POOL_ARN"),
-                    "UserPoolClientId": _required("COGNITO_USER_POOL_CLIENT_ID"),
+                    "UserPoolClientId": _cognito_client(cognito, username),
                     "UserPoolDomain": _required("COGNITO_USER_POOL_DOMAIN"),
                 },
             }
@@ -242,6 +281,16 @@ def _ensure_rule(elbv2, username: str, owner_id: str, target_group_arn: str) -> 
             "TargetGroupArn": target_group_arn,
         }
     )
+    for rule in elbv2.describe_rules(ListenerArn=listener)["Rules"]:
+        values = [
+            value
+            for condition in rule.get("Conditions", [])
+            if condition.get("Field") == "host-header"
+            for value in condition.get("Values", [])
+        ]
+        if host in values:
+            elbv2.modify_rule(RuleArn=rule["RuleArn"], Actions=actions)
+            return
     elbv2.create_rule(
         ListenerArn=listener,
         Priority=_listener_priority(elbv2, listener, owner_id),
@@ -317,6 +366,7 @@ def _task_definition(
         ]
     request["tags"] = [
         {"key": "ReplikaManaged", "value": "true"},
+        {"key": "ReplikaPlane", "value": "runtime"},
         {"key": "ReplikaTenant", "value": owner_id},
     ]
     return ecs.register_task_definition(**request)["taskDefinition"]["taskDefinitionArn"]
@@ -361,6 +411,7 @@ def _service(
         "propagateTags": "SERVICE",
         "tags": [
             {"key": "ReplikaManaged", "value": "true"},
+            {"key": "ReplikaPlane", "value": "runtime"},
             {"key": "ReplikaTenant", "value": owner_id},
             {"key": "ReplikaRelease", "value": release},
             {"key": "ReplikaRollout", "value": "ready"},
@@ -382,7 +433,9 @@ def _service(
             forceNewDeployment=True,
         )
     ecs.get_waiter("services_stable").wait(
-        cluster=kwargs["cluster"], services=[name]
+        cluster=kwargs["cluster"],
+        services=[name],
+        WaiterConfig={"Delay": 15, "MaxAttempts": 50},
     )
 
 
@@ -393,12 +446,13 @@ def handler(event, _context):
         s3files = boto3.client("s3files")
         iam = boto3.client("iam")
         elbv2 = boto3.client("elbv2")
+        cognito = boto3.client("cognito-idp")
         ecs = boto3.client("ecs")
         access_point_arn, _ = _create_access_point(s3files, owner_id)
         role_arn = _task_role(iam, owner_id, access_point_arn)
         runtime_database = _database_identity(owner_id, role_arn)
         target_group_arn = _target_group(elbv2, username)
-        _ensure_rule(elbv2, username, owner_id, target_group_arn)
+        _ensure_rule(elbv2, cognito, username, owner_id, target_group_arn)
         task_definition = _task_definition(
             ecs,
             owner_id,

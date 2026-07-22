@@ -10,6 +10,8 @@ import sys
 import boto3
 
 MANAGED_TAG = "ReplikaManaged"
+PLANE_TAG = "ReplikaPlane"
+TENANT_TAG = "ReplikaTenant"
 RELEASE_TAG = "ReplikaRelease"
 ROLLOUT_TAG = "ReplikaRollout"
 WAITER_CONFIG = {"Delay": 15, "MaxAttempts": 80}
@@ -35,7 +37,9 @@ REGISTERABLE_FIELDS = {
 }
 
 
-def _managed_services(ecs, cluster: str) -> list[dict]:
+def _managed_services(ecs, cluster: str, plane: str) -> list[dict]:
+    if plane != "runtime":
+        raise ValueError(f"unsupported enumerated plane: {plane}")
     arns: list[str] = []
     paginator = ecs.get_paginator("list_services")
     for page in paginator.paginate(cluster=cluster, launchType="FARGATE"):
@@ -49,9 +53,25 @@ def _managed_services(ecs, cluster: str) -> list[dict]:
         )
         for service in response.get("services", []):
             tags = {tag["key"]: tag["value"] for tag in service.get("tags", [])}
-            if tags.get(MANAGED_TAG, "").lower() == "true":
+            is_managed = tags.get(MANAGED_TAG, "").lower() == "true"
+            is_runtime = (
+                tags.get(PLANE_TAG) == "runtime" or bool(tags.get(TENANT_TAG))
+            )
+            if is_managed and is_runtime:
                 managed.append(service)
     return managed
+
+
+def _control_service(ecs, cluster: str, service_name: str) -> list[dict]:
+    response = ecs.describe_services(
+        cluster=cluster,
+        services=[service_name],
+        include=["TAGS"],
+    )
+    services = response.get("services", [])
+    if len(services) != 1 or services[0].get("status") == "INACTIVE":
+        raise RuntimeError(f"control service {service_name!r} was not found")
+    return services
 
 
 def _next_task_definition(ecs, task_definition_arn: str, image: str, container: str) -> str:
@@ -76,9 +96,36 @@ def _next_task_definition(ecs, task_definition_arn: str, image: str, container: 
     return ecs.register_task_definition(**request)["taskDefinition"]["taskDefinitionArn"]
 
 
-def deploy(cluster: str, image: str, container: str, release: str) -> dict:
+def deploy(
+    cluster: str,
+    image: str,
+    container: str,
+    release: str,
+    *,
+    plane: str = "runtime",
+    service: str | None = None,
+    base_task_definition: str | None = None,
+) -> dict:
     ecs = boto3.client("ecs")
-    services = _managed_services(ecs, cluster)
+    if plane == "control":
+        if not service:
+            raise ValueError("control deployments require an explicit service")
+        if base_task_definition:
+            raise ValueError("control deployments cannot advance a runtime base")
+        services = _control_service(ecs, cluster, service)
+    elif plane == "runtime":
+        if service:
+            raise ValueError("runtime deployments select tenants by ownership tags")
+        services = _managed_services(ecs, cluster, plane)
+    else:
+        raise ValueError(f"unsupported deployment plane: {plane}")
+
+    runtime_base = None
+    if base_task_definition:
+        runtime_base = _next_task_definition(
+            ecs, base_task_definition, image, container
+        )
+
     results = []
     for service in services:
         arn = service["serviceArn"]
@@ -135,6 +182,8 @@ def deploy(cluster: str, image: str, container: str, release: str) -> dict:
     return {
         "release": release,
         "image": image,
+        "plane": plane,
+        "runtime_base_task_definition": runtime_base,
         "managed_services": len(services),
         "results": results,
     }
@@ -146,8 +195,19 @@ def main() -> int:
     parser.add_argument("--image", required=True)
     parser.add_argument("--container", default="clyra")
     parser.add_argument("--release", required=True)
+    parser.add_argument("--plane", choices=["control", "runtime"], default="runtime")
+    parser.add_argument("--service")
+    parser.add_argument("--base-task-definition")
     args = parser.parse_args()
-    summary = deploy(args.cluster, args.image, args.container, args.release)
+    summary = deploy(
+        args.cluster,
+        args.image,
+        args.container,
+        args.release,
+        plane=args.plane,
+        service=args.service,
+        base_task_definition=args.base_task_definition,
+    )
     print(json.dumps(summary, indent=2))
     failed = [row for row in summary["results"] if row["status"] != "ready"]
     return 1 if failed else 0

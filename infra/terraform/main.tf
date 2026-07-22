@@ -10,6 +10,10 @@ locals {
   name                = var.service_name
   image_uri           = "${aws_ecr_repository.clyra.repository_url}:bootstrap"
   candidate_image_uri = coalesce(var.candidate_image_uri, local.image_uri)
+  runtime_base_image_uri = coalesce(
+    var.runtime_base_image_uri,
+    local.candidate_image_uri,
+  )
   provisioner_enabled = (
     var.replika_provisioner_function_arn != ""
     || var.replika_callback_token_secret_arn != ""
@@ -42,10 +46,34 @@ locals {
       TMPDIR                           = "/dev/shm"
     }) : { name = name, value = value }
   ]
+  runtime_base_environment_list = [
+    for name, value in merge(var.environment, {
+      APPCONFIG_APPLICATION      = var.appconfig_application_id
+      APPCONFIG_ENVIRONMENT      = var.appconfig_environment_id
+      APPCONFIG_CONFIGURATION    = var.appconfig_configuration_id
+      PALACE_BACKEND             = var.palace_backend
+      REPLIKA_KMS_KEY_ID         = aws_kms_key.byom.arn
+      REPLIKA_CONTROL_PLANE_URL  = "https://${var.host_name}"
+      REPLIKA_CONTROL_PLANE_ONLY = "false"
+      REPLIKA_COOKIE_DOMAIN      = ".${var.replika_product_domain}"
+      REPLIKA_PRODUCT_DOMAIN     = var.replika_product_domain
+      REPLIKA_PROVISIONING_MODE  = "runtime"
+      REPLIKA_TENANT_ID          = var.replika_tenant_id
+      REPLIKA_TRUST_ALB_IDENTITY = tostring(var.enable_replika_managed_auth)
+      TMPDIR                     = "/dev/shm"
+    }) : { name = name, value = value }
+  ]
 }
 
 resource "aws_ecr_repository" "clyra" {
   name                 = "stag-clyra"
+  image_tag_mutability = "IMMUTABLE"
+  image_scanning_configuration { scan_on_push = true }
+  encryption_configuration { encryption_type = "AES256" }
+}
+
+resource "aws_ecr_repository" "clyra_control" {
+  name                 = "stag-clyra-control"
   image_tag_mutability = "IMMUTABLE"
   image_scanning_configuration { scan_on_push = true }
   encryption_configuration { encryption_type = "AES256" }
@@ -57,6 +85,18 @@ resource "aws_ecr_lifecycle_policy" "clyra" {
     rules = [{
       rulePriority = 1
       description  = "Retain the newest 30 immutable deployment images"
+      selection    = { tagStatus = "any", countType = "imageCountMoreThan", countNumber = 30 }
+      action       = { type = "expire" }
+    }]
+  })
+}
+
+resource "aws_ecr_lifecycle_policy" "clyra_control" {
+  repository = aws_ecr_repository.clyra_control.name
+  policy = jsonencode({
+    rules = [{
+      rulePriority = 1
+      description  = "Retain the newest 30 immutable control-plane images"
       selection    = { tagStatus = "any", countType = "imageCountMoreThan", countNumber = 30 }
       action       = { type = "expire" }
     }]
@@ -475,7 +515,12 @@ resource "aws_lb_listener_rule" "clyra_health" {
   }
   condition {
     path_pattern {
-      values = ["/healthz", "/readyz"]
+      values = [
+        "/healthz",
+        "/readyz",
+        "/internal/replika/database",
+        "/internal/replika/provisioning",
+      ]
     }
   }
 }
@@ -568,7 +613,10 @@ resource "aws_ecs_task_definition" "clyra_fargate" {
   task_role_arn            = aws_iam_role.task.arn
   track_latest             = true
   enable_fault_injection   = false
-  tags                     = {}
+  tags = {
+    ReplikaManaged = "true"
+    ReplikaPlane   = "control"
+  }
   runtime_platform {
     operating_system_family = "LINUX"
     cpu_architecture        = "X86_64"
@@ -651,6 +699,101 @@ resource "aws_ecs_task_definition" "clyra_fargate" {
   }
 }
 
+resource "aws_ecs_task_definition" "replika_runtime_base" {
+  family                   = "${local.name}-replika-runtime-base"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = "2048"
+  memory                   = "4096"
+  execution_role_arn       = aws_iam_role.execution.arn
+  task_role_arn            = aws_iam_role.task.arn
+  track_latest             = true
+  enable_fault_injection   = false
+  tags = {
+    ReplikaManaged = "true"
+    ReplikaPlane   = "runtime"
+  }
+  runtime_platform {
+    operating_system_family = "LINUX"
+    cpu_architecture        = "X86_64"
+  }
+  ephemeral_storage { size_in_gib = var.fargate_ephemeral_storage_gib }
+  volume {
+    name                = "state"
+    configure_at_launch = false
+    s3files_volume_configuration {
+      file_system_arn         = aws_s3files_file_system.clyra.arn
+      access_point_arn        = aws_s3files_access_point.clyra.arn
+      root_directory          = "/"
+      transit_encryption_port = 0
+    }
+  }
+  container_definitions = jsonencode([
+    {
+      name           = "appconfig"
+      image          = "public.ecr.aws/aws-appconfig/aws-appconfig-agent:2.x"
+      cpu            = 0
+      essential      = true
+      environment    = [{ name = "SERVICE_REGION", value = var.aws_region }]
+      portMappings   = []
+      mountPoints    = []
+      volumesFrom    = []
+      systemControls = []
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          awslogs-group         = aws_cloudwatch_log_group.clyra.name
+          awslogs-region        = var.aws_region
+          awslogs-stream-prefix = "appconfig"
+        }
+      }
+    },
+    {
+      name      = "clyra"
+      image     = local.runtime_base_image_uri
+      cpu       = 0
+      essential = true
+      user      = "1000"
+      dependsOn = [
+        { containerName = "appconfig", condition = "START" },
+      ]
+      portMappings = [{ containerPort = 8080, hostPort = 8080, protocol = "tcp" }]
+      environment  = local.runtime_base_environment_list
+      secrets      = local.secret_list
+      mountPoints = [
+        { sourceVolume = "state", containerPath = "/mnt/efs", readOnly = false },
+      ]
+      volumesFrom            = []
+      systemControls         = []
+      readonlyRootFilesystem = true
+      restartPolicy = {
+        enabled              = true
+        restartAttemptPeriod = 60
+      }
+      linuxParameters = { capabilities = { drop = ["ALL"] } }
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          awslogs-group         = aws_cloudwatch_log_group.clyra.name
+          awslogs-region        = var.aws_region
+          awslogs-stream-prefix = "replika-runtime-base"
+        }
+      }
+      healthCheck = {
+        command     = ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/readyz', timeout=5)\""]
+        interval    = 30
+        timeout     = 5
+        retries     = 3
+        startPeriod = 60
+      }
+    }
+  ])
+  lifecycle {
+    # The runtime pipeline owns approved base image revisions after seeding.
+    ignore_changes = [container_definitions]
+  }
+}
+
 resource "aws_ecs_task_definition" "clyra_canary" {
   family                   = "${local.name}-storage-canary"
   requires_compatibilities = ["FARGATE"]
@@ -717,6 +860,7 @@ resource "aws_ecs_service" "clyra" {
   propagate_tags                     = "SERVICE"
   tags = {
     ReplikaManaged = "true"
+    ReplikaPlane   = "control"
     ReplikaRelease = "bootstrap"
     ReplikaRollout = "ready"
   }
@@ -740,6 +884,13 @@ resource "aws_ecs_service" "clyra" {
     aws_lb_listener_rule.clyra_health,
     aws_lb_listener_rule.clyra,
   ]
+  lifecycle {
+    # CodePipeline owns live release and rollout status.
+    ignore_changes = [
+      tags["ReplikaRelease"],
+      tags["ReplikaRollout"],
+    ]
+  }
 }
 
 resource "aws_cloudwatch_metric_alarm" "s3files_failures" {

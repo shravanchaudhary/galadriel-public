@@ -35,6 +35,11 @@ variable "candidate_image_uri" {
   type        = string
   default     = null
 }
+variable "runtime_base_image_uri" {
+  description = "Existing immutable runtime image used only to seed the dedicated runtime base task definition."
+  type        = string
+  default     = null
+}
 variable "palace_backend" {
   description = "Memory storage backend: chroma, mongo, or documentdb."
   type        = string

@@ -35,9 +35,22 @@ data "aws_iam_policy_document" "replika_provisioner" {
     actions = [
       "s3files:CreateAccessPoint",
       "s3files:DescribeAccessPoints",
+      "s3files:ListAccessPoints",
       "s3files:TagResource",
     ]
     resources = ["*"]
+  }
+
+  dynamic "statement" {
+    for_each = var.enable_replika_managed_auth ? [1] : []
+    content {
+      actions = [
+        "cognito-idp:CreateUserPoolClient",
+        "cognito-idp:DescribeUserPoolClient",
+        "cognito-idp:ListUserPoolClients",
+      ]
+      resources = ["*"]
+    }
   }
 
   statement {
@@ -47,6 +60,7 @@ data "aws_iam_policy_document" "replika_provisioner" {
       "elasticloadbalancing:DescribeRules",
       "elasticloadbalancing:DescribeTargetGroups",
       "elasticloadbalancing:AddTags",
+      "elasticloadbalancing:ModifyRule",
     ]
     resources = ["*"]
   }
@@ -102,23 +116,31 @@ resource "aws_lambda_function" "replika_provisioner" {
 
   environment {
     variables = {
-      BASE_TASK_DEFINITION      = "${local.name}-fargate"
+      BASE_TASK_DEFINITION      = "${local.name}-replika-runtime-base"
       BYOM_KMS_KEY_ARN          = aws_kms_key.byom.arn
       CALLBACK_TOKEN_SECRET_ARN = var.replika_callback_token_secret_arn
       CALLBACK_URL              = "https://${var.host_name}/internal/replika/provisioning"
-      CONTAINER_NAME            = "clyra"
-      DATABASE_BROKER_URL       = "https://${var.host_name}/internal/replika/database"
-      ECS_CLUSTER               = data.aws_ecs_cluster.staging.cluster_name
-      HTTPS_LISTENER_ARN        = data.aws_lb_listener.https.arn
-      PRIVATE_SUBNET_IDS        = jsonencode(tolist(var.private_subnet_ids))
-      PRODUCT_DOMAIN            = var.replika_product_domain
-      RUNTIME_SECRET_NAMES      = jsonencode(tolist(var.replika_runtime_secret_names))
-      S3FILES_FILE_SYSTEM_ARN   = aws_s3files_file_system.clyra.arn
-      S3FILES_FILE_SYSTEM_ID    = aws_s3files_file_system.clyra.id
-      TASK_SECURITY_GROUP_ID    = aws_security_group.task.id
-      VPC_ID                    = var.vpc_id
+      COGNITO_USER_POOL_ARN     = var.enable_replika_managed_auth ? aws_cognito_user_pool.replika[0].arn : ""
+      COGNITO_USER_POOL_DOMAIN = (
+        var.enable_replika_managed_auth ? aws_cognito_user_pool_domain.replika[0].domain : ""
+      )
+      CONTAINER_NAME          = "clyra"
+      DATABASE_BROKER_URL     = "https://${var.host_name}/internal/replika/database"
+      ECS_CLUSTER             = data.aws_ecs_cluster.staging.cluster_name
+      HTTPS_LISTENER_ARN      = data.aws_lb_listener.https.arn
+      MANAGED_AUTH_ENABLED    = tostring(var.enable_replika_managed_auth)
+      PRIVATE_SUBNET_IDS      = jsonencode(tolist(var.private_subnet_ids))
+      PRODUCT_DOMAIN          = var.replika_product_domain
+      RUNTIME_SECRET_NAMES    = jsonencode(tolist(var.replika_runtime_secret_names))
+      S3FILES_FILE_SYSTEM_ARN = aws_s3files_file_system.clyra.arn
+      S3FILES_FILE_SYSTEM_ID  = aws_s3files_file_system.clyra.id
+      TASK_SECURITY_GROUP_ID  = aws_security_group.task.id
+      VPC_ID                  = var.vpc_id
     }
   }
 
-  depends_on = [aws_iam_role_policy.replika_provisioner]
+  depends_on = [
+    aws_ecs_task_definition.replika_runtime_base,
+    aws_iam_role_policy.replika_provisioner,
+  ]
 }

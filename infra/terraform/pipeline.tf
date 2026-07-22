@@ -1,3 +1,13 @@
+locals {
+  release_paths        = jsondecode(file("${path.module}/../../release-paths.json"))
+  control_push_filters = [local.release_paths.control, local.release_paths.shared]
+  runtime_push_filters = [
+    local.release_paths.runtime_code,
+    local.release_paths.runtime_defaults,
+    local.release_paths.shared,
+  ]
+}
+
 resource "aws_s3_bucket" "pipeline" {
   bucket_prefix = "${local.name}-pipeline-"
 }
@@ -44,7 +54,10 @@ data "aws_iam_policy_document" "codebuild" {
       "ecr:BatchCheckLayerAvailability", "ecr:CompleteLayerUpload",
       "ecr:InitiateLayerUpload", "ecr:PutImage", "ecr:UploadLayerPart",
     ]
-    resources = [aws_ecr_repository.clyra.arn]
+    resources = [
+      aws_ecr_repository.clyra.arn,
+      aws_ecr_repository.clyra_control.arn,
+    ]
   }
   statement {
     actions   = ["logs:CreateLogGroup", "logs:CreateLogStream", "logs:PutLogEvents"]
@@ -103,7 +116,7 @@ resource "aws_codebuild_project" "clyra" {
   }
   source {
     type      = "CODEPIPELINE"
-    buildspec = "buildspec.yml"
+    buildspec = "buildspec-runtime.yml"
   }
   logs_config {
     cloudwatch_logs {
@@ -134,6 +147,10 @@ resource "aws_codebuild_project" "clyra_deploy" {
       value = var.service_name
     }
     environment_variable {
+      name  = "RUNTIME_BASE_TASK_DEFINITION"
+      value = aws_ecs_task_definition.replika_runtime_base.family
+    }
+    environment_variable {
       name  = "CONTAINER_NAME"
       value = "clyra"
     }
@@ -149,7 +166,89 @@ resource "aws_codebuild_project" "clyra_deploy" {
             "set -eu",
             "IMAGE_URI=\"$(jq -er --arg name \"$CONTAINER_NAME\" '.[] | select(.name == $name) | .imageUri' imagedefinitions.json)\"",
             "RELEASE_VERSION=\"$(printf '%s' \"$IMAGE_URI\" | awk -F: '{print $NF}')\"",
-            "python scripts/deploy_replika_fleet.py --cluster \"$ECS_CLUSTER\" --image \"$IMAGE_URI\" --container \"$CONTAINER_NAME\" --release \"$RELEASE_VERSION\"",
+            "python scripts/deploy_replika_fleet.py --cluster \"$ECS_CLUSTER\" --image \"$IMAGE_URI\" --container \"$CONTAINER_NAME\" --release \"$RELEASE_VERSION\" --plane runtime --base-task-definition \"$RUNTIME_BASE_TASK_DEFINITION\"",
+          ]
+        }
+      }
+    })
+  }
+
+  logs_config {
+    cloudwatch_logs {
+      status = "ENABLED"
+    }
+  }
+}
+
+resource "aws_codebuild_project" "clyra_control" {
+  name          = "${local.name}-control"
+  service_role  = aws_iam_role.codebuild.arn
+  build_timeout = 30
+  artifacts { type = "CODEPIPELINE" }
+  environment {
+    compute_type                = "BUILD_GENERAL1_MEDIUM"
+    image                       = "aws/codebuild/standard:7.0"
+    type                        = "LINUX_CONTAINER"
+    privileged_mode             = true
+    image_pull_credentials_type = "CODEBUILD"
+    environment_variable {
+      name  = "ECR_REPOSITORY_URL"
+      value = aws_ecr_repository.clyra_control.repository_url
+    }
+    environment_variable {
+      name  = "AWS_DEFAULT_REGION"
+      value = var.aws_region
+    }
+  }
+  source {
+    type      = "CODEPIPELINE"
+    buildspec = "buildspec-control.yml"
+  }
+  logs_config {
+    cloudwatch_logs {
+      status = "ENABLED"
+    }
+  }
+}
+
+resource "aws_codebuild_project" "clyra_control_deploy" {
+  name          = "${local.name}-control-deploy"
+  service_role  = aws_iam_role.codebuild.arn
+  build_timeout = 30
+
+  artifacts { type = "CODEPIPELINE" }
+
+  environment {
+    compute_type                = "BUILD_GENERAL1_SMALL"
+    image                       = "aws/codebuild/standard:7.0"
+    type                        = "LINUX_CONTAINER"
+    image_pull_credentials_type = "CODEBUILD"
+
+    environment_variable {
+      name  = "ECS_CLUSTER"
+      value = data.aws_ecs_cluster.staging.cluster_name
+    }
+    environment_variable {
+      name  = "ECS_SERVICE"
+      value = aws_ecs_service.clyra.name
+    }
+    environment_variable {
+      name  = "CONTAINER_NAME"
+      value = "clyra"
+    }
+  }
+
+  source {
+    type = "CODEPIPELINE"
+    buildspec = jsonencode({
+      version = "0.2"
+      phases = {
+        build = {
+          commands = [
+            "set -eu",
+            "IMAGE_URI=\"$(jq -er --arg name \"$CONTAINER_NAME\" '.[] | select(.name == $name) | .imageUri' imagedefinitions.json)\"",
+            "RELEASE_VERSION=\"$(printf '%s' \"$IMAGE_URI\" | awk -F: '{print $NF}')\"",
+            "python scripts/deploy_replika_fleet.py --cluster \"$ECS_CLUSTER\" --image \"$IMAGE_URI\" --container \"$CONTAINER_NAME\" --release \"$RELEASE_VERSION\" --plane control --service \"$ECS_SERVICE\"",
           ]
         }
       }
@@ -188,6 +287,8 @@ data "aws_iam_policy_document" "pipeline" {
     resources = [
       aws_codebuild_project.clyra.arn,
       aws_codebuild_project.clyra_deploy.arn,
+      aws_codebuild_project.clyra_control.arn,
+      aws_codebuild_project.clyra_control_deploy.arn,
     ]
   }
   statement {
@@ -224,7 +325,7 @@ resource "aws_codepipeline" "clyra" {
         ConnectionArn    = var.github_connection_arn
         FullRepositoryId = var.github_repo
         BranchName       = "clyra"
-        DetectChanges    = "true"
+        DetectChanges    = "false"
       }
     }
   }
@@ -252,6 +353,100 @@ resource "aws_codepipeline" "clyra" {
       input_artifacts = ["build"]
       configuration = {
         ProjectName = aws_codebuild_project.clyra_deploy.name
+      }
+    }
+  }
+
+  trigger {
+    provider_type = "CodeStarSourceConnection"
+    git_configuration {
+      source_action_name = "GitHub"
+      dynamic "push" {
+        for_each = local.runtime_push_filters
+        content {
+          branches {
+            includes = ["clyra"]
+          }
+          file_paths {
+            includes = push.value.includes
+            excludes = length(push.value.excludes) > 0 ? push.value.excludes : null
+          }
+        }
+      }
+    }
+  }
+}
+
+resource "aws_codepipeline" "clyra_control" {
+  name           = "${local.name}-control"
+  role_arn       = aws_iam_role.pipeline.arn
+  pipeline_type  = "V2"
+  execution_mode = "QUEUED"
+
+  artifact_store {
+    location = aws_s3_bucket.pipeline.bucket
+    type     = "S3"
+  }
+  stage {
+    name = "Source"
+    action {
+      name             = "GitHub"
+      category         = "Source"
+      owner            = "AWS"
+      provider         = "CodeStarSourceConnection"
+      version          = "1"
+      output_artifacts = ["control_source"]
+      configuration = {
+        ConnectionArn    = var.github_connection_arn
+        FullRepositoryId = var.github_repo
+        BranchName       = "clyra"
+        DetectChanges    = "false"
+      }
+    }
+  }
+  stage {
+    name = "Build"
+    action {
+      name             = "BuildControlImage"
+      category         = "Build"
+      owner            = "AWS"
+      provider         = "CodeBuild"
+      version          = "1"
+      input_artifacts  = ["control_source"]
+      output_artifacts = ["control_build"]
+      configuration    = { ProjectName = aws_codebuild_project.clyra_control.name }
+    }
+  }
+  stage {
+    name = "Deploy"
+    action {
+      name            = "DeployControlImage"
+      category        = "Build"
+      owner           = "AWS"
+      provider        = "CodeBuild"
+      version         = "1"
+      input_artifacts = ["control_build"]
+      configuration = {
+        ProjectName = aws_codebuild_project.clyra_control_deploy.name
+      }
+    }
+  }
+
+  trigger {
+    provider_type = "CodeStarSourceConnection"
+    git_configuration {
+      source_action_name = "GitHub"
+      dynamic "push" {
+        for_each = local.control_push_filters
+        content {
+          branches {
+            includes = ["clyra"]
+          }
+          file_paths {
+            includes = push.value.includes
+            excludes = length(push.value.excludes) > 0 ? push.value.excludes : null
+          }
+        }
       }
     }
   }

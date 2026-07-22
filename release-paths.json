@@ -1,0 +1,51 @@
+{
+  "shared": {
+    "includes": [
+      "Dockerfile",
+      "docker/**",
+      "requirements.txt",
+      "scripts/deploy_replika_fleet.py",
+      "tower/app.py",
+      "tower/auth.py",
+      "tower/templates/*",
+      "tower/static/**"
+    ],
+    "excludes": []
+  },
+  "control": {
+    "includes": [
+      "buildspec-control.yml",
+      "tower/replika_control_plane.py",
+      "tower/templates/replika/**"
+    ],
+    "excludes": []
+  },
+  "runtime_code": {
+    "includes": [
+      "buildspec-runtime.yml",
+      "main.py",
+      "harness/**",
+      "tower/**",
+      "slack_bot/**",
+      "discord_bot/**",
+      "cmd/**"
+    ],
+    "excludes": [
+      "tower/replika_control_plane.py",
+      "tower/templates/replika/**"
+    ]
+  },
+  "runtime_defaults": {
+    "includes": [
+      "config/**",
+      "knowledge/**",
+      "jobs/**",
+      "workflows/**",
+      "sme/**",
+      "state/**",
+      "entities.json",
+      "mempalace.yaml"
+    ],
+    "excludes": []
+  }
+}

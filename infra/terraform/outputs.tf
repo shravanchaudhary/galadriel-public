@@ -2,6 +2,10 @@ output "ecr_repository_url" {
   value = aws_ecr_repository.clyra.repository_url
 }
 
+output "control_ecr_repository_url" {
+  value = aws_ecr_repository.clyra_control.repository_url
+}
+
 output "ecs_service_name" {
   value = aws_ecs_service.clyra.name
 }
@@ -24,6 +28,10 @@ output "canary_task_definition_arn" {
 
 output "fargate_task_definition_arn" {
   value = aws_ecs_task_definition.clyra_fargate.arn
+}
+
+output "runtime_base_task_definition_arn" {
+  value = aws_ecs_task_definition.replika_runtime_base.arn
 }
 
 output "target_group_arn" {

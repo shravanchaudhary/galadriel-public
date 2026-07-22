@@ -16,7 +16,16 @@ from scripts.deploy_replika_fleet import deploy  # noqa: E402
 
 class _Paginator:
     def paginate(self, **_kwargs):
-        return [{"serviceArns": ["managed", "unmanaged"]}]
+        return [
+            {
+                "serviceArns": [
+                    "runtime",
+                    "legacy-runtime",
+                    "control",
+                    "unmanaged",
+                ]
+            }
+        ]
 
 
 class _Waiter:
@@ -31,29 +40,53 @@ class _Waiter:
 class _ECS:
     def __init__(self):
         self.registered = None
+        self.registrations = []
         self.updates = []
         self.tags = []
         self.wait_calls = []
+        self.paginator_calls = 0
 
     def get_paginator(self, name):
         assert name == "list_services"
+        self.paginator_calls += 1
         return _Paginator()
 
-    def describe_services(self, **_kwargs):
-        return {
-            "services": [
-                {
-                    "serviceArn": "managed",
-                    "taskDefinition": "task:1",
-                    "tags": [{"key": "ReplikaManaged", "value": "true"}],
-                },
-                {
-                    "serviceArn": "unmanaged",
-                    "taskDefinition": "other:1",
-                    "tags": [],
-                },
-            ]
+    def describe_services(self, **kwargs):
+        services = {
+            "runtime": {
+                "serviceArn": "runtime",
+                "taskDefinition": "runtime:1",
+                "tags": [
+                    {"key": "ReplikaManaged", "value": "true"},
+                    {"key": "ReplikaPlane", "value": "runtime"},
+                    {"key": "ReplikaTenant", "value": "tenant-a"},
+                ],
+            },
+            "legacy-runtime": {
+                "serviceArn": "legacy-runtime",
+                "taskDefinition": "legacy:1",
+                "tags": [
+                    {"key": "ReplikaManaged", "value": "true"},
+                    {"key": "ReplikaTenant", "value": "tenant-legacy"},
+                ],
+            },
+            "control": {
+                "serviceArn": "control",
+                "taskDefinition": "control:1",
+                "status": "ACTIVE",
+                "tags": [
+                    {"key": "ReplikaManaged", "value": "true"},
+                    {"key": "ReplikaPlane", "value": "control"},
+                ],
+            },
+            "unmanaged": {
+                "serviceArn": "unmanaged",
+                "taskDefinition": "other:1",
+                "tags": [],
+            },
         }
+        requested = kwargs["services"]
+        return {"services": [services[name] for name in requested]}
 
     def describe_task_definition(self, **_kwargs):
         return {
@@ -83,7 +116,12 @@ class _ECS:
 
     def register_task_definition(self, **kwargs):
         self.registered = kwargs
-        return {"taskDefinition": {"taskDefinitionArn": "task:2"}}
+        self.registrations.append(kwargs)
+        return {
+            "taskDefinition": {
+                "taskDefinitionArn": f"task:{len(self.registrations) + 1}"
+            }
+        }
 
     def update_service(self, **kwargs):
         self.updates.append(kwargs)
@@ -100,11 +138,11 @@ ecs = _ECS()
 with patch("scripts.deploy_replika_fleet.boto3.client", return_value=ecs):
     result = deploy("cluster", "immutable-image", "clyra", "release-1")
 
-assert result["managed_services"] == 1
+assert result["managed_services"] == 2
 assert result["results"][0]["status"] == "ready"
-assert ecs.registered["containerDefinitions"][0]["image"] == "immutable-image"
+assert ecs.registrations[0]["containerDefinitions"][0]["image"] == "immutable-image"
 assert (
-    ecs.registered["volumes"][0]["s3filesVolumeConfiguration"]["accessPointArn"]
+    ecs.registrations[0]["volumes"][0]["s3filesVolumeConfiguration"]["accessPointArn"]
     == "ap-tenant-a"
 ), "fleet rollout must preserve the tenant access point"
 assert ecs.updates[0]["taskDefinition"] == "task:2"
@@ -127,7 +165,74 @@ empty_tag_ecs = _EmptyTagECS()
 with patch("scripts.deploy_replika_fleet.boto3.client", return_value=empty_tag_ecs):
     empty_tag_result = deploy("cluster", "immutable-image", "clyra", "release-2")
 assert empty_tag_result["results"][0]["status"] == "ready"
-assert "tags" not in empty_tag_ecs.registered, "ECS rejects an explicitly empty tag list"
+assert all(
+    "tags" not in request for request in empty_tag_ecs.registrations
+), "ECS rejects an explicitly empty tag list"
+
+base_ecs = _ECS()
+with patch("scripts.deploy_replika_fleet.boto3.client", return_value=base_ecs):
+    base_result = deploy(
+        "cluster",
+        "runtime-image",
+        "clyra",
+        "release-3",
+        base_task_definition="runtime-base",
+    )
+assert base_result["runtime_base_task_definition"] == "task:2"
+assert len(base_ecs.registrations) == 3
+assert base_ecs.registrations[0]["containerDefinitions"][0]["image"] == "runtime-image"
+
+control_ecs = _ECS()
+with patch("scripts.deploy_replika_fleet.boto3.client", return_value=control_ecs):
+    control_result = deploy(
+        "cluster",
+        "control-image",
+        "clyra",
+        "release-4",
+        plane="control",
+        service="control",
+    )
+assert control_result["managed_services"] == 1
+assert control_result["plane"] == "control"
+assert control_ecs.paginator_calls == 0, "control deploy must never enumerate tenants"
+assert control_ecs.updates[0]["service"] == "control"
+
+
+class _FailOnceWaiter(_Waiter):
+    def wait(self, **kwargs):
+        super().wait(**kwargs)
+        if len(self.calls) == 1:
+            raise RuntimeError("deployment failed")
+
+
+class _RollbackECS(_ECS):
+    def describe_services(self, **kwargs):
+        response = super().describe_services(**kwargs)
+        response["services"] = [
+            service
+            for service in response["services"]
+            if service["serviceArn"] == "runtime"
+        ]
+        return response
+
+    def get_waiter(self, name):
+        assert name == "services_stable"
+        return _FailOnceWaiter(self.wait_calls)
+
+
+rollback_ecs = _RollbackECS()
+with patch("scripts.deploy_replika_fleet.boto3.client", return_value=rollback_ecs):
+    rollback_result = deploy("cluster", "bad-image", "clyra", "release-5")
+assert rollback_result["results"][0]["status"] == "rolled-back"
+assert [update["taskDefinition"] for update in rollback_ecs.updates] == [
+    "task:2",
+    "runtime:1",
+]
+assert any(
+    tag["key"] == "ReplikaRollout" and tag["value"] == "rolled-back"
+    for call in rollback_ecs.tags
+    for tag in call["tags"]
+)
 
 print("Replika fleet deployment checks passed.")
 
@@ -138,6 +243,41 @@ spec = importlib.util.spec_from_file_location(
 provisioner = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
 spec.loader.exec_module(provisioner)
+
+
+class _AccessPointPages:
+    def paginate(self, **kwargs):
+        assert kwargs == {"fileSystemId": "fs"}
+        return [
+            {
+                "accessPoints": [
+                    {
+                        "accessPointArn": "tenant-ap-arn",
+                        "accessPointId": "tenant-ap",
+                        "rootDirectory": {"path": "/tenants/tenant-a"},
+                    }
+                ]
+            }
+        ]
+
+
+class _ExistingAccessPoint:
+    def create_access_point(self, **_kwargs):
+        raise provisioner.ClientError(
+            {"Error": {"Code": "ConflictException", "Message": "already exists"}},
+            "CreateAccessPoint",
+        )
+
+    def get_paginator(self, name):
+        assert name == "list_access_points"
+        return _AccessPointPages()
+
+
+os.environ["S3FILES_FILE_SYSTEM_ID"] = "fs"
+assert provisioner._create_access_point(_ExistingAccessPoint(), "tenant-a") == (
+    "tenant-ap-arn",
+    "tenant-ap",
+), "provisioning retries must reuse the tenant access point"
 
 
 class _ProvisioningECS:
@@ -217,6 +357,7 @@ assert environment["APPCONFIG_REQUIRED"] == "false"
 assert environment["MONGO_DB"] == "replika_tenant-a"
 assert runtime["secrets"] == [{"name": "TOWER_SECRET_KEY", "valueFrom": "session"}]
 assert runtime["dependsOn"] == []
+assert {"key": "ReplikaPlane", "value": "runtime"} in request["tags"]
 assert (
     request["volumes"][0]["s3filesVolumeConfiguration"]["accessPointArn"]
     == "tenant-ap"
