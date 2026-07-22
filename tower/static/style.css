@@ -1165,6 +1165,54 @@ body.wfc-resizing * { cursor: inherit !important; }
 .wfc-clear-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .wfc-x { font-size: 1.3rem; }
 
+.wfc-queue {
+    border-bottom: 1px solid var(--border);
+    background: var(--surface-muted);
+    font-size: 0.7rem;
+}
+
+.wfc-queue-head {
+    padding: 0.3rem 0.65rem;
+    color: var(--muted);
+}
+
+.wfc-queue-items {
+    max-height: 108px;
+    overflow-y: auto;
+    padding: 0 0.45rem 0.4rem;
+}
+
+.wfc-queue-item {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.25rem 0.35rem;
+    margin-top: 0.2rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    cursor: grab;
+}
+
+.wfc-queue-text {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.wfc-queue-item button {
+    border: none;
+    background: none;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 0.65rem;
+    padding: 0.1rem;
+}
+
+.wfc-queue-item button:hover { color: var(--text); }
+
 .wfc-log {
     flex: 1;
     overflow-y: auto;

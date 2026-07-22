@@ -17,6 +17,7 @@ from .auth import SESSION_USER_KEY
 
 COLLECTION = "replikas"
 USERNAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{1,30}[a-z0-9])?$")
+REPLIKA_TYPES = frozenset({"organization", "individual"})
 RESERVED_USERNAMES = frozenset(
     {
         "admin",
@@ -67,6 +68,13 @@ def normalize_username(value: str) -> str:
     return username
 
 
+def normalize_replika_type(value: str) -> str:
+    replika_type = (value or "").strip().lower()
+    if replika_type not in REPLIKA_TYPES:
+        raise ValueError("Replika type must be organization or individual.")
+    return replika_type
+
+
 def product_url(username: str) -> str:
     domain = os.environ.get("REPLIKA_PRODUCT_DOMAIN", "replika.local").strip().lower()
     return f"https://{username}.{domain}"
@@ -93,12 +101,15 @@ class ReplikaStore:
             owner_id is not None and existing.get("owner_id") == owner_id
         )
 
-    def reserve(self, owner_id: str, username: str) -> dict[str, Any]:
+    def reserve(
+        self, owner_id: str, username: str, replika_type: str
+    ) -> dict[str, Any]:
         now = datetime.now(timezone.utc)
         document = {
             "_id": owner_id,
             "owner_id": owner_id,
             "username": username,
+            "replika_type": replika_type,
             "status": "creating",
             "provisioning_requested_at": None,
             "product_url": product_url(username),
@@ -111,7 +122,11 @@ class ReplikaStore:
             return document
         except DuplicateKeyError:
             current = self.find_for_owner(owner_id)
-            if current and current.get("username") == username:
+            if (
+                current
+                and current.get("username") == username
+                and current.get("replika_type") == replika_type
+            ):
                 return current
             if current:
                 raise ReplikaAlreadyExists("This account already has a Replika.")
@@ -177,6 +192,7 @@ class Provisioner:
         payload = {
             "owner_id": replika["owner_id"],
             "username": replika["username"],
+            "replika_type": replika["replika_type"],
             "product_url": replika["product_url"],
             "release_version": replika["release_version"],
         }
@@ -214,6 +230,11 @@ def _provisioner() -> Provisioner:
     return current_app.config.get("REPLIKA_PROVISIONER") or Provisioner()
 
 
+def replika_type_for_owner(owner_id: str) -> str | None:
+    document = _store().find_for_owner(owner_id)
+    return document.get("replika_type") if document else None
+
+
 def _owner_id() -> str:
     auth_result = getattr(g, "tower_auth", None)
     owner_id = getattr(auth_result, "username", None) or session.get(SESSION_USER_KEY)
@@ -225,6 +246,7 @@ def _owner_id() -> str:
 def _customer_view(document: dict[str, Any]) -> dict[str, Any]:
     return {
         "username": document["username"],
+        "replika_type": document["replika_type"],
         "status": document["status"],
         "url": document["product_url"],
         "release": document.get("release_version"),
@@ -288,8 +310,10 @@ def register_replika_control_plane(app) -> None:
     def create_replika():
         try:
             owner_id = _owner_id()
-            username = normalize_username((request.get_json(silent=True) or {}).get("username", ""))
-            document = _store().reserve(owner_id, username)
+            data = request.get_json(silent=True) or {}
+            username = normalize_username(data.get("username", ""))
+            replika_type = normalize_replika_type(data.get("replika_type", ""))
+            document = _store().reserve(owner_id, username, replika_type)
             if document["status"] == "error":
                 document = _store().update_status(owner_id, "creating") or document
             claimed = (

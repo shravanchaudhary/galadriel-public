@@ -27,6 +27,9 @@ locals {
       REPLIKA_PROVISIONER_CALLBACK_TOKEN = var.replika_callback_token_secret_arn
     }
   )
+  slack_secret_arns = [
+    "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:replika/slack-*",
+  ]
   secret_list = [for name, arn in local.runtime_secrets : { name = name, valueFrom = arn }]
   environment_list = [
     for name, value in merge(var.environment, {
@@ -387,7 +390,7 @@ resource "aws_iam_role_policy_attachment" "execution" {
 data "aws_iam_policy_document" "execution_secrets" {
   statement {
     actions   = ["secretsmanager:GetSecretValue"]
-    resources = values(local.runtime_secrets)
+    resources = concat(values(local.runtime_secrets), local.slack_secret_arns)
   }
 }
 
@@ -466,6 +469,25 @@ resource "aws_iam_role_policy" "task_byom" {
   policy = data.aws_iam_policy_document.task_byom.json
 }
 
+data "aws_iam_policy_document" "task_slack_secrets" {
+  statement {
+    actions = [
+      "secretsmanager:CreateSecret",
+      "secretsmanager:DeleteSecret",
+      "secretsmanager:DescribeSecret",
+      "secretsmanager:GetSecretValue",
+      "secretsmanager:PutSecretValue",
+    ]
+    resources = local.slack_secret_arns
+  }
+}
+
+resource "aws_iam_role_policy" "task_slack_secrets" {
+  name   = "slack-secret-vault"
+  role   = aws_iam_role.task.id
+  policy = data.aws_iam_policy_document.task_slack_secrets.json
+}
+
 data "aws_iam_policy_document" "task_provisioner" {
   count = local.provisioner_enabled ? 1 : 0
   statement {
@@ -522,6 +544,7 @@ resource "aws_lb_listener_rule" "clyra_health" {
         "/readyz",
         "/internal/replika/database",
         "/internal/replika/provisioning",
+        "/internal/slack/deliver",
       ]
     }
   }

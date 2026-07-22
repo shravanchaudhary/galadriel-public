@@ -33,6 +33,7 @@ def planes_for(path: str) -> set[str]:
 EXPECTED = {
     "tower/replika_control_plane.py": {"control"},
     "tower/templates/replika/setup.html": {"control"},
+    "harness/tenant_database.py": {"control", "runtime"},
     "harness/agent.py": {"runtime"},
     "tower/runs_board.py": {"runtime"},
     "config/SOUL.md": {"runtime"},

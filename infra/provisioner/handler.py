@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import urllib.request
 
 import boto3
@@ -138,6 +139,29 @@ def _assume_policy() -> str:
     )
 
 
+def _slack_auth_secret(secretsmanager, owner_id: str) -> str:
+    prefix = os.environ.get(
+        "SLACK_TENANT_AUTH_SECRET_PREFIX", "replika/slack-auth"
+    ).strip("/")
+    name = f"{prefix}/{hashlib.sha256(owner_id.encode()).hexdigest()}"
+    try:
+        return secretsmanager.create_secret(
+            Name=name,
+            SecretString=secrets.token_urlsafe(48),
+            KmsKeyId=os.environ.get(
+                "SLACK_TENANT_AUTH_KMS_KEY_ID", "alias/aws/secretsmanager"
+            ),
+            Tags=[
+                {"Key": "Service", "Value": "replika-slack-internal"},
+                {"Key": "TenantDigest", "Value": hashlib.sha256(owner_id.encode()).hexdigest()},
+            ],
+        )["ARN"]
+    except ClientError as exc:
+        if exc.response["Error"]["Code"] != "ResourceExistsException":
+            raise
+        return secretsmanager.describe_secret(SecretId=name)["ARN"]
+
+
 def _task_role(iam, owner_id: str, access_point_arn: str) -> str:
     role_name = f"replika-{_slug(owner_id)}"
     try:
@@ -224,6 +248,18 @@ def _listener_priority(elbv2, listener_arn: str, owner_id: str) -> int:
     return candidate
 
 
+def _internal_listener_priority(elbv2, listener_arn: str, owner_id: str) -> int:
+    used = {
+        int(rule["Priority"])
+        for rule in elbv2.describe_rules(ListenerArn=listener_arn)["Rules"]
+        if rule["Priority"].isdigit()
+    }
+    candidate = 1 + int(hashlib.sha256(owner_id.encode()).hexdigest()[:6], 16) % 900
+    while candidate in used:
+        candidate = 1 if candidate >= 999 else candidate + 1
+    return candidate
+
+
 def _cognito_client(cognito, username: str) -> str:
     user_pool_id = _required("COGNITO_USER_POOL_ARN").rsplit("/", 1)[-1]
     client_name = f"replika-{_slug(username)}"
@@ -281,7 +317,58 @@ def _ensure_rule(
             "TargetGroupArn": target_group_arn,
         }
     )
-    for rule in elbv2.describe_rules(ListenerArn=listener)["Rules"]:
+    rules = elbv2.describe_rules(ListenerArn=listener)["Rules"]
+    internal_actions = [
+        {
+            "Type": "forward",
+            "Order": 1,
+            "TargetGroupArn": target_group_arn,
+        }
+    ]
+    internal_rule = None
+    for rule in rules:
+        fields = {condition.get("Field") for condition in rule.get("Conditions", [])}
+        values = [
+            value
+            for condition in rule.get("Conditions", [])
+            if condition.get("Field") == "host-header"
+            for value in condition.get("Values", [])
+        ]
+        if host in values and "path-pattern" in fields:
+            patterns = [
+                value
+                for condition in rule.get("Conditions", [])
+                if condition.get("Field") == "path-pattern"
+                for value in condition.get("Values", [])
+            ]
+            if "/internal/slack/ingress" in patterns:
+                internal_rule = rule
+                break
+    if internal_rule:
+        elbv2.modify_rule(
+            RuleArn=internal_rule["RuleArn"], Actions=internal_actions
+        )
+    else:
+        elbv2.create_rule(
+            ListenerArn=listener,
+            Priority=_internal_listener_priority(elbv2, listener, owner_id),
+            Conditions=[
+                {"Field": "host-header", "Values": [host]},
+                {"Field": "path-pattern", "Values": ["/internal/slack/ingress"]},
+            ],
+            Actions=internal_actions,
+            Tags=[
+                {"Key": "ReplikaManaged", "Value": "true"},
+                {"Key": "ReplikaTenant", "Value": owner_id},
+            ],
+        )
+
+    for rule in rules:
+        if any(
+            condition.get("Field") == "path-pattern"
+            for condition in rule.get("Conditions", [])
+        ):
+            continue
         values = [
             value
             for condition in rule.get("Conditions", [])
@@ -307,9 +394,11 @@ def _task_definition(
     ecs,
     owner_id: str,
     username: str,
+    replika_type: str,
     access_point_arn: str,
     task_role_arn: str,
     runtime_database: dict,
+    slack_auth_secret_arn: str,
 ) -> str:
     current = ecs.describe_task_definition(
         taskDefinition=_required("BASE_TASK_DEFINITION")
@@ -341,6 +430,7 @@ def _task_definition(
             {
                 "REPLIKA_TENANT_ID": owner_id,
                 "REPLIKA_USERNAME": username,
+                "REPLIKA_TYPE": replika_type,
                 "REPLIKA_PRODUCT_DOMAIN": _required("PRODUCT_DOMAIN"),
                 "REPLIKA_CONTROL_PLANE_ONLY": "false",
                 "REPLIKA_MANAGED_RUNTIME": "true",
@@ -359,6 +449,12 @@ def _task_definition(
             for secret in container.get("secrets", [])
             if secret.get("name") in allowed_secrets
         ]
+        container["secrets"].append(
+            {
+                "name": "SLACK_TENANT_AUTH_SECRET",
+                "valueFrom": slack_auth_secret_arn,
+            }
+        )
         container["dependsOn"] = [
             dependency
             for dependency in container.get("dependsOn", [])
@@ -442,13 +538,18 @@ def _service(
 def handler(event, _context):
     owner_id = str(event["owner_id"])
     username = str(event["username"])
+    replika_type = str(event["replika_type"])
+    if replika_type not in {"organization", "individual"}:
+        raise ValueError("invalid replika_type")
     try:
         s3files = boto3.client("s3files")
         iam = boto3.client("iam")
+        secretsmanager = boto3.client("secretsmanager")
         elbv2 = boto3.client("elbv2")
         cognito = boto3.client("cognito-idp")
         ecs = boto3.client("ecs")
         access_point_arn, _ = _create_access_point(s3files, owner_id)
+        slack_auth_secret_arn = _slack_auth_secret(secretsmanager, owner_id)
         role_arn = _task_role(iam, owner_id, access_point_arn)
         runtime_database = _database_identity(owner_id, role_arn)
         target_group_arn = _target_group(elbv2, username)
@@ -457,9 +558,11 @@ def handler(event, _context):
             ecs,
             owner_id,
             username,
+            replika_type,
             access_point_arn,
             role_arn,
             runtime_database,
+            slack_auth_secret_arn,
         )
         _service(
             ecs,

@@ -103,6 +103,7 @@ class ConversationRunRecorder:
         self._tool_count = 0
         self._images_omitted = 0
         self._redactions = 0
+        self.request_context: dict[str, Any] = {}
 
     @classmethod
     async def start(
@@ -114,6 +115,7 @@ class ConversationRunRecorder:
         provider: str,
         headroom_enabled: bool,
         client_dedup_key: str | None = None,
+        request_context: dict[str, Any] | None = None,
     ) -> "ConversationRunRecorder | None":
         if not is_configured():
             return None
@@ -153,7 +155,9 @@ class ConversationRunRecorder:
                 {"run_id": run["run_id"]},
                 {"$set": {"last_active_at": now, "current_turn_id": None}, "$addToSet": {"sources": source}},
             )
-            return cls(run, source=source)
+            recorder = cls(run, source=source)
+            recorder.request_context = sanitize(request_context or {})
+            return recorder
         except Exception as exc:
             log.warning("Conversation run start was not recorded: %s", exc)
             return None
@@ -175,11 +179,15 @@ class ConversationRunRecorder:
             "current_turn_id": self.turn_id,
             "current_turn_state": "running",
             "last_active_at": _now(),
+            "current_request_context": self.request_context,
         }})
-        if client_dedup_key:
+        if client_dedup_key or self.request_context:
             await self._record_event(
                 "turn_started", None, visibility="internal",
-                meta={"client_dedup_key": client_dedup_key},
+                meta={
+                    "client_dedup_key": client_dedup_key,
+                    "request_context": self.request_context,
+                },
             )
 
     async def record_message(
@@ -275,6 +283,15 @@ class ConversationRunRecorder:
             log.warning("Conversation checkpoint was not recorded: %s", exc)
 
     async def finalize_turn(self, *, state: str, error: str | None = None) -> None:
+        if state == "cancelled":
+            try:
+                from scripts.lib.db import get_db
+                await get_db()[EVENTS].update_many(
+                    {"run_id": self.run_id, "turn_id": self.turn_id},
+                    {"$set": {"visibility": "internal", "cancelled": True}},
+                )
+            except Exception as exc:
+                log.warning("Cancelled turn events could not be hidden from chat history: %s", exc)
         await self._update({"$set": {
             "current_turn_id": None,
             "current_turn_state": state,

@@ -22,6 +22,13 @@ from slack_bolt.app.async_app import AsyncApp
 
 from harness.agent import GaladrielAgent, MAIN_CHANNEL_ID
 from harness.error_humanizer import humanize_anthropic_error
+from harness.slack_observations import (
+    ReplyGate,
+    SlackObservationArchiver,
+    default_observation_store,
+    explicit_bot_address,
+    observation_overlay,
+)
 from discord_bot.bot import (
     _format_status_report,
     sniff_image_media_type,
@@ -34,6 +41,8 @@ log = logging.getLogger("galadriel.slack")
 # Slack messages can be much longer than Discord's, but keep the same
 # soft-cap for consistent chunking behaviour / UX.
 MAX_SLACK_LENGTH = 3900
+MAX_SLACK_INPUT_LENGTH = 40_000
+MAX_SLACK_FILES = 20
 
 APPROVAL_TIMEOUT_SEC = 30.0
 
@@ -123,28 +132,70 @@ class SlackChannel:
             await self._client.chat_postMessage(channel=self.id, text=chunk)
 
 
-def create_bot(agent: GaladrielAgent, scheduler=None) -> AsyncApp:
+def create_bot(
+    agent: GaladrielAgent,
+    scheduler=None,
+    *,
+    observation_store=None,
+    reply_gate=None,
+    observation_archiver=None,
+    slack_client=None,
+) -> AsyncApp:
     """Create and configure the Slack Bolt app (registers handlers only —
     call `start_slack_bot()` to actually connect)."""
-    app = AsyncApp(token=os.environ["SLACK_BOT_TOKEN"])
+    app = (
+        AsyncApp(client=slack_client)
+        if slack_client is not None
+        else AsyncApp(token=os.environ["SLACK_BOT_TOKEN"])
+    )
+    observation_store = observation_store or default_observation_store()
+    reply_gate = reply_gate or ReplyGate()
+    observation_archiver = observation_archiver or SlackObservationArchiver(
+        observation_store
+    )
+    app.slack_observation_archiver = observation_archiver
 
     state = {
         "bot_user_id": None,
+        "workspace_id": os.environ.get("SLACK_TEAM_ID") or None,
         "channel_id": os.environ.get("SLACK_CHANNEL_ID") or None,
+        "replika_type": os.environ.get("REPLIKA_TYPE", "organization").strip(),
+        "owner_user_id": (
+            os.environ.get("SLACK_OWNER_USER_ID")
+            or os.environ.get("SLACK_INSTALLER_USER_ID")
+            or ""
+        ).strip(),
         "channel_name": None,
         "members": {},  # user_id -> display name (cache)
         "processed_ts": set(),  # message ts already handled — Slack can deliver
                                  # both a "message" and an "app_mention" event for
                                  # the same mention; this dedupes a double reply
     }
+    if state["replika_type"] not in {"individual", "organization"}:
+        raise RuntimeError("REPLIKA_TYPE must be individual or organization")
+    if state["replika_type"] == "individual" and not state["owner_user_id"]:
+        raise RuntimeError(
+            "SLACK_OWNER_USER_ID (or SLACK_INSTALLER_USER_ID) is required in individual mode"
+        )
     pending_approvals: dict[str, dict] = {}  # command -> {future, dedup_count, channel, ts}
+
+    def _admin_user_ids() -> set[str]:
+        configured = {
+            value.strip()
+            for value in os.environ.get("SLACK_ADMIN_USER_IDS", "").split(",")
+            if value.strip()
+        }
+        if state["owner_user_id"]:
+            configured.add(state["owner_user_id"])
+        return configured
+
+    def _is_admin(user_id: str | None) -> bool:
+        return bool(user_id) and str(user_id) in _admin_user_ids()
 
     def agent_channel_id() -> str | None:
         """The agent-facing channel bucket — MAIN_CHANNEL_ID, shared with
         Discord/Tower so the agent has one continuous conversation regardless
         of surface. None if Slack isn't configured (no channel to talk in)."""
-        if not state["channel_id"]:
-            return None
         return MAIN_CHANNEL_ID
 
     async def get_dm_channel():
@@ -160,6 +211,12 @@ def create_bot(agent: GaladrielAgent, scheduler=None) -> AsyncApp:
         state["bot_user_id"] = user_id
 
     app.set_bot_identity = set_bot_identity
+
+    def set_workspace_id(team_id: str | None) -> None:
+        if team_id:
+            state["workspace_id"] = team_id
+
+    app.set_workspace_id = set_workspace_id
 
     async def _resolve_name(user_id: str) -> str:
         if user_id in state["members"]:
@@ -178,6 +235,8 @@ def create_bot(agent: GaladrielAgent, scheduler=None) -> AsyncApp:
         """Rebuild the team-roster system context and push it into the agent.
         Called at startup and on membership changes only — never per-message,
         so the prompt-cache-stable prefix doesn't thrash."""
+        if state["replika_type"] != "organization":
+            return
         channel_id = state["channel_id"]
         if not channel_id:
             return
@@ -227,41 +286,102 @@ def create_bot(agent: GaladrielAgent, scheduler=None) -> AsyncApp:
         state["members"].pop(event.get("user"), None)
         await _refresh_roster()
 
-    # ── Message relay — any member, but only when @mentioned ────
+    # ── Message relay — observe every configured-channel message ─
     #
     # Slack can deliver a mention as a "message" event, an "app_mention"
     # event, or both (depending on which the app is subscribed to) — both
     # handlers below funnel into this one function, deduped by message `ts`.
 
     async def _handle_incoming(event, client):
-        # "file_share" is how Slack delivers a message with attachments —
-        # allow it through so image uploads reach the agent.
-        if event.get("subtype") not in (None, "file_share") or event.get("bot_id"):
+        subtype = event.get("subtype")
+        if subtype not in (None, "file_share", "message_changed", "message_deleted"):
+            return
+        if event.get("bot_id"):
             return
 
         channel_id = event.get("channel")
-        if channel_id != state["channel_id"] or not state["bot_user_id"]:
+        if not state["bot_user_id"]:
             return
 
-        user_id = event.get("user")
-        if not user_id or user_id == state["bot_user_id"]:
-            return
+        nested = event.get("message") or event.get("previous_message") or {}
+        user_id = event.get("user") or nested.get("user")
+        if state["replika_type"] == "individual":
+            if (
+                subtype not in (None, "file_share")
+                or not user_id
+                or user_id == state["bot_user_id"]
+                or not str(channel_id or "").startswith("D")
+                or not state["owner_user_id"]
+                or user_id != state["owner_user_id"]
+            ):
+                return
+        else:
+            if channel_id != state["channel_id"]:
+                return
+            if not user_id or user_id == state["bot_user_id"] or nested.get("bot_id"):
+                return
 
         ts = event.get("ts")
-        if ts:
+        if ts and subtype in (None, "file_share"):
             if ts in state["processed_ts"]:
                 return
             state["processed_ts"].add(ts)
 
         text = event.get("text", "") or ""
         mention_tag = f"<@{state['bot_user_id']}>"
-        if mention_tag not in text:
-            return
-
         clean_text = text.replace(mention_tag, "").strip()
         files = event.get("files") or []
-        if not clean_text and not files:
+        if len(text) > MAX_SLACK_INPUT_LENGTH or len(files) > MAX_SLACK_FILES:
+            log.warning("Rejected oversized Slack event channel=%s", channel_id)
             return
+        if not clean_text and not files and subtype in (None, "file_share"):
+            return
+
+        display_name = await _resolve_name(user_id)
+        if state["replika_type"] == "organization":
+            observation = observation_store.observe(
+                tenant_id=os.environ.get("REPLIKA_TENANT_ID", "manual"),
+                workspace_id=state["workspace_id"] or "manual",
+                channel_id=channel_id,
+                event=event,
+                event_id=event.get("event_ts"),
+                event_time=event.get("event_ts"),
+                sender_display_name=display_name,
+            )
+            if observation is None:
+                return
+            observation_archiver.schedule()
+            if subtype in {"message_changed", "message_deleted"}:
+                return
+            recent = observation_store.recent(
+                state["workspace_id"] or "manual", channel_id, limit=20
+            )
+            queue = getattr(agent, "conversation_queue", None)
+            inbox_status = (
+                queue.status(agent_channel_id())
+                if queue is not None
+                else {
+                    "busy": bool(agent.is_channel_busy(agent_channel_id())),
+                    "paused": False,
+                    "depth": 0,
+                }
+            )
+            decision = await reply_gate.decide(
+                tenant_id=os.environ.get("REPLIKA_TENANT_ID", "manual"),
+                current=observation,
+                recent=recent,
+                inbox_status=inbox_status,
+                explicit_override=explicit_bot_address(event, state["bot_user_id"]),
+            )
+            if not decision.should_respond:
+                log.info(
+                    "Slack message observed without reply reason=%s",
+                    decision.reason_code,
+                )
+                return
+            overlay = observation_overlay(recent)
+        else:
+            overlay = None
 
         image_blocks, skipped = await _download_image_files(files) if files else ([], [])
         if skipped:
@@ -274,7 +394,6 @@ def create_bot(agent: GaladrielAgent, scheduler=None) -> AsyncApp:
         if not clean_text and not image_blocks:
             return
 
-        display_name = await _resolve_name(user_id)
         # Tagged with the surface — the conversation is shared with
         # Discord/Tower (see MAIN_CHANNEL_ID), so the agent needs to know
         # which surface a message came from.
@@ -288,24 +407,55 @@ def create_bot(agent: GaladrielAgent, scheduler=None) -> AsyncApp:
         # failure here must never block the actual response.
         thinking_ts = None
         try:
-            placeholder = await client.chat_postMessage(channel=channel_id, text="_thinking…_")
+            placeholder_params = {"channel": channel_id, "text": "_thinking…_"}
+            if event.get("thread_ts"):
+                placeholder_params["thread_ts"] = event["thread_ts"]
+            placeholder = await client.chat_postMessage(**placeholder_params)
             thinking_ts = placeholder["ts"]
         except Exception as e:
             log.warning(f"Could not post thinking placeholder: {e}")
 
         log.info(f"📥 Processing Slack message from {display_name} in {channel_id}: {clean_text[:80]}")
         try:
-            response = await agent.respond(
+            response = await agent.enqueue_and_await(
                 user_input,
                 channel_id=agent_channel_id(),
-                run_source="slack",
-                client_dedup_key=f"slack:{channel_id}:{event.get('ts', '')}",
+                source="slack",
+                external_dedupe_key=f"slack:{channel_id}:{event.get('ts', '')}",
+                sender={"id": user_id, "display_name": display_name},
+                request_context={
+                    "source": "slack",
+                    "actor_id": str(user_id),
+                    "tenant_id": os.environ.get("REPLIKA_TENANT_ID", "manual"),
+                    "team_id": state["workspace_id"] or "manual",
+                    "channel_id": str(channel_id),
+                    "replika_type": state["replika_type"],
+                    "trusted": (
+                        state["replika_type"] == "individual" or _is_admin(user_id)
+                    ),
+                    "trust_reason": (
+                        "individual_owner"
+                        if state["replika_type"] == "individual"
+                        else "configured_slack_admin"
+                        if _is_admin(user_id)
+                        else "organization_member"
+                    ),
+                },
+                display_text=clean_text or "(image attached)",
+                reply_target={"channel": channel_id, "thread_ts": event.get("thread_ts")},
+                overlay_context=overlay,
             )
-            if not response.strip():
-                response = "🌙 *(nothing to add — acknowledged.)*"
         except Exception as e:
             log.exception("Error processing Slack message")
             response = humanize_anthropic_error(e) or f"⚠️ Something went wrong: `{e}`"
+
+        if not response.strip():
+            if thinking_ts:
+                try:
+                    await client.chat_delete(channel=channel_id, ts=thinking_ts)
+                except Exception:
+                    pass
+            return
 
         chunks = chunk_message(response)
         if thinking_ts:
@@ -315,7 +465,12 @@ def create_bot(agent: GaladrielAgent, scheduler=None) -> AsyncApp:
             except Exception as e:
                 log.warning(f"Could not update thinking placeholder: {e}")
         for chunk in chunks:
-            await client.chat_postMessage(channel=channel_id, text=chunk)
+            params = {"channel": channel_id, "text": chunk}
+            if event.get("thread_ts"):
+                params["thread_ts"] = event["thread_ts"]
+            await client.chat_postMessage(**params)
+
+    app.handle_incoming = _handle_incoming
 
     @app.event("message")
     async def handle_message(event, client):
@@ -325,7 +480,7 @@ def create_bot(agent: GaladrielAgent, scheduler=None) -> AsyncApp:
     async def handle_app_mention(event, client):
         await _handle_incoming(event, client)
 
-    # ── Approvals — Block Kit buttons, any member may click ─────
+    # ── Approvals — Block Kit buttons, admins only ──────────────
 
     async def approval_callback(command: str, tier: str) -> bool:
         if not state["channel_id"]:
@@ -343,7 +498,7 @@ def create_bot(agent: GaladrielAgent, scheduler=None) -> AsyncApp:
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": f"🔴 *Approval required*\n```{command}```\nAny member can approve or deny. ({int(APPROVAL_TIMEOUT_SEC)}s → denied)",
+                    "text": f"🔴 *Admin approval required*\n```{command}```\nOnly configured Replika admins may approve or deny. ({int(APPROVAL_TIMEOUT_SEC)}s → denied)",
                 },
             },
             {
@@ -382,6 +537,17 @@ def create_bot(agent: GaladrielAgent, scheduler=None) -> AsyncApp:
     agent.approval_callback = approval_callback
 
     async def _resolve_approval(body: dict, client, approved: bool) -> None:
+        user_id = str((body.get("user") or {}).get("id") or "")
+        if not _is_admin(user_id):
+            try:
+                await client.chat_postEphemeral(
+                    channel=str((body.get("channel") or {}).get("id") or state["channel_id"]),
+                    user=user_id,
+                    text="Only configured Replika admins may resolve this approval.",
+                )
+            except Exception:
+                log.info("Unauthorized Slack approval click denied for user=%s", user_id)
+            return
         command = body["actions"][0]["value"]
         entry = pending_approvals.get(command)
         if entry is None or entry["future"].done():
@@ -398,6 +564,9 @@ def create_bot(agent: GaladrielAgent, scheduler=None) -> AsyncApp:
         except Exception as e:
             log.warning(f"Could not update resolved approval message: {e}")
 
+    app.resolve_approval = _resolve_approval
+    app.pending_approvals = pending_approvals
+
     @app.action("approve")
     async def handle_approve(ack, body, client):
         await ack()
@@ -410,15 +579,28 @@ def create_bot(agent: GaladrielAgent, scheduler=None) -> AsyncApp:
 
     # ── Slash commands — /new, /status, /compact parity ─────────
 
-    def _wrong_channel(channel_id: str) -> bool:
+    def _wrong_target(command: dict) -> bool:
+        channel_id = command["channel_id"]
+        if state["replika_type"] == "individual":
+            return (
+                not channel_id.startswith("D")
+                or not state["owner_user_id"]
+                or command.get("user_id") != state["owner_user_id"]
+            )
         return channel_id != state["channel_id"]
 
     @app.command("/new")
     async def slash_new(ack, command, client):
         await ack()
         channel_id = command["channel_id"]
-        if _wrong_channel(channel_id):
+        if _wrong_target(command):
             await client.chat_postEphemeral(channel=channel_id, user=command["user_id"], text="I only work in the configured channel.")
+            return
+        if state["replika_type"] == "organization" and not _is_admin(command.get("user_id")):
+            await client.chat_postEphemeral(
+                channel=channel_id, user=command["user_id"],
+                text="Only configured Replika admins may reset conversation history.",
+            )
             return
         archived = await agent.pop_and_archive_history(agent_channel_id())
         suffix = f" ({archived} msgs filed to palace)" if archived else ""
@@ -428,7 +610,7 @@ def create_bot(agent: GaladrielAgent, scheduler=None) -> AsyncApp:
     async def slash_status(ack, command, client):
         await ack()
         channel_id = command["channel_id"]
-        if _wrong_channel(channel_id):
+        if _wrong_target(command):
             await client.chat_postEphemeral(channel=channel_id, user=command["user_id"], text="I only work in the configured channel.")
             return
         report = _slack_markdown(_format_status_report(agent, scheduler))
@@ -438,8 +620,14 @@ def create_bot(agent: GaladrielAgent, scheduler=None) -> AsyncApp:
     async def slash_compact(ack, command, client):
         await ack()
         channel_id = command["channel_id"]
-        if _wrong_channel(channel_id):
+        if _wrong_target(command):
             await client.chat_postEphemeral(channel=channel_id, user=command["user_id"], text="I only work in the configured channel.")
+            return
+        if state["replika_type"] == "organization" and not _is_admin(command.get("user_id")):
+            await client.chat_postEphemeral(
+                channel=channel_id, user=command["user_id"],
+                text="Only configured Replika admins may compact conversation history.",
+            )
             return
 
         cid = agent_channel_id()
@@ -466,6 +654,30 @@ def create_bot(agent: GaladrielAgent, scheduler=None) -> AsyncApp:
             log.exception("Error during Slack compaction")
             await client.chat_postMessage(channel=channel_id, text=humanize_anthropic_error(e) or f"⚠️ Compaction failed: `{e}`")
 
+    async def _slash_stop(ack, command, client):
+        await ack()
+        channel_id = command["channel_id"]
+        if _wrong_target(command):
+            await client.chat_postEphemeral(
+                channel=channel_id,
+                user=command["user_id"],
+                text="This command is only available in the configured Replika conversation.",
+            )
+            return
+        stopped = agent.request_stop(MAIN_CHANNEL_ID)
+        await client.chat_postEphemeral(
+            channel=channel_id,
+            user=command["user_id"],
+            text=(
+                "Stopped the current turn and paused queued work."
+                if stopped
+                else "Paused queued work; no turn was currently running."
+            ),
+        )
+
+    app.command("/stop")(_slash_stop)
+    app.command("/cancel")(_slash_stop)
+
     return app
 
 
@@ -477,6 +689,7 @@ async def start_slack_bot(app: AsyncApp, scheduler=None, completion_watcher=None
 
     auth = await app.client.auth_test()
     app.set_bot_identity(auth["user_id"])
+    app.set_workspace_id(auth.get("team_id"))
     log.info(f"Connected to Slack as {auth.get('user')} (id: {auth['user_id']})")
 
     # Seed the team roster, then start scheduler/worker/watcher (non-blocking).
@@ -491,6 +704,8 @@ async def start_slack_bot(app: AsyncApp, scheduler=None, completion_watcher=None
     if scheduler:
         scheduler.start()
         log.info("Scheduler started from Slack startup.")
+    else:
+        asyncio.ensure_future(app.slack_observation_archiver.flush())
     if completion_watcher:
         completion_watcher.start()
         log.info("Completion watcher started from Slack startup.")

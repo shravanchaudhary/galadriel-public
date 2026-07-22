@@ -339,12 +339,14 @@ provisioner._task_definition(
     provisioning_ecs,
     "tenant-a",
     "alice",
+    "organization",
     "tenant-ap",
     "tenant-role",
     {
         "mongo_uri": "mongodb://docdb/?authMechanism=MONGODB-AWS",
         "mongo_db": "replika_tenant-a",
     },
+    "arn:aws:secretsmanager:test:slack-auth",
 )
 request = provisioning_ecs.request
 assert request is not None
@@ -352,10 +354,17 @@ assert [container["name"] for container in request["containerDefinitions"]] == [
 runtime = request["containerDefinitions"][0]
 environment = {row["name"]: row["value"] for row in runtime["environment"]}
 assert environment["REPLIKA_TENANT_ID"] == "tenant-a"
+assert environment["REPLIKA_TYPE"] == "organization"
 assert environment["REPLIKA_MANAGED_RUNTIME"] == "true"
 assert environment["APPCONFIG_REQUIRED"] == "false"
 assert environment["MONGO_DB"] == "replika_tenant-a"
-assert runtime["secrets"] == [{"name": "TOWER_SECRET_KEY", "valueFrom": "session"}]
+assert runtime["secrets"] == [
+    {"name": "TOWER_SECRET_KEY", "valueFrom": "session"},
+    {
+        "name": "SLACK_TENANT_AUTH_SECRET",
+        "valueFrom": "arn:aws:secretsmanager:test:slack-auth",
+    },
+]
 assert runtime["dependsOn"] == []
 assert {"key": "ReplikaPlane", "value": "runtime"} in request["tags"]
 assert (

@@ -17,6 +17,12 @@
         <button type="button" class="wfc-head-btn" id="wfc-expand" title="Expand to sidebar">⤢</button>
         <button type="button" class="wfc-head-btn wfc-x" onclick="wfcToggle()" title="Close">×</button>
     </div>
+    <div class="wfc-queue">
+        <div class="wfc-queue-head">
+            <span id="wfc-queue-status">idle · 0 queued</span>
+        </div>
+        <div id="wfc-queue-items" class="wfc-queue-items" hidden></div>
+    </div>
     <div id="wfc-log" class="wfc-log"></div>
     <div id="wfc-previews" class="wfc-previews" hidden></div>
     <form id="wfc-form" class="wfc-form" onsubmit="wfcSend(event)">
@@ -37,6 +43,8 @@
     const input = document.getElementById('wfc-input');
     const sendBtn = document.getElementById('wfc-send');
     const stopBtn = document.getElementById('wfc-stop');
+    const queueStatus = document.getElementById('wfc-queue-status');
+    const queueItems = document.getElementById('wfc-queue-items');
     const panel = document.getElementById('wfc-panel');
     const launcher = document.getElementById('wfc-launcher');
     const expandBtn = document.getElementById('wfc-expand');
@@ -102,8 +110,7 @@
 
     modelSelect.addEventListener('change', () => wfcChangeModel());
 
-    let bodyEl = null, textEl = null, thoughtEl = null, toolCard = null;
-    let turnActive = false;
+    let activeStreams = 0;
 
     // ── Image attachments (file picker + paste) ─────────────────
     const attachBtn = document.getElementById('wfc-attach');
@@ -169,13 +176,11 @@
     });
 
     function wfcSetTurnActive(active) {
-        turnActive = active;
-        sendBtn.disabled = active;
-        stopBtn.hidden = !active;
+        activeStreams = Math.max(0, activeStreams + (active ? 1 : -1));
+        stopBtn.hidden = activeStreams === 0;
     }
 
     async function wfcStopTurn() {
-        if (!turnActive) return;
         stopBtn.disabled = true;
         try {
             await fetch('/api/chat/stop', {
@@ -183,6 +188,7 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ channel: 'main' }),
             });
+            await wfcLoadQueue();
         } catch (err) {
             appendText(`[Error] ${err.message}`);
             wfcSetTurnActive(false);
@@ -192,6 +198,91 @@
     }
 
     stopBtn.addEventListener('click', () => wfcStopTurn());
+
+    async function queueMutation(url, options) {
+        const res = await fetch(url, options);
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Queue changed; refresh and try again');
+        await wfcLoadQueue();
+        return data;
+    }
+
+    async function wfcLoadQueue() {
+        try {
+            const res = await fetch('/api/chat/queue?channel=main');
+            const data = await res.json();
+            if (!res.ok) return;
+            const state = data.paused ? 'paused' : (data.busy ? 'busy' : 'idle');
+            queueStatus.textContent = `${state} · ${data.depth || 0} queued`;
+            stopBtn.hidden = !data.busy && activeStreams === 0;
+            queueItems.innerHTML = '';
+            for (const item of data.items || []) {
+                const row = document.createElement('div');
+                row.className = 'wfc-queue-item';
+                row.draggable = true;
+                row.dataset.id = item.id;
+                row.dataset.revision = item.revision;
+                const text = document.createElement('span');
+                text.className = 'wfc-queue-text';
+                text.textContent = item.display_text || '(attachment)';
+                text.title = text.textContent;
+                const edit = document.createElement('button');
+                edit.type = 'button'; edit.textContent = 'Edit';
+                edit.addEventListener('click', async () => {
+                    const next = prompt('Edit queued message', item.display_text || '');
+                    if (next === null) return;
+                    try {
+                        await queueMutation(`/api/chat/queue/${encodeURIComponent(item.id)}`, {
+                            method: 'PATCH',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ revision: item.revision, display_text: next }),
+                        });
+                    } catch (err) { alert(err.message); }
+                });
+                const del = document.createElement('button');
+                del.type = 'button'; del.textContent = 'Delete';
+                del.addEventListener('click', async () => {
+                    try {
+                        await queueMutation(`/api/chat/queue/${encodeURIComponent(item.id)}`, {
+                            method: 'DELETE',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ revision: item.revision }),
+                        });
+                    } catch (err) { alert(err.message); }
+                });
+                row.append(text, edit, del);
+                queueItems.appendChild(row);
+            }
+            queueItems.hidden = !(data.items || []).length;
+        } catch (e) {}
+    }
+
+    let draggedQueueItem = null;
+    queueItems.addEventListener('dragstart', e => {
+        draggedQueueItem = e.target.closest('.wfc-queue-item');
+    });
+    queueItems.addEventListener('dragover', e => {
+        e.preventDefault();
+        const target = e.target.closest('.wfc-queue-item');
+        if (draggedQueueItem && target && target !== draggedQueueItem) {
+            const after = e.clientY > target.getBoundingClientRect().top + target.offsetHeight / 2;
+            queueItems.insertBefore(draggedQueueItem, after ? target.nextSibling : target);
+        }
+    });
+    queueItems.addEventListener('drop', async e => {
+        e.preventDefault();
+        const items = Array.from(queueItems.querySelectorAll('.wfc-queue-item')).map(row => ({
+            id: row.dataset.id, revision: Number(row.dataset.revision),
+        }));
+        try {
+            await queueMutation('/api/chat/queue/reorder', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ channel: 'main', items }),
+            });
+        } catch (err) { alert(err.message); await wfcLoadQueue(); }
+        draggedQueueItem = null;
+    });
 
     function escapeHtml(t) {
         return ChatRender.escapeHtml(t);
@@ -211,7 +302,7 @@
     function startAssistant() {
         const div = document.createElement('div');
         div.className = 'wfc-msg wfc-msg-assistant';
-        bodyEl = document.createElement('div');
+        const bodyEl = document.createElement('div');
         bodyEl.className = 'msg-body';
         const typing = document.createElement('span');
         typing.className = 'typing';
@@ -219,37 +310,40 @@
         bodyEl.appendChild(typing);
         div.appendChild(bodyEl);
         log.appendChild(div);
-        textEl = null; thoughtEl = null; toolCard = null;
+        return { div, bodyEl, textEl: null, thoughtEl: null, toolCard: null, finished: false };
     }
-    function clearTyping() {
-        const t = bodyEl && bodyEl.querySelector('.typing');
+    function clearTyping(turn) {
+        const t = turn.bodyEl && turn.bodyEl.querySelector('.typing');
         if (t) t.remove();
     }
-    function appendText(delta) {
-        clearTyping();
-        if (!textEl) {
-            textEl = document.createElement('div');
-            textEl.className = 'msg-text';
-            bodyEl.appendChild(textEl);
+    function appendText(delta, turn) {
+        if (!turn) {
+            turn = startAssistant();
         }
-        textEl.textContent += delta;
+        clearTyping(turn);
+        if (!turn.textEl) {
+            turn.textEl = document.createElement('div');
+            turn.textEl.className = 'msg-text';
+            turn.bodyEl.appendChild(turn.textEl);
+        }
+        turn.textEl.textContent += delta;
     }
-    function appendThought(delta) {
-        clearTyping();
-        if (!thoughtEl) {
+    function appendThought(delta, turn) {
+        clearTyping(turn);
+        if (!turn.thoughtEl) {
             const d = document.createElement('details');
             d.className = 'thought';
             d.innerHTML = '<summary>Thinking</summary>';
-            thoughtEl = document.createElement('div');
-            thoughtEl.className = 'thought-body';
-            d.appendChild(thoughtEl);
-            bodyEl.appendChild(d);
+            turn.thoughtEl = document.createElement('div');
+            turn.thoughtEl.className = 'thought-body';
+            d.appendChild(turn.thoughtEl);
+            turn.bodyEl.appendChild(d);
         }
-        thoughtEl.textContent += delta;
+        turn.thoughtEl.textContent += delta;
     }
-    function addToolCall(name, inp) {
-        clearTyping();
-        textEl = null; thoughtEl = null;
+    function addToolCall(name, inp, turn) {
+        clearTyping(turn);
+        turn.textEl = null; turn.thoughtEl = null;
         const card = document.createElement('details');
         card.className = 'tool-card running';
         card.innerHTML =
@@ -258,41 +352,45 @@
             + `<span class="tool-preview">${escapeHtml(inp || '')}</span></summary>`
             + `<div class="tool-input">${escapeHtml(inp || '')}</div>`
             + '<pre class="tool-output"></pre>';
-        bodyEl.appendChild(card);
-        toolCard = card;
+        turn.bodyEl.appendChild(card);
+        turn.toolCard = card;
     }
-    function addToolResult(output) {
-        if (!toolCard) return;
-        toolCard.classList.remove('running');
-        toolCard.classList.add('done');
-        toolCard.querySelector('.tool-output').textContent = output || '';
-        toolCard = null; textEl = null;
+    function addToolResult(output, turn) {
+        if (!turn.toolCard) return;
+        turn.toolCard.classList.remove('running');
+        turn.toolCard.classList.add('done');
+        turn.toolCard.querySelector('.tool-output').textContent = output || '';
+        turn.toolCard = null; turn.textEl = null;
     }
 
-    function handleEvent(ev) {
+    function handleEvent(ev, turn) {
+        if (turn.finished) return;
         switch (ev.type) {
-            case 'thought': appendThought(ev.text); break;
-            case 'text': appendText(ev.text); break;
-            case 'tool_call': addToolCall(ev.name, ev.input); break;
-            case 'tool_result': addToolResult(ev.output); break;
+            case 'thought': appendThought(ev.text, turn); break;
+            case 'text': appendText(ev.text, turn); break;
+            case 'tool_call': addToolCall(ev.name, ev.input, turn); break;
+            case 'tool_result': addToolResult(ev.output, turn); break;
             case 'done':
-                clearTyping();
-                if (bodyEl && !bodyEl.querySelector('.msg-text') && ev.text) appendText(ev.text);
-                wfcFinishTurn();
+                clearTyping(turn);
+                if (!turn.bodyEl.querySelector('.msg-text') && ev.text) appendText(ev.text, turn);
+                if (!turn.bodyEl.textContent.trim()) turn.div.remove();
+                wfcFinishTurn(turn);
                 break;
             case 'stopped':
-                clearTyping();
-                appendText(ev.text || '(Stopped)');
-                wfcFinishTurn();
+                clearTyping(turn);
+                appendText(ev.text || '(Stopped)', turn);
+                wfcFinishTurn(turn);
                 break;
-            case 'error': appendText(`[Error] ${ev.error}`); wfcFinishTurn(); break;
+            case 'error': appendText(`[Error] ${ev.error}`, turn); wfcFinishTurn(turn); break;
         }
     }
 
-    function wfcFinishTurn() {
-        if (!turnActive) return;
+    function wfcFinishTurn(turn) {
+        if (turn && turn.finished) return;
+        if (turn) turn.finished = true;
         wfcSetTurnActive(false);
-        if (pageContext.reload_on_done !== false) {
+        wfcLoadQueue();
+        if (activeStreams === 0 && pageContext.reload_on_done !== false) {
             setTimeout(() => location.reload(), 900);
         }
     }
@@ -450,7 +548,6 @@
                 return;
             }
             log.innerHTML = '';
-            bodyEl = null; textEl = null; thoughtEl = null; toolCard = null;
         } catch (err) {
             alert(err.message || 'Failed to clear conversation');
         } finally {
@@ -478,7 +575,7 @@
         pendingImages = [];
         renderPreviews();
         wfcSetTurnActive(true);
-        startAssistant();
+        const turn = startAssistant();
         toBottom();
 
         const payload = { message };
@@ -492,13 +589,16 @@
         try {
             const res = await fetch('/api/chat/stream', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-Request-Id': (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`),
+                },
                 body: JSON.stringify(payload),
             });
             if (!res.ok || !res.body) {
                 const err = await res.json().catch(() => ({ error: res.statusText }));
-                appendText(`[Error] ${err.error || res.statusText}`);
-                wfcFinishTurn();
+                appendText(`[Error] ${err.error || res.statusText}`, turn);
+                wfcFinishTurn(turn);
                 return;
             }
             const reader = res.body.getReader();
@@ -516,13 +616,13 @@
                     const raw = frame.slice(5).trim();
                     if (!raw) continue;
                     const stick = atBottom();
-                    handleEvent(JSON.parse(raw));
+                    handleEvent(JSON.parse(raw), turn);
                     if (stick) toBottom();
                 }
             }
         } catch (err) {
-            appendText(`[Error] ${err.message}`);
-            wfcFinishTurn();
+            appendText(`[Error] ${err.message}`, turn);
+            wfcFinishTurn(turn);
         }
     };
 
@@ -545,6 +645,8 @@
         }
         applyLayout(loadLayout());
         wfcLoadModel();
+        wfcLoadQueue();
+        setInterval(() => { if (wfcIsOpen()) wfcLoadQueue(); }, 2000);
         try {
             const res = await fetch('/api/history?channel=main');
             const data = await res.json();

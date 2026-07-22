@@ -33,6 +33,14 @@ data "aws_iam_policy_document" "replika_provisioner" {
 
   statement {
     actions = [
+      "secretsmanager:CreateSecret",
+      "secretsmanager:DescribeSecret",
+    ]
+    resources = local.slack_secret_arns
+  }
+
+  statement {
+    actions = [
       "s3files:CreateAccessPoint",
       "s3files:DescribeAccessPoints",
       "s3files:ListAccessPoints",
@@ -124,18 +132,20 @@ resource "aws_lambda_function" "replika_provisioner" {
       COGNITO_USER_POOL_DOMAIN = (
         var.enable_replika_managed_auth ? aws_cognito_user_pool_domain.replika[0].domain : ""
       )
-      CONTAINER_NAME          = "clyra"
-      DATABASE_BROKER_URL     = "https://${var.host_name}/internal/replika/database"
-      ECS_CLUSTER             = data.aws_ecs_cluster.staging.cluster_name
-      HTTPS_LISTENER_ARN      = data.aws_lb_listener.https.arn
-      MANAGED_AUTH_ENABLED    = tostring(var.enable_replika_managed_auth)
-      PRIVATE_SUBNET_IDS      = jsonencode(tolist(var.private_subnet_ids))
-      PRODUCT_DOMAIN          = var.replika_product_domain
-      RUNTIME_SECRET_NAMES    = jsonencode(tolist(var.replika_runtime_secret_names))
-      S3FILES_FILE_SYSTEM_ARN = aws_s3files_file_system.clyra.arn
-      S3FILES_FILE_SYSTEM_ID  = aws_s3files_file_system.clyra.id
-      TASK_SECURITY_GROUP_ID  = aws_security_group.task.id
-      VPC_ID                  = var.vpc_id
+      CONTAINER_NAME                  = "clyra"
+      DATABASE_BROKER_URL             = "https://${var.host_name}/internal/replika/database"
+      ECS_CLUSTER                     = data.aws_ecs_cluster.staging.cluster_name
+      HTTPS_LISTENER_ARN              = data.aws_lb_listener.https.arn
+      MANAGED_AUTH_ENABLED            = tostring(var.enable_replika_managed_auth)
+      PRIVATE_SUBNET_IDS              = jsonencode(tolist(var.private_subnet_ids))
+      PRODUCT_DOMAIN                  = var.replika_product_domain
+      RUNTIME_SECRET_NAMES            = jsonencode(tolist(var.replika_runtime_secret_names))
+      SLACK_TENANT_AUTH_KMS_KEY_ID    = "alias/aws/secretsmanager"
+      SLACK_TENANT_AUTH_SECRET_PREFIX = "replika/slack-auth"
+      S3FILES_FILE_SYSTEM_ARN         = aws_s3files_file_system.clyra.arn
+      S3FILES_FILE_SYSTEM_ID          = aws_s3files_file_system.clyra.id
+      TASK_SECURITY_GROUP_ID          = aws_security_group.task.id
+      VPC_ID                          = var.vpc_id
     }
   }
 

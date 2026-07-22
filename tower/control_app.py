@@ -7,24 +7,41 @@ from flask import Flask, g, jsonify, redirect, render_template, request, url_for
 
 from harness.runtime_dependencies import readiness_error
 from . import auth as tower_auth
-from .replika_control_plane import register_replika_control_plane
+from .replika_control_plane import register_replika_control_plane, replika_type_for_owner
+from .slack_integration import register_slack_integration, start_slack_dispatcher
 
 
-def create_control_app() -> Flask:
+def create_control_app(config: dict | None = None) -> Flask:
     """Create the onboarding app without importing or initializing the agent."""
     app = Flask(
         __name__,
         template_folder=str(Path(__file__).parent / "templates"),
         static_folder=str(Path(__file__).parent / "static"),
     )
+    if config:
+        app.config.update(config)
     tower_auth.configure_app_sessions(app)
 
     @app.before_request
     def _require_auth():
         allowed = (
-            request.path in {"/", "/healthz", "/readyz", "/login", "/logout", "/replika"}
+            request.path in {
+                "/",
+                "/healthz",
+                "/readyz",
+                "/login",
+                "/logout",
+                "/replika",
+                "/integrations",
+                "/integrations/slack/install",
+                "/integrations/slack/oauth/callback",
+                "/slack/events",
+                "/slack/commands",
+                "/internal/slack/deliver",
+            }
             or request.path.startswith("/static/")
             or request.path.startswith("/api/replika")
+            or request.path.startswith("/api/integrations/slack")
             or request.path.startswith("/internal/replika/")
         )
         if not allowed:
@@ -102,6 +119,9 @@ def create_control_app() -> Flask:
         return {"page_context": {}, "control_plane_only": True}
 
     register_replika_control_plane(app)
+    app.config["REPLIKA_TYPE_RESOLVER"] = replika_type_for_owner
+    register_slack_integration(app)
+    start_slack_dispatcher(app)
 
     @app.route("/")
     def index():

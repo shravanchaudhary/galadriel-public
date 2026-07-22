@@ -2,6 +2,7 @@
 
 import os
 import re
+import shlex
 
 # Green: auto-execute without asking
 # Yellow: notify user, proceed unless vetoed within timeout
@@ -135,6 +136,49 @@ def classify_command(command: str, created_files: set = None, working_dir: str =
             return "green"
     # Unknown commands default to yellow
     return "yellow"
+
+
+_READ_ONLY_PROGRAMS = {
+    "ls", "cat", "head", "tail", "grep", "rg", "find", "pwd", "date",
+    "whoami", "df", "free", "uptime", "wc", "sort", "du",
+}
+
+
+def is_demonstrably_read_only(command: str) -> bool:
+    """Conservative shell proof used for untrusted shared-channel actors."""
+    value = (command or "").strip()
+    if not value or re.search(r"[;&|<>`$()\n\r]", value):
+        return False
+    try:
+        parts = shlex.split(value)
+    except ValueError:
+        return False
+    if not parts:
+        return False
+    if parts[0] == "find" and any(
+        token in {
+            "-delete", "-exec", "-execdir", "-ok", "-okdir",
+            "-fprint", "-fprintf", "-fls",
+        }
+        for token in parts[1:]
+    ):
+        return False
+    if parts[0] == "sort" and any(
+        token == "-o" or token.startswith("--output")
+        for token in parts[1:]
+    ):
+        return False
+    if parts[0] in _READ_ONLY_PROGRAMS:
+        return True
+    if parts[:2] in (["pip", "list"], ["pip", "show"], ["pip", "freeze"]):
+        return True
+    if len(parts) >= 3 and parts[0] == "aws":
+        return parts[1:3] in (
+            ["s3", "ls"], ["sts", "get-caller-identity"],
+            ["ec2", "describe-instances"], ["cloudformation", "describe-stacks"],
+            ["cloudformation", "list-stacks"], ["ce", "get-cost-and-usage"],
+        )
+    return False
 
 
 def format_safety_notice(command: str, tier: str) -> str:

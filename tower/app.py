@@ -69,13 +69,29 @@ def create_tower(agent, scheduler=None) -> Flask:
 
     @app.before_request
     def _require_tower_auth():
+        # This route performs its own per-tenant HMAC authentication.
+        if request.path == "/internal/slack/ingress":
+            return None
         if os.environ.get("REPLIKA_CONTROL_PLANE_ONLY", "").lower() in {
             "1", "true", "yes",
         }:
             allowed = (
-                request.path in {"/", "/healthz", "/readyz", "/login", "/logout", "/replika"}
+                request.path in {
+                    "/",
+                    "/healthz",
+                    "/readyz",
+                    "/login",
+                    "/logout",
+                    "/replika",
+                    "/integrations",
+                    "/integrations/slack/install",
+                    "/integrations/slack/oauth/callback",
+                    "/slack/events",
+                    "/slack/commands",
+                }
                 or request.path.startswith("/static/")
                 or request.path.startswith("/api/replika")
+                or request.path.startswith("/api/integrations/slack")
                 or request.path.startswith("/internal/replika/")
             )
             if not allowed:
@@ -171,6 +187,8 @@ def create_tower(agent, scheduler=None) -> Flask:
 
     from .replika_control_plane import register_replika_control_plane
     register_replika_control_plane(app)
+    from .slack_runtime import register_slack_runtime
+    register_slack_runtime(app, agent, scheduler, MAIN_CHANNEL_ID)
 
     @app.template_filter("truncate_label")
     def truncate_label(value, length=24):
@@ -208,7 +226,7 @@ def create_tower(agent, scheduler=None) -> Flask:
 
     @app.route("/api/chat", methods=["POST"])
     def api_chat():
-        data = request.json
+        data = request.json or {}
         message = data.get("message", "").strip()
         image_blocks, img_err = _image_blocks_from_payload(data.get("images") or [])
         if img_err:
@@ -221,17 +239,24 @@ def create_tower(agent, scheduler=None) -> Flask:
 
         context = (request.json or {}).get("context")
         overlay = format_overlay_system_block(context)
+        actor = getattr(getattr(g, "tower_auth", None), "username", None) or "tower-user"
+        request_context = {
+            "source": "tower", "actor_id": str(actor), "trusted": True,
+            "trust_reason": "authenticated_tower",
+        }
 
         # Schedule the async agent call onto the main event loop (Discord's loop)
         # This avoids creating a new event loop and works with AsyncAnthropic
         if scheduler and scheduler._loop and scheduler._loop.is_running():
             future = asyncio.run_coroutine_threadsafe(
-                agent.respond(
+                agent.enqueue_and_await(
                     user_message,
                     channel_id=MAIN_CHANNEL_ID,
+                    source="tower",
+                    external_dedupe_key=request.headers.get("X-Request-Id"),
+                    display_text=message or "(image attached)",
                     overlay_context=overlay,
-                    run_source="tower",
-                    client_dedup_key=request.headers.get("X-Request-Id"),
+                    request_context=request_context,
                 ),
                 scheduler._loop,
             )
@@ -246,12 +271,14 @@ def create_tower(agent, scheduler=None) -> Flask:
             loop = asyncio.new_event_loop()
             try:
                 response = loop.run_until_complete(
-                    agent.respond(
+                    agent.enqueue_and_await(
                         user_message,
                         channel_id=MAIN_CHANNEL_ID,
+                        source="tower",
+                        external_dedupe_key=request.headers.get("X-Request-Id"),
+                        display_text=message or "(image attached)",
                         overlay_context=overlay,
-                        run_source="tower",
-                        client_dedup_key=request.headers.get("X-Request-Id"),
+                        request_context=request_context,
                     )
                 )
                 return jsonify({"response": response})
@@ -284,6 +311,11 @@ def create_tower(agent, scheduler=None) -> Flask:
         context = data.get("context")
         overlay = format_overlay_system_block(context)
         request_id = request.headers.get("X-Request-Id")
+        actor = getattr(getattr(g, "tower_auth", None), "username", None) or "tower-user"
+        request_context = {
+            "source": "tower", "actor_id": str(actor), "trusted": True,
+            "trust_reason": "authenticated_tower",
+        }
 
         loop = scheduler._loop if scheduler else None
         if not (loop and loop.is_running()):
@@ -296,14 +328,17 @@ def create_tower(agent, scheduler=None) -> Flask:
 
         async def run():
             try:
-                final = await agent.respond(
+                item = await agent.enqueue(
                     user_message,
                     channel_id=MAIN_CHANNEL_ID,
+                    source="tower",
+                    external_dedupe_key=request_id,
+                    display_text=message or "(image attached)",
                     emit=emit,
                     overlay_context=overlay,
-                    run_source="tower",
-                    client_dedup_key=request_id,
+                    request_context=request_context,
                 )
+                final = await agent.await_enqueued(item["id"])
                 events.put({"type": "done", "text": final})
             except Exception as e:
                 log.exception("Tower stream error")
@@ -330,20 +365,115 @@ def create_tower(agent, scheduler=None) -> Flask:
     def api_chat_stop():
         """Stop the in-flight turn on a channel (default: main)."""
         channel = (request.json or {}).get("channel", MAIN_CHANNEL_ID)
-        stopped = agent.request_stop(channel)
+        loop = scheduler._loop if scheduler else None
+        if loop and loop.is_running():
+            async def stop_on_agent_loop():
+                return agent.request_stop(channel)
+            stopped = asyncio.run_coroutine_threadsafe(
+                stop_on_agent_loop(), loop,
+            ).result(timeout=5)
+        else:
+            stopped = agent.request_stop(channel)
+        status = agent.conversation_queue.status(channel)
         return jsonify({
             "stopped": stopped,
-            "busy": agent.is_channel_busy(channel),
+            **status,
             "channel": channel,
         })
 
     @app.route("/api/chat/status", methods=["GET"])
     def api_chat_status():
         channel = request.args.get("channel", MAIN_CHANNEL_ID)
+        return jsonify(agent.conversation_queue.status(channel))
+
+    def _queue_item_for_api(item: dict) -> dict:
+        """Expose queue metadata without echoing binary/private payload fields."""
+        return {
+            key: item.get(key)
+            for key in (
+                "id", "channel", "sequence", "source", "display_text", "state",
+                "revision", "created_at", "updated_at",
+            )
+        }
+
+    @app.route("/api/chat/queue", methods=["GET"])
+    def api_chat_queue():
+        channel = request.args.get("channel", MAIN_CHANNEL_ID)
         return jsonify({
-            "busy": agent.is_channel_busy(channel),
-            "channel": channel,
+            **agent.conversation_queue.status(channel),
+            "items": [
+                _queue_item_for_api(item)
+                for item in agent.conversation_queue.pending(channel)
+            ],
         })
+
+    @app.route("/api/chat/queue/<item_id>", methods=["PATCH"])
+    def api_chat_queue_edit(item_id: str):
+        data = request.json or {}
+        text = data.get("display_text")
+        revision = data.get("revision")
+        if not isinstance(text, str) or not isinstance(revision, int):
+            return jsonify({"error": "display_text and integer revision are required"}), 400
+        if len(text) > 100_000:
+            return jsonify({"error": "Message is too long"}), 400
+        existing = agent.conversation_queue.store.get(item_id)
+        if not existing or existing.get("source") != "tower":
+            return jsonify({"error": "Queue item not found or not editable"}), 404
+        payload = existing.get("payload")
+        if isinstance(payload, str):
+            if not text.strip():
+                return jsonify({"error": "Message cannot be empty"}), 400
+            payload = f"[Tower]: {text.strip()}"
+        elif isinstance(payload, list):
+            payload = list(payload)
+            text_index = next((
+                i for i, block in enumerate(payload)
+                if isinstance(block, dict) and block.get("type") == "text"
+            ), None)
+            if text_index is None:
+                return jsonify({"error": "Message payload is not safely editable"}), 400
+            if not text.strip() and len(payload) == 1:
+                return jsonify({"error": "Message cannot be empty"}), 400
+            payload[text_index] = {
+                **payload[text_index],
+                "text": f"[Tower]: {text.strip() or '(image attached)'}",
+            }
+        else:
+            return jsonify({"error": "Message payload is not safely editable"}), 400
+        item = agent.conversation_queue.edit(
+            item_id, revision, display_text=text.strip() or "(image attached)", payload=payload,
+        )
+        if item is None:
+            return jsonify({"error": "Queue item changed or is no longer pending"}), 409
+        return jsonify({"item": _queue_item_for_api(item)})
+
+    @app.route("/api/chat/queue/<item_id>", methods=["DELETE"])
+    def api_chat_queue_delete(item_id: str):
+        data = request.json or {}
+        revision = data.get("revision")
+        if not isinstance(revision, int):
+            return jsonify({"error": "integer revision is required"}), 400
+        item = agent.conversation_queue.delete(item_id, revision)
+        if item is None:
+            return jsonify({"error": "Queue item changed or is no longer pending"}), 409
+        return jsonify({"deleted": True, "item": _queue_item_for_api(item)})
+
+    @app.route("/api/chat/queue/reorder", methods=["POST"])
+    def api_chat_queue_reorder():
+        data = request.json or {}
+        channel = data.get("channel", MAIN_CHANNEL_ID)
+        items = data.get("items")
+        if not isinstance(items, list) or any(
+            not isinstance(item, dict)
+            or not isinstance(item.get("id"), str)
+            or not isinstance(item.get("revision"), int)
+            for item in items
+        ):
+            return jsonify({"error": "items must contain id and integer revision"}), 400
+        result = agent.conversation_queue.reorder(channel, items)
+        if result is None:
+            return jsonify({"error": "Queue changed; refresh and try again"}), 409
+        return jsonify({"items": [_queue_item_for_api(item) for item in result]})
 
     @app.route("/api/history", methods=["GET"])
     def api_history():

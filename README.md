@@ -300,7 +300,7 @@ These aren't abstract ideals — they are mechanically enforced via the `CLAUDE.
 ## Features
 
 - **Discord gateway** — DMs, channel mentions, or a dedicated channel; gated by user ID
-- **Slack gateway** — a drop-in alternative to Discord for a shared team channel (`SLACK_CHANNEL_ID`): any member of that channel can talk to it (mention-gated), each message is tagged with the sender's name, and the agent is given an explicit "you're a teammate here" system context (see [Slack](#slack))
+- **Slack gateway** — a shared team channel (`SLACK_CHANNEL_ID`) where any member can talk/read, while mutating tools and approvals are restricted to the owner/installer and configured Slack admins (see [Slack](#slack))
 - **Web UI (Tower)** — local chat interface and dashboard at `localhost:8080`, plus generic workflow screens (table, kanban, detail/timeline, approval inbox, run log)
 - **Tool use** — shell execution, file read/write, memory logging, a headed browser driver, web search + fast page fetch, TOTP 2FA, **7 `db_*` workflow primitives** (the agent's only path to MongoDB — they enforce a per-workflow spec's state machine + audit trail), and 10 [MemPalace](https://github.com/MemPalace/mempalace) tools (semantic search, knowledge graph, diary, taxonomy); all async, non-blocking
 - **Structured workflows (mini-app generator)** — declarative `workflows/*.json` specs define entities and their state machines; the `db_*` primitives enforce them (legal transitions only, dedup, auto history) and the Tower screens auto-render live MongoDB state. The agent designs a workflow with you in chat, then operates it — no freestyle DB scripting
@@ -510,7 +510,7 @@ of the stable cache block. Richer incident detail goes to MemPalace
 
 ## Slack
 
-An alternative gateway to Discord for teams: instead of one authorized user in DMs, the bot sits in **one shared channel** and any member of that channel can talk to it. It's designed to feel like adding a teammate to a channel, not wiring up a private assistant.
+The manual Socket Mode fallback follows `REPLIKA_TYPE`: organization Replikas use exactly one shared `SLACK_CHANNEL_ID`; individual Replikas accept only DMs from `SLACK_OWNER_USER_ID`. Managed Replikas use the central OAuth control plane instead.
 
 ### How it differs from Discord
 
@@ -518,9 +518,9 @@ An alternative gateway to Discord for teams: instead of one authorized user in D
 |---|---|---|
 | Who can talk to it | One `DISCORD_AUTHORIZED_USER_ID` | Any member of the configured channel |
 | Which channel | Manually set via `DISCORD_CHANNEL_ID` | Manually set via `SLACK_CHANNEL_ID` |
-| When it responds | Every message in the target channel, DMs, or when mentioned | Only when **@mentioned** — a shared channel has humans talking to each other too |
+| When it responds | Every message in the target channel, DMs, or when mentioned | A structured reply gate observes every selected-channel message; explicit mentions always respond |
 | Who it thinks it's talking to | The one user in `config/MEMORY.md` | Whoever sent the message — each message is prefixed `[Sender Name]: ...`, and the agent is given a live roster of the channel so it knows it's a team member among several people, not a 1:1 assistant |
-| Approvals (🔴 red-tier commands) | The authorized user only, via DM buttons | **Any member of the channel**, via Block Kit buttons in the channel itself |
+| Approvals (🔴 red-tier commands) | The authorized user only, via DM buttons | Owner/installer/configured admins only, via Block Kit; central tenant mode blocks red actions because it has no local callback |
 | Push notifications (heartbeat, morning briefing, worker pings) | The authorized user's DM | The configured channel — there is no Slack DM push target by design |
 | Transport | Discord gateway | **Socket Mode** — an outbound-only websocket, so no public webhook URL or signing secret is needed |
 
@@ -531,15 +531,22 @@ Only one gateway runs per deployment. If `DISCORD_BOT_TOKEN` is set, Discord win
 1. Create an app at [api.slack.com/apps](https://api.slack.com/apps) ("From scratch").
 2. **OAuth & Permissions** → add Bot Token Scopes: `chat:write`, `channels:history`, `channels:read`, `groups:history`, `groups:read`, `users:read`, `app_mentions:read`. (`groups:*` only needed if the channel you'll use is private — easy to miss, and without it the bot silently can't see that channel at all.)
 3. **Socket Mode** → enable it, generate an app-level token with the `connections:write` scope → this is your `SLACK_APP_TOKEN` (`xapp-...`).
-4. **Event Subscriptions** → enable, and subscribe to the bot events: `message.channels`, `message.groups`, `app_mention`, `member_joined_channel`, `member_left_channel`. (Slack can deliver a mention as `message`, `app_mention`, or both depending on subscriptions — the bot handles either and dedupes automatically.)
+4. **Event Subscriptions** → enable, and subscribe to the bot events: `message.channels`, `message.groups`, `message.im`, `app_mention`, `member_joined_channel`, `member_left_channel`. (Slack can deliver a mention as `message`, `app_mention`, or both depending on subscriptions — the bot handles either and dedupes automatically.)
 5. **Interactivity & Shortcuts** → enable (needed for the Approve/Deny buttons; works automatically over Socket Mode, no request URL needed).
-6. **Slash Commands** → add `/new`, `/status`, `/compact` (description text is up to you; Socket Mode handles delivery, no request URL needed).
+6. **Slash Commands** → add `/new`, `/status`, `/compact`, `/stop`, and `/cancel` (the last two are identical and never enter the conversation as content).
 7. **Install App to Workspace** → generates your `SLACK_BOT_TOKEN` (`xoxb-...`). If you change scopes later, reinstall to pick them up.
 8. Invite the bot into the channel it should live in (`/invite @your-bot-name`), then grab that channel's ID (right-click the channel name → View channel details → Channel ID at the bottom) and set it as `SLACK_CHANNEL_ID` in `.env`, alongside both tokens. Start the harness — it only ever listens in that one channel.
 
+Central OAuth deployments must set `SLACK_TENANT_PRODUCT_DOMAIN`; tenant URLs
+outside that HTTPS domain are rejected. Existing installations created before
+admin management should reconnect once to grant `users:read`, then select the
+channel and save admins in Integrations. The installer remains the default admin.
+No Mongo data migration is required; queue items without actor metadata fail
+closed as untrusted organization Slack turns.
+
 ### Talking to it
 
-Mention it to get its attention (`@your-bot-name what's the deploy status?`). It replies directly in the channel — no side threads — posting a "🧝‍♀️ _thinking…_" placeholder immediately (Slack bots have no native typing indicator) and editing it in place once the real answer is ready. Anyone else in the channel can also mention it and it'll know who's talking from that point on — the system prompt carries a live roster of channel members plus each message's sender name. Each message needs its own mention; it doesn't infer who a follow-up is meant for.
+Mention it to get its attention (`@your-bot-name what's the deploy status?`). It replies directly in the channel and tracks the sender identity. Ordinary organization members receive read-only tools; the OAuth installer/owner and configured admin Slack IDs retain the normal tool and safety flow. In central OAuth mode, additional admins are verified and saved from Integrations. In manual Socket Mode, set `SLACK_ADMIN_USER_IDS` to a comma-separated list.
 
 ---
 
@@ -549,11 +556,12 @@ All shell commands are classified before the agent executes them:
 
 | Tier | Behaviour | Examples |
 |------|----------|---------|
-| 🟢 **Green** | Auto-execute | `ls`, `git status`, `aws s3 ls`, `cat` (read-only), `python3 script.py`, inline `python - <<'PY'` |
-| 🟡 **Yellow** | Notify, proceed | `git push`, `pip install`, `sudo systemctl`, `sam deploy`, `cat … > file`, unknown commands |
-| 🔴 **Red** | Discord reaction required (✅/❌, 30s timeout → denied) | `rm`, IAM changes, CloudFormation mutations, `shutdown` |
+| 🟢 **Green** | Auto-execute | `ls`, `aws s3 ls`, `cat` (read-only), `python3 script.py`, inline `python - <<'PY'` |
+| 🟡 **Yellow** | Notify, proceed | `pip install`, `sudo systemctl`, `sam deploy`, `cat … > file`, unknown commands |
+| 🔴 **Red** | Explicit owner/admin approval where a local callback exists; otherwise denied | `rm`, IAM changes, CloudFormation mutations, `shutdown` |
 
-Unknown commands default to yellow. Red commands denied by timeout or ❌ are never executed.
+Unknown commands default to yellow. Red commands denied by timeout or ❌ are never
+executed. Source-control commands are blocked at the tool boundary.
 
 ---
 
@@ -701,6 +709,8 @@ See `.env.example` for the full list with inline documentation.
 | `DISCORD_CHANNEL_ID` | No | Guild channel for conversation |
 | `SLACK_BOT_TOKEN` | No | Enables the Slack gateway (with `SLACK_APP_TOKEN`) — alternative to Discord, see [Slack](#slack) |
 | `SLACK_APP_TOKEN` | No | App-level token (`connections:write` scope) for Slack Socket Mode |
+| `SLACK_ADMIN_USER_IDS` | No | Additional comma-separated admin IDs for manual organization Slack |
+| `SLACK_TENANT_PRODUCT_DOMAIN` | Yes* | Allowed HTTPS tenant domain for the central Slack dispatcher (*central OAuth mode) |
 | `TOWER_HOST` | No | Tower bind address (default: `127.0.0.1`) |
 | `TOWER_PORT` | No | Tower port (default: `8080`) |
 | `TOWER_SECRET_KEY` | Yes* | Flask session-signing key (*required when `TOWER_AUTH_REQUIRED=true`; must not be the default) |
@@ -729,9 +739,9 @@ See `.env.example` for the full list with inline documentation.
 
 **Discord is the secure interface.** Authorization is enforced by `DISCORD_AUTHORIZED_USER_ID`. Only messages from that user ID are processed. Unauthorized users get "I do not know you, stranger."
 
-**Slack trades per-user authorization for per-channel authorization.** There is no user allowlist — anyone who is a member of the `SLACK_CHANNEL_ID` channel (including anyone who can be invited into it by an org admin) can talk to the agent and approve/deny red-tier commands. The security boundary is "who your org lets into that Slack channel," not an individual's user ID. Only point it at a channel whose full membership you'd trust with shell access. Socket Mode itself needs no public port — it's an outbound-only websocket, so there's no inbound attack surface to expose.
+**Slack uses channel routing plus per-user authorization.** Any selected-channel member can talk to the agent, but non-admin organization members are limited to read-only tools and demonstrably read-only green shell commands. Only the owner/OAuth installer and configured admins may use mutating tools, slash-command mutations, or approval buttons. Central tenant runtimes have no local approval callback, so red-tier actions remain blocked. Socket Mode itself uses an outbound-only websocket.
 
-**`run_shell` is unrestricted.** The agent can execute any command the process user can run. The safety tier system classifies and gates commands, but it's defense-in-depth, not a sandbox. Run the harness as a low-privilege user on a dedicated machine or VM.
+**`run_shell` is powerful for trusted actors.** The process can execute any command its OS user can run, subject to the safety tier flow. Untrusted organization Slack actors are additionally limited to green commands that pass a conservative read-only proof. This is defense-in-depth, not an OS sandbox; run the harness as a low-privilege user.
 
 **`read_file` and `write_file` have no path restrictions.** The agent can read any file the process can access. This is intentional for a personal assistant that needs to operate freely on your system.
 
@@ -745,7 +755,7 @@ See `.env.example` for the full list with inline documentation.
 
 Operational docs above reflect this branch. Highlights:
 
-- **Slack gateway:** a drop-in alternative to Discord for shared team channels (`slack_bot/bot.py`, Socket Mode). Channel is fixed via `SLACK_CHANNEL_ID` (same pattern as Discord's `DISCORD_CHANNEL_ID`); any member of that channel can talk to it (mention-gated), replies post directly to the channel with a "thinking…" placeholder edited in place (Slack bots have no native typing indicator), messages are tagged with the sender's name, and `GaladrielAgent.set_channel_context()` (new, generic) gives the agent a live roster so it knows it's a teammate among several people rather than a 1:1 assistant. Approvals move to Block Kit buttons any member can click; pushes (heartbeat, morning briefing, worker pings) go to that one channel instead of a DM. Only one gateway runs per deployment — see [Slack](#slack).
+- **Slack gateway:** shared-channel Socket Mode with durable observations, sender identity propagated into each agent turn, read-only permissions for ordinary organization members, and admin-only Block Kit approvals. Pushes go to the configured channel. Only one gateway runs per deployment — see [Slack](#slack).
 - **Shared work ledger:** `state/progress/` (one file per day) is written by curator *and* worker (append-style narration); main-chat sends/completions must be recorded there too, and the DB is the authoritative ledger behind it (`config/GUARDRAILS.md`, `config/RECALL.md`, `config/SOUL.md`).
 - **No double-work guard:** the DB atomic precondition-guarded transition on a unique key makes a double-action impossible by construction — no separate ownership-claim file; coarse coordination is `state/worker_control.md` (pause the worker while the curator drives).
 - **Coordination files:** `state/steering.md` (reflection corrections).

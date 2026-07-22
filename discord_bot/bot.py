@@ -538,17 +538,32 @@ def create_bot(agent: GaladrielAgent, scheduler=None, completion_watcher=None, w
         log.info(f"📥 Processing message from {message.author} in {message.channel.id}: {content[:80]}")
         async with message.channel.typing():
             try:
-                response = await agent.respond(
+                response = await agent.enqueue_and_await(
                     user_input,
                     channel_id=MAIN_CHANNEL_ID,
-                    run_source="discord",
-                    client_dedup_key=f"discord:{message.id}",
+                    source="discord",
+                    external_dedupe_key=f"discord:{message.id}",
+                    sender={
+                        "id": str(message.author.id),
+                        "display_name": str(message.author),
+                    },
+                    request_context={
+                        "source": "discord",
+                        "actor_id": str(message.author.id),
+                        "trusted": True,
+                        "trust_reason": "authorized_discord_owner",
+                    },
+                    display_text=content or "(image attached)",
+                    reply_target={
+                        "channel": str(message.channel.id),
+                        "message": str(message.id),
+                    },
                 )
                 log.info(f"📤 Agent response ready ({len(response)} chars), sending to Discord...")
                 if not response.strip():
-                    log.info("Agent returned empty response — substituting placeholder")
-                    response = "🌙 *(nothing to add — acknowledged.)*"
-                await safe_send(message, response)
+                    log.info("Message merged into a newer queued trigger; no duplicate reply sent")
+                else:
+                    await safe_send(message, response)
 
             except Exception as e:
                 log.exception("Error processing message")

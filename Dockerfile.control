@@ -12,7 +12,7 @@ RUN pip install --no-cache-dir -r requirements-control.txt
 
 COPY control_main.py .
 COPY tower ./tower
-COPY harness/__init__.py harness/runtime_dependencies.py ./harness/
+COPY harness/__init__.py harness/runtime_dependencies.py harness/tenant_database.py ./harness/
 COPY docker/entrypoint.sh ./docker/entrypoint.sh
 
 ENV TOWER_HOST=0.0.0.0 \

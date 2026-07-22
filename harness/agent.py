@@ -22,6 +22,7 @@ a turn and stay high afterward.
 """
 
 import asyncio
+import copy
 import os
 import json
 import logging
@@ -29,7 +30,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from .memory import MemoryManager
 from .tools import TOOL_DEFINITIONS, execute_tool
-from .safety import classify_command, format_safety_notice, _simple_rm_target
+from .safety import (
+    classify_command, format_safety_notice, is_demonstrably_read_only,
+    _simple_rm_target,
+)
 from .providers import BaseModelProvider
 from . import model_registry
 from . import conversation_store
@@ -48,8 +52,37 @@ log = logging.getLogger("galadriel")
 MAIN_CHANNEL_ID = "main"
 WORKER_CHANNEL_ID = "worker"
 
-_STOPPED_TOOL_RESULT = "[STOPPED] Turn cancelled from Tower."
-_STOPPED_ASSISTANT_NOTE = "(Stopped — turn cancelled from Tower.)"
+_STOPPED_ASSISTANT_NOTE = "(Stopped — turn cancelled.)"
+
+UNTRUSTED_READ_ONLY_TOOLS = {
+    "read_file", "palace_search", "palace_taxonomy", "palace_kg_query",
+    "palace_kg_timeline", "palace_diary_read", "google_search",
+    "fetch_url_data", "db_get", "db_query", "run_shell",
+}
+
+
+def is_untrusted_organization_slack(context: dict | None) -> bool:
+    context = context or {}
+    return (
+        context.get("source") == "slack"
+        and context.get("replika_type") == "organization"
+        and not context.get("trusted", False)
+    )
+
+
+def tools_for_request(tools: list[dict], context: dict | None) -> list[dict]:
+    if not is_untrusted_organization_slack(context):
+        return tools
+    filtered = [
+        {key: value for key, value in tool.items() if key != "cache_control"}
+        for tool in tools
+        if tool.get("name") in UNTRUSTED_READ_ONLY_TOOLS
+    ]
+    if filtered:
+        filtered[-1] = {
+            **filtered[-1], "cache_control": {"type": "ephemeral"},
+        }
+    return filtered
 
 
 class TurnCancelled(Exception):
@@ -407,6 +440,12 @@ class GaladrielAgent:
         # so this object can be reused across every API call.
         self.tools = _build_cached_tools()
 
+        from .conversation_queue import ConversationQueue
+        self.conversation_queue = ConversationQueue(
+            self.respond,
+            stop_callback=self._request_turn_cancel,
+        )
+
         # Log stable block metadata on startup
         stable_text = self.memory.build_stable_text()
         stable_chars = len(stable_text)
@@ -435,6 +474,10 @@ class GaladrielAgent:
     def request_stop(self, channel_id: str) -> bool:
         """Signal the in-flight turn on this channel to stop. Returns True if
         a turn was active and not already stopping."""
+        return self.conversation_queue.stop(channel_id)
+
+    def _request_turn_cancel(self, channel_id: str) -> bool:
+        """Low-level cooperative turn signal used by the inbox without recursion."""
         ev = self._turn_cancel.get(channel_id)
         if ev is not None and not ev.is_set():
             ev.set()
@@ -443,8 +486,46 @@ class GaladrielAgent:
         return False
 
     def is_channel_busy(self, channel_id: str) -> bool:
+        if self.conversation_queue.status(channel_id)["busy"]:
+            return True
         ev = self._turn_cancel.get(channel_id)
         return ev is not None and not ev.is_set()
+
+    async def enqueue(
+        self,
+        payload,
+        *,
+        channel_id: str = MAIN_CHANNEL_ID,
+        source: str,
+        external_dedupe_key: str | None = None,
+        sender=None,
+        display_text: str = "",
+        reply_target=None,
+        overlay_context: str | None = None,
+        request_context: dict | None = None,
+        emit=None,
+    ) -> dict:
+        """Persist a human-facing message and wake the channel consumer."""
+        return await self.conversation_queue.enqueue(
+            payload,
+            channel=channel_id,
+            source=source,
+            external_dedupe_key=external_dedupe_key,
+            sender=sender,
+            display_text=display_text,
+            reply_target=reply_target,
+            overlay=overlay_context,
+            request_context=request_context,
+            emit=emit,
+        )
+
+    async def await_enqueued(self, item_id: str) -> str:
+        """Wait for the turn containing an inbox item to finish."""
+        return await self.conversation_queue.await_item(item_id)
+
+    async def enqueue_and_await(self, payload, **kwargs) -> str:
+        item = await self.enqueue(payload, **kwargs)
+        return await self.await_enqueued(item["id"])
 
     def _check_cancelled(self, channel_id: str) -> None:
         ev = self._turn_cancel.get(channel_id)
@@ -455,27 +536,16 @@ class GaladrielAgent:
         self,
         channel_id: str,
         messages: list,
+        pre_turn_messages: list,
         emit,
         *,
-        tool_blocks=None,
-        tool_results: list | None = None,
+        recorder=None,
     ) -> str:
-        """Persist conversation after a user-initiated stop and return UI text."""
-        results = list(tool_results or [])
-        if tool_blocks:
-            done_ids = {r["tool_use_id"] for r in results}
-            for block in tool_blocks:
-                tool_id = block.id if hasattr(block, "id") else block.get("id")
-                if tool_id and tool_id not in done_ids:
-                    results.append({
-                        "type": "tool_result",
-                        "tool_use_id": tool_id,
-                        "content": _STOPPED_TOOL_RESULT,
-                    })
-            if results:
-                messages.append({"role": "user", "content": results})
-
+        """Rollback a cancelled turn and persist its durable cancelled audit state."""
+        messages[:] = pre_turn_messages
         conversation_store.save_channel(self.working_dir, channel_id, messages)
+        if recorder is not None:
+            await recorder.finalize_turn(state="cancelled")
         if emit is not None:
             await emit({"type": "stopped", "text": _STOPPED_ASSISTANT_NOTE})
         return _STOPPED_ASSISTANT_NOTE
@@ -1040,6 +1110,7 @@ class GaladrielAgent:
         tick_recorder=None,
         run_source: str | None = None,
         client_dedup_key: str | None = None,
+        request_context: dict | None = None,
     ) -> str:
         """Run the agentic loop and return the final assistant text.
 
@@ -1057,7 +1128,7 @@ class GaladrielAgent:
         async with self._lock_for(channel_id):
             return await self._respond_locked(
                 user_message, channel_id, emit, overlay_context, tick_recorder,
-                run_source, client_dedup_key,
+                run_source, client_dedup_key, request_context,
             )
 
     @staticmethod
@@ -1077,11 +1148,13 @@ class GaladrielAgent:
         tick_recorder=None,
         run_source: str | None = None,
         client_dedup_key: str | None = None,
+        request_context: dict | None = None,
     ) -> str:
         cancel_ev = asyncio.Event()
         self._turn_cancel[channel_id] = cancel_ev
-        pending_holder = {"blocks": None, "results": []}
         run_holder = {"recorder": None}
+        messages = self._get_messages(channel_id)
+        pre_turn_messages = copy.deepcopy(messages)
 
         try:
             return await self._respond_locked_inner(
@@ -1089,24 +1162,30 @@ class GaladrielAgent:
                 channel_id,
                 emit,
                 overlay_context,
-                pending_holder,
+                None,
                 tick_recorder,
                 run_source,
                 client_dedup_key,
+                request_context,
                 run_holder,
             )
         except TurnCancelled:
-            result = await self._finalize_cancelled_turn(
+            return await self._finalize_cancelled_turn(
                 channel_id,
-                self._get_messages(channel_id),
+                messages,
+                pre_turn_messages,
                 emit,
-                tool_blocks=pending_holder["blocks"],
-                tool_results=pending_holder["results"],
+                recorder=run_holder["recorder"],
             )
-            recorder = run_holder["recorder"]
-            if recorder is not None:
-                await recorder.finalize_turn(state="cancelled")
-            return result
+        except asyncio.CancelledError:
+            await self._finalize_cancelled_turn(
+                channel_id,
+                messages,
+                pre_turn_messages,
+                emit,
+                recorder=run_holder["recorder"],
+            )
+            raise
         except Exception as exc:
             recorder = run_holder["recorder"]
             if recorder is not None:
@@ -1125,6 +1204,7 @@ class GaladrielAgent:
         tick_recorder=None,
         run_source: str | None = None,
         client_dedup_key: str | None = None,
+        request_context: dict | None = None,
         run_holder: dict | None = None,
     ) -> str:
         messages = self._get_messages(channel_id)
@@ -1139,6 +1219,7 @@ class GaladrielAgent:
                 provider=model_registry.provider_for_model(model),
                 headroom_enabled=bool(self.headroom_enabled),
                 client_dedup_key=client_dedup_key,
+                request_context=request_context,
             )
             if run_recorder is not None:
                 await run_recorder.begin_turn(client_dedup_key)
@@ -1174,6 +1255,14 @@ class GaladrielAgent:
             self._assemble_system_blocks(channel_id), overlay_context,
         )
         call_index = 0
+        actor_context = request_context or {
+            "source": run_source or "direct",
+            "actor_id": "",
+            "trusted": (run_source or "direct") in {"tower", "discord", "direct"},
+            "trust_reason": "trusted_surface",
+        }
+        untrusted_org_slack = is_untrusted_organization_slack(actor_context)
+        turn_tools = tools_for_request(self.tools, actor_context)
 
         max_tokens_retries = 0  # Track consecutive max_tokens hits
         turn_thought = ""  # Accumulated thought deltas for the current API response
@@ -1263,7 +1352,7 @@ class GaladrielAgent:
                     model=channel_model,
                     max_tokens=self.max_tokens,
                     system=system_blocks,
-                    tools=self.tools,
+                    tools=turn_tools,
                     messages=messages_for_api,
                 ):
                     self._check_cancelled(channel_id)
@@ -1279,7 +1368,7 @@ class GaladrielAgent:
                     model=channel_model,
                     max_tokens=self.max_tokens,
                     system=system_blocks,
-                    tools=self.tools,
+                    tools=turn_tools,
                     messages=messages_for_api,
                 )
             call_duration_ms = int(
@@ -1448,6 +1537,22 @@ class GaladrielAgent:
                     tool_input = block.input if isinstance(block.input, dict) else {}
                     tool_id = block.id
 
+                    if untrusted_org_slack and tool_name not in UNTRUSTED_READ_ONLY_TOOLS:
+                        blocked = f"[BLOCKED] {tool_name} is not available to this Slack actor."
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": tool_id,
+                            "content": blocked,
+                        })
+                        if pending_tool_results_holder is not None:
+                            pending_tool_results_holder["results"] = tool_results
+                        if emit is not None:
+                            await emit({
+                                "type": "tool_result", "name": tool_name,
+                                "output": blocked,
+                            })
+                        continue
+
                     if emit is not None:
                         await emit({
                             "type": "tool_call",
@@ -1460,6 +1565,27 @@ class GaladrielAgent:
                         shell_dir = tool_input.get("working_dir") or self.working_dir
                         tier = classify_command(command, self._created_files, shell_dir)
                         log.info(format_safety_notice(command, tier))
+
+                        if untrusted_org_slack and (
+                            tier != "green" or not is_demonstrably_read_only(command)
+                        ):
+                            blocked = (
+                                "[BLOCKED] Shared-channel Slack actors may run only "
+                                "demonstrably read-only green commands."
+                            )
+                            tool_results.append({
+                                "type": "tool_result",
+                                "tool_use_id": tool_id,
+                                "content": blocked,
+                            })
+                            if pending_tool_results_holder is not None:
+                                pending_tool_results_holder["results"] = tool_results
+                            if emit is not None:
+                                await emit({
+                                    "type": "tool_result", "name": tool_name,
+                                    "output": blocked,
+                                })
+                            continue
 
                         if tier == "red":
                             blocked = None

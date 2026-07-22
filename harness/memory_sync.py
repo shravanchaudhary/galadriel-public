@@ -106,3 +106,17 @@ async def drain_outbox(limit: int = 20) -> int:
         )
         mined += int(ok)
     return mined
+
+
+async def drain_slack_observations(limit: int = 50) -> int:
+    """Resume staged/pending Slack observation batches after restart."""
+    from .slack_observations import (
+        SlackObservationArchiver,
+        default_observation_store,
+    )
+
+    return await SlackObservationArchiver(
+        default_observation_store(),
+        debounce_seconds=0,
+        batch_size=limit,
+    ).flush()

@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+{% block title %}Integrations{% endblock %}
+{% block heading %}Integrations{% endblock %}
+{% block subtitle %}Connect your Replika to the services you use{% endblock %}
+
+{% block content %}
+<section class="card" style="max-width: 680px;">
+    <div class="card-label">Slack</div>
+    {% if configuration_error %}
+        <p class="muted">{{ configuration_error }}</p>
+    {% elif not slack.connected %}
+        <p style="margin-bottom: 1rem;">
+            Connect Slack to use
+            {{ "one shared channel" if replika_type == "organization" else "a private DM with your Replika" }}.
+        </p>
+        <a class="btn" href="/integrations/slack/install">Add to Slack</a>
+    {% else %}
+        <div class="card-value">{{ slack.team_name }}</div>
+        {% if slack.mode == "dm" %}
+            <p style="margin: 0.75rem 0;">
+                DM mode is active for installer
+                <strong>{{ slack.installer_user_id or "unknown" }}</strong>.
+            </p>
+            <p class="muted">Messages are routed only from direct conversations with the Replika.</p>
+        {% else %}
+            <label for="slack-channel" style="display: block; margin: 1rem 0 0.4rem;">
+                Replika channel
+            </label>
+            <select id="slack-channel" class="interval-select" style="min-width: 280px;">
+                {% if slack.selected_channel %}
+                <option value="{{ slack.selected_channel.id }}">
+                    #{{ slack.selected_channel.name }}
+                </option>
+                {% else %}
+                <option value="">Loading accessible channels…</option>
+                {% endif %}
+            </select>
+            <p id="slack-channel-message" class="muted" style="margin-top: 0.5rem;">
+                Select exactly one public channel or private channel the app has been invited to.
+            </p>
+            <label for="slack-admins" style="display: block; margin: 1rem 0 0.4rem;">
+                Additional admin Slack user IDs
+            </label>
+            <input id="slack-admins" type="text" style="min-width: 360px;"
+                   value="{{ slack.admin_user_ids|reject('equalto', slack.installer_user_id)|join(', ') }}"
+                   placeholder="U012ABCDEF, U034GHIJKL">
+            <button type="button" class="btn" id="slack-save-admins">Save admins</button>
+            <p id="slack-admin-message" class="muted" style="margin-top: 0.5rem;">
+                The OAuth installer is always an admin. Additional admins must be active members of the selected channel.
+            </p>
+        {% endif %}
+        <button type="button" class="btn btn-danger" id="slack-disconnect" style="margin-top: 1rem;">
+            Disconnect Slack
+        </button>
+    {% endif %}
+</section>
+{% endblock %}
+
+{% block scripts %}
+{% if slack.connected %}
+<script>
+const channelSelect = document.getElementById('slack-channel');
+const channelMessage = document.getElementById('slack-channel-message');
+
+async function loadChannels() {
+    if (!channelSelect) return;
+    const response = await fetch('/api/integrations/slack/channels');
+    const data = await response.json();
+    if (!response.ok) {
+        channelMessage.textContent = data.error || 'Could not load channels.';
+        return;
+    }
+    const selected = {{ (slack.selected_channel.id if slack.selected_channel else "")|tojson }};
+    channelSelect.replaceChildren(new Option('Select one channel', ''));
+    for (const channel of data.channels) {
+        const suffix = channel.is_private ? ' (private, invited)' : '';
+        channelSelect.add(new Option(`#${channel.name}${suffix}`, channel.id));
+    }
+    channelSelect.value = selected;
+}
+
+if (channelSelect) {
+    loadChannels();
+    channelSelect.addEventListener('change', async () => {
+        if (!channelSelect.value) return;
+        const response = await fetch('/api/integrations/slack/channel', {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({channel_id: channelSelect.value}),
+        });
+        const data = await response.json();
+        channelMessage.textContent = response.ok
+            ? `Routing Slack messages from #${data.selected_channel.name}.`
+            : (data.error || 'Could not save that channel.');
+    });
+}
+
+const saveAdmins = document.getElementById('slack-save-admins');
+if (saveAdmins) {
+    saveAdmins.addEventListener('click', async () => {
+        const input = document.getElementById('slack-admins');
+        const message = document.getElementById('slack-admin-message');
+        const admin_user_ids = input.value.split(',').map(value => value.trim()).filter(Boolean);
+        const response = await fetch('/api/integrations/slack/admins', {
+            method: 'PUT',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({admin_user_ids}),
+        });
+        const data = await response.json();
+        message.textContent = response.ok
+            ? 'Admin identities verified and saved.'
+            : (data.error || 'Could not save admins.');
+    });
+}
+
+document.getElementById('slack-disconnect').addEventListener('click', async () => {
+    if (!confirm('Disconnect this Slack workspace?')) return;
+    const response = await fetch('/api/integrations/slack', {method: 'DELETE'});
+    if (response.ok) window.location.reload();
+});
+</script>
+{% endif %}
+{% endblock %}

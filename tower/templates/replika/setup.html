@@ -1,18 +1,30 @@
 {% extends "base.html" %}
 {% block title %}Your Replika{% endblock %}
 {% block heading %}Your Replika{% endblock %}
-{% block subtitle %}Choose the address for your personal AI{% endblock %}
+{% block subtitle %}Choose how your Replika works and where it lives{% endblock %}
 
 {% block content %}
 <section class="card" style="max-width: 640px;">
     <div id="replika-ready" {% if not replika %}hidden{% endif %}>
         <div class="card-label">Your address</div>
         <div class="card-value" id="replika-url">{{ replika.url if replika else "" }}</div>
+        <p id="replika-type">{{ replika.replika_type|capitalize if replika else "" }}</p>
         <p id="replika-status">{{ replika.status|capitalize if replika else "" }}</p>
         <a id="replika-open" href="{{ replika.url if replika else '#' }}">Open Replika</a>
     </div>
 
     <form id="replika-form" {% if replika %}hidden{% endif %}>
+        <fieldset style="border: 0; margin-bottom: 1rem;">
+            <legend style="font-weight: 500; margin-bottom: 0.5rem;">Replika type</legend>
+            <label style="display: block; margin-bottom: 0.5rem;">
+                <input type="radio" name="replika_type" value="individual" checked required>
+                Individual — install for yourself and talk in Slack DMs
+            </label>
+            <label style="display: block;">
+                <input type="radio" name="replika_type" value="organization" required>
+                Organization — connect one shared Slack channel
+            </label>
+        </fieldset>
         <label for="replika-username">Username</label>
         <div class="model-controls">
             <input
@@ -45,6 +57,8 @@ function showReplika(replika) {
     form.hidden = true;
     document.getElementById('replika-ready').hidden = false;
     document.getElementById('replika-url').textContent = replika.url;
+    document.getElementById('replika-type').textContent =
+        replika.replika_type === 'organization' ? 'Organization' : 'Individual';
     document.getElementById('replika-status').textContent =
         replika.status === 'ready' ? 'Ready' :
         replika.status === 'creating' ? 'Creating your Replika…' :
@@ -85,7 +99,10 @@ if (input) {
         const response = await fetch('/api/replika', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({username: input.value}),
+            body: JSON.stringify({
+                username: input.value,
+                replika_type: form.elements.replika_type.value,
+            }),
         });
         const data = await response.json();
         if (!response.ok) {

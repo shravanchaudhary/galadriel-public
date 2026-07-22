@@ -31,6 +31,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -601,6 +602,86 @@ def archive_conversation_durable(
     return _write_conversation_batch(
         _archive_root(), channel_id, messages, kind=kind,
     )
+
+
+def write_slack_observation_batch(observations: list[dict]) -> Path | None:
+    """Durably stage exact Slack observations for one bounded Palace mine."""
+    if not observations:
+        return None
+    ts = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+    batch_dir = _archive_root() / f"slack_observations_{ts}_{uuid.uuid4().hex[:8]}"
+    target_dir = batch_dir / CONVERSATION_ROOM
+    try:
+        target_dir.mkdir(parents=True, exist_ok=False)
+        (batch_dir / "mempalace.yaml").write_text(
+            _CONVERSATION_PALACE_YAML, encoding="utf-8"
+        )
+        sections = [
+            "# Slack channel observations",
+            "",
+            f"- staged: {datetime.now().astimezone().isoformat()}",
+            f"- observation count: {len(observations)}",
+            f"- wing: {DEFAULT_WING}",
+            f"- room: {CONVERSATION_ROOM}",
+            "",
+            "---",
+            "",
+        ]
+        for row in observations:
+            observed = row.get("observed_at")
+            if isinstance(observed, datetime):
+                observed = observed.astimezone().isoformat()
+            sender = row.get("sender_display_name") or row.get("sender_id") or "unknown"
+            sections.extend([
+                f"## {sender} — Slack {row.get('message_ts', '?')}",
+                "",
+                f"- workspace: {row.get('workspace_id', '?')}",
+                f"- channel: {row.get('channel_id', '?')}",
+                f"- sender_id: {row.get('sender_id') or '?'}",
+                f"- observed_at: {observed or '?'}",
+                f"- slack_ts: {row.get('message_ts', '?')}",
+                f"- thread_ts: {row.get('thread_ts') or '(none)'}",
+                f"- revision: {row.get('revision', 1)}",
+                f"- tombstone: {bool(row.get('tombstone'))}",
+                "",
+                "### Current authoritative state",
+                "",
+                (
+                    "[DELETED — this tombstone supersedes every earlier revision; "
+                    "do not recall prior text as current.]"
+                    if row.get("tombstone")
+                    else (
+                        f"[REVISION {row.get('revision', 1)} IS CURRENT — it "
+                        "supersedes every earlier revision below.]\n\n"
+                        + str(row.get("text") or "")
+                    )
+                ),
+                "",
+            ])
+            revisions = row.get("revisions") or []
+            if len(revisions) > 1:
+                sections.extend([
+                    "### Superseded revision history",
+                    "",
+                    "Historical evidence only. Never treat these entries as current.",
+                    "",
+                ])
+                for index, revision in enumerate(revisions, 1):
+                    sections.extend([
+                        f"#### Revision {index} — {revision.get('kind', 'message')}",
+                        f"- tombstone: {bool(revision.get('tombstone'))}",
+                        f"- event_id: {revision.get('event_id') or '?'}",
+                        "",
+                        str(revision.get("text") or ""),
+                        "",
+                    ])
+        (target_dir / "slack_observations.md").write_text(
+            "\n".join(sections), encoding="utf-8"
+        )
+    except Exception as exc:
+        log.warning("Slack observation archive write failed: %s", exc)
+        return None
+    return batch_dir
 
 
 def _safe_channel(channel_id: str) -> str:

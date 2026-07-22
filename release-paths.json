@@ -15,6 +15,7 @@
       "Dockerfile.control",
       "control_main.py",
       "requirements-control.txt",
+      "harness/tenant_database.py",
       "tower/control_app.py",
       "tower/replika_control_plane.py",
       "tower/templates/replika/**"
