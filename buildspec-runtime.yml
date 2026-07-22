@@ -1,5 +1,6 @@
 version: 0.2
 
+# This file intentionally belongs only to the tenant-runtime release.
 phases:
   pre_build:
     commands:
