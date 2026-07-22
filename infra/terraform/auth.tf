@@ -39,3 +39,13 @@ resource "aws_cognito_user_pool_domain" "replika" {
   domain       = "${substr(replace(local.name, "_", "-"), 0, 30)}-${data.aws_caller_identity.current.account_id}"
   user_pool_id = aws_cognito_user_pool.replika[0].id
 }
+
+resource "aws_cognito_user_pool_ui_customization" "replika" {
+  count        = var.enable_replika_managed_auth ? 1 : 0
+  user_pool_id = aws_cognito_user_pool.replika[0].id
+  client_id    = "ALL"
+  css          = file("${path.module}/cognito-login.css")
+  image_file   = filebase64("${path.module}/../../tower/static/img/clodexa-logo.png")
+
+  depends_on = [aws_cognito_user_pool_domain.replika]
+}

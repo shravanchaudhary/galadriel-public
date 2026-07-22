@@ -34,6 +34,7 @@ locals {
       APPCONFIG_ENVIRONMENT            = var.appconfig_environment_id
       APPCONFIG_CONFIGURATION          = var.appconfig_configuration_id
       PALACE_BACKEND                   = var.palace_backend
+      REPLIKA_COGNITO_DOMAIN           = var.enable_replika_managed_auth ? "https://${aws_cognito_user_pool_domain.replika[0].domain}.auth.${var.aws_region}.amazoncognito.com" : ""
       REPLIKA_KMS_KEY_ID               = aws_kms_key.byom.arn
       REPLIKA_CONTROL_PLANE_URL        = "https://${var.host_name}"
       REPLIKA_CONTROL_PLANE_ONLY       = tostring(var.replika_control_plane_only)
@@ -52,6 +53,7 @@ locals {
       APPCONFIG_ENVIRONMENT      = var.appconfig_environment_id
       APPCONFIG_CONFIGURATION    = var.appconfig_configuration_id
       PALACE_BACKEND             = var.palace_backend
+      REPLIKA_COGNITO_DOMAIN     = var.enable_replika_managed_auth ? "https://${aws_cognito_user_pool_domain.replika[0].domain}.auth.${var.aws_region}.amazoncognito.com" : ""
       REPLIKA_KMS_KEY_ID         = aws_kms_key.byom.arn
       REPLIKA_CONTROL_PLANE_URL  = "https://${var.host_name}"
       REPLIKA_CONTROL_PLANE_ONLY = "false"

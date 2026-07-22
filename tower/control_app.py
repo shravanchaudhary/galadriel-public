@@ -95,8 +95,7 @@ def create_control_app() -> Flask:
 
     @app.route("/logout", methods=["POST"])
     def logout():
-        tower_auth.clear_session()
-        return redirect(url_for("login"))
+        return tower_auth.logout_response()
 
     @app.context_processor
     def _inject_page_context():

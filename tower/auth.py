@@ -10,10 +10,11 @@ from __future__ import annotations
 import base64
 import binascii
 import hmac
+import json
 import os
 from dataclasses import dataclass
 from typing import Literal
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
 from flask import Request, jsonify, redirect, request, session, url_for
 
@@ -192,6 +193,55 @@ def establish_session(username: str) -> None:
 
 def clear_session() -> None:
     session.clear()
+
+
+def _cognito_client_id(req: Request) -> str:
+    configured = os.environ.get("REPLIKA_COGNITO_CLIENT_ID", "").strip()
+    if configured:
+        return configured
+    token = (req.headers.get("x-amzn-oidc-accesstoken") or "").strip()
+    try:
+        payload = token.split(".")[1]
+        payload += "=" * (-len(payload) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload))
+        return str(claims.get("client_id") or "") if isinstance(claims, dict) else ""
+    except (IndexError, ValueError, binascii.Error, UnicodeDecodeError):
+        return ""
+
+
+def logout_response(req: Request | None = None):
+    """Clear Flask, ALB, and Cognito sessions for the current product host."""
+    req = req or request
+    clear_session()
+
+    cognito_domain = os.environ.get("REPLIKA_COGNITO_DOMAIN", "").rstrip("/")
+    client_id = _cognito_client_id(req)
+    forwarded_proto = (req.headers.get("X-Forwarded-Proto") or "").split(",", 1)[0]
+    scheme = forwarded_proto.strip() or req.scheme
+    login_url = f"{scheme}://{req.host}/login"
+    if cognito_domain and client_id:
+        target = f"{cognito_domain}/logout?{urlencode({
+            'client_id': client_id,
+            'logout_uri': login_url,
+        })}"
+    else:
+        target = url_for("login")
+
+    response = redirect(target)
+    # ALB shards large authentication sessions across up to four cookies.
+    for name in ["AWSELBAuthSessionCookie", *[
+        f"AWSELBAuthSessionCookie-{index}" for index in range(4)
+    ]]:
+        response.delete_cookie(
+            name,
+            path="/",
+            secure=True,
+            httponly=True,
+            samesite="Lax",
+        )
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Clear-Site-Data"] = '"cache", "storage"'
+    return response
 
 
 def wants_json_unauthorized(req: Request | None = None) -> bool:

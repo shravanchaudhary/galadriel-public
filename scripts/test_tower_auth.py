@@ -51,6 +51,13 @@ def _basic(username: str, password: str) -> dict:
     return {"Authorization": f"Basic {token}"}
 
 
+def _unsigned_access_token(client_id: str) -> str:
+    payload = base64.urlsafe_b64encode(
+        f'{{"client_id":"{client_id}"}}'.encode()
+    ).decode().rstrip("=")
+    return f"header.{payload}.signature"
+
+
 def _assert(condition: bool, message: str) -> None:
     if not condition:
         raise AssertionError(message)
@@ -172,9 +179,49 @@ _assert("/login" in gone.headers.get("Location", ""), "logout should land on log
 after = client.get("/", follow_redirects=False)
 _assert(after.status_code == 302, "logout must revoke dashboard access")
 
+# Managed logout must also terminate the ALB and Cognito sessions.
+_, client = _make_client(
+    REPLIKA_COGNITO_DOMAIN="https://auth.example",
+)
+managed_logout = client.post(
+    "/logout",
+    base_url="https://alice.replika.example",
+    headers={
+        "x-amzn-oidc-accesstoken": _unsigned_access_token("tenant-client"),
+    },
+    follow_redirects=False,
+)
+managed_location = managed_logout.headers.get("Location", "")
+_assert(
+    managed_location.startswith("https://auth.example/logout?"),
+    f"managed logout must use Cognito: {managed_location}",
+)
+_assert("client_id=tenant-client" in managed_location, "Cognito client ID missing")
+_assert(
+    "logout_uri=https%3A%2F%2Falice.replika.example%2Flogin" in managed_location,
+    f"tenant logout URI missing: {managed_location}",
+)
+managed_cookies = managed_logout.headers.getlist("Set-Cookie")
+_assert(
+    any(cookie.startswith("AWSELBAuthSessionCookie=") for cookie in managed_cookies),
+    "base ALB session cookie must be expired",
+)
+for index in range(4):
+    _assert(
+        any(
+            cookie.startswith(f"AWSELBAuthSessionCookie-{index}=")
+            for cookie in managed_cookies
+        ),
+        f"ALB session shard {index} must be expired",
+    )
+_assert(
+    managed_logout.headers.get("Cache-Control") == "no-store",
+    "logout response must not be cached",
+)
+
 
 # --- Basic + Bearer header compatibility -------------------------------------
-_, client = _make_client()
+_, client = _make_client(REPLIKA_COGNITO_DOMAIN=None)
 basic_ok = client.get("/", headers=_basic("clyra", "test-token"))
 _assert(basic_ok.status_code == 200, f"Basic auth should work, got {basic_ok.status_code}")
 
