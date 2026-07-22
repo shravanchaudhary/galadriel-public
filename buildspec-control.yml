@@ -1,5 +1,6 @@
 version: 0.2
 
+# This file intentionally belongs only to the control-plane release.
 phases:
   pre_build:
     commands:
