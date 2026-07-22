@@ -130,7 +130,7 @@ variable "replika_runtime_secret_names" {
 }
 variable "host_name" {
   type    = string
-  default = "clyra-stag.clodexa.com"
+  default = "app.replika.clodexa.com"
 }
 variable "log_retention_days" {
   type    = number

@@ -73,7 +73,7 @@ def create_tower(agent, scheduler=None) -> Flask:
             "1", "true", "yes",
         }:
             allowed = (
-                request.path in {"/healthz", "/readyz", "/login", "/logout", "/replika"}
+                request.path in {"/", "/healthz", "/readyz", "/login", "/logout", "/replika"}
                 or request.path.startswith("/static/")
                 or request.path.startswith("/api/replika")
                 or request.path.startswith("/internal/replika/")
@@ -184,6 +184,10 @@ def create_tower(agent, scheduler=None) -> Flask:
 
     @app.route("/")
     def index():
+        if os.environ.get("REPLIKA_CONTROL_PLANE_ONLY", "").lower() in {
+            "1", "true", "yes",
+        }:
+            return redirect(url_for("replika_control_plane.replika_setup"))
         channels = len(agent.conversations)
         total_msgs = sum(len(m) for m in agent.conversations.values())
         memory_files = sorted(Path(agent.memory.memory_dir).glob("*.md"), reverse=True)

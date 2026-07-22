@@ -31,7 +31,7 @@ output "target_group_arn" {
 }
 
 output "replika_control_plane_url" {
-  value = "https://${var.host_name}/replika"
+  value = "https://${var.host_name}"
 }
 
 output "replika_product_url_pattern" {

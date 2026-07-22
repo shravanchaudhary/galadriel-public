@@ -227,6 +227,34 @@ _assert(
     "rejected tenant session should return to the control plane",
 )
 
+# --- Control-plane root redirects to canonical setup page -------------------
+_, client = _make_client(
+    REPLIKA_TRUST_ALB_IDENTITY="true",
+    REPLIKA_TENANT_ID="default",
+    REPLIKA_COOKIE_DOMAIN=".replika.example",
+    REPLIKA_CONTROL_PLANE_URL="https://app.replika.example",
+    REPLIKA_CONTROL_PLANE_ONLY="true",
+)
+control_plane_root = client.get(
+    "/",
+    base_url="https://app.replika.example",
+    headers={"x-amzn-oidc-identity": "account-123"},
+    follow_redirects=False,
+)
+_assert(control_plane_root.status_code == 302, "control-plane / should redirect")
+_assert(
+    control_plane_root.headers.get("Location") == "/replika",
+    "control-plane / should redirect to /replika",
+)
+control_plane_setup = client.get(
+    "/replika",
+    base_url="https://app.replika.example",
+)
+_assert(
+    control_plane_setup.status_code == 200,
+    "authenticated control-plane session should access /replika",
+)
+
 
 # --- Auth-disabled local mode ------------------------------------------------
 _, client = _make_client(
@@ -235,6 +263,7 @@ _, client = _make_client(
     REPLIKA_TENANT_ID=None,
     REPLIKA_COOKIE_DOMAIN=None,
     REPLIKA_CONTROL_PLANE_URL=None,
+    REPLIKA_CONTROL_PLANE_ONLY=None,
 )
 open_dash = client.get("/")
 _assert(open_dash.status_code == 200, f"auth-disabled / should be open, got {open_dash.status_code}")

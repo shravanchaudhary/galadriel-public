@@ -15,7 +15,7 @@ Last updated: 2026-07-16
 - Backing bucket: `clyra-stag-state-56814c98a4d1f5a76581e7c511`
 - Palace backend: Chroma, MongoDB, or DocumentDB via `PALACE_BACKEND`
 - Staging palace selection: DocumentDB
-- Endpoint: `https://clyra-stag.clodexa.com`
+- Control-plane endpoint: `https://app.replika.clodexa.com`
 
 The task has an unprivileged `clyra` container and the AppConfig Agent
 sidecar. Application code is immutable image content. AWS has no repository
@@ -87,7 +87,8 @@ Last updated: 2026-07-16
 
 ## Current deployment
 
-Clyra is healthy at `https://clyra-stag.clodexa.com`.
+The legacy staging hostname is retired. The active control plane is
+`https://app.replika.clodexa.com`.
 
 - AWS account/region: `020571892795`, `ap-south-1`
 - ECS service: `clyra-stag`
@@ -105,12 +106,6 @@ Clyra is healthy at `https://clyra-stag.clodexa.com`.
 - DocumentDB and Valkey readiness: passing
 - Deployment branch: `clyra`
 - Main deployment commits: `7865ce6`, `bc15a19`, `205a89e`, `d834b81`
-
-Cloudflare has an unproxied CNAME matching `backend.clodexa.com`:
-
-```text
-clyra-stag.clodexa.com -> STAG-ALB-927318609.ap-south-1.elb.amazonaws.com
-```
 
 The existing `*.clodexa.com` ACM certificate provides HTTPS. Rotate the
 Cloudflare API token that was pasted into chat.
