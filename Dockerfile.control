@@ -1,0 +1,26 @@
+# syntax=docker/dockerfile:1
+
+FROM public.ecr.aws/docker/library/python:3.12-slim
+
+RUN python -c "from urllib.request import urlretrieve; urlretrieve('https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem', '/etc/ssl/certs/rds-global-bundle.pem')"
+
+RUN useradd --create-home --uid 1000 replika
+WORKDIR /app
+
+COPY requirements-control.txt .
+RUN pip install --no-cache-dir -r requirements-control.txt
+
+COPY control_main.py .
+COPY tower ./tower
+COPY harness/__init__.py harness/runtime_dependencies.py ./harness/
+COPY docker/entrypoint.sh ./docker/entrypoint.sh
+
+ENV TOWER_HOST=0.0.0.0 \
+    TOWER_PORT=8080 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+EXPOSE 8080
+USER replika
+ENTRYPOINT ["./docker/entrypoint.sh"]
+CMD ["python", "control_main.py"]

@@ -1,11 +1,8 @@
 {
   "shared": {
     "includes": [
-      "Dockerfile",
       "docker/**",
-      "requirements.txt",
       "scripts/deploy_replika_fleet.py",
-      "tower/app.py",
       "tower/auth.py",
       "tower/templates/*",
       "tower/static/**"
@@ -15,6 +12,10 @@
   "control": {
     "includes": [
       "buildspec-control.yml",
+      "Dockerfile.control",
+      "control_main.py",
+      "requirements-control.txt",
+      "tower/control_app.py",
       "tower/replika_control_plane.py",
       "tower/templates/replika/**"
     ],
@@ -23,14 +24,16 @@
   "runtime_code": {
     "includes": [
       "buildspec-runtime.yml",
+      "Dockerfile",
+      "requirements.txt",
       "main.py",
       "harness/**",
       "tower/**",
-      "slack_bot/**",
-      "discord_bot/**",
+      "*_bot/**",
       "cmd/**"
     ],
     "excludes": [
+      "tower/control_app.py",
       "tower/replika_control_plane.py",
       "tower/templates/replika/**"
     ]

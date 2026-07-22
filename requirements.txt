@@ -24,5 +24,6 @@ redis>=5.0.0
 thefuzz>=0.22.0
 # Screenshot downscale for vision attachments (browser tool)
 Pillow>=10.0.0
-# Local prompt/context compression + screenshot prune (harness/headroom_compress.py)
-headroom-ai[all,ml]>=0.30.0
+# Local prompt/context compression. The default pipeline is CPU/text-only;
+# ML extras pull multi-gigabyte CUDA/PyTorch wheels that Fargate cannot use.
+headroom-ai>=0.30.0

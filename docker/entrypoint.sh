@@ -48,6 +48,10 @@ PY
     set +a
 fi
 
+if [ "${REPLIKA_CONTROL_PLANE_ONLY:-false}" = "true" ]; then
+    exec "$@"
+fi
+
 if [ -n "${REPLIKA_TENANT_ID:-}" ] && [ "${REPLIKA_TENANT_ID}" != "default" ]; then
     tenant_db_id="$(printf '%s' "$REPLIKA_TENANT_ID" | tr -cd 'A-Za-z0-9_-')"
     if [ -z "$tenant_db_id" ]; then

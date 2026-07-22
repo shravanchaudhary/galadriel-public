@@ -36,6 +36,16 @@ def start_tower(agent, scheduler):
     serve(app, host=host, port=port, threads=threads)
 
 
+async def run_tower_only(scheduler, completion_watcher, worker=None):
+    """Keep the agent event loop alive when Tower is the only chat gateway."""
+    scheduler.start()
+    completion_watcher.start()
+    if worker:
+        worker.start()
+    log.info("Tower-only agent event loop started.")
+    await asyncio.Event().wait()
+
+
 def _install_shutdown_archive(agent):
     """Archive live conversations to disk before the process exits.
 
@@ -156,7 +166,7 @@ def main():
         else:
             log.info("No DISCORD_BOT_TOKEN or SLACK_BOT_TOKEN/SLACK_APP_TOKEN set — running in Tower-only mode.")
             log.info("Chat via the Tower UI, or set DISCORD_BOT_TOKEN, or set SLACK_BOT_TOKEN + SLACK_APP_TOKEN.")
-            tower_thread.join()
+            asyncio.run(run_tower_only(scheduler, completion_watcher, worker))
     except KeyboardInterrupt:
         log.info("Shutting down.")
     finally:
