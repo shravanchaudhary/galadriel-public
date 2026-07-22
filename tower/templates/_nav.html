@@ -18,7 +18,6 @@
             <a href="/config" class="{{ 'active' if request.path.startswith('/config') }}">Configuration</a>
             <a href="/palace" class="{{ 'active' if request.path.startswith('/palace') }}">Memory</a>
             <a href="/costs" class="{{ 'active' if request.path.startswith('/costs') }}">Costs</a>
-            <a href="/integrations" class="{{ 'active' if request.path.startswith('/integrations') }}">Integrations</a>
             <a href="#" class="site-nav-cta" id="site-nav-chat" role="button">Chat</a>
             {% endif %}
             <form method="post" action="/logout" class="site-nav-logout">

@@ -83,15 +83,9 @@ def create_tower(agent, scheduler=None) -> Flask:
                     "/login",
                     "/logout",
                     "/replika",
-                    "/integrations",
-                    "/integrations/slack/install",
-                    "/integrations/slack/oauth/callback",
-                    "/slack/events",
-                    "/slack/commands",
                 }
                 or request.path.startswith("/static/")
                 or request.path.startswith("/api/replika")
-                or request.path.startswith("/api/integrations/slack")
                 or request.path.startswith("/internal/replika/")
             )
             if not allowed:
