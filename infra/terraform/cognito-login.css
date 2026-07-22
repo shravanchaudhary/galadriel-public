@@ -57,8 +57,14 @@
   padding: 10px 12px;
 }
 
-.textDescription-customizable,
-.idpDescription-customizable,
+.textDescription-customizable {
+  color: #746d64;
+}
+
+.idpDescription-customizable {
+  color: #746d64;
+}
+
 .legalText-customizable {
   color: #746d64;
 }
