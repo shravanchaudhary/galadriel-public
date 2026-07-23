@@ -69,13 +69,13 @@ def test_dynamic_project_does_not_use_hall() -> None:
         assert 'hall="' not in dynamic
 
 
-def test_repository_stable_core_stays_cacheable() -> None:
+def test_repository_stable_core_stays_minimal() -> None:
     manager = MemoryManager(str(ROOT / "config"), str(ROOT / "memory"))
     stable = manager.build_stable_text()
 
-    # Conservative character proxy for Gemini's 4K-token cache floor. Exact
-    # tokenization is provider-specific; this catches accidental major shrinkage.
-    assert len(stable) >= 14_000, len(stable)
+    # The neutral product base must remain useful but must not regain a copied
+    # tenant persona merely to cross a provider-specific prompt-cache floor.
+    assert 4_000 <= len(stable) <= 10_000, len(stable)
     for name in STABLE_FILES:
         assert (ROOT / "config" / name).read_text(encoding="utf-8") in stable
     # Non-allowlisted reference material must stay out of the stable prompt.
@@ -179,7 +179,7 @@ def main() -> int:
         test_explicit_allowlist_and_order,
         test_active_vision_is_opt_in,
         test_dynamic_project_does_not_use_hall,
-        test_repository_stable_core_stays_cacheable,
+        test_repository_stable_core_stays_minimal,
         test_knowledge_index_integrity,
         test_add_drawer_defaults_to_knowledge_room,
         test_archive_channel_kind_naming_and_legacy_match,

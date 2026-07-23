@@ -1,20 +1,19 @@
-# Backlog — Projects (one-offs)
+# Backlog — One-off projects
 
-Curator-owned. The worker reads this every tick and advances the top open item.
-Projects carry forward until truly done. Order = priority (top first).
+The Replika and background worker use this ordered list for projects that carry
+forward until completed. Put recurring work in `config/JOBS.md`.
 
-Each item:
-- **<title>** — <one-line goal> · cookbook: `jobs/<id>.md` (if any) · deadline: <date or none> · status: open | blocked | done
+Each item should include a title, one-line goal, optional cookbook, deadline, and
+status (`open`, `blocked`, or `done`).
 
 ## Open
 
-- (none)
+- None.
 
 ## Blocked
 
-- **Rachit Content Post 1** — Draft "Stepping Out of the Arena" post · cookbook: `jobs/content_drafting.md` · deadline: none · status: blocked (Awaiting chat interview to pull out depth)
+- None.
 
-## Done (recent, pruned periodically)
+## Done
 
-- **Sales Nav Account Audit** — Target Dodo Payments and Meraki Labs based on recent Sales Nav alerts · cookbook: `jobs/outbound_sales_engine.md` · deadline: none · status: done
-- **Rachit Inbox Triage** — Draft follow-ups for Aman Mishra & Anish Gillella · cookbook: `jobs/dm_triage.md` · deadline: none · status: done
+- None.

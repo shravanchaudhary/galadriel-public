@@ -264,15 +264,24 @@ class MongoSlackObservationStore:
 
     def __init__(self, database):
         self.collection = database[COLLECTION]
-        self.collection.create_index(
+        self._create_index(
             [("workspace_id", ASCENDING), ("channel_id", ASCENDING), ("message_ts", ASCENDING)],
             unique=True,
             name="unique_slack_observation",
         )
-        self.collection.create_index(
+        self._create_index(
             [("archive_state", ASCENDING), ("observed_at", ASCENDING)],
             name="slack_observation_archive",
         )
+
+    def _create_index(self, keys, **kwargs) -> None:
+        try:
+            self.collection.create_index(keys, **kwargs)
+        except DuplicateKeyError:
+            # DocumentDB can report code 11000 when concurrent startup paths
+            # race to create the same index. Accept only a completed peer create.
+            if kwargs.get("name") not in self.collection.index_information():
+                raise
 
     @classmethod
     def from_env(cls):

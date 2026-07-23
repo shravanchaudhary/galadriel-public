@@ -12,7 +12,6 @@ from zoneinfo import ZoneInfo
 
 from flask import Blueprint, abort, redirect, render_template, request, url_for
 
-from .config_browser import _git_commit
 from . import ui_context as ui_ctx
 
 CET = ZoneInfo("Europe/Stockholm")
@@ -100,7 +99,6 @@ def register_actions_board(app):
         path = base / f"{date}.md"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
-        _git_commit(path.as_posix(), "edit")
         return redirect(url_for("actions_board.actions_index", date=date, saved=kind))
 
     app.register_blueprint(bp)

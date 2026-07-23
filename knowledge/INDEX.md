@@ -1,21 +1,18 @@
-# Knowledge Index
+# Knowledge index
 
-Deterministic procedure/skill lookup. When a known failure or reusable
-procedure applies: find the matching row → `read_file` the entry → run the
-exact `palace_search` query only if richer detail is needed.
+Use this index to load a known procedure or reference before improvising. Add a row
+when a technique becomes reusable; keep personal history in the memory palace.
 
-| id | trigger | path | palace_query |
+| id | trigger | path | palace query |
 |---|---|---|---|
-| recover-tab-invalid | Browser/CE `TAB_INVALID` or dead tab after extension change | `knowledge/procedures/recover-tab-invalid.md` | `TAB_INVALID browser recovery` |
-| keep-browser-alive | About to close a browser tab / end a browser session | `knowledge/procedures/keep-browser-alive.md` | `browser last tab ownership` |
-| react-text-insertion | Typing into a React editor corrupts state / loses text | `knowledge/procedures/react-text-insertion.md` | `document.execCommand insertText React` |
-| rate-limit-in-loops | Looping external actions (send, invite, publish, scrape) | `knowledge/procedures/rate-limit-in-loops.md` | `db_counter rate limit loops` |
-| save-drafts-before-approval | Moving any draft entity to `review_pending` | `knowledge/procedures/save-drafts-before-approval.md` | `save draft before review_pending` |
-| review-backpressure | Approval queue is saturated / many pending reviews | `knowledge/procedures/review-backpressure.md` | `review backpressure stop drafting` |
-| gemini-nested-arguments | Gemini/protobuf Struct nested args break PyMongo filters | `knowledge/skills/gemini-nested-arguments.md` | `Gemini protobuf Struct nested dictionary` |
-| voice-sourcing | Need outbound/post voice rules or personal phrasing | `knowledge/skills/voice-sourcing.md` | `shravan voice rules personal sourcing` |
-| architecture | How the project is shaped / memory hierarchy / self-update | `knowledge/reference/architecture.md` | `galadriel architecture memory hierarchy` |
-| tools | Tool reference / where to record what | `knowledge/reference/tools.md` | `galadriel tools decision matrix` |
-| data | DB system of record / db_* primitives doctrine | `knowledge/reference/data.md` | `db primitives system of record` |
-| workflows | Authoring a workflows/*.json mini-app | `knowledge/reference/workflows.md` | `workflow spec authoring self-test` |
-| coding-principles | Self-edit discipline before changing harness code | `knowledge/reference/coding_principles.md` | `coding principles surgical changes` |
+| recover-tab-invalid | Browser reports an invalid or dead tab | `knowledge/procedures/recover-tab-invalid.md` | `TAB_INVALID browser recovery` |
+| keep-browser-alive | Releasing or closing a browser session | `knowledge/procedures/keep-browser-alive.md` | `browser last tab ownership` |
+| react-text-insertion | A controlled React editor loses typed text | `knowledge/procedures/react-text-insertion.md` | `React controlled editor text insertion` |
+| rate-limit-in-loops | Repeating external actions | `knowledge/procedures/rate-limit-in-loops.md` | `rate limit repeated actions` |
+| save-drafts-before-approval | Moving a draft into human review | `knowledge/procedures/save-drafts-before-approval.md` | `save draft before approval` |
+| gemini-nested-arguments | Nested tool arguments are malformed | `knowledge/skills/gemini-nested-arguments.md` | `Gemini nested tool arguments` |
+| architecture | Understanding Replika's memory and runtime boundaries | `knowledge/reference/architecture.md` | `Replika architecture memory storage` |
+| tools | Choosing a Replika tool and recording its result | `knowledge/reference/tools.md` | `Replika tool decision guide` |
+| data | Using operational data safely | `knowledge/reference/data.md` | `database tools system of record` |
+| workflows | Authoring a structured workflow | `knowledge/reference/workflows.md` | `workflow spec authoring` |
+| coding-principles | Making a small, verifiable file change | `knowledge/reference/coding_principles.md` | `coding principles surgical changes` |

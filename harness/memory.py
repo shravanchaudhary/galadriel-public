@@ -104,7 +104,7 @@ class MemoryManager:
                     parts.append(f"# Active Vision\n\n{vision}")
 
         if not parts:
-            return "You are Galadriel, a helpful AI assistant."
+            return "You are Replika, a helpful personal AI assistant."
         return "\n\n---\n\n".join(parts)
 
     def build_dynamic_text(self) -> str:

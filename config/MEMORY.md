@@ -1,41 +1,22 @@
-# MEMORY.md - Long Term Memory
+# MEMORY.md — Essential user context
 
-## About Your User
+This file is the small, always-loaded index of facts the Replika needs on most
+turns. It starts neutral for every new tenant.
 
-- **User Name:** Shravan
-- **LinkedIn Profile Handle:** shravankc
-- **Authorized Discord ID:** 1406315779049263114
-- **Standing Authorization:** Granted. Bare connection requests (no note) may be sent autonomously; all message-bearing writes (messages, posts, comments, notes, emails) require explicit approval per the strict lock.
+## User
 
-## Credentials (SECURE)
+- **Preferred name:** Not set
+- **Communication preferences:** Not set
+- **Standing authorizations:** None
 
-- **Never store credentials in this repo (or any file).** All secrets — usernames, passwords, TOTP secrets, API keys — live ONLY in the operational DB (`credentials` collection).
-- **The map:** `state/credentials_map.md` lists what credential sets exist, their lookup key, and which fields each holds (metadata only — no secret values). Read it, then fetch the actual secret from the DB at use time.
-- Currently stored: `linkedin` (username + password + totp_secret).
+## Essential context
 
-## Constraints
+- No user-specific context has been recorded yet.
+- Search the memory palace before relying on historical facts.
+- Store secrets only through the configured credential store, never in this file.
 
-- **STRICT APPROVAL LOCK (CRITICAL):** Do NOT send any message, publish any post, leave any comment, or send any connection request with a note autonomously. Every single outbound piece of text must be presented to Shravan in the chat and explicitly approved before execution. No exceptions. (A bare connection request carries no text and may be sent autonomously.)
+## Maintaining this file
 
-## Infrastructure
-
-- **Server:** Local / EC2 (development)
-- **Working Dir:** /Users/shravanchaudhary/Documents/work/galadriel-public
-- **Python Venv:** /Users/shravanchaudhary/Documents/work/galadriel-public/venv
-- **Model:** gemini-3.1-pro-preview (configured in model_registry.py)
-
-## Key Paths
-
-- **Harness code:** /Users/shravanchaudhary/Documents/work/galadriel-public
-- **Config:** /Users/shravanchaudhary/Documents/work/galadriel-public/config/
-- **Daily memory logs:** /Users/shravanchaudhary/Documents/work/galadriel-public/memory/
-- **Ops scripts:** /Users/shravanchaudhary/Documents/work/galadriel-public/cmd/
-
-## Operational Notes
-
-- **Gemini Identity Mandate (CRITICAL):** I am running exclusively on Gemini models (gemini-3.1-pro-preview with thinking for the main agent, gemini-2.5-flash for compaction). I know that I was created for claude majorly, but with recent update i'm running on gemini completely.
-- **Voice Mimicry Mandate:** Do not generate outreach or posts until a deep analysis of Shravan's personal message threads and post history has been completed and stored. Learn how Shravan speaks by reading multiple sent folders/threads first.
-- Galadriel can update this file herself using the write_file tool.
-- Git remote: git@github.com:shravanchaudhary/galadriel-public.git
-
-_This file `MEMORY.md` is yours to evolve. Add what matters. Remove what doesn't. But please make sure you don't bloat this file. This is your quick memory. Only keep whats essentially required to act fast, like index of essential things on mempalace(it too has taxonomy but this will be faster quicker, like the only most important shit). Or something which feels like is required every time you run without any memory recall. Everything else should go into mempalace._
+Update it when an enduring user preference, standing authorization, or high-value
+memory becomes useful on most turns. Keep it short. Put episodic history in daily
+logs or the memory palace and operational work in `state/`.

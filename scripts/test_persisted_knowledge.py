@@ -27,6 +27,7 @@ class PersistedKnowledgeTests(unittest.TestCase):
                 "APPCONFIG_REQUIRED": "false",
                 "GALADRIEL_DEFAULTS_ROOT": str(defaults),
                 "GALADRIEL_STORAGE_ROOT": str(persisted),
+                "GALADRIEL_APP_ROOT": str(repo),
                 "MEMPALACE_PATH": str(palace),
             }
             result = subprocess.run(

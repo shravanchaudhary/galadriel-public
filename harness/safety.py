@@ -19,8 +19,6 @@ GREEN_PATTERNS = [
     r"^echo\b",
     r"^date$",
     r"^whoami$",
-    r"^git\s+(status|log|diff|branch|show|remote)",
-    r"^git\s+fetch\b",
     r"^aws\s+(s3\s+ls|dynamodb\s+describe|ec2\s+describe|sts\s+get|cloudformation\s+describe|cloudformation\s+list|ce\s+get)",
     r"^python3?\s+.*\.(py)\s*$",
     r"^pip\s+(list|show|freeze)",
@@ -34,7 +32,6 @@ GREEN_PATTERNS = [
 ]
 
 YELLOW_PATTERNS = [
-    r"^git\s+(add|commit|push|pull|merge|checkout|switch)",
     r"^sam\s+deploy",
     r"^aws\s+s3\s+(cp|mv|sync)",
     r"^aws\s+dynamodb\s+(put-item|update-item|batch-write)",
@@ -53,7 +50,6 @@ RED_PATTERNS = [
     r"^aws\s+ec2\s+(terminate|stop|run|modify)",
     r"^aws\s+s3\s+rb\b",
     r"^aws\s+dynamodb\s+(create|delete)-table",
-    r"^git\s+(push\s+--force|reset\s+--hard)",
     r"^shutdown\b",
     r"^reboot\b",
     r"curl.*\|\s*(bash|sh)",
@@ -75,6 +71,16 @@ DB_FREESTYLE_PATTERNS = [
     r"\bget_db\s*\(",
     r"\b(Async)?MongoClient\b",
 ]
+
+_GIT_COMMAND_RE = re.compile(
+    r"(?:^|[\s;&|()'\"])(?:[^\s;&|()'\"]*/)?git(?=$|[\s;&|()'\"])",
+    re.IGNORECASE,
+)
+
+
+def is_git_command(command: str) -> bool:
+    """Return true when a shell command invokes Git, including through wrappers."""
+    return bool(_GIT_COMMAND_RE.search(command or ""))
 
 
 def is_db_freestyle(command: str) -> bool:
@@ -123,6 +129,8 @@ def classify_command(command: str, created_files: set = None, working_dir: str =
     a plain `rm` is auto-approved instead of red.
     """
     cmd = command.strip()
+    if is_git_command(cmd):
+        return "red"
     if is_self_created_file_deletion(cmd, created_files, working_dir):
         return "green"
     for pattern in RED_PATTERNS:

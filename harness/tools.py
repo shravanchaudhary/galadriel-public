@@ -320,7 +320,7 @@ TOOL_DEFINITIONS = [
         "description": (
             "File a fact into the knowledge graph as a (subject, predicate, object) "
             "triple with a validity window. Use for durable relational facts: "
-            "`user — prefers — direct commits`, "
+            "`user — prefers — concise updates`, "
             "`service — runs_on — ARM64 t4g`, `project — shipped_at — 2026-04-20`. "
             "Facts can be superseded later via palace_kg_invalidate. "
             "Prefer this over palace_add_drawer for structured relations."
@@ -833,7 +833,13 @@ async def _execute_tool_impl(
 
         if managed_runtime():
             return "[blocked] Shell access is disabled in managed Replika runtimes."
-        from .safety import is_db_freestyle
+        from .safety import is_db_freestyle, is_git_command
+        if is_git_command(inputs["command"]):
+            return (
+                "[blocked] Source-control commands are unavailable to the Replika. "
+                "File changes remain in tenant storage until the user manages source "
+                "control outside the Replika."
+            )
         if is_db_freestyle(inputs["command"]):
             return (
                 "[blocked] Freestyle MongoDB access via run_shell is not allowed. "

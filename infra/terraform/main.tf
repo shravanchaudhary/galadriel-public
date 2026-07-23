@@ -581,6 +581,26 @@ resource "aws_lb_listener_rule" "clyra" {
   }
 }
 
+resource "aws_lb_listener_rule" "replika_not_found" {
+  listener_arn = data.aws_lb_listener.https.arn
+  priority     = 50000
+
+  action {
+    type = "fixed-response"
+    fixed_response {
+      content_type = "text/plain"
+      message_body = "Replika not found"
+      status_code  = "404"
+    }
+  }
+
+  condition {
+    host_header {
+      values = ["*.${var.replika_product_domain}"]
+    }
+  }
+}
+
 resource "aws_route53_record" "replika_wildcard" {
   count   = var.replika_route53_zone_id == "" ? 0 : 1
   zone_id = var.replika_route53_zone_id

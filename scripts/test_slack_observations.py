@@ -19,7 +19,9 @@ from flask import Flask  # noqa: E402
 from slack_sdk.web.async_client import AsyncWebClient  # noqa: E402
 
 from harness.slack_observations import (  # noqa: E402
+    DuplicateKeyError,
     MemorySlackObservationStore,
+    MongoSlackObservationStore,
     ReplyDecision,
     ReplyGate,
     SlackObservationArchiver,
@@ -34,6 +36,48 @@ from tower.slack_runtime import register_slack_runtime  # noqa: E402
 def check(condition, message):
     if not condition:
         raise AssertionError(message)
+
+
+class RacingIndexCollection:
+    def __init__(self, peer_completes=True):
+        self.indexes = {}
+        self.peer_completes = peer_completes
+        self.first = True
+
+    def create_index(self, _keys, **kwargs):
+        name = kwargs["name"]
+        if self.first:
+            self.first = False
+            if self.peer_completes:
+                self.indexes[name] = {}
+            raise DuplicateKeyError("concurrent index create")
+        self.indexes[name] = {}
+
+    def index_information(self):
+        return self.indexes
+
+
+class RacingIndexDatabase:
+    def __init__(self, collection):
+        self.collection = collection
+
+    def __getitem__(self, _name):
+        return self.collection
+
+
+racing_collection = RacingIndexCollection()
+MongoSlackObservationStore(RacingIndexDatabase(racing_collection))
+check(
+    "unique_slack_observation" in racing_collection.indexes,
+    "a completed concurrent DocumentDB index create is accepted",
+)
+
+try:
+    MongoSlackObservationStore(RacingIndexDatabase(RacingIndexCollection(False)))
+except DuplicateKeyError:
+    pass
+else:
+    raise AssertionError("an uncreated index must not hide a real duplicate-key failure")
 
 
 def message(ts: str, text: str, user: str = "U1"):

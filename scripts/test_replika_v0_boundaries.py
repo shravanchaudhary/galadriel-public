@@ -99,6 +99,24 @@ with tempfile.TemporaryDirectory() as temp:
     os.environ["GALADRIEL_CORE_ROOT"] = str(ROOT)
     for name in ("memory", "personal-tools"):
         (root / name).mkdir()
+    (root / "config").mkdir()
+    (root / "jobs").mkdir()
+    (root / "knowledge/reference").mkdir(parents=True)
+    (root / "config/JOBS.md").write_text(
+        "# Jobs\n\nKeep this goal.\n"
+        "| End of Day State Commit | 23:55 | `jobs/daily_state_commit.md` |\n",
+        encoding="utf-8",
+    )
+    (root / "jobs/daily_state_commit.md").write_text(
+        "# Daily State Commit\n\nRun git add state/ config/ memory/ jobs/.\n",
+        encoding="utf-8",
+    )
+    (root / "knowledge/reference/architecture.md").write_text(
+        "# Architecture\n\nKeep this intro.\n\n"
+        "## Git discipline\n\nCommit every change.\n\n"
+        "## Storage\n\nKeep this section.\n",
+        encoding="utf-8",
+    )
 
     _assert(
         assert_agent_writable(str(root / "memory" / "today.md")).is_relative_to(root),
@@ -133,9 +151,22 @@ with tempfile.TemporaryDirectory() as temp:
 
     first = migrate(root)
     second = migrate(root)
-    _assert(first["applied"] == [1], "first migration should create V1 state")
+    _assert(first["applied"] == [1, 2], "first migration should apply all state versions")
     _assert(second["applied"] == [], "migration must be idempotent")
     _assert((root / "personal-tools").is_dir(), "personal tool directory must persist")
+    _assert(
+        not (root / "jobs/daily_state_commit.md").exists(),
+        "obsolete self-commit job must be removed",
+    )
+    _assert(
+        "Keep this goal." in (root / "config/JOBS.md").read_text(encoding="utf-8"),
+        "migration must preserve unrelated tenant instructions",
+    )
+    architecture = (root / "knowledge/reference/architecture.md").read_text(
+        encoding="utf-8"
+    )
+    _assert("Git discipline" not in architecture, "Git policy section must be removed")
+    _assert("Keep this section." in architecture, "later sections must be preserved")
 
 os.environ["REPLIKA_TENANT_ID"] = "tenant-a"
 os.environ["REPLIKA_KMS_KEY_ID"] = "test-key"

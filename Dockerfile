@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 #
-# Galadriel — ready-to-run container image.
+# Replika — ready-to-run runtime image.
 #
 # Two-stage build: the builder compiles wheels (incl. the heavier ChromaDB /
 # onnxruntime stack that mempalace pulls in), the runtime stage stays slim.
@@ -18,16 +18,16 @@
 FROM public.ecr.aws/docker/library/python:3.12-slim AS builder
 WORKDIR /build
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential git \
+        build-essential \
     && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt .
 RUN pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.txt
 
 # ---------- runtime: slim final image ----------
 FROM public.ecr.aws/docker/library/python:3.12-slim
-LABEL org.opencontainers.image.title="Galadriel" \
+LABEL org.opencontainers.image.title="Replika" \
       org.opencontainers.image.source="https://github.com/avasol/galadriel-public" \
-      org.opencontainers.image.description="A persistent, self-hosted Claude agent with a verbatim memory palace."
+      org.opencontainers.image.description="A persistent personal AI runtime with long-term memory."
 
 # onnxruntime (transitive dep of mempalace) needs libgomp at runtime. iptables
 # is used only by the ECS task's short-lived network init sidecar, never by the

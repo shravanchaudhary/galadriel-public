@@ -3,6 +3,7 @@ set -eu
 
 storage_root="${GALADRIEL_STORAGE_ROOT:-${GALADRIEL_EFS_ROOT:-/mnt/efs}}"
 defaults_root="${GALADRIEL_DEFAULTS_ROOT:-/opt/galadriel-defaults}"
+app_root="${GALADRIEL_APP_ROOT:-/app}"
 
 if [ "${APPCONFIG_REQUIRED:-false}" = "true" ]; then
     : "${APPCONFIG_APPLICATION:?APPCONFIG_APPLICATION is required}"
@@ -66,7 +67,7 @@ for dir in data memory config knowledge state jobs workflows personal-tools comp
     mkdir -p "$storage_root/$dir"
 done
 
-python3 /app/scripts/migrate_replika_state.py --root "$storage_root"
+python3 "$app_root/scripts/migrate_replika_state.py" --root "$storage_root"
 
 # Seed files added by a new image without overwriting state already persisted
 # on persistent storage. `cp -an` is deliberately idempotent across replacements.

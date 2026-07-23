@@ -14,6 +14,7 @@ keys/
 memory/*.md
 memory/*.json
 !memory/.gitkeep
+!memory/README.md
 config/scheduler_state.json
 config/ambient_state.json
 

@@ -12,16 +12,14 @@ Nothing here is cached: every view re-reads from disk, and `MemoryManager`
 does the same on every agent turn (see harness/memory.py), so what you see
 here is exactly what the agent sees on its next call — no restart needed.
 
-Editing writes straight to the working tree, then auto-commits so every
-change lands in git history without a separate step.
+Editing writes directly to tenant storage and is visible to the agent on its
+next turn. Source control is intentionally outside the Replika runtime.
 
 Files are only reachable through a server-side enumeration of the configured
 directories above (`_all_editable()`), never through a raw filesystem path
 taken from the request — that enumeration IS the whitelist.
 """
 
-import logging
-import subprocess
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -40,8 +38,6 @@ from harness.loop_prompts import (
 )
 
 from . import ui_context as ui_ctx
-
-log = logging.getLogger("galadriel.tower.config")
 
 CONFIG_DIR = Path("config")
 JOBS_DIR = Path("jobs")
@@ -133,21 +129,6 @@ def _dir_contents(base: Path, subpath: str, files: list[Path]) -> dict:
         else:
             folder_names.add(rel.parts[0])
     return {"folders": sorted(folder_names), "files": level_files}
-
-
-def _git_commit(relpath: str, verb: str = "edit") -> None:
-    """Best-effort auto-commit of one file change via Tower. Never raises."""
-    try:
-        if verb == "delete":
-            subprocess.run(["git", "add", "-u", "--", relpath], check=True, capture_output=True)
-        else:
-            subprocess.run(["git", "add", "--", relpath], check=True, capture_output=True)
-        subprocess.run(
-            ["git", "commit", "-m", f"tower: {verb} {relpath}"],
-            check=True, capture_output=True,
-        )
-    except Exception as e:
-        log.info(f"Tower auto-commit skipped for {relpath} ({verb}): {e}")
 
 
 def _safe_filename(name: str) -> bool:
@@ -289,7 +270,6 @@ def register_config_browser(app, agent, scheduler=None):
             abort(404)
         content = request.form.get("content", "")
         path.write_text(content, encoding="utf-8")
-        _git_commit(relpath, "edit")
         return redirect(url_for("config_browser.config_file", f=relpath, saved=1))
 
     @bp.route("/config/file/delete", methods=["POST"])
@@ -300,7 +280,6 @@ def register_config_browser(app, agent, scheduler=None):
             abort(404)
         back = _browse_url_for_relpath(relpath)
         path.unlink()
-        _git_commit(relpath, "delete")
         return redirect(back)
 
     @bp.route("/config/create", methods=["POST"])
@@ -316,7 +295,6 @@ def register_config_browser(app, agent, scheduler=None):
             abort(409)
         target.write_text(f"# {target.stem}\n\n", encoding="utf-8")
         relpath = target.as_posix()
-        _git_commit(relpath, "create")
         return redirect(url_for("config_browser.config_file", f=relpath))
 
     @bp.route("/config/preview")
