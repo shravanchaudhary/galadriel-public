@@ -102,6 +102,10 @@ def public_path(path: str) -> bool:
         "/logout",
         "/internal/replika/provisioning",
         "/internal/replika/database",
+        "/integrations/slack/oauth/callback",
+        "/slack/events",
+        "/slack/commands",
+        "/internal/slack/deliver",
     }:
         return True
     if path.startswith("/static/"):

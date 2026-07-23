@@ -271,6 +271,9 @@ class Scheduler:
 
         # Capture the running event loop so Flask threads can schedule onto it
         self._loop = asyncio.get_event_loop()
+        conversation_queue = getattr(self.agent, "conversation_queue", None)
+        if conversation_queue is not None:
+            conversation_queue.start()
 
         # Mine shutdown-staged archives in the background — conversation buffers
         # are restored from disk on startup, so this no longer blocks first reply.
@@ -281,13 +284,19 @@ class Scheduler:
             log.warning(f"Could not schedule background palace mine: {e}")
         try:
             from harness.conversation_run_store import mark_active_runs_interrupted
-            from harness.memory_sync import drain_outbox
+            from harness.memory_sync import drain_outbox, drain_slack_observations
 
             async def _reconcile_conversation_runs():
                 await mark_active_runs_interrupted()
                 mined = await drain_outbox()
                 if mined:
                     log.info(f"Reconciled {mined} pending conversation archive batch(es).")
+                slack_mined = await drain_slack_observations()
+                if slack_mined:
+                    log.info(
+                        "Reconciled %d Slack observation archive batch(es).",
+                        slack_mined,
+                    )
 
             asyncio.ensure_future(_reconcile_conversation_runs())
         except Exception as e:
@@ -640,10 +649,11 @@ class Scheduler:
         — handled by their own routines — are skipped to avoid double work.
         """
         try:
-            from .memory_sync import drain_outbox
+            from .memory_sync import drain_outbox, drain_slack_observations
             await drain_outbox()
+            await drain_slack_observations()
         except Exception as e:
-            log.warning(f"Conversation outbox drain failed: {e}")
+            log.warning(f"Memory outbox drain failed: {e}")
         for cid in list(self.agent.conversations.keys()):
             if cid in SCHEDULER_CHANNELS:
                 continue

@@ -1,8 +1,7 @@
 """Contact enrichment — two tools: fetch_email and fetch_phone.
 
-Ports wario's decision-maker email/phone waterfall (was entangled with the lead
-model + billing in ``services/intent_leads.py``) into two flat tools, minus
-credits/cost-tracking/webhooks.
+Extracts the decision-maker email/phone waterfall into two flat tools without
+credits, cost tracking, or webhooks.
 
   * ``fetch_email`` → FullEnrich first (cheapest, with a verification status),
     Explorium contacts as fallback.

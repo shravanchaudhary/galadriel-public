@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
+import stat
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -19,6 +21,28 @@ def remove_path(path: Path) -> None:
         shutil.rmtree(path)
     else:
         path.unlink()
+
+
+def copy_portable_tree(source: Path, target: Path) -> None:
+    """Copy content and modes without unsupported NFS timestamp operations."""
+    for source_path in sorted(source.rglob("*")):
+        target_path = target / source_path.relative_to(source)
+        info = source_path.lstat()
+        mode = stat.S_IMODE(info.st_mode)
+        if source_path.is_symlink():
+            if target_path.exists() or target_path.is_symlink():
+                remove_path(target_path)
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            os.symlink(os.readlink(source_path), target_path)
+        elif source_path.is_dir():
+            target_path.mkdir(parents=True, exist_ok=True)
+            target_path.chmod(mode)
+        elif source_path.is_file():
+            if target_path.exists() or target_path.is_symlink():
+                remove_path(target_path)
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source_path, target_path)
+            target_path.chmod(mode)
 
 
 def main() -> int:
@@ -42,7 +66,7 @@ def main() -> int:
     if args.delete and not args.allow_existing:
         raise SystemExit("--delete requires --allow-existing")
 
-    source_manifest = build_manifest(source)
+    source_manifest = build_manifest(source, exclude={MARKER})
     if args.delete:
         for path in sorted(target.rglob("*"), key=lambda item: len(item.parts), reverse=True):
             source_path = source / path.relative_to(target)
@@ -59,20 +83,16 @@ def main() -> int:
             remove_path(target_path)
         elif source_path.is_file() and target_path.is_dir():
             remove_path(target_path)
-    shutil.copytree(
-        source,
-        target,
-        symlinks=True,
-        copy_function=shutil.copy2,
-        dirs_exist_ok=True,
-    )
+    copy_portable_tree(source, target)
     target_manifest = build_manifest(target, exclude={MARKER})
 
     source_view = comparison_view(source_manifest)
     target_view = comparison_view(target_manifest)
-    if source_view != target_view:
-        source_by_path = {entry["path"]: entry for entry in source_view}
-        target_by_path = {entry["path"]: entry for entry in target_view}
+    source_content = [{k: v for k, v in entry.items() if k != "mode"} for entry in source_view]
+    target_content = [{k: v for k, v in entry.items() if k != "mode"} for entry in target_view]
+    if source_content != target_content:
+        source_by_path = {entry["path"]: entry for entry in source_content}
+        target_by_path = {entry["path"]: entry for entry in target_content}
         changed = sorted(
             path
             for path in source_by_path.keys() | target_by_path.keys()
