@@ -544,7 +544,35 @@ resource "aws_lb_listener_rule" "clyra_health" {
         "/readyz",
         "/internal/replika/database",
         "/internal/replika/provisioning",
+      ]
+    }
+  }
+}
+
+resource "aws_lb_listener_rule" "clyra_slack" {
+  count        = var.enable_replika_managed_auth ? 1 : 0
+  listener_arn = data.aws_lb_listener.https.arn
+  priority     = var.listener_rule_priority - 2
+  action {
+    type  = "forward"
+    order = 1
+    forward {
+      target_group {
+        arn = aws_lb_target_group.clyra.arn
+      }
+    }
+  }
+  condition {
+    host_header {
+      values = [var.host_name]
+    }
+  }
+  condition {
+    path_pattern {
+      values = [
         "/internal/slack/deliver",
+        "/slack/commands",
+        "/slack/events",
       ]
     }
   }

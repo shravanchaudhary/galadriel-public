@@ -62,6 +62,7 @@ class ClaimStore:
         self.deliveries = []
         self.failures = []
         self.auth_refs = []
+        self.placeholders = []
 
     def claim(self, worker_id):
         if not self.items:
@@ -78,6 +79,10 @@ class ClaimStore:
 
     def set_auth_ref(self, owner_id, auth_ref):
         self.auth_refs.append((owner_id, auth_ref))
+
+    def set_placeholder(self, item_id, worker_id, placeholder_ts):
+        self.placeholders.append((item_id, placeholder_ts))
+        return True
 
 
 class Vault:
@@ -110,7 +115,7 @@ class SlackApi:
 
     def call(self, method, *, token=None, **params):
         self.calls.append((method, token, params))
-        return {"ok": True}
+        return {"ok": True, "ts": "200.1"}
 
 
 installation = {
@@ -143,6 +148,42 @@ dispatcher = SlackOutboxDispatcher(
 check(dispatcher.dispatch_once(), "dispatcher claims work")
 check(store.deliveries == ["E1"], "dispatcher records successful delivery")
 check(store.auth_refs == [("tenant-1", "secret://tenant-1")], "auth ref persisted")
+
+placeholder_item = {
+    **ingress_item,
+    "_id": "E-PLACEHOLDER",
+    "dedupe_key": "E-PLACEHOLDER",
+    "payload": {
+        "event_id": "E-PLACEHOLDER",
+        "event": {
+            "type": "app_mention",
+            "channel": "C1",
+            "thread_ts": "100.1",
+            "text": "<@B1> hello",
+        },
+    },
+}
+placeholder_store = ClaimStore([placeholder_item])
+placeholder_transport = TenantTransport()
+placeholder_slack = SlackApi()
+SlackOutboxDispatcher(
+    placeholder_store,
+    installation_resolver=lambda owner: {**installation, "bot_user_id": "B1"},
+    tenant_url_resolver=lambda owner: "https://tenant.example",
+    auth_vault=Vault(),
+    token_vault=Vault(),
+    transport=placeholder_transport,
+    slack_api=placeholder_slack,
+).dispatch_once()
+check(
+    placeholder_slack.calls[0][0] == "chat.postMessage"
+    and placeholder_slack.calls[0][2]["text"] == "_thinking…_",
+    "explicit Slack request gets an immediate placeholder",
+)
+check(
+    placeholder_transport.calls[0][1]["placeholder_ts"] == "200.1",
+    "placeholder timestamp reaches the tenant runtime",
+)
 
 retry_store = ClaimStore([dict(ingress_item)])
 retry_dispatcher = SlackOutboxDispatcher(
@@ -179,6 +220,27 @@ SlackOutboxDispatcher(
 check(slack.calls[0][2]["thread_ts"] == "100.1", "outbound preserves thread")
 check(outbound_store.deliveries == ["O1"], "outbound success recorded")
 
+update_store = ClaimStore([{
+    **outbound,
+    "_id": "O-UPDATE",
+    "payload": {**outbound["payload"], "placeholder_ts": "200.1"},
+}])
+update_slack = SlackApi()
+SlackOutboxDispatcher(
+    update_store,
+    installation_resolver=lambda owner: installation,
+    tenant_url_resolver=lambda owner: "unused",
+    auth_vault=Vault(),
+    token_vault=Vault(),
+    transport=TenantTransport(),
+    slack_api=update_slack,
+).dispatch_once()
+check(
+    update_slack.calls[0][0] == "chat.update"
+    and update_slack.calls[0][2]["ts"] == "200.1",
+    "final response replaces the thinking placeholder",
+)
+
 
 class InjectedDispatcher:
     def __init__(self):
@@ -205,16 +267,17 @@ check(
 
 
 class Agent:
-    def __init__(self):
+    def __init__(self, response="runtime reply"):
         self.enqueued = []
         self.stops = 0
+        self.response = response
 
     async def enqueue(self, payload, **kwargs):
         self.enqueued.append((payload, kwargs))
         return {"id": f"item-{len(self.enqueued)}"}
 
     async def await_enqueued(self, item_id):
-        return "runtime reply"
+        return self.response
 
     def request_stop(self, channel):
         self.stops += 1
@@ -251,9 +314,11 @@ thread = threading.Thread(target=loop.run_forever, daemon=True)
 thread.start()
 
 
-def runtime_client(replika_type, *, owner="UOWNER", channel="CSELECTED"):
+def runtime_client(
+    replika_type, *, owner="UOWNER", channel="CSELECTED", response="runtime reply"
+):
     app = Flask(__name__)
-    agent = Agent()
+    agent = Agent(response)
     delivery = DeliveryTransport()
     app.config.update(
         REPLIKA_TENANT_ID="tenant-1",
@@ -288,6 +353,7 @@ base = {
     "admin_user_ids": [owner],
     "selected_channel": None,
     "bot_user_id": "B1",
+    "placeholder_ts": "200.1",
     "kind": "event",
     "dedupe_key": "E-DM",
     "payload": {
@@ -305,6 +371,25 @@ base = {
 check(post_ingress(client, base).status_code == 202, "owner DM accepted")
 check(delivery.event.wait(2), "runtime sends async response")
 check(delivery.calls[0][1]["thread_ts"] == "100.2", "runtime preserves thread")
+check(
+    delivery.calls[0][1]["placeholder_ts"] == "200.1"
+    and not delivery.calls[0][1]["delete_placeholder"],
+    "runtime returns the placeholder timestamp for in-place update",
+)
+empty_client, _, empty_delivery, empty_owner, _ = runtime_client(
+    "individual", response=""
+)
+empty = json.loads(json.dumps(base))
+empty["dedupe_key"] = "E-EMPTY"
+empty["payload"]["event_id"] = "E-EMPTY"
+empty["payload"]["event"]["user"] = empty_owner
+check(post_ingress(empty_client, empty).status_code == 202, "empty-result DM accepted")
+check(empty_delivery.event.wait(2), "empty result triggers placeholder cleanup")
+check(
+    empty_delivery.calls[0][1]["delete_placeholder"]
+    and empty_delivery.calls[0][1]["text"] is None,
+    "empty result deletes the thinking placeholder",
+)
 other = json.loads(json.dumps(base))
 other["dedupe_key"] = "E-OTHER"
 other["payload"]["event_id"] = "E-OTHER"

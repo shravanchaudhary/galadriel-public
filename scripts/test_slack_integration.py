@@ -439,6 +439,7 @@ oversized_response = client.post(
 )
 _assert(oversized_response.status_code == 413, "oversized Slack payload rejected")
 
+store.outbox[event_key]["placeholder_ts"] = "200.1"
 delivery_payload = {
     "tenant_id": "account-123",
     "team_id": "T123",
@@ -447,6 +448,8 @@ delivery_payload = {
     "channel": "C1",
     "thread_ts": "100.1",
     "text": "reply from runtime",
+    "placeholder_ts": "200.1",
+    "delete_placeholder": False,
 }
 delivery_body = json.dumps(delivery_payload, separators=(",", ":")).encode()
 delivery = client.post(
@@ -459,9 +462,26 @@ delivery = client.post(
 )
 _assert(delivery.status_code == 202, "authenticated outbound accepted")
 _assert(
-    store.outbox["outbound:reply-1"]["payload"]["thread_ts"] == "100.1",
-    "outbound delivery is durable and thread-aware",
+    store.outbox["outbound:reply-1"]["payload"]["thread_ts"] == "100.1"
+    and store.outbox["outbound:reply-1"]["payload"]["placeholder_ts"] == "200.1",
+    "outbound delivery is durable, thread-aware, and updates its placeholder",
 )
+delete_payload = {
+    **delivery_payload,
+    "dedupe_key": "reply-delete",
+    "text": None,
+    "delete_placeholder": True,
+}
+delete_body = json.dumps(delete_payload, separators=(",", ":")).encode()
+delete_response = client.post(
+    "/internal/slack/deliver",
+    data=delete_body,
+    content_type="application/json",
+    headers=signed_internal_headers(
+        "account-123", delete_body, "tenant-hmac-secret"
+    ),
+)
+_assert(delete_response.status_code == 202, "placeholder deletion accepted")
 too_long = {**delivery_payload, "dedupe_key": "reply-too-long", "text": "x" * 40_001}
 too_long_body = json.dumps(too_long, separators=(",", ":")).encode()
 too_long_response = client.post(

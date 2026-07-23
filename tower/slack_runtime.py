@@ -120,7 +120,9 @@ def register_slack_runtime(app, agent, scheduler=None, channel_id: str = "main")
         source_dedupe_key: str,
         channel: str,
         thread_ts: str | None,
-        text: str,
+        text: str | None,
+        placeholder_ts: str | None,
+        delete_placeholder: bool,
         secret: str,
         base_url: str,
         transport,
@@ -133,6 +135,8 @@ def register_slack_runtime(app, agent, scheduler=None, channel_id: str = "main")
             "channel": channel,
             "thread_ts": thread_ts,
             "text": text,
+            "placeholder_ts": placeholder_ts,
+            "delete_placeholder": delete_placeholder,
         }
         body = json.dumps(payload, separators=(",", ":")).encode()
         headers = signed_internal_headers(tenant_id, body, secret)
@@ -203,6 +207,36 @@ def register_slack_runtime(app, agent, scheduler=None, channel_id: str = "main")
         loop = scheduler._loop if scheduler else None
         if not (loop and loop.is_running()):
             return jsonify({"error": "Agent event loop unavailable"}), 503
+        thread_ts = event.get("thread_ts")
+        if thread_ts is not None and not isinstance(thread_ts, str):
+            return jsonify({"error": "Invalid thread timestamp"}), 400
+        placeholder_ts = str(data.get("placeholder_ts") or "") or None
+        base_url = (
+            setting("SLACK_CONTROL_PLANE_URL")
+            or setting("REPLIKA_CONTROL_PLANE_URL")
+        ).rstrip("/")
+        central_transport = (
+            current_app.config.get("SLACK_CENTRAL_TRANSPORT")
+            or CentralSlackTransport()
+        )
+
+        def discard_placeholder() -> None:
+            if not placeholder_ts:
+                return
+            send_response(
+                tenant_id=tenant_id,
+                team_id=team_id,
+                dedupe_key=f"{event_id}:placeholder-delete",
+                source_dedupe_key=dedupe_key,
+                channel=channel,
+                thread_ts=thread_ts,
+                text=None,
+                placeholder_ts=placeholder_ts,
+                delete_placeholder=True,
+                secret=secret,
+                base_url=base_url,
+                transport=central_transport,
+            )
 
         observation = None
         if replika_type == "organization":
@@ -215,6 +249,7 @@ def register_slack_runtime(app, agent, scheduler=None, channel_id: str = "main")
                 event_time=payload.get("event_time"),
             )
             if observation is None:
+                discard_placeholder()
                 return jsonify({"accepted": False}), 202
 
         if replika_type == "organization":
@@ -224,6 +259,7 @@ def register_slack_runtime(app, agent, scheduler=None, channel_id: str = "main")
             asyncio.run_coroutine_threadsafe(archive_observation(), loop)
 
         if event.get("subtype") in {"message_changed", "message_deleted"}:
+            discard_placeholder()
             return jsonify({"accepted": True}), 202
 
         sender_id = str(event["user"])
@@ -232,104 +268,104 @@ def register_slack_runtime(app, agent, scheduler=None, channel_id: str = "main")
         if replika_type == "organization" and bot_user_id:
             text = text.replace(f"<@{bot_user_id}>", "").strip()
         if not text:
+            discard_placeholder()
             return jsonify({"accepted": False}), 202
-        thread_ts = event.get("thread_ts")
-        if thread_ts is not None and not isinstance(thread_ts, str):
-            return jsonify({"error": "Invalid thread timestamp"}), 400
-
-        base_url = (
-            setting("SLACK_CONTROL_PLANE_URL")
-            or setting("REPLIKA_CONTROL_PLANE_URL")
-        ).rstrip("/")
-        central_transport = (
-            current_app.config.get("SLACK_CENTRAL_TRANSPORT")
-            or CentralSlackTransport()
-        )
 
         async def run_and_deliver():
-            overlay = None
-            if replika_type == "organization":
-                recent = observation_store.recent(team_id, channel, limit=20)
-                queue = getattr(agent, "conversation_queue", None)
-                inbox_status = (
-                    queue.status(channel_id)
-                    if queue is not None
-                    else {
-                        "busy": bool(getattr(agent, "is_channel_busy", lambda _c: False)(channel_id)),
-                        "paused": False,
-                        "depth": 0,
-                    }
-                )
-                decision = await reply_gate.decide(
-                    tenant_id=tenant_id,
-                    current=observation,
-                    recent=recent,
-                    inbox_status=inbox_status,
-                    explicit_override=explicit_bot_address(event, bot_user_id),
-                )
-                if not decision.should_respond:
-                    log.info(
-                        "Slack message observed without reply tenant=%s reason=%s",
-                        tenant_id,
-                        decision.reason_code,
-                    )
-                    return
-                overlay = observation_overlay(recent)
-            item = await agent.enqueue(
-                f"[Slack/{sender_id}]: {text}",
-                channel_id=channel_id,
-                source="slack",
-                external_dedupe_key=f"slack:{team_id}:{event_id}",
-                sender={"id": sender_id},
-                request_context={
-                    "source": "slack",
-                    "actor_id": sender_id,
-                    "tenant_id": tenant_id,
-                    "team_id": team_id,
-                    "channel_id": channel,
-                    "replika_type": replika_type,
-                    "trusted": (
-                        replika_type == "individual"
-                        or sender_id == str(data.get("installer_user_id") or "")
-                        or sender_id in {
-                            str(value) for value in (data.get("admin_user_ids") or [])
+            response_sent = False
+            try:
+                overlay = None
+                if replika_type == "organization":
+                    recent = observation_store.recent(team_id, channel, limit=20)
+                    queue = getattr(agent, "conversation_queue", None)
+                    inbox_status = (
+                        queue.status(channel_id)
+                        if queue is not None
+                        else {
+                            "busy": bool(getattr(agent, "is_channel_busy", lambda _c: False)(channel_id)),
+                            "paused": False,
+                            "depth": 0,
                         }
-                    ),
-                    "trust_reason": (
-                        "individual_owner"
-                        if replika_type == "individual"
-                        else "configured_slack_admin"
-                        if (
-                            sender_id == str(data.get("installer_user_id") or "")
+                    )
+                    decision = await reply_gate.decide(
+                        tenant_id=tenant_id,
+                        current=observation,
+                        recent=recent,
+                        inbox_status=inbox_status,
+                        explicit_override=explicit_bot_address(event, bot_user_id),
+                    )
+                    if not decision.should_respond:
+                        log.info(
+                            "Slack message observed without reply tenant=%s reason=%s",
+                            tenant_id,
+                            decision.reason_code,
+                        )
+                        return
+                    overlay = observation_overlay(recent)
+                item = await agent.enqueue(
+                    f"[Slack/{sender_id}]: {text}",
+                    channel_id=channel_id,
+                    source="slack",
+                    external_dedupe_key=f"slack:{team_id}:{event_id}",
+                    sender={"id": sender_id},
+                    request_context={
+                        "source": "slack",
+                        "actor_id": sender_id,
+                        "tenant_id": tenant_id,
+                        "team_id": team_id,
+                        "channel_id": channel,
+                        "replika_type": replika_type,
+                        "trusted": (
+                            replika_type == "individual"
+                            or sender_id == str(data.get("installer_user_id") or "")
                             or sender_id in {
                                 str(value) for value in (data.get("admin_user_ids") or [])
                             }
-                        )
-                        else "organization_member"
-                    ),
-                },
-                display_text=text,
-                reply_target={"channel": channel, "thread_ts": thread_ts},
-                overlay_context=overlay,
-            )
-            response = await agent.await_enqueued(item["id"])
-            # Older items in a merged batch deliberately receive an empty result;
-            # only the newest trigger owns the assistant reply.
-            if not isinstance(response, str) or not response.strip():
-                return
-            await asyncio.to_thread(
-                send_response,
-                tenant_id=tenant_id,
-                team_id=team_id,
-                dedupe_key=f"{event_id}:{item['id']}",
-                source_dedupe_key=dedupe_key,
-                channel=channel,
-                thread_ts=thread_ts,
-                text=response,
-                secret=secret,
-                base_url=base_url,
-                transport=central_transport,
-            )
+                        ),
+                        "trust_reason": (
+                            "individual_owner"
+                            if replika_type == "individual"
+                            else "configured_slack_admin"
+                            if (
+                                sender_id == str(data.get("installer_user_id") or "")
+                                or sender_id in {
+                                    str(value) for value in (data.get("admin_user_ids") or [])
+                                }
+                            )
+                            else "organization_member"
+                        ),
+                    },
+                    display_text=text,
+                    reply_target={"channel": channel, "thread_ts": thread_ts},
+                    overlay_context=overlay,
+                )
+                response = await agent.await_enqueued(item["id"])
+                # Older items in a merged batch deliberately receive an empty result;
+                # only the newest trigger owns the assistant reply.
+                if not isinstance(response, str) or not response.strip():
+                    return
+                await asyncio.to_thread(
+                    send_response,
+                    tenant_id=tenant_id,
+                    team_id=team_id,
+                    dedupe_key=f"{event_id}:{item['id']}",
+                    source_dedupe_key=dedupe_key,
+                    channel=channel,
+                    thread_ts=thread_ts,
+                    text=response,
+                    placeholder_ts=placeholder_ts,
+                    delete_placeholder=False,
+                    secret=secret,
+                    base_url=base_url,
+                    transport=central_transport,
+                )
+                response_sent = True
+            finally:
+                if placeholder_ts and not response_sent:
+                    try:
+                        await asyncio.to_thread(discard_placeholder)
+                    except Exception:
+                        log.warning("Could not delete Slack placeholder", exc_info=True)
 
         future = asyncio.run_coroutine_threadsafe(run_and_deliver(), loop)
 

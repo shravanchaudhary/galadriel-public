@@ -35,6 +35,7 @@ data "aws_iam_policy_document" "replika_provisioner" {
     actions = [
       "secretsmanager:CreateSecret",
       "secretsmanager:DescribeSecret",
+      "secretsmanager:TagResource",
     ]
     resources = local.slack_secret_arns
   }
