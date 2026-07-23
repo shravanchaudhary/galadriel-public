@@ -24,6 +24,9 @@ assert client.get("/readyz").status_code == 200
 root = client.get("/", follow_redirects=False)
 assert root.status_code == 302
 assert root.headers["Location"] == "/replika"
+replika = client.get("/replika")
+assert replika.status_code == 200
+assert b'href="/integrations"' in replika.data
 assert client.get("/api/chat").status_code == 404
 
 print("Control-plane app check passed.")
