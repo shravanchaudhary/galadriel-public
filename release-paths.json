@@ -2,8 +2,10 @@
   "shared": {
     "includes": [
       "docker/**",
+      "release-paths.json",
       "scripts/deploy_replika_fleet.py",
       "tower/auth.py",
+      "tower/slack_integration.py",
       "tower/templates/*",
       "tower/static/**"
     ],

@@ -35,13 +35,16 @@ MAX_INTERNAL_SLACK_BYTES = 1_000_000
 class CentralSlackTransport:
     """Injectable transport for authenticated runtime-to-control delivery."""
 
-    def post(self, url: str, payload: dict[str, Any], headers: dict[str, str]) -> None:
+    def post(
+        self, url: str, payload: dict[str, Any], headers: dict[str, str]
+    ) -> dict[str, Any]:
         body = json.dumps(payload, separators=(",", ":")).encode()
         req = urllib.request.Request(url, data=body, headers=headers, method="POST")
         try:
             with urllib.request.urlopen(req, timeout=10) as response:
                 if response.status not in {200, 202}:
                     raise RuntimeError(f"control plane returned HTTP {response.status}")
+                return json.loads(response.read() or b"{}")
         except (urllib.error.URLError, TimeoutError) as exc:
             raise RuntimeError("central Slack delivery request failed") from exc
 
@@ -122,11 +125,12 @@ def register_slack_runtime(app, agent, scheduler=None, channel_id: str = "main")
         thread_ts: str | None,
         text: str | None,
         placeholder_ts: str | None,
+        create_placeholder: bool,
         delete_placeholder: bool,
         secret: str,
         base_url: str,
         transport,
-    ) -> None:
+    ) -> dict[str, Any]:
         payload = {
             "tenant_id": tenant_id,
             "team_id": team_id,
@@ -136,13 +140,14 @@ def register_slack_runtime(app, agent, scheduler=None, channel_id: str = "main")
             "thread_ts": thread_ts,
             "text": text,
             "placeholder_ts": placeholder_ts,
+            "create_placeholder": create_placeholder,
             "delete_placeholder": delete_placeholder,
         }
         body = json.dumps(payload, separators=(",", ":")).encode()
         headers = signed_internal_headers(tenant_id, body, secret)
         if not base_url:
             raise RuntimeError("SLACK_CONTROL_PLANE_URL is not configured")
-        transport.post(base_url + "/internal/slack/deliver", payload, headers)
+        return transport.post(base_url + "/internal/slack/deliver", payload, headers) or {}
 
     @bp.post("/internal/slack/ingress")
     def slack_ingress():
@@ -232,6 +237,7 @@ def register_slack_runtime(app, agent, scheduler=None, channel_id: str = "main")
                 thread_ts=thread_ts,
                 text=None,
                 placeholder_ts=placeholder_ts,
+                create_placeholder=False,
                 delete_placeholder=True,
                 secret=secret,
                 base_url=base_url,
@@ -272,6 +278,7 @@ def register_slack_runtime(app, agent, scheduler=None, channel_id: str = "main")
             return jsonify({"accepted": False}), 202
 
         async def run_and_deliver():
+            nonlocal placeholder_ts
             response_sent = False
             try:
                 overlay = None
@@ -302,6 +309,27 @@ def register_slack_runtime(app, agent, scheduler=None, channel_id: str = "main")
                         )
                         return
                     overlay = observation_overlay(recent)
+                if not placeholder_ts:
+                    try:
+                        result = await asyncio.to_thread(
+                            send_response,
+                            tenant_id=tenant_id,
+                            team_id=team_id,
+                            dedupe_key=f"{event_id}:placeholder-create",
+                            source_dedupe_key=dedupe_key,
+                            channel=channel,
+                            thread_ts=thread_ts,
+                            text=None,
+                            placeholder_ts=None,
+                            create_placeholder=True,
+                            delete_placeholder=False,
+                            secret=secret,
+                            base_url=base_url,
+                            transport=central_transport,
+                        )
+                        placeholder_ts = str(result.get("placeholder_ts") or "") or None
+                    except Exception:
+                        log.warning("Could not create Slack placeholder", exc_info=True)
                 item = await agent.enqueue(
                     f"[Slack/{sender_id}]: {text}",
                     channel_id=channel_id,
@@ -354,6 +382,7 @@ def register_slack_runtime(app, agent, scheduler=None, channel_id: str = "main")
                     thread_ts=thread_ts,
                     text=response,
                     placeholder_ts=placeholder_ts,
+                    create_placeholder=False,
                     delete_placeholder=False,
                     secret=secret,
                     base_url=base_url,

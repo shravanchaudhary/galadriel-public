@@ -80,7 +80,7 @@ class ClaimStore:
     def set_auth_ref(self, owner_id, auth_ref):
         self.auth_refs.append((owner_id, auth_ref))
 
-    def set_placeholder(self, item_id, worker_id, placeholder_ts):
+    def set_runtime_placeholder(self, item_id, placeholder_ts):
         self.placeholders.append((item_id, placeholder_ts))
         return True
 
@@ -176,13 +176,9 @@ SlackOutboxDispatcher(
     slack_api=placeholder_slack,
 ).dispatch_once()
 check(
-    placeholder_slack.calls[0][0] == "chat.postMessage"
-    and placeholder_slack.calls[0][2]["text"] == "_thinking…_",
-    "explicit Slack request gets an immediate placeholder",
-)
-check(
-    placeholder_transport.calls[0][1]["placeholder_ts"] == "200.1",
-    "placeholder timestamp reaches the tenant runtime",
+    not placeholder_slack.calls
+    and placeholder_transport.calls[0][1]["placeholder_ts"] is None,
+    "dispatcher waits for the runtime reply decision before posting a placeholder",
 )
 
 retry_store = ClaimStore([dict(ingress_item)])
@@ -294,6 +290,15 @@ class AlwaysRespondGate:
         return ReplyDecision(True, "agent_input_needed")
 
 
+class NeverRespondGate:
+    def __init__(self):
+        self.decided = threading.Event()
+
+    async def decide(self, **kwargs):
+        self.decided.set()
+        return ReplyDecision(False, "social_acknowledgement")
+
+
 class NoopArchiver:
     def schedule(self):
         pass
@@ -306,7 +311,10 @@ class DeliveryTransport:
 
     def post(self, url, payload, headers):
         self.calls.append((url, payload, headers))
+        if payload.get("create_placeholder"):
+            return {"placeholder_ts": "200.1"}
         self.event.set()
+        return {}
 
 
 loop = asyncio.new_event_loop()
@@ -315,7 +323,12 @@ thread.start()
 
 
 def runtime_client(
-    replika_type, *, owner="UOWNER", channel="CSELECTED", response="runtime reply"
+    replika_type,
+    *,
+    owner="UOWNER",
+    channel="CSELECTED",
+    response="runtime reply",
+    reply_gate=None,
 ):
     app = Flask(__name__)
     agent = Agent(response)
@@ -327,7 +340,7 @@ def runtime_client(
         SLACK_CONTROL_PLANE_URL="https://control.example",
         SLACK_CENTRAL_TRANSPORT=delivery,
         SLACK_OBSERVATION_STORE=MemorySlackObservationStore(),
-        SLACK_REPLY_GATE=AlwaysRespondGate(),
+        SLACK_REPLY_GATE=reply_gate or AlwaysRespondGate(),
         SLACK_OBSERVATION_ARCHIVER=NoopArchiver(),
     )
     register_slack_runtime(app, agent, Scheduler(loop))
@@ -353,7 +366,6 @@ base = {
     "admin_user_ids": [owner],
     "selected_channel": None,
     "bot_user_id": "B1",
-    "placeholder_ts": "200.1",
     "kind": "event",
     "dedupe_key": "E-DM",
     "payload": {
@@ -370,10 +382,14 @@ base = {
 }
 check(post_ingress(client, base).status_code == 202, "owner DM accepted")
 check(delivery.event.wait(2), "runtime sends async response")
-check(delivery.calls[0][1]["thread_ts"] == "100.2", "runtime preserves thread")
 check(
-    delivery.calls[0][1]["placeholder_ts"] == "200.1"
-    and not delivery.calls[0][1]["delete_placeholder"],
+    delivery.calls[0][1]["create_placeholder"]
+    and delivery.calls[1][1]["thread_ts"] == "100.2",
+    "runtime requests a placeholder before agent delivery",
+)
+check(
+    delivery.calls[1][1]["placeholder_ts"] == "200.1"
+    and not delivery.calls[1][1]["delete_placeholder"],
     "runtime returns the placeholder timestamp for in-place update",
 )
 empty_client, _, empty_delivery, empty_owner, _ = runtime_client(
@@ -386,8 +402,9 @@ empty["payload"]["event"]["user"] = empty_owner
 check(post_ingress(empty_client, empty).status_code == 202, "empty-result DM accepted")
 check(empty_delivery.event.wait(2), "empty result triggers placeholder cleanup")
 check(
-    empty_delivery.calls[0][1]["delete_placeholder"]
-    and empty_delivery.calls[0][1]["text"] is None,
+    empty_delivery.calls[0][1]["create_placeholder"]
+    and empty_delivery.calls[1][1]["delete_placeholder"]
+    and empty_delivery.calls[1][1]["text"] is None,
     "empty result deletes the thinking placeholder",
 )
 other = json.loads(json.dumps(base))
@@ -413,11 +430,30 @@ org["payload"]["event"].update(
     channel=selected,
     channel_type="channel",
     user="U2",
-    text="<@B1> organization request",
+    text="organization request without a mention",
     ts="100.0",
 )
 check(post_ingress(org_client, org).get_json()["accepted"], "selected channel accepted")
 check(org_delivery.event.wait(2), "organization response delivered asynchronously")
+check(
+    org_delivery.calls[0][1]["create_placeholder"]
+    and org_delivery.calls[1][1]["placeholder_ts"] == "200.1",
+    "reply-gate-approved organization message gets a placeholder before processing",
+)
+ignore_gate = NeverRespondGate()
+ignore_client, ignore_agent, ignore_delivery, _, _ = runtime_client(
+    "organization", reply_gate=ignore_gate
+)
+ignored = json.loads(json.dumps(org))
+ignored["dedupe_key"] = "E-IGNORED"
+ignored["payload"]["event_id"] = "E-IGNORED"
+ignored["payload"]["event"]["ts"] = "102.0"
+check(post_ingress(ignore_client, ignored).status_code == 202, "ignored event accepted")
+check(ignore_gate.decided.wait(2), "reply gate considered ignored event")
+check(
+    not ignore_delivery.calls and not ignore_agent.enqueued,
+    "reply-gate-rejected message creates no placeholder",
+)
 check(
     not org_agent.enqueued[0][1]["request_context"]["trusted"],
     "ordinary organization member is untrusted for sensitive tools",

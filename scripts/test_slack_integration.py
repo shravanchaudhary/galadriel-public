@@ -69,6 +69,13 @@ class _Store:
     def outbox_item(self, dedupe_key):
         return self.outbox.get(dedupe_key)
 
+    def set_runtime_placeholder(self, item_id, placeholder_ts):
+        item = self.outbox.get(item_id)
+        if not item or item.get("placeholder_ts"):
+            return False
+        item["placeholder_ts"] = placeholder_ts
+        return True
+
     def select_channel(self, owner_id, team_id, channel):
         if not self.for_owner(owner_id) or self.installation["team_id"] != team_id:
             return False
@@ -166,6 +173,8 @@ class _Slack:
                 "ok": True,
                 "user": {"id": params["user"], "team_id": "T123", "is_bot": False},
             }
+        if method == "chat.postMessage":
+            return {"ok": True, "ts": "200.1"}
         return {"ok": True}
 
 
@@ -439,7 +448,33 @@ oversized_response = client.post(
 )
 _assert(oversized_response.status_code == 413, "oversized Slack payload rejected")
 
-store.outbox[event_key]["placeholder_ts"] = "200.1"
+placeholder_payload = {
+    "tenant_id": "account-123",
+    "team_id": "T123",
+    "dedupe_key": "placeholder-1",
+    "source_dedupe_key": event_key,
+    "channel": "C1",
+    "thread_ts": "100.1",
+    "text": None,
+    "placeholder_ts": None,
+    "create_placeholder": True,
+    "delete_placeholder": False,
+}
+placeholder_body = json.dumps(placeholder_payload, separators=(",", ":")).encode()
+placeholder = client.post(
+    "/internal/slack/deliver",
+    data=placeholder_body,
+    content_type="application/json",
+    headers=signed_internal_headers(
+        "account-123", placeholder_body, "tenant-hmac-secret"
+    ),
+)
+_assert(
+    placeholder.status_code == 200
+    and placeholder.get_json()["placeholder_ts"] == "200.1"
+    and store.outbox[event_key]["placeholder_ts"] == "200.1",
+    "reply-gate callback posts and persists a Slack placeholder",
+)
 delivery_payload = {
     "tenant_id": "account-123",
     "team_id": "T123",
@@ -449,6 +484,7 @@ delivery_payload = {
     "thread_ts": "100.1",
     "text": "reply from runtime",
     "placeholder_ts": "200.1",
+    "create_placeholder": False,
     "delete_placeholder": False,
 }
 delivery_body = json.dumps(delivery_payload, separators=(",", ":")).encode()

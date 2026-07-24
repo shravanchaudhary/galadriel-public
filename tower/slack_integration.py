@@ -392,9 +392,9 @@ class SlackInstallationStore:
             }, "$unset": {"claim_expires_at": "", "claimed_by": ""}},
         )
 
-    def set_placeholder(self, item_id: str, worker_id: str, placeholder_ts: str) -> bool:
+    def set_runtime_placeholder(self, item_id: str, placeholder_ts: str) -> bool:
         result = self.outbox.update_one(
-            {"_id": item_id, "status": "claimed", "claimed_by": worker_id},
+            {"_id": item_id, "placeholder_ts": {"$exists": False}},
             {"$set": {
                 "placeholder_ts": placeholder_ts,
                 "updated_at": datetime.now(timezone.utc),
@@ -526,7 +526,6 @@ class SlackOutboxDispatcher:
         if not auth_ref:
             auth_ref = self.auth_vault.ensure(owner_id)
             self.store.set_auth_ref(owner_id, auth_ref)
-        placeholder_ts = self._ensure_placeholder(installation, item)
         payload = {
             "tenant_id": owner_id,
             "team_id": installation["team_id"],
@@ -538,7 +537,7 @@ class SlackOutboxDispatcher:
             "kind": item["kind"],
             "dedupe_key": item["dedupe_key"],
             "payload": item["payload"],
-            "placeholder_ts": placeholder_ts,
+            "placeholder_ts": item.get("placeholder_ts"),
         }
         body = json.dumps(payload, separators=(",", ":")).encode()
         headers = signed_internal_headers(
@@ -548,40 +547,6 @@ class SlackOutboxDispatcher:
             self.tenant_url_resolver(owner_id)
         ) + "/internal/slack/ingress"
         self.transport.post(url, payload, headers)
-
-    def _ensure_placeholder(
-        self, installation: dict[str, Any], item: dict[str, Any]
-    ) -> str | None:
-        if item.get("placeholder_ts"):
-            return str(item["placeholder_ts"])
-        event = (item.get("payload") or {}).get("event") or {}
-        channel = str(event.get("channel") or "")
-        if not channel:
-            return None
-        explicit = installation.get("replika_type") == "individual"
-        if installation.get("replika_type") == "organization":
-            bot_user_id = str(installation.get("bot_user_id") or "")
-            explicit = event.get("type") == "app_mention" or (
-                bool(bot_user_id)
-                and f"<@{bot_user_id}>" in str(event.get("text") or "")
-            )
-        if not explicit:
-            return None
-        params = {"channel": channel, "text": "_thinking…_"}
-        if event.get("thread_ts"):
-            params["thread_ts"] = event["thread_ts"]
-        result = self.slack_api.call(
-            "chat.postMessage",
-            token=self.token_vault.get(installation["token_ref"]),
-            **params,
-        )
-        placeholder_ts = str(result.get("ts") or "")
-        if not placeholder_ts or not self.store.set_placeholder(
-            item["_id"], self.worker_id, placeholder_ts
-        ):
-            raise RuntimeError("Could not persist Slack placeholder")
-        item["placeholder_ts"] = placeholder_ts
-        return placeholder_ts
 
     def _deliver_slack(self, installation: dict[str, Any], payload: dict[str, Any]) -> None:
         token = self.token_vault.get(installation["token_ref"])
@@ -1205,6 +1170,7 @@ def register_slack_integration(app) -> None:
         text = data.get("text")
         thread_ts = data.get("thread_ts")
         placeholder_ts = str(data.get("placeholder_ts") or "")
+        create_placeholder = data.get("create_placeholder") is True
         delete_placeholder = data.get("delete_placeholder") is True
         source_dedupe_key = str(data.get("source_dedupe_key") or "")
         if (
@@ -1212,6 +1178,7 @@ def register_slack_integration(app) -> None:
             or not channel
             or (
                 not delete_placeholder
+                and not create_placeholder
                 and (
                     not isinstance(text, str)
                     or not text.strip()
@@ -1219,6 +1186,10 @@ def register_slack_integration(app) -> None:
                 )
             )
             or (delete_placeholder and (not placeholder_ts or text is not None))
+            or (
+                create_placeholder
+                and (delete_placeholder or placeholder_ts or text is not None)
+            )
             or (thread_ts is not None and not isinstance(thread_ts, str))
             or not source_dedupe_key
         ):
@@ -1240,6 +1211,41 @@ def register_slack_integration(app) -> None:
             )
         ):
             return jsonify({"error": "Original Slack target does not match"}), 403
+        if create_placeholder:
+            existing = str(source.get("placeholder_ts") or "")
+            if existing:
+                return jsonify({"placeholder_ts": existing})
+            params = {"channel": channel, "text": "_thinking…_"}
+            if thread_ts:
+                params["thread_ts"] = thread_ts
+            result = _slack().call(
+                "chat.postMessage",
+                token=_vault().get(installation["token_ref"]),
+                **params,
+            )
+            created = str(result.get("ts") or "")
+            if not created:
+                raise RuntimeError("Slack did not return a placeholder timestamp")
+            if _store().set_runtime_placeholder(source_dedupe_key, created):
+                return jsonify({"placeholder_ts": created})
+            winner = str(
+                (_store().outbox_item(source_dedupe_key) or {}).get("placeholder_ts")
+                or ""
+            )
+            try:
+                _slack().call(
+                    "chat.delete",
+                    token=_vault().get(installation["token_ref"]),
+                    channel=channel,
+                    ts=created,
+                )
+            except RuntimeError:
+                current_app.logger.warning(
+                    "Could not delete duplicate Slack placeholder", exc_info=True
+                )
+            if winner:
+                return jsonify({"placeholder_ts": winner})
+            raise RuntimeError("Could not persist Slack placeholder")
         dedupe_key = "outbound:" + str(data.get("dedupe_key") or "")
         if dedupe_key == "outbound:":
             return jsonify({"error": "dedupe_key is required"}), 400
