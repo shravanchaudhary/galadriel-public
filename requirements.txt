@@ -7,6 +7,10 @@ slack-bolt>=1.20.0
 aiohttp>=3.9.0
 Flask>=3.0.0
 waitress>=3.0.0
+# In-process phone bridge (ASGI WebSockets on a separate development port)
+fastapi>=0.139.0
+uvicorn>=0.49.0
+websockets>=16.0
 python-dotenv>=1.0.0
 boto3>=1.43.41
 mempalace>=3.3.2,<3.4

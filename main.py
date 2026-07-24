@@ -129,6 +129,11 @@ def main():
     # Attach completion_watcher to agent so it can be referenced
     agent.completion_watcher = completion_watcher
 
+    if os.environ.get("PHONE_BRIDGE_ENABLED", "0") == "1":
+        from phone_bridge import start_phone_bridge
+
+        start_phone_bridge()
+
     # Start Tower in a background thread
     tower_thread = threading.Thread(
         target=start_tower, args=(agent, scheduler), daemon=True
