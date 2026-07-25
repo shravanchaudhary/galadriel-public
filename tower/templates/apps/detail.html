@@ -1,4 +1,4 @@
-{% extends "workflows/base.html" %}
+{% extends "apps/base.html" %}
 {% block title %}{{ doc.get(spec.key) }} — {{ spec.name }}{% endblock %}
 {% block heading %}{{ doc.get(spec.table_columns[0], doc.get(spec.key)) }}{% endblock %}
 {% block subtitle %}{{ spec.name }} · <span class="badge {{ 'approval' if doc.get('status') in spec.approval_states }}">{{ doc.get('status', '—') }}</span>{% endblock %}

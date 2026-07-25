@@ -8,10 +8,10 @@ import asyncio
 import logging
 import signal
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify, Response, redirect, url_for, g
-from harness.agent import MAIN_CHANNEL_ID, WORKER_CHANNEL_ID
+from harness.agent import MAIN_CHANNEL_ID
 from harness import tower_settings
 from . import auth as tower_auth
 
@@ -58,7 +58,7 @@ def _build_chat_message(message: str, images: list) -> str | list | None:
     return [{"type": "text", "text": text}, *images]
 
 
-def create_tower(agent, scheduler=None) -> Flask:
+def create_tower(agent, scheduler=None, worker=None) -> Flask:
     """Create the Flask Tower app wired to the agent and scheduler."""
     app = Flask(
         __name__,
@@ -201,23 +201,22 @@ def create_tower(agent, scheduler=None) -> Flask:
             "1", "true", "yes",
         }:
             return redirect(url_for("replika_control_plane.replika_setup"))
-        channels = len(agent.conversations)
-        total_msgs = sum(len(m) for m in agent.conversations.values())
-        memory_files = sorted(Path(agent.memory.memory_dir).glob("*.md"), reverse=True)
-        recent_memories = [f.stem for f in memory_files[:7]]
-        sched_status = scheduler.get_status() if scheduler else None
+        from . import ui_context as ui_ctx
+        from .todo_board import dashboard_todo_vars
+
+        todo = dashboard_todo_vars()
         return render_template(
             "index.html",
-            model=agent.model,
-            worker_model=agent.model_for_channel(WORKER_CHANNEL_ID),
-            model_options=tower_settings.AGENT_MODEL_OPTIONS,
-            model_persisted=tower_settings.is_configured(),
             headroom_enabled=getattr(agent, "headroom_enabled", False),
-            channels=channels,
-            total_msgs=total_msgs,
-            recent_memories=recent_memories,
-            now=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            scheduler=sched_status,
+            now_iso=datetime.now(timezone.utc).isoformat(),
+            saved=request.args.get("saved"),
+            page_context=ui_ctx.todo(
+                todo["todo_date"],
+                todo["plan_relpath"],
+                todo["progress_relpath"],
+                "dashboard",
+            ),
+            **todo,
         )
 
     @app.route("/api/chat", methods=["POST"])
@@ -519,18 +518,6 @@ def create_tower(agent, scheduler=None) -> Flask:
             archived = 0
         return jsonify({"status": "ok", "archived": archived})
 
-    @app.route("/api/memory", methods=["GET"])
-    def api_memory():
-        date = request.args.get("date")
-        if date:
-            path = Path(agent.memory.memory_dir) / f"{date}.md"
-            if path.exists():
-                return jsonify({"date": date, "content": path.read_text()})
-            return jsonify({"error": "Not found"}), 404
-        # List all memory files
-        files = sorted(Path(agent.memory.memory_dir).glob("*.md"), reverse=True)
-        return jsonify({"files": [f.stem for f in files]})
-
     # ── Agent model API ──────────────────────────────────────────
 
     @app.route("/api/model", methods=["GET"])
@@ -734,6 +721,24 @@ def create_tower(agent, scheduler=None) -> Flask:
             scheduler.arm_wake(prompt)
         return jsonify(scheduler.get_status())
 
+    @app.route("/api/scheduler/routine-time", methods=["POST"])
+    def api_scheduler_routine_time():
+        """Set morning or goodnight fire time (CET). Body: {routine, time: HH:MM}."""
+        if not scheduler:
+            return jsonify({"error": "Scheduler not available"}), 503
+        data = request.json or {}
+        routine = (data.get("routine") or "").strip().lower()
+        hhmm = (data.get("time") or "").strip()
+        if routine not in ("morning", "goodnight"):
+            return jsonify({"error": "routine must be 'morning' or 'goodnight'"}), 400
+        if not hhmm:
+            return jsonify({"error": "Missing 'time' (HH:MM)"}), 400
+        try:
+            scheduler.set_routine_time(routine, hhmm)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        return jsonify(scheduler.get_status())
+
     @app.route("/api/runtime/restart", methods=["POST"])
     def api_runtime_restart():
         """Arm a durable wake and request a provider-controlled process restart."""
@@ -750,25 +755,61 @@ def create_tower(agent, scheduler=None) -> Flask:
         threading.Timer(1.0, lambda: os.kill(os.getpid(), signal.SIGTERM)).start()
         return jsonify({"status": "restarting"}), 202
 
-    # Generic workflow screens (table / kanban / detail / approvals),
-    # auto-rendered from the workflow specs + live MongoDB.
-    from .workflows import register_workflows
-    register_workflows(app, scheduler)
+    # Apps — table / kanban / detail / approvals from workflow specs + MongoDB.
+    from .apps import register_apps
+    register_apps(app, scheduler)
 
-    # Actions — today's planned actions + progress (editable), worker status.
-    from .actions_board import register_actions_board
-    register_actions_board(app)
+    # Plan / progress save endpoints (editors live on Dashboard).
+    from .todo_board import register_todo_board
+    register_todo_board(app)
 
-    # Loops — autonomous channel prompts (worker, scheduler, completions).
-    from .loops_board import register_loops_board
-    register_loops_board(app, scheduler=scheduler, agent=agent)
+    # Agent — autonomous channel prompts (worker, scheduler, completions).
+    from .agent_board import register_agent_board
+    register_agent_board(app, scheduler=scheduler, agent=agent, worker=worker)
 
-    # Worker Runs — durable per-tick telemetry and transcript audit.
+    @app.route("/api/worker/idle-interval", methods=["GET", "POST"])
+    def api_worker_idle_interval():
+        """Get or set the worker idle-poll interval (minutes)."""
+        if request.method == "GET":
+            minutes = (
+                worker.idle_interval_minutes()
+                if worker is not None
+                else tower_settings.get_worker_idle_minutes()
+            )
+            return jsonify({
+                "minutes": minutes,
+                "options": list(tower_settings.VALID_WORKER_IDLE_MINUTES),
+                "worker_running": worker is not None,
+                "persisted": tower_settings.is_configured(),
+            })
+        data = request.json or {}
+        try:
+            minutes = int(data.get("minutes"))
+        except (TypeError, ValueError):
+            return jsonify({"error": "Missing or invalid 'minutes'"}), 400
+        if minutes not in tower_settings.VALID_WORKER_IDLE_MINUTES:
+            return jsonify({"error": "Invalid idle interval"}), 400
+        try:
+            if worker is not None:
+                worker.set_idle_interval_minutes(minutes)
+            else:
+                tower_settings.set_worker_idle_minutes(minutes)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except RuntimeError as e:
+            return jsonify({"error": str(e)}), 503
+        return jsonify({
+            "minutes": minutes,
+            "options": list(tower_settings.VALID_WORKER_IDLE_MINUTES),
+            "worker_running": worker is not None,
+            "persisted": tower_settings.is_configured(),
+        })
+
+    # Chats — ChatGPT-like browser for chat + worker + loop ticks.
     from .worker_ticks_board import register_worker_ticks_board
     register_worker_ticks_board(app)
-
-    from .runs_board import register_runs_board
-    register_runs_board(app)
+    from .chats_board import register_chats_board
+    register_chats_board(app)
 
     # "Brain" — live agent configuration browser (config/jobs/state/sme).
     from .config_browser import register_config_browser

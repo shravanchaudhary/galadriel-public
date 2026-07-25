@@ -229,7 +229,7 @@ def record_ptr(key, status=None) -> dict:
 def workflow_index(entities: list[dict]) -> dict:
     return _ptr(
         "workflow_index",
-        "workflows",
+        "apps",
         reload=False,
         entities=[{"entity": e["entity"], "workflow": e.get("workflow")} for e in entities],
     )
@@ -419,13 +419,13 @@ def palace_diary(drawer_ids: list[str], *, page: int = 1) -> dict:
     )
 
 
-# ── Actions & loops ──────────────────────────────────────────────────────────
+# ── TODO / Agent / Chats ─────────────────────────────────────────────────────
 
 
-def actions(date: str, plan_file: str, progress_file: str, worker_status: str) -> dict:
+def todo(date: str, plan_file: str, progress_file: str, worker_status: str) -> dict:
     return _ptr(
-        "actions",
-        f"actions · {date}",
+        "todo",
+        f"todo · {date}",
         date=date,
         plan_file=plan_file,
         progress_file=progress_file,
@@ -434,36 +434,40 @@ def actions(date: str, plan_file: str, progress_file: str, worker_status: str) -
     )
 
 
-def loops_index() -> dict:
-    return _ptr("loops_index", "loops", reload=False)
+# Back-compat aliases for older callers / overlays.
+actions = todo
+
+
+def agent_index() -> dict:
+    return _ptr("agent_index", "agent", reload=False)
+
+
+loops_index = agent_index
 
 
 def costs_index(range_key: str) -> dict:
     return _ptr("costs_index", f"costs · {range_key}", reload=False, range=range_key)
 
 
-def worker_ticks_index(date: str, tick_ids: list[str]) -> dict:
-    return _ptr(
-        "worker_ticks_index",
-        f"worker runs · {date}",
-        reload=False,
-        date=date,
-        tick_ids=tick_ids,
-    )
+def chats_index(date: str, run_ids: list[str]) -> dict:
+    return _ptr("chats_index", f"chats · {date}", reload=False, date=date, run_ids=run_ids)
 
 
-def worker_tick_detail(tick_id: str, date: str) -> dict:
+def chat_detail(run_id: str) -> dict:
+    return _ptr("chat_detail", f"chat · {run_id}", run_id=run_id)
+
+
+def chat_tick_detail(tick_id: str, date: str) -> dict:
     return _ptr(
-        "worker_tick_detail",
-        f"worker run · {tick_id}",
+        "chat_tick_detail",
+        f"chat · {tick_id}",
         tick_id=tick_id,
         date=date,
     )
 
 
-def runs_index(date: str, run_ids: list[str]) -> dict:
-    return _ptr("runs_index", f"runs · {date}", reload=False, date=date, run_ids=run_ids)
-
-
-def run_detail(run_id: str) -> dict:
-    return _ptr("run_detail", f"run · {run_id}", run_id=run_id)
+# Back-compat aliases
+runs_index = chats_index
+run_detail = chat_detail
+worker_ticks_index = chats_index
+worker_tick_detail = chat_tick_detail

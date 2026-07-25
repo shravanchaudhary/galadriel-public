@@ -110,7 +110,7 @@ async def _insert(doc: dict) -> None:
 
 # ── Read side (Tower UI) ────────────────────────────────────────────────
 # Synchronous pymongo client, isolated from the async writer — same pattern
-# as tower/workflows.py's `_db()`, since Flask routes are sync.
+# as tower/apps.py's `_db()`, since Flask routes are sync.
 
 _sync_db = None
 

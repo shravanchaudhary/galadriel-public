@@ -22,7 +22,7 @@ from flask import Flask  # noqa: E402
 
 from harness import worker_tick_store  # noqa: E402
 from harness.worker import WorkerLoop  # noqa: E402
-from tower.worker_ticks_board import register_worker_ticks_board  # noqa: E402
+from tower.chats_board import register_chats_board  # noqa: E402
 
 
 class _Recorder:
@@ -110,11 +110,11 @@ class WorkerBoardTests(unittest.TestCase):
         app = Flask(__name__, template_folder=str(ROOT / "tower" / "templates"))
         app.secret_key = "test"
         app.context_processor(lambda: {"page_context": {}})
-        register_worker_ticks_board(app)
+        register_chats_board(app)
         self.client = app.test_client()
 
-    def test_invalid_day_is_rejected(self):
-        response = self.client.get("/worker-runs?date=not-a-day")
+    def test_invalid_kind_is_rejected(self):
+        response = self.client.get("/chats?kind=not-a-channel")
         self.assertEqual(response.status_code, 400)
 
     def test_selected_day_and_detail_render(self):
@@ -123,7 +123,7 @@ class WorkerBoardTests(unittest.TestCase):
             "day_cet": "2026-07-14",
             "state": "completed",
             "worker_status": "worked",
-            "started_at": datetime(2026, 7, 14, 8, tzinfo=timezone.utc),
+            "started_at": datetime.now(timezone.utc),
             "duration_ms": 1250,
             "model": "gemini-2.5-flash",
             "provider": "gemini",
@@ -131,14 +131,27 @@ class WorkerBoardTests(unittest.TestCase):
             "token_total": 42,
             "cost_total": 0.01,
             "system_prompt_versions": [],
+            "user_prompt": "Do the work",
         }
         with patch.object(worker_tick_store, "is_configured", return_value=True), \
-             patch.object(worker_tick_store, "ticks_for_day", return_value=[tick]), \
+             patch.object(worker_tick_store, "recent_ticks", return_value=[tick]), \
              patch.object(worker_tick_store, "get_tick", return_value=tick), \
              patch.object(worker_tick_store, "events_for_tick", return_value=[]), \
-             patch.object(worker_tick_store, "calls_for_tick", return_value=[]):
-            self.assertEqual(self.client.get("/worker-runs?date=2026-07-14").status_code, 200)
-            self.assertEqual(self.client.get("/worker-runs/tick-1").status_code, 200)
+             patch.object(worker_tick_store, "calls_for_tick", return_value=[]) as calls_mock:
+            listed = self.client.get("/worker-runs", follow_redirects=True)
+            self.assertEqual(listed.status_code, 200)
+            self.assertIn(b"Today", listed.data)
+            self.assertFalse(calls_mock.called)
+            shell = self.client.get("/chats?kind=worker&id=tick-1")
+            self.assertEqual(shell.status_code, 200)
+            self.assertIn(b"runs-shell", shell.data)
+            self.assertFalse(calls_mock.called)
+            detail = self.client.get("/chats/detail?kind=worker&id=tick-1")
+            self.assertEqual(detail.status_code, 200)
+            self.assertEqual(detail.get_json()["id"], "tick-1")
+            self.assertTrue(calls_mock.called)
+            legacy = self.client.get("/worker-runs/tick-1", follow_redirects=True)
+            self.assertEqual(legacy.status_code, 200)
         self.assertEqual(self.client.get("/worker-runs/missing").status_code, 404)
 
 

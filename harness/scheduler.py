@@ -43,9 +43,9 @@ SCHEDULER_CHANNELS = {"wake", "heartbeat", "morning", "reflection", "goodnight"}
 # every tick, so we only checkpoint the heartbeat channel once per hour.
 HEARTBEAT_CHECKPOINT_MIN_GAP = timedelta(hours=1)
 
-# Morning: 09:10 CET on workdays (Mon-Fri)
+# Morning: 09:10 CET on workdays (Mon-Fri) — overridable via Tower /agent
 MORNING_TIME = time(9, 10)
-# Goodnight: 21:00 CET every day
+# Goodnight: 21:00 CET every day — overridable via Tower /agent
 GOODNIGHT_TIME = time(21, 0)
 # Ambient reflection slots (workdays only): palace filing + worker audit +
 # a brief status summary to the user at each slot.
@@ -55,7 +55,30 @@ REFLECTION_TIMES = (time(11, 0), time(14, 0), time(17, 0), time(20, 0))
 VALID_INTERVALS = [5, 10, 20, 30]
 DEFAULT_INTERVAL = 10
 
-# Default heartbeat prompt lives in harness/loop_prompts.py (also shown in Tower /loops).
+
+def _try_parse_hhmm(value: str | None) -> time | None:
+    """Parse ``HH:MM`` into a time, or None if invalid."""
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        hour_s, minute_s = value.strip().split(":", 1)
+        hour, minute = int(hour_s), int(minute_s)
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return time(hour, minute)
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
+def _parse_hhmm(value: str | None, default: time) -> time:
+    """Parse ``HH:MM`` into a time; fall back to ``default`` on bad input."""
+    return _try_parse_hhmm(value) or default
+
+
+def _format_hhmm(value: time) -> str:
+    return f"{value.hour:02d}:{value.minute:02d}"
+
+# Default heartbeat prompt lives in harness/loop_prompts.py (also shown in Tower /agent).
 
 # Morning / catchup prompt builders live in harness/loop_prompts.py.
 
@@ -81,6 +104,10 @@ class Scheduler:
         # One-shot wake state (restart-surviving)
         self.pending_wake: str | None = None
         self._wake_task: asyncio.Task | None = None
+
+        # Configurable routine times (CET); defaults match MORNING/GOODNIGHT_TIME
+        self.morning_time: time = MORNING_TIME
+        self.goodnight_time: time = GOODNIGHT_TIME
 
         # Cron tasks
         self._morning_task: asyncio.Task | None = None
@@ -119,6 +146,12 @@ class Scheduler:
                 interval = data.get("heartbeat_interval", DEFAULT_INTERVAL)
                 if interval in VALID_INTERVALS:
                     self.heartbeat_interval = interval
+                self.morning_time = _parse_hhmm(
+                    data.get("morning_time"), MORNING_TIME
+                )
+                self.goodnight_time = _parse_hhmm(
+                    data.get("goodnight_time"), GOODNIGHT_TIME
+                )
                 # Fire-trackers — restored so "did X already run today?" survives a
                 # restart. Without this a mid-day restart re-fires routines and a
                 # post-grace restart silently skips the missed morning entirely.
@@ -129,6 +162,8 @@ class Scheduler:
                     f"Scheduler state loaded: enabled={self.heartbeat_enabled}, "
                     f"interval={self.heartbeat_interval}m, "
                     f"pending_wake={'armed' if self.pending_wake else 'none'}, "
+                    f"morning={_format_hhmm(self.morning_time)}, "
+                    f"goodnight={_format_hhmm(self.goodnight_time)}, "
                     f"last_morning={self._last_morning}"
                 )
             except Exception as e:
@@ -140,6 +175,8 @@ class Scheduler:
             data = {
                 "heartbeat_enabled": self.heartbeat_enabled,
                 "heartbeat_interval": self.heartbeat_interval,
+                "morning_time": _format_hhmm(self.morning_time),
+                "goodnight_time": _format_hhmm(self.goodnight_time),
             }
             if self.heartbeat_prompt:
                 data["heartbeat_prompt"] = self.heartbeat_prompt
@@ -164,18 +201,41 @@ class Scheduler:
     def get_status(self) -> dict:
         """Return current scheduler status for the Tower UI."""
         now_cet = datetime.now(CET)
+        morning = _format_hhmm(self.morning_time)
+        goodnight = _format_hhmm(self.goodnight_time)
         return {
             "heartbeat_enabled": self.heartbeat_enabled,
             "heartbeat_interval": self.heartbeat_interval,
             "heartbeat_prompt": self.heartbeat_prompt,
             "pending_wake": "armed" if self.pending_wake else None,
             "valid_intervals": VALID_INTERVALS,
-            "morning_time": "09:10 CET (workdays)",
-            "goodnight_time": "21:00 CET (daily)",
+            "morning_hhmm": morning,
+            "goodnight_hhmm": goodnight,
+            "morning_time": f"{morning} CET (workdays)",
+            "goodnight_time": f"{goodnight} CET (daily)",
             "reflection_times": "11:00/14:00/17:00/20:00 CET (workdays — palace + worker audit + status)",
             "server_time_cet": now_cet.strftime("%Y-%m-%d %H:%M:%S %Z"),
             "is_workday": now_cet.weekday() < 5,
         }
+
+    def set_routine_time(self, routine: str, hhmm: str) -> None:
+        """Update morning or goodnight fire time (CET). Thread-safe; takes effect
+        on the next cron poll (≤30s)."""
+        routine = (routine or "").strip().lower()
+        parsed = _try_parse_hhmm(hhmm)
+        if parsed is None:
+            raise ValueError("Invalid time; use HH:MM")
+        if routine == "morning":
+            self.morning_time = parsed
+        elif routine == "goodnight":
+            self.goodnight_time = parsed
+        else:
+            raise ValueError("routine must be 'morning' or 'goodnight'")
+        self._save_state()
+        log.info(
+            f"Routine time updated: morning={_format_hhmm(self.morning_time)}, "
+            f"goodnight={_format_hhmm(self.goodnight_time)}"
+        )
 
     def set_heartbeat(self, enabled: bool, interval: int | None = None,
                       prompt: str | None = None):
@@ -302,16 +362,16 @@ class Scheduler:
         except Exception as e:
             log.warning(f"Could not reconcile conversation run state: {e}")
 
-        # Always start morning + goodnight watchers
+        # Always start morning + goodnight watchers (times re-read each poll)
         self._morning_task = asyncio.ensure_future(self._cron_loop(
             name="morning",
-            target_time=MORNING_TIME,
+            time_attr="morning_time",
             callback=self._morning_routine,
             workday_only=True,
         ))
         self._goodnight_task = asyncio.ensure_future(self._cron_loop(
             name="goodnight",
-            target_time=GOODNIGHT_TIME,
+            time_attr="goodnight_time",
             callback=self._goodnight_routine,
             workday_only=False,
         ))
@@ -340,7 +400,10 @@ class Scheduler:
         now_cet = datetime.now(CET)
         today_str = now_cet.strftime("%Y-%m-%d")
         morning_dt = now_cet.replace(
-            hour=MORNING_TIME.hour, minute=MORNING_TIME.minute, second=0, microsecond=0
+            hour=self.morning_time.hour,
+            minute=self.morning_time.minute,
+            second=0,
+            microsecond=0,
         )
         # Start the window PAST the cron's 5-min grace: within grace the normal
         # morning cron still fires the routine itself, so a catch-up there would
@@ -451,13 +514,18 @@ class Scheduler:
         setattr(self, tracker, today_str)
         self._save_state()
 
-    async def _cron_loop(self, name: str, target_time: time, callback, workday_only: bool):
-        """Generic cron-style loop that fires a callback once per day at target_time CET."""
+    async def _cron_loop(self, name: str, time_attr: str, callback, workday_only: bool):
+        """Generic cron-style loop that fires a callback once per day at a CET time.
+
+        ``time_attr`` is an instance attribute (e.g. ``morning_time``) re-read
+        each poll so Tower UI changes take effect within ~30s without restart.
+        """
         try:
             while True:
                 now = datetime.now(CET)
                 today_str = now.strftime("%Y-%m-%d")
                 tracker = f"_last_{name}"
+                target_time = getattr(self, time_attr)
 
                 # Build today's target datetime
                 target_dt = now.replace(
@@ -486,20 +554,40 @@ class Scheduler:
                     await asyncio.sleep(30)
                     continue
 
-                # We haven't fired today and target is in the future
+                # Future target: poll every 30s so mid-day time edits are picked up
                 seconds_to_wait = (target_dt - now).total_seconds()
-                log.info(f"Cron [{name}]: sleeping {seconds_to_wait:.0f}s until {target_time}")
-                await asyncio.sleep(seconds_to_wait)
+                if seconds_to_wait > 55:
+                    log.info(
+                        f"Cron [{name}]: waiting {seconds_to_wait:.0f}s until "
+                        f"{_format_hhmm(target_time)} CET"
+                    )
+                await asyncio.sleep(min(30, max(1, seconds_to_wait)))
 
-                # Re-check after sleep
+                # Re-check after sleep (time_attr may have changed)
                 now = datetime.now(CET)
                 today_str = now.strftime("%Y-%m-%d")
+                target_time = getattr(self, time_attr)
+                target_dt = now.replace(
+                    hour=target_time.hour,
+                    minute=target_time.minute,
+                    second=0,
+                    microsecond=0,
+                )
 
                 if getattr(self, tracker) == today_str:
                     continue
 
+                if now < target_dt:
+                    continue
+
                 if workday_only and now.weekday() >= 5:
                     log.info(f"Cron [{name}]: skipping — weekend")
+                    self._mark_fired(tracker, today_str)
+                    continue
+
+                # Within grace only — if the user moved the time into the past
+                # by hours, mark fired without running (same as original stale-skip).
+                if (now - target_dt).total_seconds() >= 300:
                     self._mark_fired(tracker, today_str)
                     continue
 
@@ -562,7 +650,7 @@ class Scheduler:
     # ── Routines ─────────────────────────────────────────────────
 
     async def _morning_routine(self):
-        """Morning greeting + daily planning — workday 09:10 CET."""
+        """Morning greeting + daily planning — workday morning slot (CET)."""
         log.info("Morning routine starting...")
         today = datetime.now(CET).strftime("%Y-%m-%d")
         await self._send_agent_message(prompt=_morning_prompt(today), channel_id="morning")

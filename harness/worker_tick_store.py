@@ -77,7 +77,11 @@ def _json_hash(value: Any) -> str:
 
 
 class WorkerTickRecorder:
-    """Writes an append-only trace while one worker turn is executing."""
+    """Writes an append-only trace while one autonomous turn is executing.
+
+    Used for the background worker and scheduler/completion loop channels
+    (heartbeat, morning, reflection, …).
+    """
 
     def __init__(
         self,
@@ -90,11 +94,13 @@ class WorkerTickRecorder:
         provider: str,
         headroom_enabled: bool,
         tools_count: int = 0,
+        channel_id: str = "worker",
     ):
         self.tick_id = tick_id
         self.day_cet = day_cet
         self.started_at = started_at
         self.user_prompt = user_prompt
+        self.channel_id = channel_id or "worker"
         self.model = model
         self.provider = provider
         self.headroom_enabled = headroom_enabled
@@ -115,7 +121,7 @@ class WorkerTickRecorder:
         self._redactions += stats["redactions"]
         doc = {
             "tick_id": self.tick_id,
-            "channel_id": "worker",
+            "channel_id": self.channel_id,
             "day_cet": self.day_cet,
             "started_at": self.started_at,
             "state": "running",
@@ -252,7 +258,12 @@ class WorkerTickRecorder:
             from scripts.lib.db import get_db
             db = get_db()
             await db[TICKS_COLLECTION].create_index("tick_id", unique=True)
+            await db[TICKS_COLLECTION].create_index([("started_at", -1)])
+            await db[TICKS_COLLECTION].create_index([("channel_id", 1), ("started_at", -1)])
             await db[TICKS_COLLECTION].create_index([("day_cet", 1), ("started_at", -1)])
+            await db[TICKS_COLLECTION].create_index(
+                [("day_cet", 1), ("channel_id", 1), ("started_at", -1)]
+            )
             await db[TICKS_COLLECTION].insert_one(doc)
         except Exception as exc:
             log.warning("Worker tick start was not recorded: %s", exc)
@@ -293,11 +304,95 @@ async def mark_running_ticks_interrupted() -> None:
         log.warning("Could not recover stale worker ticks: %s", exc)
 
 
-def ticks_for_day(day_cet: str) -> list[dict]:
+def _channel_query(channel_id: str | None) -> dict:
+    """Match ticks for a channel. Legacy docs without channel_id are worker."""
+    if not channel_id:
+        return {}
+    if channel_id == "worker":
+        return {"$or": [
+            {"channel_id": "worker"},
+            {"channel_id": {"$exists": False}},
+        ]}
+    return {"channel_id": channel_id}
+
+
+def ticks_for_day(day_cet: str, channel_id: str | None = None) -> list[dict]:
     db = _sync_db()
     if db is None:
         return []
-    return list(db[TICKS_COLLECTION].find({"day_cet": day_cet}).sort("started_at", -1))
+    query = {"day_cet": day_cet, **_channel_query(channel_id)}
+    return list(db[TICKS_COLLECTION].find(query).sort("started_at", -1))
+
+
+# Fields needed by the Chats rail; excludes full prompts / system versions.
+_LIST_PROJECTION = {
+    "_id": 0,
+    "tick_id": 1,
+    "channel_id": 1,
+    "day_cet": 1,
+    "state": 1,
+    "worker_status": 1,
+    "started_at": 1,
+    "notification": 1,
+    "llm_call_count": 1,
+    "cost_total": 1,
+    "token_total": 1,
+    "duration_ms": 1,
+}
+
+
+def count_ticks(channel_id: str | None = None) -> int:
+    db = _sync_db()
+    if db is None:
+        return 0
+    query = _channel_query(channel_id)
+    if not query:
+        try:
+            return int(db[TICKS_COLLECTION].estimated_document_count())
+        except Exception:
+            pass
+    return int(db[TICKS_COLLECTION].count_documents(query))
+
+
+_list_indexes_ready = False
+
+
+def ensure_list_indexes() -> None:
+    """Best-effort sync indexes for the Chats rail (once per process)."""
+    global _list_indexes_ready
+    if _list_indexes_ready:
+        return
+    db = _sync_db()
+    if db is None:
+        return
+    try:
+        db[TICKS_COLLECTION].create_index([("started_at", -1)])
+        db[TICKS_COLLECTION].create_index([("channel_id", 1), ("started_at", -1)])
+        _list_indexes_ready = True
+    except Exception:
+        pass
+
+
+def recent_ticks(
+    limit: int = 100,
+    channel_id: str | None = None,
+    *,
+    skip: int = 0,
+) -> list[dict]:
+    db = _sync_db()
+    if db is None:
+        return []
+    ensure_list_indexes()
+    # Cap high enough for merged "all" pagination (offset + page + 1).
+    limit = max(1, min(int(limit or 100), 5000))
+    skip = max(0, int(skip or 0))
+    return list(
+        db[TICKS_COLLECTION]
+        .find(_channel_query(channel_id), _LIST_PROJECTION)
+        .sort("started_at", -1)
+        .skip(skip)
+        .limit(limit)
+    )
 
 
 def get_tick(tick_id: str) -> dict | None:

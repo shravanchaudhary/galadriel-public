@@ -1,0 +1,420 @@
+{% extends "base.html" %}
+{% block title %}Chats{% endblock %}
+{% block container_class %}runs-shell-page{% endblock %}
+{% block page_header %}{% endblock %}
+
+{% block content %}
+{% if not db_configured %}
+<p class="empty-state">MONGO_URI / MONGO_DB not configured — durable chats are unavailable.</p>
+{% else %}
+<div class="runs-shell">
+    <aside class="runs-rail">
+        <form class="runs-rail-controls" method="get" action="/chats" id="runs-filters">
+            <label class="runs-field">
+                <span class="muted">Channel</span>
+                <select name="kind" id="runs-kind" class="interval-select"
+                        onchange="const id=this.form.querySelector('input[name=id]'); if(id) id.remove(); this.form.submit()">
+                    {% for fid, flabel in filters %}
+                    <option value="{{ fid }}" {% if kind == fid %}selected{% endif %}>{{ flabel }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            {% if selected_id %}
+            <input type="hidden" name="id" value="{{ selected_id }}">
+            {% endif %}
+        </form>
+
+        {% if active and kind in ('chat', 'all') %}
+        <a class="runs-active-pill" href="/chats?kind={{ kind }}&id={{ active.run_id }}" data-chat-id="{{ active.run_id }}">
+            <span class="badge run-state-active">ACTIVE</span>
+            <span>Current conversation</span>
+        </a>
+        {% endif %}
+
+        <div class="runs-list" role="list" id="runs-list"
+             data-kind="{{ kind }}"
+             data-selected="{{ selected_id or '' }}"
+             data-next-page="2"
+             data-has-more="{{ '1' if has_more else '0' }}">
+            {% for section in sections %}
+            <div class="runs-section-label" data-bucket="{{ section.id }}">{{ section.label }}</div>
+            {% for item in section.rows %}
+            <a role="listitem"
+               class="runs-list-item {% if item.id == selected_id %}is-active{% endif %}"
+               data-bucket="{{ item.bucket }}"
+               data-chat-id="{{ item.id }}"
+               href="/chats?kind={{ kind }}&id={{ item.id }}">
+                <div class="runs-list-top">
+                    <span class="runs-list-time">{{ item.time }}</span>
+                    <span class="badge run-state-{{ item.state }} worker-state-{{ item.state }}">{{ item.state }}</span>
+                </div>
+                {% if kind == 'all' %}
+                <div class="runs-list-channel muted">{{ item.channel_label }}</div>
+                {% endif %}
+                <div class="runs-list-title">{{ item.title }}</div>
+                <div class="runs-list-meta muted">{{ item.meta }}</div>
+            </a>
+            {% endfor %}
+            {% else %}
+            <p class="runs-empty muted" id="runs-empty">
+                No histories for this filter.
+                {% if kind not in ('chat', 'all', 'worker') %}
+                New {{ kind }} turns are recorded from the next run onward.
+                {% endif %}
+            </p>
+            {% endfor %}
+            <div class="runs-load-sentinel" id="runs-load-sentinel" {% if not has_more %}hidden{% endif %}>
+                <span class="muted" id="runs-load-status">Loading…</span>
+            </div>
+        </div>
+    </aside>
+
+    <section class="runs-chat" aria-label="Chat transcript" id="runs-chat-pane">
+        <div class="runs-chat-empty" id="runs-chat-placeholder">
+            <h1>Chats</h1>
+            <p class="muted" id="runs-chat-placeholder-msg">Pick a chat or worker run from the left.</p>
+        </div>
+
+        <div id="runs-chat-loaded" hidden>
+            <header class="runs-chat-head">
+                <div class="runs-chat-titles">
+                    <h1 id="runs-chat-title"></h1>
+                    <p class="muted" id="runs-chat-meta"></p>
+                </div>
+                <div class="runs-chat-actions">
+                    <button type="button" class="btn btn-small btn-secondary" id="runs-toggle-details">Details</button>
+                </div>
+            </header>
+
+            <div class="runs-chat-log" id="runs-history"></div>
+
+            <aside class="runs-details" id="runs-details" hidden>
+                <div class="runs-details-inner">
+                    <div class="runs-details-head">
+                        <h2>Details</h2>
+                        <button type="button" class="btn btn-small btn-secondary" id="runs-close-details">Close</button>
+                    </div>
+                    <div class="status-grid runs-details-stats" id="runs-details-stats"></div>
+                    <div id="runs-details-extra"></div>
+                </div>
+            </aside>
+        </div>
+    </section>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{% if db_configured %}
+<script src="/static/chat_render.js"></script>
+<script>
+(function () {
+    const list = document.getElementById('runs-list');
+    const sentinel = document.getElementById('runs-load-sentinel');
+    const status = document.getElementById('runs-load-status');
+    const placeholder = document.getElementById('runs-chat-placeholder');
+    const placeholderMsg = document.getElementById('runs-chat-placeholder-msg');
+    const loaded = document.getElementById('runs-chat-loaded');
+    const historyEl = document.getElementById('runs-history');
+    const titleEl = document.getElementById('runs-chat-title');
+    const metaEl = document.getElementById('runs-chat-meta');
+    const details = document.getElementById('runs-details');
+    const detailsStats = document.getElementById('runs-details-stats');
+    const detailsExtra = document.getElementById('runs-details-extra');
+    const openBtn = document.getElementById('runs-toggle-details');
+    const closeBtn = document.getElementById('runs-close-details');
+    if (!list) return;
+
+    const kind = list.dataset.kind || 'all';
+    let selectedId = list.dataset.selected || '';
+    let nextPage = parseInt(list.dataset.nextPage || '2', 10) || 2;
+    let hasMore = list.dataset.hasMore === '1';
+    let loadingMore = false;
+    let loadingDetail = false;
+    let detailSeq = 0;
+
+    function escapeHtml(value) {
+        return String(value == null ? '' : value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+
+    function formatUsd(value) {
+        const n = Number(value || 0);
+        return Number.isFinite(n) ? `$${n.toFixed(4)}` : '$0.0000';
+    }
+
+    function formatTokens(value) {
+        return Number(value || 0).toLocaleString();
+    }
+
+    function formatDuration(ms) {
+        ms = Number(ms || 0);
+        if (ms < 1000) return `${ms} ms`;
+        const seconds = Math.floor(ms / 1000);
+        return seconds >= 60 ? `${Math.floor(seconds / 60)}m ${seconds % 60}s` : `${seconds}s`;
+    }
+
+    function formatRunDuration(ms) {
+        const seconds = Math.floor(Number(ms || 0) / 1000);
+        return seconds >= 60 ? `${Math.floor(seconds / 60)}m ${seconds % 60}s` : `${seconds}s`;
+    }
+
+    function setDetails(open) {
+        if (!details) return;
+        details.hidden = !open;
+        if (openBtn) openBtn.textContent = open ? 'Hide details' : 'Details';
+    }
+
+    function setActiveItem(id) {
+        selectedId = id || '';
+        list.dataset.selected = selectedId;
+        list.querySelectorAll('.runs-list-item').forEach((el) => {
+            el.classList.toggle('is-active', el.dataset.chatId === selectedId);
+        });
+        const pill = document.querySelector('.runs-active-pill');
+        if (pill) pill.classList.toggle('is-active', pill.dataset.chatId === selectedId);
+        const hidden = document.querySelector('#runs-filters input[name="id"]');
+        if (hidden) hidden.value = selectedId;
+    }
+
+    function showPlaceholder(message) {
+        if (loaded) loaded.hidden = true;
+        if (placeholder) placeholder.hidden = false;
+        if (placeholderMsg) placeholderMsg.textContent = message || 'Pick a chat or worker run from the left.';
+        setDetails(false);
+    }
+
+    function renderDetails(detail) {
+        const stats = detail.stats || {};
+        let statsHtml = `
+            <div class="card"><div class="card-label">Calls</div><div class="card-value">${escapeHtml(stats.calls || 0)}</div></div>
+            <div class="card"><div class="card-label">Tokens</div><div class="card-value">${escapeHtml(formatTokens(stats.tokens))}</div></div>
+            <div class="card"><div class="card-label">Cost</div><div class="card-value">${escapeHtml(formatUsd(stats.cost))}</div></div>`;
+        if (detail.store === 'tick') {
+            statsHtml += `<div class="card"><div class="card-label">Elapsed</div><div class="card-value">${escapeHtml(formatDuration(stats.duration_ms))}</div></div>`;
+        }
+        detailsStats.innerHTML = statsHtml;
+
+        let extra = '';
+        if (detail.store === 'tick' && detail.user_prompt) {
+            extra += `<section class="memory-section"><h2>Trigger</h2><pre class="runs-log">${escapeHtml(detail.user_prompt)}</pre></section>`;
+        }
+        if (detail.system_versions && detail.system_versions.length) {
+            extra += '<section class="memory-section"><h2>System prompts</h2>';
+            detail.system_versions.forEach((version, idx) => {
+                const hash = String(version.hash || '').slice(0, 12);
+                const blocks = version.blocks;
+                const body = typeof blocks === 'string'
+                    ? escapeHtml(blocks)
+                    : escapeHtml(JSON.stringify(blocks || null, null, 2));
+                extra += `<details class="worker-system-version"><summary>Version ${idx + 1} · ${escapeHtml(hash)}</summary><pre class="runs-log">${body}</pre></details>`;
+            });
+            extra += '</section>';
+        }
+        if (detail.protocol && detail.protocol.length) {
+            extra += '<section class="memory-section"><h2>Protocol / tools</h2><div id="runs-protocol" class="chat-log run-chat-log"></div></section>';
+        }
+        if (detail.checkpoints && detail.checkpoints.length) {
+            extra += '<section class="memory-section"><h2>Checkpoints</h2><ul class="timeline">';
+            detail.checkpoints.forEach((checkpoint) => {
+                extra += `<li><div class="ts">${escapeHtml(checkpoint.created_at || '')}</div>
+                    <div class="ev"><strong>${escapeHtml(checkpoint.kind || '')}</strong>
+                    · ${escapeHtml(checkpoint.messages_before || 0)} messages
+                    <details><summary>Summary</summary><pre class="runs-log">${escapeHtml(checkpoint.summary || 'No summary')}</pre></details>
+                    </div></li>`;
+            });
+            extra += '</ul></section>';
+        }
+        extra += '<section class="memory-section"><h2>Model calls</h2>';
+        if (detail.calls && detail.calls.length) {
+            extra += `<table class="wf-table"><thead><tr>
+                <th>#</th><th>Latency</th><th>Stop</th><th>Input</th><th>Cache</th><th>Output</th><th>Cost</th>
+            </tr></thead><tbody>`;
+            detail.calls.forEach((call, idx) => {
+                extra += `<tr>
+                    <td>${escapeHtml(call.call_index != null ? call.call_index : idx)}</td>
+                    <td>${escapeHtml(formatRunDuration(call.duration_ms))}</td>
+                    <td>${escapeHtml(call.stop_reason || '')}</td>
+                    <td>${escapeHtml(formatTokens(call.input_tokens))}</td>
+                    <td>${escapeHtml(formatTokens(call.cache_read_tokens))}</td>
+                    <td>${escapeHtml(formatTokens(call.output_tokens))}</td>
+                    <td>${escapeHtml(formatUsd(call.cost_total))}</td>
+                </tr>`;
+            });
+            extra += '</tbody></table>';
+        } else {
+            extra += '<p class="muted">No correlated calls.</p>';
+        }
+        extra += '</section>';
+        detailsExtra.innerHTML = extra;
+
+        if (detail.protocol && detail.protocol.length) {
+            const protocolEl = document.getElementById('runs-protocol');
+            if (protocolEl && window.ChatRender) {
+                ChatRender.hydrateHistory(protocolEl, detail.protocol, {
+                    userClass: 'wfc-msg wfc-msg-user',
+                    assistantClass: 'wfc-msg wfc-msg-assistant',
+                    userTextClass: 'wfc-msg-text',
+                    userLabel: 'Context',
+                    assistantLabel: 'Agent',
+                });
+            }
+        }
+    }
+
+    function renderDetail(detail) {
+        if (placeholder) placeholder.hidden = true;
+        if (loaded) loaded.hidden = false;
+        titleEl.textContent = detail.title || 'Chat';
+        const channelBadge = detail.store === 'tick' ? (detail.user_label || 'Tick') : 'Chat';
+        metaEl.innerHTML = `
+            <span class="badge">${escapeHtml(channelBadge)}</span>
+            <span class="badge run-state-${escapeHtml(detail.state)} worker-state-${escapeHtml(detail.state)}">${escapeHtml(detail.state || '')}</span>
+            · ${escapeHtml(detail.started_label || '')}
+            · ${escapeHtml((detail.stats && detail.stats.calls) || 0)} calls
+            · ${escapeHtml(formatTokens(detail.stats && detail.stats.tokens))} tokens
+            · ${escapeHtml(formatUsd(detail.stats && detail.stats.cost))}`;
+        historyEl.innerHTML = '';
+        if (window.ChatRender) {
+            ChatRender.hydrateHistory(historyEl, detail.history || [], {
+                userClass: 'wfc-msg wfc-msg-user',
+                assistantClass: 'wfc-msg wfc-msg-assistant',
+                userTextClass: 'wfc-msg-text',
+                userLabel: detail.user_label || 'You',
+                assistantLabel: detail.assistant_label || 'Agent',
+            });
+            historyEl.scrollTop = historyEl.scrollHeight;
+        }
+        renderDetails(detail);
+        setDetails(false);
+    }
+
+    async function loadDetail(id, { push = false } = {}) {
+        if (!id) {
+            showPlaceholder();
+            return;
+        }
+        const seq = ++detailSeq;
+        loadingDetail = true;
+        setActiveItem(id);
+        if (push) {
+            const url = `/chats?kind=${encodeURIComponent(kind)}&id=${encodeURIComponent(id)}`;
+            history.pushState({ id, kind }, '', url);
+        }
+        showPlaceholder('Loading…');
+        try {
+            const res = await fetch(`/chats/detail?kind=${encodeURIComponent(kind)}&id=${encodeURIComponent(id)}`);
+            if (seq !== detailSeq) return;
+            if (res.status === 404) {
+                showPlaceholder('Chat not found.');
+                return;
+            }
+            if (!res.ok) throw new Error('detail failed');
+            const detail = await res.json();
+            if (seq !== detailSeq) return;
+            renderDetail(detail);
+        } catch (err) {
+            if (seq !== detailSeq) return;
+            showPlaceholder('Could not load chat.');
+        } finally {
+            if (seq === detailSeq) loadingDetail = false;
+        }
+    }
+
+    function ensureSection(bucket, label) {
+        let labelEl = list.querySelector(`.runs-section-label[data-bucket="${bucket}"]`);
+        if (labelEl) return labelEl;
+        labelEl = document.createElement('div');
+        labelEl.className = 'runs-section-label';
+        labelEl.dataset.bucket = bucket;
+        labelEl.textContent = label;
+        list.insertBefore(labelEl, sentinel);
+        return labelEl;
+    }
+
+    function appendItem(item) {
+        ensureSection(item.bucket || 'older', item.bucket_label || 'Older');
+        const a = document.createElement('a');
+        a.setAttribute('role', 'listitem');
+        a.className = 'runs-list-item' + (item.id === selectedId ? ' is-active' : '');
+        a.dataset.bucket = item.bucket || 'older';
+        a.dataset.chatId = item.id;
+        a.href = `/chats?kind=${encodeURIComponent(kind)}&id=${encodeURIComponent(item.id)}`;
+        let html = `
+            <div class="runs-list-top">
+                <span class="runs-list-time">${escapeHtml(item.time)}</span>
+                <span class="badge run-state-${escapeHtml(item.state)} worker-state-${escapeHtml(item.state)}">${escapeHtml(item.state)}</span>
+            </div>`;
+        if (kind === 'all') {
+            html += `<div class="runs-list-channel muted">${escapeHtml(item.channel_label)}</div>`;
+        }
+        html += `
+            <div class="runs-list-title">${escapeHtml(item.title)}</div>
+            <div class="runs-list-meta muted">${escapeHtml(item.meta)}</div>`;
+        a.innerHTML = html;
+        list.insertBefore(a, sentinel);
+    }
+
+    async function loadMore() {
+        if (loadingMore || !hasMore) return;
+        loadingMore = true;
+        sentinel.hidden = false;
+        if (status) status.textContent = 'Loading…';
+        try {
+            const res = await fetch(`/chats/items?kind=${encodeURIComponent(kind)}&page=${nextPage}`);
+            if (!res.ok) throw new Error('load failed');
+            const data = await res.json();
+            for (const item of (data.items || [])) appendItem(item);
+            nextPage = (data.page || nextPage) + 1;
+            hasMore = !!data.has_more;
+            if (!hasMore) {
+                if (status) status.textContent = '';
+                sentinel.hidden = true;
+            }
+        } catch (err) {
+            if (status) status.textContent = 'Could not load more';
+            hasMore = false;
+        } finally {
+            loadingMore = false;
+            // Short lists can leave the sentinel intersecting without a new
+            // IntersectionObserver callback — keep filling until scrollable.
+            if (hasMore && list.scrollHeight <= list.clientHeight + 8) {
+                loadMore();
+            }
+        }
+    }
+
+    document.querySelector('.runs-rail')?.addEventListener('click', (event) => {
+        const target = event.target.closest('[data-chat-id]');
+        if (!target) return;
+        event.preventDefault();
+        const id = target.dataset.chatId;
+        if (!id) return;
+        loadDetail(id, { push: id !== selectedId });
+    });
+
+    if (openBtn) openBtn.addEventListener('click', () => setDetails(details.hidden));
+    if (closeBtn) closeBtn.addEventListener('click', () => setDetails(false));
+
+    window.addEventListener('popstate', () => {
+        const params = new URLSearchParams(window.location.search);
+        loadDetail(params.get('id') || '', { push: false });
+    });
+
+    if (sentinel) {
+        const observer = new IntersectionObserver((entries) => {
+            if (entries.some((entry) => entry.isIntersecting)) loadMore();
+        }, { root: list, rootMargin: '80px' });
+        observer.observe(sentinel);
+        if (hasMore && list.scrollHeight <= list.clientHeight + 8) loadMore();
+    }
+
+    if (selectedId) loadDetail(selectedId, { push: false });
+    else showPlaceholder();
+})();
+</script>
+{% endif %}
+{% endblock %}

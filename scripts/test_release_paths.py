@@ -35,7 +35,7 @@ EXPECTED = {
     "tower/templates/replika/setup.html": {"control"},
     "harness/tenant_database.py": {"control", "runtime"},
     "harness/agent.py": {"runtime"},
-    "tower/runs_board.py": {"runtime"},
+    "tower/chats_board.py": {"runtime"},
     "config/SOUL.md": {"runtime"},
     "Dockerfile": {"runtime"},
     "Dockerfile.control": {"control"},

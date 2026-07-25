@@ -2,7 +2,7 @@
 
 Specs live as JSON files under `workflows/`. Each spec defines one or more
 entities with a small state machine. Both the DB primitives
-(`harness/db_ops.py`) and the Tower UI (`tower/workflows.py`) resolve entities
+(`harness/db_ops.py`) and the Tower UI (`tower/apps.py`) resolve entities
 through this registry, so the spec is the single source of truth for
 collections, unique keys, states, and allowed transitions.
 

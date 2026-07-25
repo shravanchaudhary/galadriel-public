@@ -1,4 +1,4 @@
-{% extends "workflows/base.html" %}
+{% extends "apps/base.html" %}
 {% block title %}{{ spec.name }} — Table{% endblock %}
 {% block heading %}{{ spec.name }}{% endblock %}
 {% block subtitle %}{{ spec.workflow }} · table view · backed by <code>{{ spec.collection }}</code>{% endblock %}
@@ -39,6 +39,18 @@
         {% endfor %}
     </tbody>
 </table>
+
+{% if page > 1 or has_more %}
+<div class="wf-toolbar">
+    {% if page > 1 %}
+    <a class="btn btn-small" href="?{% if status %}status={{ status | urlencode }}&{% endif %}page={{ page - 1 }}">← Prev</a>
+    {% endif %}
+    <span class="muted">Page {{ page }}</span>
+    {% if has_more %}
+    <a class="btn btn-small" href="?{% if status %}status={{ status | urlencode }}&{% endif %}page={{ page + 1 }}">Next →</a>
+    {% endif %}
+</div>
+{% endif %}
 {% else %}
 <p class="empty-state">No records{% if status %} in status <strong>{{ status }}</strong>{% endif %}.</p>
 {% endif %}

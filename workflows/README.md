@@ -22,7 +22,7 @@ A spec defines one or more **entities**, each a small state machine:
   secrets never reach a screen).
 
 Both the DB primitives (`harness/db_ops.py`) and the Tower UI
-(`tower/workflows.py`) resolve entities through `harness/workflows.py`, so the
+(`tower/apps.py`) resolve entities through `harness/workflows.py`, so the
 spec drives both the backend rules and the screens. Specs are read fresh from
 disk on every use, so a newly authored spec is picked up without a restart.
 

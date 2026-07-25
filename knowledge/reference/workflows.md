@@ -13,7 +13,7 @@ model:
 - **MongoDB** = state. **The `db_*` primitives** = the only way to change it.
 - **A `workflows/*.json` spec** = the rules (entities, fields, states, allowed
   transitions, approval hints, UI columns) — the single source of truth.
-- **The Tower UI** (`/workflows`) = a live view of that state.
+- **The Tower UI** (`/apps`) = a live view of that state.
 - **The cookbook** (`jobs/<id>.md`) = the prose rules the primitives don't
   enforce (caps, ordering, approval gates).
 

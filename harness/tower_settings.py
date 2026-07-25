@@ -14,13 +14,34 @@ AGENT_MODEL_DOC_ID = "agent_model"  # legacy — migrated to main_model on read
 MAIN_MODEL_DOC_ID = "main_model"
 WORKER_MODEL_DOC_ID = "worker_model"
 HEADROOM_DOC_ID = "headroom"
+WORKER_IDLE_DOC_ID = "worker_idle_interval"
 
-# Channels with a user-selectable model in Tower.
-CONFIGURABLE_CHANNELS: tuple[str, ...] = ("main", "worker")
+# Idle-poll minutes when the worker has nothing to do (default 10).
+VALID_WORKER_IDLE_MINUTES: tuple[int, ...] = (5, 10, 15, 20, 30, 60)
+DEFAULT_WORKER_IDLE_MINUTES = 10
+
+# Channels with a user-selectable model in Tower (main chat + autonomous loops).
+CONFIGURABLE_CHANNELS: tuple[str, ...] = (
+    "main",
+    "worker",
+    "heartbeat",
+    "wake",
+    "morning",
+    "reflection",
+    "goodnight",
+    "completions",
+)
 _CHANNEL_DOC_IDS = {
     "main": MAIN_MODEL_DOC_ID,
     "worker": WORKER_MODEL_DOC_ID,
 }
+
+
+def _channel_setting_id(channel: str) -> str:
+    """Mongo setting id for a channel's model choice."""
+    if channel in _CHANNEL_DOC_IDS:
+        return _CHANNEL_DOC_IDS[channel]
+    return f"channel_model_{channel}"
 
 # Selectable agent models in Tower. Provider is resolved from the model name
 # via model_registry.provider_for_model (gemini-* → Gemini, *:tag → Ollama).
@@ -66,12 +87,12 @@ def _valid_model(model: str | None) -> str | None:
 
 def get_channel_model(channel: str) -> str | None:
     """Return the persisted model for a channel, or None if unset / Mongo unavailable."""
-    if channel not in _CHANNEL_DOC_IDS:
+    if channel not in CONFIGURABLE_CHANNELS:
         return None
     db = _db()
     if db is None:
         return None
-    setting_id = _CHANNEL_DOC_IDS[channel]
+    setting_id = _channel_setting_id(channel)
     doc = db[COLLECTION].find_one(
         {"_id": _doc_id(setting_id), "tenant_id": _tenant_id()}
     )
@@ -86,17 +107,18 @@ def get_channel_model(channel: str) -> str | None:
 
 def set_channel_model(channel: str, model: str) -> None:
     """Persist a channel's model choice. Raises if Mongo is unavailable."""
-    if channel not in _CHANNEL_DOC_IDS:
+    if channel not in CONFIGURABLE_CHANNELS:
         raise ValueError(f"Unsupported channel: {channel}")
     if model not in AGENT_MODEL_OPTIONS:
         raise ValueError(f"Unsupported model: {model}")
     db = _db()
     if db is None:
         raise RuntimeError("MONGO_URI / MONGO_DB not configured")
+    setting_id = _channel_setting_id(channel)
     db[COLLECTION].replace_one(
-        {"_id": _doc_id(_CHANNEL_DOC_IDS[channel])},
+        {"_id": _doc_id(setting_id)},
         {
-            "_id": _doc_id(_CHANNEL_DOC_IDS[channel]),
+            "_id": _doc_id(setting_id),
             "tenant_id": _tenant_id(),
             "model": model,
             "updated_at": datetime.now(timezone.utc),
@@ -137,6 +159,39 @@ def set_headroom_enabled(enabled: bool) -> None:
             "_id": _doc_id(HEADROOM_DOC_ID),
             "tenant_id": _tenant_id(),
             "enabled": bool(enabled),
+            "updated_at": datetime.now(timezone.utc),
+        },
+        upsert=True,
+    )
+
+
+def get_worker_idle_minutes() -> int:
+    """Return the worker idle-poll interval in minutes (default 10)."""
+    db = _db()
+    if db is None:
+        return DEFAULT_WORKER_IDLE_MINUTES
+    doc = db[COLLECTION].find_one(
+        {"_id": _doc_id(WORKER_IDLE_DOC_ID), "tenant_id": _tenant_id()}
+    )
+    minutes = (doc or {}).get("minutes")
+    if minutes in VALID_WORKER_IDLE_MINUTES:
+        return int(minutes)
+    return DEFAULT_WORKER_IDLE_MINUTES
+
+
+def set_worker_idle_minutes(minutes: int) -> None:
+    """Persist the worker idle-poll interval. Raises if Mongo is unavailable."""
+    if minutes not in VALID_WORKER_IDLE_MINUTES:
+        raise ValueError(f"Unsupported idle interval: {minutes}")
+    db = _db()
+    if db is None:
+        raise RuntimeError("MONGO_URI / MONGO_DB not configured")
+    db[COLLECTION].replace_one(
+        {"_id": _doc_id(WORKER_IDLE_DOC_ID)},
+        {
+            "_id": _doc_id(WORKER_IDLE_DOC_ID),
+            "tenant_id": _tenant_id(),
+            "minutes": int(minutes),
             "updated_at": datetime.now(timezone.utc),
         },
         upsert=True,

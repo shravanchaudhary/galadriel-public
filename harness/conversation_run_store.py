@@ -367,6 +367,7 @@ class ConversationRunRecorder:
 async def ensure_indexes(db) -> None:
     """Idempotent indexes; repeated calls are harmless and avoid startup coupling."""
     await db[RUNS].create_index("run_id", unique=True)
+    await db[RUNS].create_index([("started_at", -1)])
     await db[RUNS].create_index(
         [("channel_id", 1), ("state", 1)],
         unique=True,
@@ -409,9 +410,32 @@ def get_run(run_id: str) -> dict | None:
     return db[RUNS].find_one({"run_id": run_id}) if db is not None else None
 
 
-def active_run(channel_id: str = "main") -> dict | None:
+# Fields needed by the Chats rail; excludes embedded system prompts.
+_LIST_PROJECTION = {
+    "_id": 0,
+    "run_id": 1,
+    "channel_id": 1,
+    "state": 1,
+    "started_at": 1,
+    "sources": 1,
+    "end_reason": 1,
+    "llm_call_count": 1,
+    "cost_total": 1,
+    "event_count": 1,
+    "token_total": 1,
+}
+
+
+def active_run(channel_id: str = "main", *, lean: bool = False) -> dict | None:
+    """Return the active run. lean=True omits system_prompt_versions (list UI)."""
     db = _sync_db()
-    return db[RUNS].find_one({"channel_id": channel_id, "state": "active"}) if db is not None else None
+    if db is None:
+        return None
+    projection = dict(_LIST_PROJECTION) if lean else None
+    return db[RUNS].find_one(
+        {"channel_id": channel_id, "state": "active"},
+        projection,
+    )
 
 
 def runs_for_day(day: str) -> list[dict]:
@@ -421,6 +445,52 @@ def runs_for_day(day: str) -> list[dict]:
     start = datetime.fromisoformat(f"{day}T00:00:00+00:00")
     end = datetime.fromisoformat(f"{day}T23:59:59.999999+00:00")
     return list(db[RUNS].find({"started_at": {"$gte": start, "$lte": end}}).sort("started_at", -1))
+
+
+def count_runs() -> int:
+    """Metadata estimate — avoid exact count_documents round-trips on Atlas."""
+    db = _sync_db()
+    if db is None:
+        return 0
+    try:
+        return int(db[RUNS].estimated_document_count())
+    except Exception:
+        return int(db[RUNS].count_documents({}))
+
+
+_list_indexes_ready = False
+
+
+def ensure_list_indexes() -> None:
+    """Best-effort sync indexes for the Chats rail (once per process)."""
+    global _list_indexes_ready
+    if _list_indexes_ready:
+        return
+    db = _sync_db()
+    if db is None:
+        return
+    try:
+        db[RUNS].create_index([("started_at", -1)])
+        _list_indexes_ready = True
+    except Exception:
+        pass
+
+
+def recent_runs(limit: int = 100, *, skip: int = 0) -> list[dict]:
+    db = _sync_db()
+    if db is None:
+        return []
+    ensure_list_indexes()
+    # Cap high enough for merged "all" pagination (offset + page + 1).
+    limit = max(1, min(int(limit or 100), 5000))
+    skip = max(0, int(skip or 0))
+    return list(
+        db[RUNS]
+        .find({}, _LIST_PROJECTION)
+        .sort("started_at", -1)
+        .skip(skip)
+        .limit(limit)
+    )
 
 
 def events_for_run(run_id: str, *, visibility: str | None = None) -> list[dict]:

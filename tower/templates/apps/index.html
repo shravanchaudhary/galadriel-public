@@ -1,0 +1,56 @@
+{% extends "apps/base.html" %}
+{% block title %}Apps{% endblock %}
+{% block heading %}Apps{% endblock %}
+{% block subtitle %}Each entity is a state machine defined in workflows/*.json{% endblock %}
+
+{% block wf_content %}
+{% if not db_ok %}
+<p class="empty-state">DB not configured (MONGO_URI / MONGO_DB unset) — no live data to show.</p>
+{% endif %}
+
+{% if items %}
+<div class="status-grid" id="apps-grid">
+    {% for item in items %}
+    <div class="card" data-entity="{{ item.spec.name }}">
+        <div class="card-label">{{ item.spec.workflow }}</div>
+        <div class="card-value">{{ item.spec.name }}</div>
+        <p class="muted" style="font-size:0.8rem;margin-top:0.4rem;">
+            <span class="apps-count">…</span> record(s) · {{ item.spec.states | length }} states
+        </p>
+        <div class="wf-nav" style="margin-top:0.75rem;margin-bottom:0;">
+            <a href="/w/{{ item.spec.name }}">Table</a>
+            <a href="/w/{{ item.spec.name }}/kanban">Kanban</a>
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<p class="empty-state">No apps defined yet. Author a spec in <code>workflows/*.json</code> (see <code>knowledge/reference/workflows.md</code>).</p>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script>
+(function () {
+    const approvalsLink = document.querySelector('.wf-nav a[href="/approvals"]');
+    fetch('/apps/stats')
+        .then((res) => res.ok ? res.json() : null)
+        .then((data) => {
+            if (!data) return;
+            const counts = data.counts || {};
+            document.querySelectorAll('#apps-grid .card[data-entity]').forEach((card) => {
+                const name = card.dataset.entity;
+                const el = card.querySelector('.apps-count');
+                if (el) el.textContent = String(counts[name] != null ? counts[name] : 0);
+            });
+            if (approvalsLink && data.approvals_count) {
+                approvalsLink.textContent = `Approvals (${data.approvals_count})`;
+            }
+        })
+        .catch(() => {
+            document.querySelectorAll('.apps-count').forEach((el) => { el.textContent = '?'; });
+        });
+})();
+</script>
+{% endblock %}

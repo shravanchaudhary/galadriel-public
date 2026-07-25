@@ -23,12 +23,12 @@ logging.basicConfig(
 log = logging.getLogger("galadriel")
 
 
-def start_tower(agent, scheduler):
+def start_tower(agent, scheduler, worker=None):
     """Run the Tower Flask app with a bounded production WSGI server."""
     from tower.app import create_tower
     from waitress import serve
 
-    app = create_tower(agent, scheduler)
+    app = create_tower(agent, scheduler, worker=worker)
     host = os.environ.get("TOWER_HOST", "0.0.0.0")
     port = int(os.environ.get("TOWER_PORT", "8080"))
     threads = int(os.environ.get("TOWER_THREADS", "8"))
@@ -136,7 +136,7 @@ def main():
 
     # Start Tower in a background thread
     tower_thread = threading.Thread(
-        target=start_tower, args=(agent, scheduler), daemon=True
+        target=start_tower, args=(agent, scheduler, worker), daemon=True
     )
     tower_thread.start()
 

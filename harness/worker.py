@@ -35,6 +35,7 @@ GALADRIEL_WORKER=1 to enable.
 import asyncio
 import logging
 import re
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -43,6 +44,7 @@ from zoneinfo import ZoneInfo
 from .loop_prompts import WORKER_PROMPT
 from . import worker_tick_store
 from . import model_registry
+from . import tower_settings
 
 log = logging.getLogger("galadriel.worker")
 
@@ -52,10 +54,12 @@ WORKER_CHANNEL = "worker"
 # When the agent reports work remains, loop again after a short floor gap (never
 # hot-loop). When it reports idle/nothing-actionable, poll less often.
 MIN_GAP_SEC = 30
-IDLE_POLL_SEC = 600  # 10 minutes
+IDLE_POLL_SEC = 600  # default 10 minutes — overridable via Tower /agent
 # Soft cap on continuous time spent on a single project before the worker should
 # come up for air and re-scan the board. Surfaced to the agent in the clock.
 PROJECT_SLICE_CAP_MIN = 30
+# Re-check idle interval this often so Tower UI edits take effect mid-sleep.
+_IDLE_POLL_SLICE_SEC = 30
 
 _STATUS_RE = re.compile(r"<<WORKER_STATUS:\s*(worked|idle)\s*>>", re.IGNORECASE)
 
@@ -73,15 +77,45 @@ class WorkerLoop:
         # worker is mid-burst (consecutive worked ticks), so the ping fires once
         # when a burst begins, not on every tick. Reset on pause/idle.
         self._was_working: bool = False
+        minutes = tower_settings.get_worker_idle_minutes()
+        self.idle_poll_sec = minutes * 60
 
     def set_bot(self, bot):
         self.bot = bot
+
+    def idle_interval_minutes(self) -> int:
+        return max(1, int(self.idle_poll_sec // 60))
+
+    def set_idle_interval_minutes(self, minutes: int) -> None:
+        """Update idle-poll interval (minutes). Takes effect on the next sleep slice."""
+        if minutes not in tower_settings.VALID_WORKER_IDLE_MINUTES:
+            raise ValueError(f"Unsupported idle interval: {minutes}")
+        self.idle_poll_sec = int(minutes) * 60
+        try:
+            tower_settings.set_worker_idle_minutes(minutes)
+        except RuntimeError:
+            log.warning(
+                "Worker idle interval changed but not persisted — MongoDB not configured"
+            )
+        log.info(f"Worker idle interval set to {minutes} min")
 
     def start(self):
         """Start the worker loop. Call from an async context (e.g. on_ready)."""
         self._started_at = datetime.now(CET)
         self._task = asyncio.ensure_future(self._loop())
-        log.info("Worker loop started.")
+        log.info(
+            f"Worker loop started (idle poll every {self.idle_interval_minutes()}m)."
+        )
+
+    async def _idle_sleep(self):
+        """Sleep for the configured idle interval, in short slices so UI edits apply."""
+        started = time.monotonic()
+        while True:
+            target = float(self.idle_poll_sec)
+            elapsed = time.monotonic() - started
+            if elapsed >= target:
+                return
+            await asyncio.sleep(min(_IDLE_POLL_SLICE_SEC, target - elapsed))
 
     # ── Loop ─────────────────────────────────────────────────────
 
@@ -93,13 +127,16 @@ class WorkerLoop:
                     log.info("Worker paused (control flag) — idle poll.")
                     # Paused counts as rest, so resuming into work re-fires the ping.
                     self._was_working = False
-                    await asyncio.sleep(IDLE_POLL_SEC)
+                    await self._idle_sleep()
                     continue
 
                 status = await self._run_turn()
                 # 'worked' → more may remain, loop again after a short floor gap.
                 # 'idle'   → nothing actionable, poll less often.
-                await asyncio.sleep(MIN_GAP_SEC if status == "worked" else IDLE_POLL_SEC)
+                if status == "worked":
+                    await asyncio.sleep(MIN_GAP_SEC)
+                else:
+                    await self._idle_sleep()
         except asyncio.CancelledError:
             log.info("Worker loop cancelled.")
         except Exception as e:

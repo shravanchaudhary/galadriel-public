@@ -49,8 +49,17 @@ log = logging.getLogger("galadriel")
 # agent has continuous context regardless of which surface the user is on.
 # Background/system channels (heartbeat, worker, morning, etc.) stay on their
 # own synthetic channel_ids and are unaffected.
-MAIN_CHANNEL_ID = "main"
-WORKER_CHANNEL_ID = "worker"
+# Product names: Chat / Worker / Ambient. Durable storage IDs stay stable.
+MAIN_CHANNEL_ID = "main"          # product: Chat
+CHAT_CHANNEL_ID = MAIN_CHANNEL_ID
+WORKER_CHANNEL_ID = "worker"      # product: Worker
+AMBIENT_CHANNEL_ID = "reflection" # product: Ambient
+
+# Autonomous loops that get a durable per-turn tick audit (same store as worker).
+# Worker still builds its own recorder; these channels auto-record inside respond().
+LOOP_TICK_CHANNELS = frozenset({
+    "wake", "heartbeat", "morning", AMBIENT_CHANNEL_ID, "goodnight", "completions",
+})
 
 _STOPPED_ASSISTANT_NOTE = "(Stopped — turn cancelled.)"
 
@@ -707,9 +716,12 @@ class GaladrielAgent:
                 log.warning(f"Output-ceiling warning callback failed: {e}")
 
     def model_for_channel(self, channel_id: str) -> str:
-        """Return the model used for API calls on this channel."""
-        if channel_id == WORKER_CHANNEL_ID:
-            return self._channel_models.get(WORKER_CHANNEL_ID, self.model)
+        """Return the model used for API calls on this channel.
+
+        Per-loop / per-channel overrides win; everything else falls back to main.
+        """
+        if channel_id in self._channel_models:
+            return self._channel_models[channel_id]
         return self._channel_models.get(MAIN_CHANNEL_ID, self.model)
 
     def _provider_for(self, model: str) -> BaseModelProvider:
@@ -1139,6 +1151,54 @@ class GaladrielAgent:
         blocks.append({"type": "text", "text": overlay_context})
         return blocks
 
+    async def _start_loop_tick(self, channel_id: str, user_message: str | list):
+        """Create a durable tick recorder for a scheduler/completion channel."""
+        import uuid
+        from zoneinfo import ZoneInfo
+        from . import worker_tick_store
+
+        cet = ZoneInfo("Europe/Stockholm")
+        started_at = datetime.now(cet)
+        if isinstance(user_message, str):
+            prompt = user_message
+        elif isinstance(user_message, list):
+            parts = []
+            for block in user_message:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    parts.append(block.get("text") or "")
+                elif isinstance(block, str):
+                    parts.append(block)
+            prompt = "\n".join(p for p in parts if p) or f"[{channel_id}]"
+        else:
+            prompt = str(user_message)
+        model = self.model_for_channel(channel_id)
+        recorder = worker_tick_store.WorkerTickRecorder(
+            str(uuid.uuid4()),
+            started_at.strftime("%Y-%m-%d"),
+            started_at,
+            prompt,
+            channel_id=channel_id,
+            model=model,
+            provider=model_registry.provider_for_model(model),
+            headroom_enabled=bool(self.headroom_enabled),
+            tools_count=len(self.tools or []),
+        )
+        await recorder.start()
+        return recorder
+
+    async def _finalize_owned_tick(self, tick_recorder, *, state: str, error: str | None = None):
+        if tick_recorder is None:
+            return
+        try:
+            from zoneinfo import ZoneInfo
+            await tick_recorder.finalize(
+                state=state,
+                finished_at=datetime.now(ZoneInfo("Europe/Stockholm")),
+                error=error,
+            )
+        except Exception as exc:
+            log.warning("Loop tick finalize failed: %s", exc)
+
     async def _respond_locked(
         self,
         user_message: str | list,
@@ -1155,9 +1215,16 @@ class GaladrielAgent:
         run_holder = {"recorder": None}
         messages = self._get_messages(channel_id)
         pre_turn_messages = copy.deepcopy(messages)
+        owned_tick = None
+        if tick_recorder is None and channel_id in LOOP_TICK_CHANNELS:
+            try:
+                owned_tick = await self._start_loop_tick(channel_id, user_message)
+                tick_recorder = owned_tick
+            except Exception as exc:
+                log.warning("Loop tick start failed (%s); continuing without audit", exc)
 
         try:
-            return await self._respond_locked_inner(
+            result = await self._respond_locked_inner(
                 user_message,
                 channel_id,
                 emit,
@@ -1169,7 +1236,10 @@ class GaladrielAgent:
                 request_context,
                 run_holder,
             )
+            await self._finalize_owned_tick(owned_tick, state="completed")
+            return result
         except TurnCancelled:
+            await self._finalize_owned_tick(owned_tick, state="interrupted", error="cancelled")
             return await self._finalize_cancelled_turn(
                 channel_id,
                 messages,
@@ -1178,6 +1248,7 @@ class GaladrielAgent:
                 recorder=run_holder["recorder"],
             )
         except asyncio.CancelledError:
+            await self._finalize_owned_tick(owned_tick, state="interrupted", error="cancelled")
             await self._finalize_cancelled_turn(
                 channel_id,
                 messages,
@@ -1187,6 +1258,7 @@ class GaladrielAgent:
             )
             raise
         except Exception as exc:
+            await self._finalize_owned_tick(owned_tick, state="error", error=str(exc))
             recorder = run_holder["recorder"]
             if recorder is not None:
                 await recorder.finalize_turn(state="error", error=str(exc))

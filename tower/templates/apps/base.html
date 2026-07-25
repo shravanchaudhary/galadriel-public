@@ -1,12 +1,12 @@
 {% extends "base.html" %}
-{% block title %}{% block wf_title %}Workflows{% endblock %}{% endblock %}
+{% block title %}{% block wf_title %}Apps{% endblock %}{% endblock %}
 {% block container_class %}wf-container{% endblock %}
-{% block heading %}{% block wf_heading %}Workflows{% endblock %}{% endblock %}
+{% block heading %}{% block wf_heading %}Apps{% endblock %}{% endblock %}
 {% block subtitle %}{% block wf_subtitle %}Live view of the operational database{% endblock %}{% endblock %}
 
 {% block content %}
 <nav class="wf-nav">
-    <a href="/workflows" class="{{ 'active' if request.path == '/workflows' }}">All Workflows</a>
+    <a href="/apps" class="{{ 'active' if request.path in ('/apps', '/workflows') }}">All Apps</a>
     <a href="/approvals" class="{{ 'active' if request.path == '/approvals' }}">Approvals{% if approvals_count %} ({{ approvals_count }}){% endif %}</a>
 </nav>
 {% block wf_content %}{% endblock %}

@@ -9,19 +9,19 @@
 <p class="empty-state">MONGO_URI / MONGO_DB not configured — durable conversation runs are unavailable.</p>
 {% else %}
 <div class="wf-toolbar">
-    <form method="get" action="/runs">
+    <form method="get" action="/chats">
         <label for="run-date" class="muted">Day (CET)</label>
         <input id="run-date" name="date" type="date" value="{{ date }}" onchange="this.form.submit()">
     </form>
-    <a href="/runs?date={{ previous_date }}" class="btn btn-small">← Previous</a>
-    <a href="/runs?date={{ today }}" class="btn btn-small {{ 'btn-danger' if date == today else '' }}">Today</a>
-    <a href="/runs?date={{ next_date }}" class="btn btn-small">Next →</a>
+    <a href="/chats?date={{ previous_date }}" class="btn btn-small">← Previous</a>
+    <a href="/chats?date={{ today }}" class="btn btn-small {{ 'btn-danger' if date == today else '' }}">Today</a>
+    <a href="/chats?date={{ next_date }}" class="btn btn-small">Next →</a>
     <span class="spacer"></span>
     <a href="/worker-runs" class="btn btn-small">Worker ticks →</a>
 </div>
 
 {% if active %}
-<p class="runs-active"><span class="badge run-state-active">ACTIVE</span> Current shared conversation: <a href="/runs/user/{{ active.run_id }}">{{ active.run_id }}</a></p>
+<p class="runs-active"><span class="badge run-state-active">ACTIVE</span> Current shared conversation: <a href="/chats/user/{{ active.run_id }}">{{ active.run_id }}</a></p>
 {% endif %}
 
 {% if runs %}
@@ -38,7 +38,7 @@
         <td>{{ "{:,}".format(run.token_total | default(0)) }}</td>
         <td>{{ run.cost_total | usd }}</td>
         <td>{{ run.end_reason or '—' }}</td>
-        <td><a href="/runs/user/{{ run.run_id }}">open →</a></td>
+        <td><a href="/chats/user/{{ run.run_id }}">open →</a></td>
     </tr>
     {% endfor %}
     </tbody>

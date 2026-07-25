@@ -1,205 +1,201 @@
 {% extends "base.html" %}
 {% block title %}Dashboard{% endblock %}
 {% block heading %}Dashboard{% endblock %}
-{% block subtitle %}Agent status, scheduler, and recent activity{% endblock %}
+{% block subtitle %}Runtime status, providers, and today's plan{% endblock %}
+{% block container_class %}dashboard-page{% endblock %}
 
 {% block content %}
-<div class="status-grid">
-    <div class="card">
-        <div class="card-label">Main Model</div>
-        <div class="model-controls">
-            <select id="model-select" class="interval-select" onchange="changeModel('main')">
-                {% for m in model_options %}
-                <option value="{{ m }}" {% if m == model %}selected{% endif %}>{{ m }}</option>
-                {% endfor %}
-            </select>
-            {% if not model_persisted %}
-            <div class="model-note muted">Set MONGO_URI / MONGO_DB to persist across restarts</div>
-            {% endif %}
+<div class="dash-overview">
+    <div class="card dash-tile card-with-menu" id="server-time-card">
+        <button type="button" class="card-menu-btn" id="tz-menu-btn" aria-label="Timezone options" aria-haspopup="true" aria-expanded="false">⋯</button>
+        <div class="card-menu" id="tz-menu" hidden>
+            <label class="card-menu-label" for="tz-select">Timezone</label>
+            <select id="tz-select" class="interval-select"></select>
         </div>
-    </div>
-    <div class="card">
-        <div class="card-label">Worker Model</div>
-        <div class="model-controls">
-            <select id="worker-model-select" class="interval-select" onchange="changeModel('worker')">
-                {% for m in model_options %}
-                <option value="{{ m }}" {% if m == worker_model %}selected{% endif %}>{{ m }}</option>
-                {% endfor %}
-            </select>
-            <div class="model-note muted">Background worker loop only</div>
-        </div>
-    </div>
-    <div class="card">
-        <div class="card-label">Active Channels</div>
-        <div class="card-value">{{ channels }}</div>
-    </div>
-    <div class="card">
-        <div class="card-label">Messages in Memory</div>
-        <div class="card-value">{{ total_msgs }}</div>
-    </div>
-    <div class="card">
         <div class="card-label">Server Time</div>
-        <div class="card-value">{{ now }}</div>
+        <div class="dash-time" id="server-time" data-iso="{{ now_iso }}">—</div>
+        <div class="dash-meta muted" id="server-time-tz"></div>
+    </div>
+
+    <div class="card dash-tile">
+        <div class="dash-tile-top">
+            <div class="card-label">Headroom</div>
+            <div class="toggle-row dash-toggle">
+                <label class="toggle-switch">
+                    <input type="checkbox" id="headroom-toggle"
+                        {% if headroom_enabled %}checked{% endif %}
+                        onchange="toggleHeadroom()">
+                    <span class="toggle-slider"></span>
+                </label>
+                <span id="headroom-status" class="heartbeat-status {{ 'status-on' if headroom_enabled else 'status-off' }}">
+                    {{ 'ON' if headroom_enabled else 'Off' }}
+                </span>
+            </div>
+        </div>
+        <p class="dash-copy">Compress tool outputs before each API call. Cache-safe freeze during cascades.</p>
+    </div>
+
+    <div class="card dash-tile dash-providers-tile">
+        <div class="card-label">Model providers</div>
+        <div class="dash-provider-row">
+            <label class="dash-field">
+                <span class="interval-label">Provider</span>
+                <select id="provider-select" class="interval-select" onchange="onProviderChange()">
+                    <option value="anthropic">Anthropic</option>
+                    <option value="gemini">Gemini</option>
+                </select>
+            </label>
+            <label class="dash-field dash-field-grow">
+                <span class="interval-label">API key</span>
+                <input type="password" id="provider-key-input" autocomplete="off" placeholder="Paste API key">
+            </label>
+        </div>
+        <div class="dash-provider-actions">
+            <button type="button" class="btn btn-small" onclick="saveProviderKey()">Save</button>
+            <button type="button" class="btn btn-small btn-secondary" onclick="deleteProviderKey()">Remove</button>
+            <span class="dash-provider-status muted" id="provider-key-status">Not configured</span>
+        </div>
     </div>
 </div>
 
-{% if scheduler %}
-<section class="scheduler-section">
-    <h2>Scheduler</h2>
-    <div class="scheduler-grid">
-        <div class="card scheduler-card">
-            <div class="card-label">Heartbeat</div>
-            <div class="heartbeat-controls">
-                <div class="toggle-row">
-                    <label class="toggle-switch">
-                        <input type="checkbox" id="heartbeat-toggle"
-                            {% if scheduler.heartbeat_enabled %}checked{% endif %}
-                            onchange="toggleHeartbeat()">
-                        <span class="toggle-slider"></span>
-                    </label>
-                    <span id="heartbeat-status" class="heartbeat-status {{ 'status-on' if scheduler.heartbeat_enabled else 'status-off' }}">
-                        {{ 'Active' if scheduler.heartbeat_enabled else 'Off' }}
-                    </span>
-                </div>
-                <div class="interval-row">
-                    <label for="heartbeat-interval" class="interval-label">Interval</label>
-                    <select id="heartbeat-interval" class="interval-select" onchange="changeInterval()">
-                        {% for iv in scheduler.valid_intervals %}
-                        <option value="{{ iv }}" {% if iv == scheduler.heartbeat_interval %}selected{% endif %}>
-                            {{ iv }} min
-                        </option>
-                        {% endfor %}
-                    </select>
-                </div>
-            </div>
-        </div>
-
-        <div class="card scheduler-card">
-            <div class="card-label">Headroom</div>
-            <div class="heartbeat-controls">
-                <div class="toggle-row">
-                    <label class="toggle-switch">
-                        <input type="checkbox" id="headroom-toggle"
-                            {% if headroom_enabled %}checked{% endif %}
-                            onchange="toggleHeadroom()">
-                        <span class="toggle-slider"></span>
-                    </label>
-                    <span id="headroom-status" class="heartbeat-status {{ 'status-on' if headroom_enabled else 'status-off' }}">
-                        {{ 'ON' if headroom_enabled else 'Off' }}
-                    </span>
-                </div>
-            </div>
-            <div class="cron-note">Compress tool outputs before each API call (cache-safe freeze during cascades)</div>
-        </div>
-
-        <div class="card scheduler-card">
-            <div class="card-label">Morning Greeting</div>
-            <div class="card-value cron-info">
-                <span class="cron-label">Daily</span>
-                {{ scheduler.morning_time }}
-            </div>
-            <div class="cron-note">Calendar and coffers check</div>
-        </div>
-
-        <div class="card scheduler-card">
-            <div class="card-label">Goodnight</div>
-            <div class="card-value cron-info">
-                <span class="cron-label">Daily</span>
-                {{ scheduler.goodnight_time }}
-            </div>
-            <div class="cron-note">Disables heartbeat for rest period</div>
-        </div>
-    </div>
-    <div class="scheduler-meta">
-        CET: <strong>{{ scheduler.server_time_cet }}</strong>
-        &nbsp;·&nbsp;
-        {{ 'Workday' if scheduler.is_workday else 'Weekend' }}
-    </div>
-</section>
+{% if saved %}
+<div class="wf-toolbar">
+    <span class="badge" style="border-color:#27ae60;color:#27ae60;background:rgba(39,174,96,0.08);">
+        Saved {{ saved }}
+    </span>
+</div>
 {% endif %}
 
-<section class="memory-section">
-    <h2>Model providers</h2>
-    <div class="status-grid" id="provider-key-cards">
-        {% for provider in ("anthropic", "gemini") %}
-        <div class="card" data-provider="{{ provider }}">
-            <div class="card-label">{{ provider|capitalize }}</div>
-            <div class="model-controls">
-                <input type="password" autocomplete="off" placeholder="Paste API key">
-                <button type="button" onclick="saveProviderKey('{{ provider }}')">Save</button>
-                <button type="button" onclick="deleteProviderKey('{{ provider }}')">Remove</button>
-            </div>
-            <div class="model-note muted provider-key-status">Not configured</div>
+<div class="actions-board-grid dash-todo-grid">
+    <section class="actions-panel">
+        <div class="actions-panel-head">
+            <h2>Plan</h2>
+            <span class="muted">{{ plan_relpath }}</span>
         </div>
-        {% endfor %}
-    </div>
-</section>
+        <form method="post" action="/todo/save">
+            <input type="hidden" name="kind" value="plan">
+            <input type="hidden" name="date" value="{{ todo_date }}">
+            <textarea name="content" class="editor-textarea actions-editor dash-todo-editor" spellcheck="false" placeholder="What should happen today?">{{ plan_content }}</textarea>
+            <div class="wf-toolbar">
+                <button type="submit" class="btn">Save plan</button>
+            </div>
+        </form>
+    </section>
 
-<section class="memory-section">
-    <h2>Recent Memory Logs</h2>
-    <ul class="memory-list">
-        {% for date in recent_memories %}
-        <li><a href="#" onclick="loadMemory('{{ date }}')">{{ date }}</a></li>
-        {% else %}
-        <li class="muted">No memory logs yet.</li>
-        {% endfor %}
-    </ul>
-    <pre id="memory-content" class="memory-display"></pre>
-</section>
+    <section class="actions-panel">
+        <div class="actions-panel-head">
+            <h2>Progress</h2>
+            <span class="muted">{{ progress_relpath }}</span>
+        </div>
+        <form method="post" action="/todo/save">
+            <input type="hidden" name="kind" value="progress">
+            <input type="hidden" name="date" value="{{ todo_date }}">
+            <textarea name="content" class="editor-textarea actions-editor dash-todo-editor" spellcheck="false" placeholder="What got done, blockers, evidence…">{{ progress_content }}</textarea>
+            <div class="wf-toolbar">
+                <button type="submit" class="btn">Save progress</button>
+            </div>
+        </form>
+    </section>
+</div>
 {% endblock %}
 
 {% block scripts %}
 <script>
-async function changeModel(channel) {
-    const selectId = channel === 'worker' ? 'worker-model-select' : 'model-select';
-    const select = document.getElementById(selectId);
-    const model = select.value;
+const TZ_STORAGE_KEY = 'tower-display-timezone';
+const PROVIDER_STORAGE_KEY = 'tower-selected-provider';
+const TZ_OPTIONS = [
+    { value: 'local', label: 'Local (browser)' },
+    { value: 'UTC', label: 'UTC' },
+    { value: 'Europe/Stockholm', label: 'CET / Europe/Stockholm' },
+    { value: 'America/New_York', label: 'America/New_York' },
+    { value: 'America/Los_Angeles', label: 'America/Los_Angeles' },
+    { value: 'Asia/Kolkata', label: 'Asia/Kolkata' },
+    { value: 'Asia/Tokyo', label: 'Asia/Tokyo' },
+    { value: 'Australia/Sydney', label: 'Australia/Sydney' },
+];
+
+let providerKeyState = {};
+
+function getStoredTimezone() {
+    return localStorage.getItem(TZ_STORAGE_KEY) || 'local';
+}
+
+function formatServerTime(date, tz) {
+    if (Number.isNaN(date.getTime())) return '—';
+    const opts = {
+        weekday: 'short',
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+        second: '2-digit',
+    };
+    if (tz && tz !== 'local') opts.timeZone = tz;
     try {
-        const res = await fetch('/api/model', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ model, channel }),
-        });
-        const data = await res.json();
-        if (!res.ok) {
-            throw new Error(data.error || 'Failed to set model');
-        }
-        if (channel === 'main') {
-            const wfc = document.getElementById('wfc-model-select');
-            if (wfc) {
-                wfc.value = model;
-                wfc.dataset.current = model;
-            }
-        }
-    } catch (err) {
-        console.error('Failed to set model:', err);
-        alert(err.message || 'Failed to set model');
+        return new Intl.DateTimeFormat(undefined, opts).format(date);
+    } catch (e) {
+        return date.toISOString().replace('T', ' ').slice(0, 19);
     }
 }
 
-async function loadMemory(date) {
-    const res = await fetch(`/api/memory?date=${date}`);
-    const data = await res.json();
-    document.getElementById('memory-content').textContent = data.content || data.error || 'Empty';
+let serverClockAnchor = null;
+
+function refreshServerTime() {
+    const el = document.getElementById('server-time');
+    const label = document.getElementById('server-time-tz');
+    if (!el) return;
+    if (!serverClockAnchor) {
+        const base = new Date(el.dataset.iso || Date.now()).getTime();
+        serverClockAnchor = { base, loadedAt: Date.now() };
+    }
+    const approx = new Date(
+        serverClockAnchor.base + (Date.now() - serverClockAnchor.loadedAt)
+    );
+    const tz = getStoredTimezone();
+    el.textContent = formatServerTime(approx, tz);
+    el.title = approx.toISOString();
+    label.textContent = tz === 'local'
+        ? (Intl.DateTimeFormat().resolvedOptions().timeZone || 'Local')
+        : tz;
 }
 
-async function toggleHeartbeat() {
-    const toggle = document.getElementById('heartbeat-toggle');
-    const interval = parseInt(document.getElementById('heartbeat-interval').value);
-    const enabled = toggle.checked;
+function initTimezoneMenu() {
+    const select = document.getElementById('tz-select');
+    const btn = document.getElementById('tz-menu-btn');
+    const menu = document.getElementById('tz-menu');
+    if (!select || !btn || !menu) return;
 
-    try {
-        const res = await fetch('/api/scheduler/heartbeat', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ enabled, interval }),
-        });
-        const data = await res.json();
-        updateHeartbeatUI(data);
-    } catch (err) {
-        console.error('Failed to toggle heartbeat:', err);
-        toggle.checked = !toggle.checked;
+    const current = getStoredTimezone();
+    select.innerHTML = '';
+    for (const opt of TZ_OPTIONS) {
+        const el = document.createElement('option');
+        el.value = opt.value;
+        el.textContent = opt.label;
+        if (opt.value === current) el.selected = true;
+        select.appendChild(el);
     }
+
+    btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const open = menu.hidden;
+        menu.hidden = !open;
+        btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    });
+    select.addEventListener('change', () => {
+        localStorage.setItem(TZ_STORAGE_KEY, select.value);
+        refreshServerTime();
+        menu.hidden = true;
+        btn.setAttribute('aria-expanded', 'false');
+    });
+    document.addEventListener('click', (e) => {
+        if (!menu.hidden && !menu.contains(e.target) && e.target !== btn) {
+            menu.hidden = true;
+            btn.setAttribute('aria-expanded', 'false');
+        }
+    });
+    refreshServerTime();
+    setInterval(refreshServerTime, 1000);
 }
 
 async function toggleHeadroom() {
@@ -226,51 +222,45 @@ async function toggleHeadroom() {
     }
 }
 
-async function changeInterval() {
-    const toggle = document.getElementById('heartbeat-toggle');
-    if (!toggle.checked) return;
+function selectedProvider() {
+    return document.getElementById('provider-select').value;
+}
 
-    const interval = parseInt(document.getElementById('heartbeat-interval').value);
-
-    try {
-        const res = await fetch('/api/scheduler/heartbeat', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ enabled: true, interval }),
-        });
-        const data = await res.json();
-        updateHeartbeatUI(data);
-    } catch (err) {
-        console.error('Failed to change interval:', err);
+function updateProviderKeyUI() {
+    const provider = selectedProvider();
+    const input = document.getElementById('provider-key-input');
+    const status = document.getElementById('provider-key-status');
+    const row = providerKeyState[provider];
+    if (row && row.configured) {
+        status.textContent = `Configured ${row.masked || '••••'}`;
+        input.placeholder = '••••••••••••';
+        input.value = '';
+    } else {
+        status.textContent = 'Not configured';
+        input.placeholder = 'Paste API key';
+        input.value = '';
     }
 }
 
-function updateHeartbeatUI(data) {
-    const status = document.getElementById('heartbeat-status');
-    if (data.heartbeat_enabled) {
-        status.textContent = 'Active';
-        status.className = 'heartbeat-status status-on';
-    } else {
-        status.textContent = 'Off';
-        status.className = 'heartbeat-status status-off';
-    }
+function onProviderChange() {
+    localStorage.setItem(PROVIDER_STORAGE_KEY, selectedProvider());
+    updateProviderKeyUI();
 }
 
 async function refreshProviderKeys() {
     const response = await fetch('/api/provider-keys');
     if (!response.ok) return;
     const data = await response.json();
-    const configured = Object.fromEntries((data.providers || []).map(row => [row.provider, row]));
-    document.querySelectorAll('[data-provider]').forEach(card => {
-        const row = configured[card.dataset.provider];
-        card.querySelector('.provider-key-status').textContent =
-            row ? `Configured ${row.masked}` : 'Not configured';
-    });
+    providerKeyState = {};
+    for (const row of data.providers || []) {
+        providerKeyState[row.provider] = row;
+    }
+    updateProviderKeyUI();
 }
 
-async function saveProviderKey(provider) {
-    const card = document.querySelector(`[data-provider="${provider}"]`);
-    const input = card.querySelector('input');
+async function saveProviderKey() {
+    const provider = selectedProvider();
+    const input = document.getElementById('provider-key-input');
     const response = await fetch(`/api/provider-keys/${provider}`, {
         method: 'PUT',
         headers: {'Content-Type': 'application/json'},
@@ -285,7 +275,8 @@ async function saveProviderKey(provider) {
     await refreshProviderKeys();
 }
 
-async function deleteProviderKey(provider) {
+async function deleteProviderKey() {
+    const provider = selectedProvider();
     const response = await fetch(`/api/provider-keys/${provider}`, {method: 'DELETE'});
     const data = await response.json();
     if (!response.ok) {
@@ -295,19 +286,15 @@ async function deleteProviderKey(provider) {
     await refreshProviderKeys();
 }
 
-refreshProviderKeys();
+(function initProviderSelect() {
+    const select = document.getElementById('provider-select');
+    const saved = localStorage.getItem(PROVIDER_STORAGE_KEY);
+    if (saved && [...select.options].some(o => o.value === saved)) {
+        select.value = saved;
+    }
+})();
 
-setInterval(async () => {
-    try {
-        const res = await fetch('/api/scheduler');
-        const data = await res.json();
-        const toggle = document.getElementById('heartbeat-toggle');
-        const status = document.getElementById('heartbeat-status');
-        if (toggle && status) {
-            toggle.checked = data.heartbeat_enabled;
-            updateHeartbeatUI(data);
-        }
-    } catch (e) {}
-}, 30000);
+initTimezoneMenu();
+refreshProviderKeys();
 </script>
 {% endblock %}

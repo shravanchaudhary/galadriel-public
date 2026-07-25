@@ -3,7 +3,7 @@
 Each background loop (scheduler, worker, completion watcher) sends a message on
 its own channel_id so the conversation buffer stays isolated from main chat.
 This module is the single source of truth for those prompt templates; Tower's
-/loops UI reads from here.
+/agent UI reads from here.
 """
 
 import json
