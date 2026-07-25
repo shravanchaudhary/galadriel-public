@@ -26,3 +26,4 @@ entities.json
 todo
 state/conversation_buffers/
 state/screenshots/
+state/phone_bridge_auth.json

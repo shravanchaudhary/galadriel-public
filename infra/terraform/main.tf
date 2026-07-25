@@ -47,6 +47,11 @@ locals {
       REPLIKA_PROVISIONING_MODE        = local.provisioner_function_arn == "" ? "local" : "managed"
       REPLIKA_TENANT_ID                = var.replika_tenant_id
       REPLIKA_TRUST_ALB_IDENTITY       = tostring(var.enable_replika_managed_auth)
+      PHONE_BRIDGE_ENABLED             = var.replika_control_plane_only ? "0" : "1"
+      PHONE_BRIDGE_WS_HOST             = "0.0.0.0"
+      PHONE_BRIDGE_WS_PORT             = "8765"
+      PHONE_BRIDGE_AUTH_STORE          = "/mnt/efs/state/phone_bridge_auth.json"
+      PHONE_TOOLS_ENABLED              = var.replika_control_plane_only ? "0" : "1"
       TMPDIR                           = "/dev/shm"
     }) : { name = name, value = value }
   ]
@@ -65,6 +70,11 @@ locals {
       REPLIKA_PROVISIONING_MODE  = "runtime"
       REPLIKA_TENANT_ID          = var.replika_tenant_id
       REPLIKA_TRUST_ALB_IDENTITY = tostring(var.enable_replika_managed_auth)
+      PHONE_BRIDGE_ENABLED       = "1"
+      PHONE_BRIDGE_WS_HOST       = "0.0.0.0"
+      PHONE_BRIDGE_WS_PORT       = "8765"
+      PHONE_BRIDGE_AUTH_STORE    = "/mnt/efs/state/phone_bridge_auth.json"
+      PHONE_TOOLS_ENABLED        = "1"
       TMPDIR                     = "/dev/shm"
     }) : { name = name, value = value }
   ]
@@ -132,6 +142,13 @@ resource "aws_security_group" "task" {
     protocol        = "tcp"
     from_port       = 8080
     to_port         = 8080
+    security_groups = [var.alb_security_group_id]
+  }
+  ingress {
+    description     = "Phone bridge only from staging ALB"
+    protocol        = "tcp"
+    from_port       = 8765
+    to_port         = 8765
     security_groups = [var.alb_security_group_id]
   }
   egress {
@@ -519,6 +536,48 @@ resource "aws_lb_target_group" "clyra" {
   }
 }
 
+resource "aws_lb_target_group" "phone_bridge" {
+  count       = var.replika_control_plane_only ? 0 : 1
+  name        = "${substr(local.name, 0, 25)}-phone"
+  port        = 8765
+  protocol    = "HTTP"
+  target_type = "ip"
+  vpc_id      = var.vpc_id
+  health_check {
+    path                = "/phone/healthz"
+    healthy_threshold   = 2
+    unhealthy_threshold = 3
+    timeout             = 5
+    interval            = 15
+    matcher             = "200"
+  }
+}
+
+resource "aws_lb_listener_rule" "phone_bridge" {
+  count        = var.replika_control_plane_only ? 0 : 1
+  listener_arn = data.aws_lb_listener.https.arn
+  priority     = var.listener_rule_priority - 3
+  action {
+    type  = "forward"
+    order = 1
+    forward {
+      target_group {
+        arn = aws_lb_target_group.phone_bridge[0].arn
+      }
+    }
+  }
+  condition {
+    host_header {
+      values = [var.host_name]
+    }
+  }
+  condition {
+    path_pattern {
+      values = ["/phone/*"]
+    }
+  }
+}
+
 resource "aws_lb_listener_rule" "clyra_health" {
   count        = var.enable_replika_managed_auth ? 1 : 0
   listener_arn = data.aws_lb_listener.https.arn
@@ -734,9 +793,12 @@ resource "aws_ecs_task_definition" "clyra_fargate" {
       dependsOn = [
         { containerName = "appconfig", condition = "START" },
       ]
-      portMappings = [{ containerPort = 8080, hostPort = 8080, protocol = "tcp" }]
-      environment  = local.environment_list
-      secrets      = local.secret_list
+      portMappings = [
+        { containerPort = 8080, hostPort = 8080, protocol = "tcp" },
+        { containerPort = 8765, hostPort = 8765, protocol = "tcp" },
+      ]
+      environment = local.environment_list
+      secrets     = local.secret_list
       mountPoints = [
         { sourceVolume = "state", containerPath = "/mnt/efs", readOnly = false },
       ]
@@ -830,9 +892,12 @@ resource "aws_ecs_task_definition" "replika_runtime_base" {
       dependsOn = [
         { containerName = "appconfig", condition = "START" },
       ]
-      portMappings = [{ containerPort = 8080, hostPort = 8080, protocol = "tcp" }]
-      environment  = local.runtime_base_environment_list
-      secrets      = local.secret_list
+      portMappings = [
+        { containerPort = 8080, hostPort = 8080, protocol = "tcp" },
+        { containerPort = 8765, hostPort = 8765, protocol = "tcp" },
+      ]
+      environment = local.runtime_base_environment_list
+      secrets     = local.secret_list
       mountPoints = [
         { sourceVolume = "state", containerPath = "/mnt/efs", readOnly = false },
       ]
@@ -951,10 +1016,19 @@ resource "aws_ecs_service" "clyra" {
     container_name   = "clyra"
     container_port   = 8080
   }
+  dynamic "load_balancer" {
+    for_each = var.replika_control_plane_only ? [] : [1]
+    content {
+      target_group_arn = aws_lb_target_group.phone_bridge[0].arn
+      container_name   = "clyra"
+      container_port   = 8765
+    }
+  }
   depends_on = [
     aws_s3files_mount_target.clyra,
     aws_s3files_file_system_policy.clyra,
     aws_lb_listener_rule.clyra_health,
+    aws_lb_listener_rule.phone_bridge,
     aws_lb_listener_rule.clyra,
   ]
   lifecycle {

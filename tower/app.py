@@ -183,6 +183,8 @@ def create_tower(agent, scheduler=None) -> Flask:
     register_replika_control_plane(app)
     from .slack_runtime import register_slack_runtime
     register_slack_runtime(app, agent, scheduler, MAIN_CHANNEL_ID)
+    from .phone_bridge import register_phone_bridge
+    register_phone_bridge(app)
 
     @app.template_filter("truncate_label")
     def truncate_label(value, length=24):

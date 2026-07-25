@@ -20,6 +20,12 @@ from .contact_enrichment import (
     CONTACT_TOOL_NAMES,
     execute_contact_tool,
 )
+from .phone_tools import (
+    PHONE_TOOL_DEFINITIONS,
+    PHONE_TOOL_NAMES,
+    execute_phone_tool,
+    phone_tools_enabled,
+)
 
 TOOL_DEFINITIONS = [
     {
@@ -626,6 +632,7 @@ TOOL_DEFINITIONS = [
 TOOL_DEFINITIONS.extend(EXPLORIUM_TOOL_DEFINITIONS)
 # Contact (email/phone) enrichment — FullEnrich ⇄ Explorium waterfall, own cache.
 TOOL_DEFINITIONS.extend(CONTACT_TOOL_DEFINITIONS)
+TOOL_DEFINITIONS.extend(PHONE_TOOL_DEFINITIONS)
 
 
 # ── Stateless / no-palace mode (forgetting as a feature) ──
@@ -740,6 +747,8 @@ def visible_tool_definitions() -> list:
         if palace_disabled()
         else list(TOOL_DEFINITIONS)
     )
+    if not phone_tools_enabled():
+        tools = [tool for tool in tools if tool["name"] not in PHONE_TOOL_NAMES]
     from .path_policy import managed_runtime
 
     if managed_runtime():
@@ -1007,6 +1016,10 @@ async def _execute_tool_impl(
         return await execute_explorium_tool(name, inputs)
     elif name in CONTACT_TOOL_NAMES:
         return await execute_contact_tool(name, inputs)
+    elif name in PHONE_TOOL_NAMES:
+        if not phone_tools_enabled():
+            return "[blocked] Phone tools are disabled."
+        return await execute_phone_tool(name, inputs)
     else:
         return f"Unknown tool: {name}"
 

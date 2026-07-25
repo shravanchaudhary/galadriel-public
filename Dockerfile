@@ -33,7 +33,7 @@ LABEL org.opencontainers.image.title="Replika" \
 # is used only by the ECS task's short-lived network init sidecar, never by the
 # unprivileged application container.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates curl libgomp1 iptables \
+        adb ca-certificates curl libgomp1 iptables \
     && curl --fail --silent --show-error \
         --output /etc/ssl/certs/rds-global-bundle.pem \
         https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem \
@@ -77,6 +77,11 @@ ENV MEMPALACE_PATH=/data/.mempalace/palace \
     PALACE_WAKE_UP_FILE=/data/.mempalace/wake_up.md \
     GALADRIEL_STORAGE_ROOT=/mnt/efs \
     GALADRIEL_ENFORCE_WRITE_BOUNDARIES=true \
+    HOME=/data \
+    ANDROID_USER_HOME=/data/.android \
+    ADB_VENDOR_KEYS=/data/.android/adbkey \
+    ADB_SERVER_SOCKET=tcp:127.0.0.1:5037 \
+    TMPDIR=/data/tmp \
     BROWSER_BACKEND=bce \
     TOWER_HOST=0.0.0.0 \
     TOWER_PORT=8080 \
@@ -85,7 +90,7 @@ ENV MEMPALACE_PATH=/data/.mempalace/palace \
 
 # Tower form/session auth (TOWER_AUTH_*) protects the UI when enabled. Prefer
 # binding to localhost or an authenticated edge; see docker-compose.yml.
-EXPOSE 8080
+EXPOSE 8080 8765
 
 USER galadriel
 ENTRYPOINT ["./docker/entrypoint.sh"]

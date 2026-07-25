@@ -208,8 +208,9 @@ def _task_role(iam, owner_id: str, access_point_arn: str) -> str:
     return role["Arn"]
 
 
-def _target_group(elbv2, username: str) -> str:
-    name = f"rp-{_slug(username, 29)}"[:32]
+def _target_group(elbv2, username: str, *, phone_bridge: bool = False) -> str:
+    suffix = "-phone" if phone_bridge else ""
+    name = f"rp-{_slug(username, 29 - len(suffix))}{suffix}"[:32]
     try:
         existing = elbv2.describe_target_groups(Names=[name]).get("TargetGroups", [])
     except ClientError as exc:
@@ -221,11 +222,11 @@ def _target_group(elbv2, username: str) -> str:
     return elbv2.create_target_group(
         Name=name,
         Protocol="HTTP",
-        Port=8080,
+        Port=8765 if phone_bridge else 8080,
         VpcId=_required("VPC_ID"),
         TargetType="ip",
         HealthCheckProtocol="HTTP",
-        HealthCheckPath="/healthz",
+        HealthCheckPath="/phone/healthz" if phone_bridge else "/healthz",
         Matcher={"HttpCode": "200"},
         Tags=[
             {"Key": "ReplikaManaged", "Value": "true"},
@@ -293,7 +294,12 @@ def _cognito_client(cognito, username: str) -> str:
 
 
 def _ensure_rule(
-    elbv2, cognito, username: str, owner_id: str, target_group_arn: str
+    elbv2,
+    cognito,
+    username: str,
+    owner_id: str,
+    target_group_arn: str,
+    phone_target_group_arn: str,
 ) -> None:
     listener = _required("HTTPS_LISTENER_ARN")
     host = f"{username}.{_required('PRODUCT_DOMAIN')}"
@@ -357,6 +363,50 @@ def _ensure_rule(
                 {"Field": "path-pattern", "Values": ["/internal/slack/ingress"]},
             ],
             Actions=internal_actions,
+            Tags=[
+                {"Key": "ReplikaManaged", "Value": "true"},
+                {"Key": "ReplikaTenant", "Value": owner_id},
+            ],
+        )
+
+    phone_actions = [
+        {
+            "Type": "forward",
+            "Order": 1,
+            "TargetGroupArn": phone_target_group_arn,
+        }
+    ]
+    phone_rule = None
+    for rule in rules:
+        values = [
+            value
+            for condition in rule.get("Conditions", [])
+            if condition.get("Field") == "host-header"
+            for value in condition.get("Values", [])
+        ]
+        patterns = [
+            value
+            for condition in rule.get("Conditions", [])
+            if condition.get("Field") == "path-pattern"
+            for value in condition.get("Values", [])
+        ]
+        if host in values and "/phone/*" in patterns:
+            phone_rule = rule
+            break
+    if phone_rule:
+        elbv2.modify_rule(
+            RuleArn=phone_rule["RuleArn"],
+            Actions=phone_actions,
+        )
+    else:
+        elbv2.create_rule(
+            ListenerArn=listener,
+            Priority=_internal_listener_priority(elbv2, listener, f"{owner_id}:phone"),
+            Conditions=[
+                {"Field": "host-header", "Values": [host]},
+                {"Field": "path-pattern", "Values": ["/phone/*"]},
+            ],
+            Actions=phone_actions,
             Tags=[
                 {"Key": "ReplikaManaged", "Value": "true"},
                 {"Key": "ReplikaTenant", "Value": owner_id},
@@ -473,6 +523,7 @@ def _service(
     owner_id: str,
     task_definition: str,
     target_group_arn: str,
+    phone_target_group_arn: str,
     release: str,
 ) -> None:
     name = f"replika-{_slug(owner_id)}"
@@ -500,7 +551,12 @@ def _service(
                 "targetGroupArn": target_group_arn,
                 "containerName": _required("CONTAINER_NAME"),
                 "containerPort": 8080,
-            }
+            },
+            {
+                "targetGroupArn": phone_target_group_arn,
+                "containerName": _required("CONTAINER_NAME"),
+                "containerPort": 8765,
+            },
         ],
         "healthCheckGracePeriodSeconds": 90,
         "enableExecuteCommand": True,
@@ -526,6 +582,7 @@ def _service(
             service=name,
             taskDefinition=task_definition,
             desiredCount=1,
+            loadBalancers=kwargs["loadBalancers"],
             forceNewDeployment=True,
         )
     ecs.get_waiter("services_stable").wait(
@@ -553,7 +610,19 @@ def handler(event, _context):
         role_arn = _task_role(iam, owner_id, access_point_arn)
         runtime_database = _database_identity(owner_id, role_arn)
         target_group_arn = _target_group(elbv2, username)
-        _ensure_rule(elbv2, cognito, username, owner_id, target_group_arn)
+        phone_target_group_arn = _target_group(
+            elbv2,
+            username,
+            phone_bridge=True,
+        )
+        _ensure_rule(
+            elbv2,
+            cognito,
+            username,
+            owner_id,
+            target_group_arn,
+            phone_target_group_arn,
+        )
         task_definition = _task_definition(
             ecs,
             owner_id,
@@ -569,6 +638,7 @@ def handler(event, _context):
             owner_id,
             task_definition,
             target_group_arn,
+            phone_target_group_arn,
             str(event.get("release_version") or "v0"),
         )
         _callback(owner_id, "ready")

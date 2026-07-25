@@ -15,6 +15,7 @@ class StreamSocket(
     client: OkHttpClient,
     baseUrl: String,
     streamId: String,
+    streamToken: String,
 ) {
     private val opened = CompletableDeferred<Unit>()
     private val incoming = Channel<ByteArray>(capacity = 16)
@@ -23,6 +24,7 @@ class StreamSocket(
     init {
         val request = Request.Builder()
             .url("${baseUrl.trimEnd('/')}/phone/stream/$streamId")
+            .header("X-Phone-Stream-Token", streamToken)
             .build()
         websocket = client.newWebSocket(request, Listener())
     }

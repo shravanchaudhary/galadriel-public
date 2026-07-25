@@ -1,5 +1,6 @@
 package com.galadriel.phonebridge.tunnel
 
+import com.galadriel.phonebridge.adb.AdbEndpoint
 import java.net.InetSocketAddress
 import java.net.Socket
 import kotlinx.coroutines.Dispatchers
@@ -14,14 +15,20 @@ class TcpProxy(
     private val client: OkHttpClient,
     private val baseUrl: String,
     private val streamId: String,
-    private val adbPort: Int,
+    private val streamToken: String,
+    private val endpoint: AdbEndpoint,
 ) {
     suspend fun run() = withContext(Dispatchers.IO) {
         Socket().use { adbSocket ->
             adbSocket.tcpNoDelay = true
-            adbSocket.connect(InetSocketAddress("127.0.0.1", adbPort), 5_000)
+            adbSocket.connect(InetSocketAddress(endpoint.host, endpoint.port), 5_000)
 
-            val stream = StreamSocket(client, baseUrl, streamId)
+            val stream = StreamSocket(
+                client,
+                baseUrl,
+                streamId,
+                streamToken,
+            )
             try {
                 stream.awaitOpen()
                 coroutineScope {

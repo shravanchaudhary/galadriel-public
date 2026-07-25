@@ -67,6 +67,20 @@ for dir in data memory config knowledge state jobs workflows personal-tools comp
     mkdir -p "$storage_root/$dir"
 done
 
+if [ "${PHONE_BRIDGE_ENABLED:-0}" = "1" ]; then
+    adb_dir="${ANDROID_USER_HOME:-$storage_root/data/.android}"
+    adb_key="${ADB_VENDOR_KEYS:-$adb_dir/adbkey}"
+    mkdir -p "$adb_dir" "${TMPDIR:-$storage_root/data/tmp}"
+    chmod 700 "$adb_dir"
+    if [ ! -f "$adb_key" ]; then
+        adb keygen "$adb_key"
+    fi
+    chmod 600 "$adb_key"
+    if [ -f "$adb_key.pub" ]; then
+        chmod 600 "$adb_key.pub"
+    fi
+fi
+
 python3 "$app_root/scripts/migrate_replika_state.py" --root "$storage_root"
 
 # Seed files added by a new image without overwriting state already persisted
