@@ -8,13 +8,24 @@
         <a href="/replika" class="{{ 'active' if request.path.startswith('/replika') }}">My Replika</a>
         <a href="/integrations" class="{{ 'active' if request.path.startswith('/integrations') }}">Integrations</a>
         {% else %}
+        {% set agent_section_active = request.path.startswith('/agent') or request.path.startswith('/loops') or request.path.startswith('/config') or request.path.startswith('/palace') %}
         <a href="/" class="{{ 'active' if request.path == '/' }}">Dashboard</a>
-        <a href="/agent" class="{{ 'active' if request.path.startswith('/agent') or request.path.startswith('/loops') }}">Agent</a>
         <a href="/chats" class="{{ 'active' if request.path.startswith('/chats') or request.path.startswith('/runs') or request.path.startswith('/worker-runs') }}">Chats</a>
         <a href="/apps" class="{{ 'active' if request.path.startswith('/apps') or request.path.startswith('/workflows') or request.path.startswith('/w/') or request.path.startswith('/approvals') }}">Apps</a>
-        <a href="/config" class="{{ 'active' if request.path.startswith('/config') }}">Configuration</a>
-        <a href="/palace" class="{{ 'active' if request.path.startswith('/palace') }}">Memory</a>
-        <a href="/phone-bridge" class="{{ 'active' if request.path.startswith('/phone-bridge') }}">Phone</a>
+        <div class="site-nav-group {{ 'is-active' if agent_section_active }}">
+            <div class="site-nav-group-label">Agent</div>
+            <div class="site-nav-group-links">
+                <a href="/agent" class="{{ 'active' if request.path.startswith('/agent') or request.path.startswith('/loops') }}">Schedules</a>
+                <a href="/config" class="{{ 'active' if request.path.startswith('/config') }}">Configuration</a>
+                <a href="/palace" class="{{ 'active' if request.path.startswith('/palace') }}">Memory</a>
+            </div>
+        </div>
+        <div class="site-nav-group {{ 'is-active' if request.path.startswith('/phone-bridge') }}">
+            <div class="site-nav-group-label">Devices</div>
+            <div class="site-nav-group-links">
+                <a href="/phone-bridge" class="{{ 'active' if request.path.startswith('/phone-bridge') }}">Phone</a>
+            </div>
+        </div>
         <a href="/costs" class="{{ 'active' if request.path.startswith('/costs') }}">Costs</a>
         {% endif %}
     </nav>
