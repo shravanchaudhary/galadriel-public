@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 import logging
@@ -31,6 +30,7 @@ _SECRET_TEXT_RE = re.compile(
     r'(?i)(["\']?(?:api[_-]?key|access[_-]?token|auth(?:orization)?|password|'
     r'secret|token|totp(?:[_-]?secret)?)["\']?\s*[:=]\s*)(?:"[^"]*"|\'[^\']*\'|\S+)',
 )
+_TITLE_MAX = 72
 
 
 def _now() -> datetime:
@@ -88,21 +88,73 @@ def sanitize(value: Any, stats: dict[str, int] | None = None, key: str = "") -> 
     return value
 
 
+def _content_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(block.get("text") or "")
+            elif isinstance(block, str):
+                parts.append(block)
+        return "\n".join(p for p in parts if p)
+    if content is None:
+        return ""
+    return str(content)
+
+
+def title_from_user_content(content: Any) -> str | None:
+    """Short list title from a direct user message body."""
+    text = _content_text(content).strip()
+    if not text:
+        return None
+    for prefix in ("[Tower]: ", "[User instruction]\n"):
+        if prefix in text:
+            text = text.split(prefix, 1)[-1].strip()
+    text = text.replace("\n", " ").strip()
+    if not text:
+        return None
+    if len(text) > _TITLE_MAX:
+        return text[: _TITLE_MAX - 1] + "…"
+    return text
+
+
 class ConversationRunRecorder:
-    """Records one `respond()` turn inside the active logical main conversation."""
+    """Records one `respond()` turn inside the active logical main conversation.
+
+    Conversation events and most run-doc metrics are buffered in memory and
+    flushed once in ``finalize_turn`` to avoid per-tool-step Mongo writes.
+    """
 
     def __init__(self, run: dict, *, source: str, turn_id: str | None = None):
         self.run_id = run["run_id"]
         self.turn_id = turn_id or str(uuid.uuid4())
         self.source = source
         self.model = run.get("model", "")
-        self._system_hashes: set[str] = set()
-        self._usage = {"input": 0, "cache_read": 0, "cache_write": 0, "output": 0}
-        self._cost_total = 0.0
-        self._call_count = 0
-        self._tool_count = 0
-        self._images_omitted = 0
-        self._redactions = 0
+        self._has_title = bool(run.get("title"))
+        self._system_hashes: set[str] = {
+            v.get("hash") for v in (run.get("system_prompt_versions") or [])
+            if isinstance(v, dict) and v.get("hash")
+        }
+        self._pending_system_versions: list[dict] = []
+        self._usage = {
+            "input": int((run.get("tokens") or {}).get("input", 0) or 0),
+            "cache_read": int((run.get("tokens") or {}).get("cache_read", 0) or 0),
+            "cache_write": int((run.get("tokens") or {}).get("cache_write", 0) or 0),
+            "output": int((run.get("tokens") or {}).get("output", 0) or 0),
+        }
+        self._cost_total = float(run.get("cost_total", 0) or 0)
+        self._call_count = int(run.get("llm_call_count", 0) or 0)
+        self._tool_count = int(run.get("tool_call_count", 0) or 0)
+        self._images_omitted = int(run.get("images_omitted", 0) or 0)
+        self._redactions = int(run.get("redaction_count", 0) or 0)
+        self._event_sequence = int(run.get("event_sequence", 0) or 0)
+        self._pending_events: list[dict] = []
+        self._title_seed: str | None = None
+        self._last_call: dict | None = None
+        self._latest_checkpoint_id = run.get("latest_checkpoint_id")
+        self._latest_checkpoint_sequence = run.get("latest_checkpoint_sequence")
         self.request_context: dict[str, Any] = {}
 
     @classmethod
@@ -134,6 +186,7 @@ class ConversationRunRecorder:
                     "last_active_at": now,
                     "sources": [source],
                     "event_count": 0,
+                    "event_sequence": 0,
                     "palace_cursor": 0,
                     "latest_checkpoint_id": None,
                     "system_prompt_versions": [],
@@ -144,6 +197,7 @@ class ConversationRunRecorder:
                     "provider": provider,
                     "headroom_enabled": bool(headroom_enabled),
                     "current_turn_id": None,
+                    "title": None,
                 }
                 try:
                     await db[RUNS].insert_one(run)
@@ -153,8 +207,16 @@ class ConversationRunRecorder:
                         raise
             await db[RUNS].update_one(
                 {"run_id": run["run_id"]},
-                {"$set": {"last_active_at": now, "current_turn_id": None}, "$addToSet": {"sources": source}},
+                {"$set": {
+                    "last_active_at": now,
+                    "current_turn_id": None,
+                    "model": model,
+                    "provider": provider,
+                    "headroom_enabled": bool(headroom_enabled),
+                }, "$addToSet": {"sources": source}},
             )
+            # Refresh fields that may have been written by concurrent flushes.
+            run = await db[RUNS].find_one({"run_id": run["run_id"]}) or run
             recorder = cls(run, source=source)
             recorder.request_context = sanitize(request_context or {})
             return recorder
@@ -175,12 +237,7 @@ class ConversationRunRecorder:
             return None
 
     async def begin_turn(self, client_dedup_key: str | None = None) -> None:
-        await self._update({"$set": {
-            "current_turn_id": self.turn_id,
-            "current_turn_state": "running",
-            "last_active_at": _now(),
-            "current_request_context": self.request_context,
-        }})
+        # Turn bookkeeping stays in memory until finalize_turn.
         if client_dedup_key or self.request_context:
             await self._record_event(
                 "turn_started", None, visibility="internal",
@@ -207,6 +264,16 @@ class ConversationRunRecorder:
                 1 for block in content
                 if isinstance(block, dict) and block.get("type") == "tool_use"
             )
+        if (
+            kind == "direct_user"
+            and visibility == "user"
+            and not self._has_title
+            and not self._title_seed
+        ):
+            # Seed for LLM title at finalize; truncated text is the fallback.
+            seed = _content_text(content).strip()
+            if seed:
+                self._title_seed = seed
         return await self._record_event(
             kind,
             content,
@@ -215,9 +282,15 @@ class ConversationRunRecorder:
             thought=safe.get("_thought") if isinstance(safe, dict) else None,
         )
 
-    async def record_direct_reply(self, text: str) -> None:
+    async def record_direct_reply(
+        self, text: str, *, thought: str | None = None,
+    ) -> None:
         await self._record_event(
-            "direct_reply", sanitize(text), visibility="user", role="assistant",
+            "direct_reply",
+            sanitize(text),
+            visibility="user",
+            role="assistant",
+            thought=(thought or "").strip() or None,
         )
 
     async def record_system_blocks(self, blocks: list[dict]) -> None:
@@ -229,9 +302,9 @@ class ConversationRunRecorder:
         self._system_hashes.add(digest)
         self._redactions += stats["redactions"]
         self._images_omitted += stats["images_omitted"]
-        await self._update({"$push": {"system_prompt_versions": {
+        self._pending_system_versions.append({
             "recorded_at": _now(), "hash": digest, "blocks": safe,
-        }}})
+        })
 
     async def record_call(
         self,
@@ -246,19 +319,11 @@ class ConversationRunRecorder:
             self._usage[key] += int(usage.get(key, 0) or 0)
         cost = estimate_cost(self.model, usage)
         self._cost_total += float(cost.get("cost_total", 0) or 0)
-        self._call_count = max(self._call_count, call_index + 1)
-        token_total = sum(self._usage.values())
-        await self._update({"$set": {
-            "llm_call_count": self._call_count,
-            "tool_call_count": self._tool_count,
-            "tokens": dict(self._usage),
-            "token_total": token_total,
-            "cost_total": self._cost_total,
-            "last_call": {
-                "call_index": call_index, "duration_ms": duration_ms,
-                "stop_reason": stop_reason, "headroom": headroom_metrics or {},
-            },
-        }})
+        self._call_count += 1
+        self._last_call = {
+            "call_index": call_index, "duration_ms": duration_ms,
+            "stop_reason": stop_reason, "headroom": headroom_metrics or {},
+        }
 
     async def record_checkpoint(self, checkpoint: dict) -> None:
         """Persist a compaction/checkpoint boundary without ending this run."""
@@ -275,44 +340,81 @@ class ConversationRunRecorder:
                 "checkpoint", None, visibility="internal",
                 meta={"checkpoint_id": doc["checkpoint_id"], **checkpoint},
             )
-            await self._update({"$set": {
-                "latest_checkpoint_id": doc["checkpoint_id"],
-                "latest_checkpoint_sequence": sequence,
-            }})
+            self._latest_checkpoint_id = doc["checkpoint_id"]
+            self._latest_checkpoint_sequence = sequence
         except Exception as exc:
             log.warning("Conversation checkpoint was not recorded: %s", exc)
 
     async def finalize_turn(self, *, state: str, error: str | None = None) -> None:
         if state == "cancelled":
-            try:
-                from scripts.lib.db import get_db
-                await get_db()[EVENTS].update_many(
-                    {"run_id": self.run_id, "turn_id": self.turn_id},
-                    {"$set": {"visibility": "internal", "cancelled": True}},
-                )
-            except Exception as exc:
-                log.warning("Cancelled turn events could not be hidden from chat history: %s", exc)
-        await self._update({"$set": {
-            "current_turn_id": None,
-            "current_turn_state": state,
-            "last_active_at": _now(),
-            "last_error": error,
-            "event_count": await self._event_count(),
-            "tool_call_count": self._tool_count,
-            "llm_call_count": self._call_count,
-            "tokens": dict(self._usage),
-            "token_total": sum(self._usage.values()),
-            "cost_total": self._cost_total,
-            "images_omitted": self._images_omitted,
-            "redaction_count": self._redactions,
-        }})
+            for event in self._pending_events:
+                if event.get("turn_id") == self.turn_id:
+                    event["visibility"] = "internal"
+                    event["cancelled"] = True
+        await self._flush_pending(state=state, error=error)
+
+    async def _flush_pending(self, *, state: str, error: str | None = None) -> None:
+        try:
+            from scripts.lib.db import get_db
+            db = get_db()
+            if self._pending_events:
+                await db[EVENTS].insert_many(self._pending_events)
+            fields: dict[str, Any] = {
+                "current_turn_id": None,
+                "current_turn_state": state,
+                "last_active_at": _now(),
+                "last_error": error,
+                "event_sequence": self._event_sequence,
+                "event_count": await self._event_count(),
+                "tool_call_count": self._tool_count,
+                "llm_call_count": self._call_count,
+                "tokens": dict(self._usage),
+                "token_total": sum(self._usage.values()),
+                "cost_total": self._cost_total,
+                "images_omitted": self._images_omitted,
+                "redaction_count": self._redactions,
+                "current_request_context": self.request_context,
+            }
+            if self._last_call is not None:
+                fields["last_call"] = self._last_call
+            if self._latest_checkpoint_id is not None:
+                fields["latest_checkpoint_id"] = self._latest_checkpoint_id
+                fields["latest_checkpoint_sequence"] = self._latest_checkpoint_sequence
+            if self._title_seed and not self._has_title:
+                title = None
+                try:
+                    import asyncio
+                    from .chat_title import generate_chat_title
+
+                    title = await asyncio.wait_for(
+                        generate_chat_title(self._title_seed),
+                        timeout=8,
+                    )
+                except Exception as exc:
+                    log.warning("Chat title LLM skipped: %s", exc)
+                if not title:
+                    title = title_from_user_content(self._title_seed)
+                if title:
+                    fields["title"] = title
+                    self._has_title = True
+            update: dict[str, Any] = {"$set": fields}
+            if self._pending_system_versions:
+                update["$push"] = {
+                    "system_prompt_versions": {"$each": self._pending_system_versions},
+                }
+            await db[RUNS].update_one({"run_id": self.run_id}, update)
+            self._pending_events.clear()
+            self._pending_system_versions.clear()
+            self._title_seed = None
+        except Exception as exc:
+            log.warning("Conversation turn flush failed: %s", exc)
 
     async def _event_count(self) -> int:
         try:
             from scripts.lib.db import get_db
             return int(await get_db()[EVENTS].count_documents({"run_id": self.run_id}))
         except Exception:
-            return 0
+            return len(self._pending_events)
 
     async def _record_event(
         self,
@@ -324,44 +426,25 @@ class ConversationRunRecorder:
         thought: str | None = None,
         meta: dict | None = None,
     ) -> int | None:
-        try:
-            from scripts.lib.db import get_db
-            db = get_db()
-            counter = await db[RUNS].find_one_and_update(
-                {"run_id": self.run_id},
-                {"$inc": {"event_sequence": 1}, "$set": {"last_active_at": _now()}},
-                return_document=ReturnDocument.AFTER,
-            )
-            if counter is None:
-                return None
-            sequence = int(counter.get("event_sequence", 0))
-            event = {
-                "run_id": self.run_id,
-                "sequence": sequence,
-                "turn_id": self.turn_id,
-                "ts": _now(),
-                "kind": kind,
-                "visibility": visibility,
-                "source": self.source,
-                "role": role,
-                "content": content,
-            }
-            if thought:
-                event["thought"] = thought
-            if meta:
-                event["meta"] = sanitize(meta)
-            await db[EVENTS].insert_one(event)
-            return sequence
-        except Exception as exc:
-            log.warning("Conversation event was not recorded: %s", exc)
-            return None
-
-    async def _update(self, update: dict) -> None:
-        try:
-            from scripts.lib.db import get_db
-            await get_db()[RUNS].update_one({"run_id": self.run_id}, update)
-        except Exception as exc:
-            log.warning("Conversation run update was not recorded: %s", exc)
+        self._event_sequence += 1
+        sequence = self._event_sequence
+        event = {
+            "run_id": self.run_id,
+            "sequence": sequence,
+            "turn_id": self.turn_id,
+            "ts": _now(),
+            "kind": kind,
+            "visibility": visibility,
+            "source": self.source,
+            "role": role,
+            "content": content,
+        }
+        if thought:
+            event["thought"] = thought
+        if meta:
+            event["meta"] = sanitize(meta)
+        self._pending_events.append(event)
+        return sequence
 
 
 async def ensure_indexes(db) -> None:
@@ -394,6 +477,32 @@ async def end_active_run(channel_id: str, reason: str) -> dict | None:
         return None
 
 
+async def reactivate_run(run_id: str) -> dict | None:
+    """Make an ended (or inactive) run the sole active run for its channel."""
+    try:
+        from scripts.lib.db import get_db
+        db = get_db()
+        run = await db[RUNS].find_one({"run_id": run_id})
+        if run is None:
+            return None
+        channel_id = run.get("channel_id") or "main"
+        if run.get("state") != "active":
+            await end_active_run(channel_id, "switch")
+            await db[RUNS].update_one(
+                {"run_id": run_id},
+                {"$set": {
+                    "state": "active",
+                    "last_active_at": _now(),
+                    "current_turn_id": None,
+                    "current_turn_state": None,
+                }, "$unset": {"ended_at": "", "end_reason": ""}},
+            )
+        return await db[RUNS].find_one({"run_id": run_id})
+    except Exception as exc:
+        log.warning("Conversation run reactivate failed: %s", exc)
+        return None
+
+
 async def mark_active_runs_interrupted() -> None:
     try:
         from scripts.lib.db import get_db
@@ -410,6 +519,86 @@ def get_run(run_id: str) -> dict | None:
     return db[RUNS].find_one({"run_id": run_id}) if db is not None else None
 
 
+def protocol_tail_for_run(run_id: str) -> tuple[list[dict], dict | None]:
+    """Protocol messages after the latest checkpoint, plus that checkpoint."""
+    db = _sync_db()
+    if db is None:
+        return [], None
+    run = db[RUNS].find_one({"run_id": run_id})
+    if run is None:
+        return [], None
+    checkpoint = None
+    checkpoint_id = run.get("latest_checkpoint_id")
+    if checkpoint_id:
+        checkpoint = db[CHECKPOINTS].find_one({"checkpoint_id": checkpoint_id})
+    query: dict[str, Any] = {"run_id": run_id, "kind": "protocol_message"}
+    boundary = run.get("latest_checkpoint_sequence")
+    if boundary is not None:
+        query["sequence"] = {"$gt": boundary}
+    tail = list(db[EVENTS].find(query).sort("sequence", 1))
+    return tail, checkpoint
+
+
+def buffer_messages_for_run(run_id: str) -> tuple[list[dict], dict | None]:
+    """Rebuild the live agent message buffer from a run's durable events.
+
+    Includes ``direct_user`` and ``protocol_message`` events after the latest
+    checkpoint (user turns are stored as direct_user, not protocol_message).
+    """
+    db = _sync_db()
+    if db is None:
+        return [], None
+    run = db[RUNS].find_one({"run_id": run_id})
+    if run is None:
+        return [], None
+    checkpoint = None
+    checkpoint_id = run.get("latest_checkpoint_id")
+    if checkpoint_id:
+        checkpoint = db[CHECKPOINTS].find_one({"checkpoint_id": checkpoint_id})
+    query: dict[str, Any] = {
+        "run_id": run_id,
+        "kind": {"$in": ["direct_user", "protocol_message"]},
+    }
+    boundary = run.get("latest_checkpoint_sequence")
+    if boundary is not None:
+        query["sequence"] = {"$gt": boundary}
+    messages: list[dict] = []
+    for event in db[EVENTS].find(query).sort("sequence", 1):
+        if event.get("role") is None or event.get("content") is None:
+            continue
+        message: dict[str, Any] = {
+            "role": event["role"],
+            "content": event.get("content"),
+        }
+        if event.get("thought"):
+            message["_thought"] = event["thought"]
+        messages.append(message)
+    return messages, checkpoint
+
+
+def backfill_run_title(run_id: str) -> str | None:
+    """Derive and persist title from the first user-visible event if missing."""
+    db = _sync_db()
+    if db is None:
+        return None
+    run = db[RUNS].find_one({"run_id": run_id}, {"title": 1})
+    if run is None:
+        return None
+    if run.get("title"):
+        return run["title"]
+    event = db[EVENTS].find_one(
+        {"run_id": run_id, "visibility": "user", "role": "user"},
+        sort=[("sequence", 1)],
+    )
+    if event is None:
+        return None
+    title = title_from_user_content(event.get("content"))
+    if not title:
+        return None
+    db[RUNS].update_one({"run_id": run_id, "title": {"$in": [None, ""]}}, {"$set": {"title": title}})
+    return title
+
+
 # Fields needed by the Chats rail; excludes embedded system prompts.
 _LIST_PROJECTION = {
     "_id": 0,
@@ -423,6 +612,7 @@ _LIST_PROJECTION = {
     "cost_total": 1,
     "event_count": 1,
     "token_total": 1,
+    "title": 1,
 }
 
 
@@ -522,16 +712,5 @@ def recovery_state(channel_id: str = "main") -> tuple[dict | None, list[dict], d
     run = active_run(channel_id)
     if run is None:
         return None, [], None
-    db = _sync_db()
-    if db is None:
-        return run, [], None
-    checkpoint = None
-    checkpoint_id = run.get("latest_checkpoint_id")
-    if checkpoint_id:
-        checkpoint = db[CHECKPOINTS].find_one({"checkpoint_id": checkpoint_id})
-    query: dict[str, Any] = {"run_id": run["run_id"], "kind": "protocol_message"}
-    boundary = run.get("latest_checkpoint_sequence")
-    if boundary is not None:
-        query["sequence"] = {"$gt": boundary}
-    tail = list(db[EVENTS].find(query).sort("sequence", 1))
+    tail, checkpoint = protocol_tail_for_run(run["run_id"])
     return run, tail, checkpoint

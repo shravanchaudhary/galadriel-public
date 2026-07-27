@@ -1521,7 +1521,19 @@ class GaladrielAgent:
                 )
                 conversation_store.save_channel(self.working_dir, channel_id, messages)
                 if run_recorder is not None:
-                    await run_recorder.record_direct_reply(final_text)
+                    # Prefer the final assistant thought; fall back to the
+                    # latest thought earlier in this tool cascade.
+                    reply_thought = (assistant_msg.get("_thought") or "").strip()
+                    if not reply_thought:
+                        for prior in reversed(messages):
+                            if prior.get("role") != "assistant":
+                                continue
+                            reply_thought = (prior.get("_thought") or "").strip()
+                            if reply_thought:
+                                break
+                    await run_recorder.record_direct_reply(
+                        final_text, thought=reply_thought or None,
+                    )
                     await run_recorder.finalize_turn(state="completed")
                 return final_text
 
@@ -1786,6 +1798,63 @@ class GaladrielAgent:
         self._last_input_tokens.pop(channel_id, None)
         self._last_archived_len.pop(channel_id, None)
 
+    async def switch_main_run(self, run_id: str) -> dict:
+        """Park the current active main run and resume ``run_id`` as the live tail.
+
+        Rebuilds ``conversations['main']`` from durable events after the latest
+        checkpoint. Does not palace-mine on park (events already durable).
+        """
+        from . import conversation_run_store
+
+        if self.is_channel_busy(MAIN_CHANNEL_ID):
+            raise RuntimeError("Channel is busy")
+        run = conversation_run_store.get_run(run_id)
+        if run is None or (run.get("channel_id") or MAIN_CHANNEL_ID) != MAIN_CHANNEL_ID:
+            raise ValueError("Conversation not found")
+
+        active = conversation_run_store.active_run(MAIN_CHANNEL_ID)
+        if active and active.get("run_id") == run_id:
+            messages = self._get_messages(MAIN_CHANNEL_ID)
+            return {
+                "run_id": run_id,
+                "switched": False,
+                "message_count": len(messages),
+                "title": run.get("title"),
+            }
+
+        current = self.conversations.get(MAIN_CHANNEL_ID) or []
+        if current:
+            conversation_store.save_channel(self.working_dir, MAIN_CHANNEL_ID, current)
+
+        if active and active.get("run_id") != run_id:
+            await conversation_run_store.end_active_run(MAIN_CHANNEL_ID, "switch")
+
+        messages, checkpoint = conversation_run_store.buffer_messages_for_run(run_id)
+        self.conversations[MAIN_CHANNEL_ID] = list(messages)
+        conversation_store.save_channel(self.working_dir, MAIN_CHANNEL_ID, messages)
+        self._post_recovery_archive_tag.pop(MAIN_CHANNEL_ID, None)
+        self._output_ceiling_streak.pop(MAIN_CHANNEL_ID, None)
+        self._last_input_tokens.pop(MAIN_CHANNEL_ID, None)
+        self._last_archived_len[MAIN_CHANNEL_ID] = 0
+        if checkpoint and checkpoint.get("summary"):
+            self._compaction_summary[MAIN_CHANNEL_ID] = checkpoint["summary"]
+        else:
+            self._compaction_summary.pop(MAIN_CHANNEL_ID, None)
+
+        reactivated = await conversation_run_store.reactivate_run(run_id)
+        if reactivated is None:
+            raise RuntimeError("Failed to reactivate conversation")
+        log.info(
+            "Switched main conversation to run %s (%d messages after checkpoint).",
+            run_id, len(messages),
+        )
+        return {
+            "run_id": run_id,
+            "switched": True,
+            "message_count": len(messages),
+            "title": reactivated.get("title") or run.get("title"),
+        }
+
     async def pop_and_archive_history(self, channel_id: str = "default", reason: str = "new") -> int:
         """Archive the channel's conversation to the palace, then clear it.
 
@@ -1800,6 +1869,9 @@ class GaladrielAgent:
         """
         messages = self.conversations.get(channel_id)
         if not messages:
+            if channel_id == MAIN_CHANNEL_ID:
+                from .conversation_run_store import end_active_run
+                await end_active_run(channel_id, reason)
             return 0
         if channel_id == MAIN_CHANNEL_ID:
             try:

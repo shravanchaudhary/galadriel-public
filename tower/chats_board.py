@@ -51,7 +51,7 @@ BUCKET_ORDER = [
     ("week", "Past week"),
     ("older", "Older"),
 ]
-PAGE_SIZE = 10
+PAGE_SIZE = 6
 
 
 def _today() -> str:
@@ -59,9 +59,18 @@ def _today() -> str:
 
 
 def _as_messages(events: list[dict]) -> list[dict]:
+    """Rebuild the message list used for Tower transcript serialization.
+
+    User turns are stored as ``direct_user`` (not ``protocol_message``); assistant
+    / tool traffic is ``protocol_message`` and may carry ``thought``. Both are
+    required — protocol-only drops users, so serialize_chat_history skips every
+    assistant turn (and its thoughts).
+    """
     messages = []
     for event in events:
-        if event.get("kind") != "protocol_message":
+        if event.get("kind") not in ("protocol_message", "direct_user"):
+            continue
+        if event.get("role") is None or event.get("content") is None:
             continue
         message = {"role": event.get("role"), "content": event.get("content")}
         if event.get("thought"):
@@ -104,10 +113,14 @@ def _direct_history(events: list[dict]) -> list[dict]:
         if role == "user":
             history.append({"role": "user", "text": ui_ctx.display_user_text(text)})
         elif role == "assistant":
-            history.append({
-                "role": "assistant",
-                "blocks": [{"type": "text", "text": text}],
-            })
+            blocks: list[dict] = []
+            thought = (event.get("thought") or "").strip()
+            if thought:
+                blocks.append({"type": "thought", "text": thought})
+            if text:
+                blocks.append({"type": "text", "text": text})
+            if blocks:
+                history.append({"role": "assistant", "blocks": blocks})
     return history
 
 
@@ -191,11 +204,27 @@ def _sort_key(item: dict):
     return _aware(item.get("started_at")) or datetime.min.replace(tzinfo=ZoneInfo("UTC"))
 
 
+def _run_title(row: dict) -> str:
+    title = (row.get("title") or "").strip()
+    if title:
+        return title
+    run_id = row.get("run_id") or ""
+    if run_id:
+        try:
+            filled = conversation_run_store.backfill_run_title(run_id)
+            if filled:
+                return filled
+        except Exception:
+            pass
+    sources = row.get("sources") or []
+    if sources:
+        return ", ".join(sources)
+    return row.get("end_reason") or "Conversation"
+
+
 def _main_items(rows: list[dict]) -> list[dict]:
     items = []
     for row in rows:
-        sources = row.get("sources") or []
-        subtitle = ", ".join(sources) if sources else (row.get("end_reason") or "Conversation")
         started = row.get("started_at")
         bucket = _bucket_for(started)
         items.append({
@@ -207,7 +236,7 @@ def _main_items(rows: list[dict]) -> list[dict]:
             "time": _list_time(started, bucket),
             "started_at": started,
             "state": row.get("state") or "unknown",
-            "title": subtitle,
+            "title": _run_title(row),
             "meta": f"{int(row.get('llm_call_count') or 0)} calls · ${float(row.get('cost_total') or 0):.4f}",
         })
     return items
@@ -249,19 +278,40 @@ def _group_sections(items: list[dict]) -> list[dict]:
     return sections
 
 
+def history_for_run(run_id: str) -> tuple[list[dict], list[dict]]:
+    """Return (display history, protocol history) for a conversation run.
+
+    Prefer protocol messages for the transcript so thoughts and tool cards
+    survive the post-stream rehydrate (same shape as the live SSE turn).
+    Fall back to direct_user / direct_reply events when protocol is empty.
+    """
+    events = conversation_run_store.events_for_run(run_id)
+    direct = conversation_run_store.events_for_run(run_id, visibility="user")
+    protocol = ui_ctx.serialize_chat_history(_as_messages(events))
+    history = protocol or _direct_history(direct)
+    return history, protocol
+
+
+def active_main_history() -> tuple[list[dict], str | None]:
+    """Overlay history for the active main-channel run, if any."""
+    run = conversation_run_store.active_run("main")
+    if not run:
+        return [], None
+    run_id = run["run_id"]
+    history, _protocol = history_for_run(run_id)
+    return history, run_id
+
+
 def _load_main_detail(run_id: str) -> dict | None:
     run = conversation_run_store.get_run(run_id)
     if run is None:
         return None
-    events = conversation_run_store.events_for_run(run_id)
-    direct = conversation_run_store.events_for_run(run_id, visibility="user")
-    protocol = ui_ctx.serialize_chat_history(_as_messages(events))
-    history = _direct_history(direct) or protocol
+    history, protocol = history_for_run(run_id)
     return {
         "store": "run",
         "channel": "chat",
         "id": run_id,
-        "title": ", ".join(run.get("sources") or []) or "Conversation",
+        "title": _run_title(run),
         "state": run.get("state") or "unknown",
         "started_label": _fmt_time(run.get("started_at")),
         "date": _cet_date(run.get("started_at")),
@@ -277,6 +327,7 @@ def _load_main_detail(run_id: str) -> dict | None:
         "checkpoints": _jsonable(conversation_run_store.checkpoints_for_run(run_id)),
         "calls": _jsonable(conversation_run_store.calls_for_run(run_id)),
         "record": _jsonable(run),
+        "continuable": True,
         "user_label": "You",
         "assistant_label": "Agent",
         "page_context": ui_ctx.chat_detail(run_id),
@@ -356,6 +407,7 @@ def _detail_payload(detail: dict) -> dict:
         "user_prompt": record.get("user_prompt") if detail.get("store") == "tick" else None,
         "user_label": detail.get("user_label"),
         "assistant_label": detail.get("assistant_label"),
+        "continuable": bool(detail.get("continuable")),
     }
 
 
@@ -367,7 +419,7 @@ def _parse_page(raw) -> int:
 
 
 def _normalize_kind(raw: str | None) -> str:
-    kind = (raw or "all").strip().lower()
+    kind = (raw or "chat").strip().lower()
     if kind == "main":
         return "chat"
     if kind == "reflection":
@@ -451,6 +503,10 @@ def _collect_items(kind: str, *, page: int = 1) -> tuple[list[dict], bool, bool,
 def register_chats_board(app):
     bp = Blueprint("chats_board", __name__)
 
+    @app.context_processor
+    def _inject_chat_nav_defaults():
+        return {"chat_filters": FILTERS}
+
     @app.template_filter("run_time")
     def _run_time(value):
         if not value:
@@ -524,6 +580,11 @@ def register_chats_board(app):
 
         # List shell only — names/meta. Transcript loads via GET /chats/detail.
         items, has_more, db_configured, active = _collect_items(kind, page=1)
+        if active and not (active.get("title") or "").strip():
+            filled = conversation_run_store.backfill_run_title(active.get("run_id") or "")
+            if filled:
+                active = dict(active)
+                active["title"] = filled
         sections = _group_sections(items)
         page_ids = [item["id"] for item in items]
         page_context = ui_ctx.chats_index(_today(), page_ids)

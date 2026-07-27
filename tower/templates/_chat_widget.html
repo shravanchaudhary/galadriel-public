@@ -1,8 +1,11 @@
 <!-- Agent chat overlay — shared across console pages. -->
 <script type="application/json" id="page-context">{{ page_context | tojson }}</script>
 
-<button id="wfc-launcher" class="wfc-launcher" onclick="wfcToggle()" title="Ask the agent">
-    <span class="wfc-launcher-icon">↗</span>
+<button id="wfc-launcher" class="wfc-launcher" onclick="wfcToggle()"
+        title="Chat with agent" aria-label="Chat with agent">
+    <svg class="wfc-launcher-icon" viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" focusable="false">
+        <path fill="currentColor" d="M4 4h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H8l-4 4v-4H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zm2 4v2h12V8H6zm0 4v2h8v-2H6z"/>
+    </svg>
 </button>
 
 <div id="wfc-panel" class="wfc-panel" hidden>
@@ -37,6 +40,7 @@
 </div>
 
 <script src="/static/chat_render.js"></script>
+<script src="/static/chat_live.js"></script>
 <script>
 (function () {
     const log = document.getElementById('wfc-log');
@@ -51,11 +55,7 @@
     const LAYOUT_KEY = 'wfc-layout';
     const LAYOUT_DEFAULTS = { width: 380, height: 540, expanded: false };
     const MIN_W = 320, MIN_H = 280;
-    const RENDER_OPTS = {
-        userClass: 'wfc-msg wfc-msg-user',
-        assistantClass: 'wfc-msg wfc-msg-assistant',
-        userTextClass: 'wfc-msg-text',
-    };
+    const RENDER_OPTS = ChatLive.RENDER_OPTS;
 
     let pageContext = {};
     try {
@@ -385,11 +385,19 @@
         }
     }
 
+    async function wfcRefreshHistory() {
+        try {
+            const data = await ChatLive.fetchHistory();
+            ChatLive.hydrate(log, (data.history || []).slice(-40));
+        } catch (e) {}
+    }
+
     function wfcFinishTurn(turn) {
         if (turn && turn.finished) return;
         if (turn) turn.finished = true;
         wfcSetTurnActive(false);
         wfcLoadQueue();
+        wfcRefreshHistory();
         if (activeStreams === 0 && pageContext.reload_on_done !== false) {
             setTimeout(() => location.reload(), 900);
         }
@@ -495,11 +503,6 @@
         return !panel.hasAttribute('hidden');
     }
 
-    function wfcSetNavActive(active) {
-        const navChat = document.getElementById('site-nav-chat');
-        if (navChat) navChat.classList.toggle('active', active);
-    }
-
     window.wfcOpen = function () {
         if (wfcIsOpen()) {
             input.focus();
@@ -508,7 +511,6 @@
         panel.removeAttribute('hidden');
         launcher.classList.add('open');
         sessionStorage.setItem('wfc-open', '1');
-        wfcSetNavActive(true);
         input.focus();
         toBottom();
         applyLayout(loadLayout());
@@ -519,7 +521,6 @@
         panel.setAttribute('hidden', '');
         launcher.classList.remove('open');
         sessionStorage.removeItem('wfc-open');
-        wfcSetNavActive(false);
         applyLayout(loadLayout());
     };
 
@@ -560,98 +561,36 @@
         const message = input.value.trim();
         const images = pendingImages.slice();
         if (!message && !images.length) return;
-        const userDiv = appendMessage('user', message || '(image attached)');
-        if (images.length && userDiv) {
-            const strip = document.createElement('div');
-            strip.className = 'wfc-msg-images';
-            for (const img of images) {
-                const thumb = document.createElement('img');
-                thumb.src = img.dataUrl;
-                strip.appendChild(thumb);
-            }
-            userDiv.appendChild(strip);
-        }
         input.value = '';
         pendingImages = [];
         renderPreviews();
         wfcSetTurnActive(true);
-        const turn = startAssistant();
-        toBottom();
-
-        const payload = { message };
-        if (images.length) {
-            payload.images = images.map(img => ({ data: img.data }));
-        }
-        if (pageContext && pageContext.view) {
-            payload.context = pageContext;
-        }
-
-        try {
-            const res = await fetch('/api/chat/stream', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-Request-Id': (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`),
-                },
-                body: JSON.stringify(payload),
-            });
-            if (!res.ok || !res.body) {
-                const err = await res.json().catch(() => ({ error: res.statusText }));
-                appendText(`[Error] ${err.error || res.statusText}`, turn);
-                wfcFinishTurn(turn);
-                return;
-            }
-            const reader = res.body.getReader();
-            const decoder = new TextDecoder();
-            let buf = '';
-            while (true) {
-                const { value, done } = await reader.read();
-                if (done) break;
-                buf += decoder.decode(value, { stream: true });
-                let idx;
-                while ((idx = buf.indexOf('\n\n')) !== -1) {
-                    const frame = buf.slice(0, idx);
-                    buf = buf.slice(idx + 2);
-                    if (!frame.startsWith('data:')) continue;
-                    const raw = frame.slice(5).trim();
-                    if (!raw) continue;
-                    const stick = atBottom();
-                    handleEvent(JSON.parse(raw), turn);
-                    if (stick) toBottom();
-                }
-            }
-        } catch (err) {
-            appendText(`[Error] ${err.message}`, turn);
-            wfcFinishTurn(turn);
-        }
+        await ChatLive.streamChat({
+            log,
+            message,
+            images,
+            context: pageContext,
+            onDone: () => wfcFinishTurn({ finished: false }),
+            onError: () => wfcFinishTurn({ finished: false }),
+        });
+        // streamChat invokes onDone or onError exactly once.
     };
 
     (async () => {
-        const navChat = document.getElementById('site-nav-chat');
-        if (navChat) {
-            navChat.addEventListener('click', e => {
-                e.preventDefault();
-                wfcOpen();
-            });
-        }
-
         const clearBtn = document.getElementById('wfc-clear');
         if (clearBtn) clearBtn.addEventListener('click', () => wfcClear());
 
         if (sessionStorage.getItem('wfc-open')) {
             panel.removeAttribute('hidden');
             launcher.classList.add('open');
-            wfcSetNavActive(true);
         }
         applyLayout(loadLayout());
         wfcLoadModel();
         wfcLoadQueue();
         setInterval(() => { if (wfcIsOpen()) wfcLoadQueue(); }, 2000);
         try {
-            const res = await fetch('/api/history?channel=main');
-            const data = await res.json();
-            ChatRender.hydrateHistory(log, (data.history || []).slice(-20), RENDER_OPTS);
-            toBottom();
+            const data = await ChatLive.fetchHistory();
+            ChatLive.hydrate(log, (data.history || []).slice(-40));
         } catch (e) {}
     })();
 })();

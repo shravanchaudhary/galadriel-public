@@ -450,11 +450,13 @@ def costs_index(range_key: str) -> dict:
 
 
 def chats_index(date: str, run_ids: list[str]) -> dict:
+    # Chats shell refreshes its own rail/transcript; skip full-page reload.
     return _ptr("chats_index", f"chats · {date}", reload=False, date=date, run_ids=run_ids)
 
 
 def chat_detail(run_id: str) -> dict:
-    return _ptr("chat_detail", f"chat · {run_id}", run_id=run_id)
+    # Chats pane manages its own transcript refresh; avoid full page reload.
+    return _ptr("chat_detail", f"chat · {run_id}", reload=False, run_id=run_id)
 
 
 def chat_tick_detail(tick_id: str, date: str) -> dict:

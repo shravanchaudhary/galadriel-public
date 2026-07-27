@@ -105,19 +105,67 @@ def delete(provider: str, *, db=None) -> bool:
     return bool(result.deleted_count)
 
 
+def _env_key_for(provider: str) -> str | None:
+    """Plaintext API key from process env, if present."""
+    if provider == "anthropic":
+        return (os.environ.get("ANTHROPIC_API_KEY") or "").strip() or None
+    if provider == "gemini":
+        return (
+            (os.environ.get("GEMINI_API_KEY") or "").strip()
+            or (os.environ.get("GOOGLE_API_KEY") or "").strip()
+            or None
+        )
+    return None
+
+
+def _mask_secret(secret: str) -> str:
+    tail = secret[-4:] if len(secret) >= 4 else secret
+    return f"****{tail}"
+
+
 def list_summaries(*, db=None) -> list[dict]:
-    database = db if db is not None else _db()
-    rows = database[COLLECTION].find(
-        {"tenant_id": tenant_id()},
-        {"ciphertext": 0},
-    )
-    return [summary(row) for row in rows]
+    """Return per-provider config status (BYOM Mongo first, else process env)."""
+    by_provider: dict[str, dict] = {}
+    try:
+        database = db if db is not None else _db()
+        rows = database[COLLECTION].find(
+            {"tenant_id": tenant_id()},
+            {"ciphertext": 0},
+        )
+        for row in rows:
+            by_provider[row["provider"]] = summary(row, source="byom")
+    except Exception:
+        # Local / env-only deployments still report configured keys below.
+        pass
+    for provider in sorted(SUPPORTED_PROVIDERS):
+        if provider in by_provider:
+            continue
+        secret = _env_key_for(provider)
+        if secret:
+            by_provider[provider] = {
+                "provider": provider,
+                "configured": True,
+                "masked": _mask_secret(secret),
+                "source": "env",
+                "updated_at": None,
+            }
+        else:
+            by_provider[provider] = {
+                "provider": provider,
+                "configured": False,
+                "masked": None,
+                "source": None,
+                "updated_at": None,
+            }
+    return [by_provider[p] for p in sorted(SUPPORTED_PROVIDERS)]
 
 
-def summary(document: dict) -> dict:
+def summary(document: dict, *, source: str = "byom") -> dict:
+    fingerprint = document.get("key_fingerprint") or ""
     return {
         "provider": document["provider"],
         "configured": True,
-        "masked": f"••••{document.get('key_fingerprint', '')}",
+        "masked": f"****{fingerprint}" if fingerprint else "****",
+        "source": source,
         "updated_at": document.get("updated_at"),
     }

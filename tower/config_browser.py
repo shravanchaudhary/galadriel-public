@@ -20,7 +20,7 @@ directories above (`_all_editable()`), never through a raw filesystem path
 taken from the request — that enumeration IS the whitelist.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -221,7 +221,10 @@ def register_config_browser(app, agent, scheduler=None):
             for key, (label, note, _base, _files_fn) in CATEGORIES.items()
         ]
         return render_template(
-            "config/index.html", categories=categories,
+            "config/index.html",
+            categories=categories,
+            headroom_enabled=getattr(agent, "headroom_enabled", False),
+            now_iso=datetime.now(timezone.utc).isoformat(),
             page_context=ui_ctx.config_index(),
         )
 

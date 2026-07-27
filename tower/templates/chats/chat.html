@@ -7,72 +7,11 @@
 {% if not db_configured %}
 <p class="empty-state">MONGO_URI / MONGO_DB not configured — durable chats are unavailable.</p>
 {% else %}
-<div class="runs-shell">
-    <aside class="runs-rail">
-        <form class="runs-rail-controls" method="get" action="/chats" id="runs-filters">
-            <label class="runs-field">
-                <span class="muted">Channel</span>
-                <select name="kind" id="runs-kind" class="interval-select"
-                        onchange="const id=this.form.querySelector('input[name=id]'); if(id) id.remove(); this.form.submit()">
-                    {% for fid, flabel in filters %}
-                    <option value="{{ fid }}" {% if kind == fid %}selected{% endif %}>{{ flabel }}</option>
-                    {% endfor %}
-                </select>
-            </label>
-            {% if selected_id %}
-            <input type="hidden" name="id" value="{{ selected_id }}">
-            {% endif %}
-        </form>
-
-        {% if active and kind in ('chat', 'all') %}
-        <a class="runs-active-pill" href="/chats?kind={{ kind }}&id={{ active.run_id }}" data-chat-id="{{ active.run_id }}">
-            <span class="badge run-state-active">ACTIVE</span>
-            <span>Current conversation</span>
-        </a>
-        {% endif %}
-
-        <div class="runs-list" role="list" id="runs-list"
-             data-kind="{{ kind }}"
-             data-selected="{{ selected_id or '' }}"
-             data-next-page="2"
-             data-has-more="{{ '1' if has_more else '0' }}">
-            {% for section in sections %}
-            <div class="runs-section-label" data-bucket="{{ section.id }}">{{ section.label }}</div>
-            {% for item in section.rows %}
-            <a role="listitem"
-               class="runs-list-item {% if item.id == selected_id %}is-active{% endif %}"
-               data-bucket="{{ item.bucket }}"
-               data-chat-id="{{ item.id }}"
-               href="/chats?kind={{ kind }}&id={{ item.id }}">
-                <div class="runs-list-top">
-                    <span class="runs-list-time">{{ item.time }}</span>
-                    <span class="badge run-state-{{ item.state }} worker-state-{{ item.state }}">{{ item.state }}</span>
-                </div>
-                {% if kind == 'all' %}
-                <div class="runs-list-channel muted">{{ item.channel_label }}</div>
-                {% endif %}
-                <div class="runs-list-title">{{ item.title }}</div>
-                <div class="runs-list-meta muted">{{ item.meta }}</div>
-            </a>
-            {% endfor %}
-            {% else %}
-            <p class="runs-empty muted" id="runs-empty">
-                No histories for this filter.
-                {% if kind not in ('chat', 'all', 'worker') %}
-                New {{ kind }} turns are recorded from the next run onward.
-                {% endif %}
-            </p>
-            {% endfor %}
-            <div class="runs-load-sentinel" id="runs-load-sentinel" {% if not has_more %}hidden{% endif %}>
-                <span class="muted" id="runs-load-status">Loading…</span>
-            </div>
-        </div>
-    </aside>
-
+<div class="runs-shell runs-shell-main">
     <section class="runs-chat" aria-label="Chat transcript" id="runs-chat-pane">
         <div class="runs-chat-empty" id="runs-chat-placeholder">
             <h1>Chats</h1>
-            <p class="muted" id="runs-chat-placeholder-msg">Pick a chat or worker run from the left.</p>
+            <p class="muted" id="runs-chat-placeholder-msg">Pick a chat from the left.</p>
         </div>
 
         <div id="runs-chat-loaded" hidden>
@@ -86,7 +25,22 @@
                 </div>
             </header>
 
-            <div class="runs-chat-log" id="runs-history"></div>
+            <div class="runs-chat-log wfc-log" id="runs-history"></div>
+
+            <div class="runs-chat-composer" id="runs-composer" hidden>
+                <div id="runs-previews" class="wfc-previews" hidden></div>
+                <form id="runs-form" class="wfc-form">
+                    <button type="button" class="wfc-attach" id="runs-attach" title="Attach image (or paste one)">📎</button>
+                    <input type="file" id="runs-file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
+                    <textarea id="runs-input" class="wfc-input" rows="1"
+                        placeholder="Tell the agent what to do…"></textarea>
+                    <button type="submit" class="wfc-send" id="runs-send" title="Send">→</button>
+                    <button type="button" class="wfc-stop" id="runs-stop" title="Stop agent" hidden>■</button>
+                </form>
+            </div>
+            <p class="runs-chat-readonly-note muted" id="runs-readonly-note" hidden>
+                Worker / schedule ticks are read-only audit history.
+            </p>
 
             <aside class="runs-details" id="runs-details" hidden>
                 <div class="runs-details-inner">
@@ -107,6 +61,7 @@
 {% block scripts %}
 {% if db_configured %}
 <script src="/static/chat_render.js"></script>
+<script src="/static/chat_live.js"></script>
 <script>
 (function () {
     const list = document.getElementById('runs-list');
@@ -123,15 +78,30 @@
     const detailsExtra = document.getElementById('runs-details-extra');
     const openBtn = document.getElementById('runs-toggle-details');
     const closeBtn = document.getElementById('runs-close-details');
+    const composer = document.getElementById('runs-composer');
+    const readonlyNote = document.getElementById('runs-readonly-note');
+    const form = document.getElementById('runs-form');
+    const input = document.getElementById('runs-input');
+    const sendBtn = document.getElementById('runs-send');
+    const stopBtn = document.getElementById('runs-stop');
+    const attachBtn = document.getElementById('runs-attach');
+    const fileInput = document.getElementById('runs-file');
+    const previews = document.getElementById('runs-previews');
+    const newChatBtn = document.getElementById('runs-new-chat');
     if (!list) return;
 
-    const kind = list.dataset.kind || 'all';
+    const kind = list.dataset.kind || 'chat';
     let selectedId = list.dataset.selected || '';
     let nextPage = parseInt(list.dataset.nextPage || '2', 10) || 2;
     let hasMore = list.dataset.hasMore === '1';
     let loadingMore = false;
     let loadingDetail = false;
     let detailSeq = 0;
+    let currentDetail = null;
+    let streaming = false;
+    let pendingImages = [];
+    const MAX_IMAGES = 5;
+    const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 
     function escapeHtml(value) {
         return String(value == null ? '' : value)
@@ -143,11 +113,30 @@
 
     function formatUsd(value) {
         const n = Number(value || 0);
-        return Number.isFinite(n) ? `$${n.toFixed(4)}` : '$0.0000';
+        return Number.isFinite(n) ? `$${n.toFixed(2)}` : '$0.00';
     }
 
     function formatTokens(value) {
-        return Number(value || 0).toLocaleString();
+        const n = Number(value || 0);
+        if (!Number.isFinite(n)) return '0';
+        const abs = Math.abs(n);
+        const units = [
+            [1e12, 't'],
+            [1e9, 'b'],
+            [1e6, 'm'],
+            [1e3, 'k'],
+        ];
+        for (const [div, suffix] of units) {
+            if (abs >= div) {
+                const scaled = n / div;
+                const rounded = Math.round(scaled * 10) / 10;
+                const body = Number.isInteger(rounded)
+                    ? String(rounded)
+                    : rounded.toFixed(1);
+                return body + suffix;
+            }
+        }
+        return String(Math.round(n));
     }
 
     function formatDuration(ms) {
@@ -174,17 +163,57 @@
         list.querySelectorAll('.runs-list-item').forEach((el) => {
             el.classList.toggle('is-active', el.dataset.chatId === selectedId);
         });
-        const pill = document.querySelector('.runs-active-pill');
-        if (pill) pill.classList.toggle('is-active', pill.dataset.chatId === selectedId);
-        const hidden = document.querySelector('#runs-filters input[name="id"]');
-        if (hidden) hidden.value = selectedId;
     }
 
     function showPlaceholder(message) {
         if (loaded) loaded.hidden = true;
         if (placeholder) placeholder.hidden = false;
-        if (placeholderMsg) placeholderMsg.textContent = message || 'Pick a chat or worker run from the left.';
+        if (placeholderMsg) placeholderMsg.textContent = message || 'Pick a chat from the left.';
         setDetails(false);
+        currentDetail = null;
+        if (composer) composer.hidden = true;
+        if (readonlyNote) readonlyNote.hidden = true;
+    }
+
+    function renderPreviews() {
+        previews.innerHTML = '';
+        previews.hidden = pendingImages.length === 0;
+        pendingImages.forEach((img, idx) => {
+            const chip = document.createElement('span');
+            chip.className = 'wfc-preview-chip';
+            const thumb = document.createElement('img');
+            thumb.src = img.dataUrl;
+            const x = document.createElement('button');
+            x.type = 'button';
+            x.textContent = '×';
+            x.title = 'Remove image';
+            x.addEventListener('click', () => {
+                pendingImages.splice(idx, 1);
+                renderPreviews();
+            });
+            chip.appendChild(thumb);
+            chip.appendChild(x);
+            previews.appendChild(chip);
+        });
+    }
+
+    function addImageFile(file) {
+        if (!file || !file.type.startsWith('image/')) return;
+        if (pendingImages.length >= MAX_IMAGES) {
+            alert(`Max ${MAX_IMAGES} images per message.`);
+            return;
+        }
+        if (file.size > MAX_IMAGE_BYTES) {
+            alert(`${file.name || 'Image'} is over the 5MB limit.`);
+            return;
+        }
+        const reader = new FileReader();
+        reader.onload = () => {
+            const dataUrl = reader.result;
+            pendingImages.push({ data: dataUrl.split(',', 2)[1], dataUrl });
+            renderPreviews();
+        };
+        reader.readAsDataURL(file);
     }
 
     function renderDetails(detail) {
@@ -265,34 +294,49 @@
         }
     }
 
-    function renderDetail(detail) {
+    function setComposerEnabled(enabled) {
+        if (!composer) return;
+        composer.hidden = !enabled;
+        if (readonlyNote) readonlyNote.hidden = enabled;
+        if (sendBtn) sendBtn.disabled = streaming;
+        if (input) input.disabled = streaming;
+    }
+
+    function renderDetail(detail, historyOverride) {
         if (placeholder) placeholder.hidden = true;
         if (loaded) loaded.hidden = false;
+        currentDetail = detail;
         titleEl.textContent = detail.title || 'Chat';
-        const channelBadge = detail.store === 'tick' ? (detail.user_label || 'Tick') : 'Chat';
         metaEl.innerHTML = `
-            <span class="badge">${escapeHtml(channelBadge)}</span>
-            <span class="badge run-state-${escapeHtml(detail.state)} worker-state-${escapeHtml(detail.state)}">${escapeHtml(detail.state || '')}</span>
-            · ${escapeHtml(detail.started_label || '')}
+            ${escapeHtml(detail.started_label || '')}
             · ${escapeHtml((detail.stats && detail.stats.calls) || 0)} calls
             · ${escapeHtml(formatTokens(detail.stats && detail.stats.tokens))} tokens
             · ${escapeHtml(formatUsd(detail.stats && detail.stats.cost))}`;
-        historyEl.innerHTML = '';
-        if (window.ChatRender) {
-            ChatRender.hydrateHistory(historyEl, detail.history || [], {
-                userClass: 'wfc-msg wfc-msg-user',
-                assistantClass: 'wfc-msg wfc-msg-assistant',
-                userTextClass: 'wfc-msg-text',
-                userLabel: detail.user_label || 'You',
-                assistantLabel: detail.assistant_label || 'Agent',
-            });
-            historyEl.scrollTop = historyEl.scrollHeight;
-        }
+        ChatLive.hydrate(historyEl, historyOverride || detail.history || []);
+        setComposerEnabled(!!detail.continuable);
         renderDetails(detail);
         setDetails(false);
     }
 
-    async function loadDetail(id, { push = false } = {}) {
+    async function refreshRail() {
+        try {
+            const res = await fetch(`/chats/items?kind=${encodeURIComponent(kind)}&page=1`);
+            if (!res.ok) return;
+            const data = await res.json();
+            const empty = document.getElementById('runs-empty');
+            if (empty) empty.remove();
+            list.querySelectorAll('.runs-list-item, .runs-section-label').forEach((el) => el.remove());
+            nextPage = 2;
+            hasMore = !!data.has_more;
+            sentinel.hidden = !hasMore;
+            if (status) status.textContent = hasMore ? 'Loading…' : '';
+            for (const item of (data.items || [])) appendItem(item);
+            setActiveItem(selectedId);
+            if (hasMore && list.scrollHeight <= list.clientHeight + 8) loadMore();
+        } catch (err) {}
+    }
+
+    async function loadDetail(id, { push = false, select = true } = {}) {
         if (!id) {
             showPlaceholder();
             return;
@@ -315,10 +359,28 @@
             if (!res.ok) throw new Error('detail failed');
             const detail = await res.json();
             if (seq !== detailSeq) return;
-            renderDetail(detail);
+
+            let historyOverride = null;
+            if (detail.continuable && select) {
+                try {
+                    const selected = await ChatLive.selectRun(detail.id);
+                    historyOverride = selected.history || detail.history;
+                    if (selected.title) detail.title = selected.title;
+                    detail.state = 'active';
+                } catch (err) {
+                    if (String(err.message || '').toLowerCase().includes('busy')) {
+                        showPlaceholder('Agent is busy — wait for the current turn, then try again.');
+                        return;
+                    }
+                    throw err;
+                }
+            }
+            if (seq !== detailSeq) return;
+            renderDetail(detail, historyOverride);
+            refreshRail();
         } catch (err) {
             if (seq !== detailSeq) return;
-            showPlaceholder('Could not load chat.');
+            showPlaceholder(err.message || 'Could not load chat.');
         } finally {
             if (seq === detailSeq) loadingDetail = false;
         }
@@ -342,6 +404,7 @@
         a.className = 'runs-list-item' + (item.id === selectedId ? ' is-active' : '');
         a.dataset.bucket = item.bucket || 'older';
         a.dataset.chatId = item.id;
+        a.dataset.store = item.store || '';
         a.href = `/chats?kind=${encodeURIComponent(kind)}&id=${encodeURIComponent(item.id)}`;
         let html = `
             <div class="runs-list-top">
@@ -379,29 +442,134 @@
             hasMore = false;
         } finally {
             loadingMore = false;
-            // Short lists can leave the sentinel intersecting without a new
-            // IntersectionObserver callback — keep filling until scrollable.
             if (hasMore && list.scrollHeight <= list.clientHeight + 8) {
                 loadMore();
             }
         }
     }
 
-    document.querySelector('.runs-rail')?.addEventListener('click', (event) => {
+    async function sendMessage(event) {
+        event.preventDefault();
+        if (!currentDetail || !currentDetail.continuable || streaming) return;
+        const message = input.value.trim();
+        const images = pendingImages.slice();
+        if (!message && !images.length) return;
+        input.value = '';
+        pendingImages = [];
+        renderPreviews();
+        streaming = true;
+        stopBtn.hidden = false;
+        sendBtn.disabled = true;
+        input.disabled = true;
+        await ChatLive.streamChat({
+            log: historyEl,
+            message,
+            images,
+            context: {
+                surface: 'tower',
+                view: 'chat_detail',
+                label: 'chats',
+                run_id: currentDetail.id,
+                reload_on_done: false,
+            },
+            onDone: async () => {
+                streaming = false;
+                stopBtn.hidden = true;
+                sendBtn.disabled = false;
+                input.disabled = false;
+                try {
+                    const hist = await ChatLive.fetchHistory();
+                    if (hist.run_id) {
+                        currentDetail.id = hist.run_id;
+                        selectedId = hist.run_id;
+                        setActiveItem(hist.run_id);
+                        const url = `/chats?kind=${encodeURIComponent(kind)}&id=${encodeURIComponent(hist.run_id)}`;
+                        history.replaceState({ id: hist.run_id, kind }, '', url);
+                    }
+                    ChatLive.hydrate(historyEl, hist.history || []);
+                } catch (err) {}
+                await refreshRail();
+                const titleNode = selectedId
+                    ? list.querySelector(`.runs-list-item[data-chat-id="${selectedId}"] .runs-list-title`)
+                    : null;
+                if (titleNode && titleNode.textContent) {
+                    currentDetail.title = titleNode.textContent;
+                    titleEl.textContent = titleNode.textContent;
+                }
+            },
+        });
+    }
+
+    document.querySelector('.nav-chats-body')?.addEventListener('click', (event) => {
         const target = event.target.closest('[data-chat-id]');
         if (!target) return;
         event.preventDefault();
         const id = target.dataset.chatId;
-        if (!id) return;
-        loadDetail(id, { push: id !== selectedId });
+        if (!id || streaming) return;
+        loadDetail(id, { push: id !== selectedId, select: true });
     });
 
     if (openBtn) openBtn.addEventListener('click', () => setDetails(details.hidden));
     if (closeBtn) closeBtn.addEventListener('click', () => setDetails(false));
+    if (form) form.addEventListener('submit', sendMessage);
+    if (input) {
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage(e);
+            }
+        });
+        input.addEventListener('paste', (e) => {
+            for (const item of (e.clipboardData || {}).items || []) {
+                if (item.type && item.type.startsWith('image/')) {
+                    e.preventDefault();
+                    addImageFile(item.getAsFile());
+                }
+            }
+        });
+    }
+    if (attachBtn) attachBtn.addEventListener('click', () => fileInput.click());
+    if (fileInput) fileInput.addEventListener('change', () => {
+        for (const f of fileInput.files) addImageFile(f);
+        fileInput.value = '';
+    });
+    if (stopBtn) stopBtn.addEventListener('click', async () => {
+        stopBtn.disabled = true;
+        try { await ChatLive.stopChat(); } catch (err) {}
+        stopBtn.disabled = false;
+    });
+    if (newChatBtn) newChatBtn.addEventListener('click', async () => {
+        if (streaming) return;
+        if (!confirm('Start a fresh conversation? Current history will be archived to memory first.')) return;
+        newChatBtn.disabled = true;
+        try {
+            await ChatLive.clearChat();
+            selectedId = '';
+            setActiveItem('');
+            history.pushState({}, '', `/chats?kind=${encodeURIComponent(kind)}`);
+            renderDetail({
+                store: 'run',
+                id: '',
+                title: 'New chat',
+                state: 'active',
+                started_label: 'now',
+                continuable: true,
+                stats: {},
+                history: [],
+                protocol: [],
+            }, []);
+            await refreshRail();
+            input && input.focus();
+        } catch (err) {
+            alert(err.message || 'Failed to start new chat');
+        } finally {
+            newChatBtn.disabled = false;
+        }
+    });
 
     window.addEventListener('popstate', () => {
         const params = new URLSearchParams(window.location.search);
-        loadDetail(params.get('id') || '', { push: false });
+        loadDetail(params.get('id') || '', { push: false, select: true });
     });
 
     if (sentinel) {
@@ -412,7 +580,7 @@
         if (hasMore && list.scrollHeight <= list.clientHeight + 8) loadMore();
     }
 
-    if (selectedId) loadDetail(selectedId, { push: false });
+    if (selectedId) loadDetail(selectedId, { push: false, select: true });
     else showPlaceholder();
 })();
 </script>

@@ -207,8 +207,6 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
         todo = dashboard_todo_vars()
         return render_template(
             "index.html",
-            headroom_enabled=getattr(agent, "headroom_enabled", False),
-            now_iso=datetime.now(timezone.utc).isoformat(),
             saved=request.args.get("saved"),
             page_context=ui_ctx.todo(
                 todo["todo_date"],
@@ -475,33 +473,52 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
         channel = request.args.get("channel", MAIN_CHANNEL_ID)
         from .ui_context import serialize_chat_history
         if channel == MAIN_CHANNEL_ID:
-            run = None
             try:
-                from harness import conversation_run_store
-                run = conversation_run_store.active_run(channel)
-                if run:
-                    events = conversation_run_store.events_for_run(
-                        run["run_id"], visibility="user",
-                    )
-                    history = [
-                        {
-                            "role": event.get("role", "assistant"),
-                            "text": event.get("content", ""),
-                        }
-                        for event in events
-                        if isinstance(event.get("content"), str)
-                    ]
-                    return jsonify({"history": history, "run_id": run["run_id"]})
+                from .chats_board import active_main_history
+                history, run_id = active_main_history()
+                if history:
+                    return jsonify({"history": history, "run_id": run_id})
             except Exception:
                 log.debug("Mongo conversation history unavailable", exc_info=True)
         messages = agent.conversations.get(channel, [])
         return jsonify({"history": serialize_chat_history(messages)})
 
+    @app.route("/api/chat/select", methods=["POST"])
+    def api_chat_select():
+        """Resume a main-channel conversation run as the live overlay/Chats tail."""
+        data = request.json or {}
+        run_id = (data.get("run_id") or "").strip()
+        if not run_id:
+            return jsonify({"error": "run_id is required"}), 400
+        if agent.is_channel_busy(MAIN_CHANNEL_ID):
+            return jsonify({"error": "Channel is busy"}), 409
+        loop = scheduler._loop if scheduler else None
+        if not (loop and loop.is_running()):
+            return jsonify({"error": "Agent event loop not available"}), 503
+        try:
+            result = asyncio.run_coroutine_threadsafe(
+                agent.switch_main_run(run_id), loop,
+            ).result(timeout=60)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 404
+        except RuntimeError as e:
+            status = 409 if "busy" in str(e).lower() else 500
+            return jsonify({"error": str(e)}), status
+        except Exception as e:
+            log.exception("Tower chat select error")
+            return jsonify({"error": str(e)}), 500
+        from .chats_board import history_for_run
+        history, _protocol = history_for_run(run_id)
+        return jsonify({
+            **result,
+            "history": history,
+        })
+
     @app.route("/api/clear", methods=["POST"])
     def api_clear():
         """Archive the channel's conversation to the palace, then clear it —
         matching Discord's `/new` / `!new` / `!clear` behaviour."""
-        channel = request.json.get("channel", MAIN_CHANNEL_ID)
+        channel = (request.json or {}).get("channel", MAIN_CHANNEL_ID)
         loop = scheduler._loop if scheduler else None
         if loop and loop.is_running():
             future = asyncio.run_coroutine_threadsafe(
@@ -569,10 +586,9 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
     def api_provider_keys_get():
         from harness import provider_credentials
 
-        try:
-            return jsonify({"providers": provider_credentials.list_summaries()})
-        except RuntimeError:
-            return jsonify({"error": "Provider key storage is unavailable"}), 503
+        # Always returns per-provider status (BYOM and/or env). Never 503 for
+        # missing KMS/Mongo — env-configured keys still show as configured.
+        return jsonify({"providers": provider_credentials.list_summaries()})
 
     @app.route("/api/provider-keys/<provider>", methods=["PUT"])
     def api_provider_key_put(provider: str):

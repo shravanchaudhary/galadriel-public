@@ -9,8 +9,77 @@
         <a href="/integrations" class="{{ 'active' if request.path.startswith('/integrations') }}">Integrations</a>
         {% else %}
         {% set agent_section_active = request.path.startswith('/agent') or request.path.startswith('/loops') or request.path.startswith('/config') or request.path.startswith('/palace') %}
+        {% set chats_section_active = request.path.startswith('/chats') or request.path.startswith('/runs') or request.path.startswith('/worker-runs') %}
+        {% set nav_kind = kind if kind is defined else 'chat' %}
+        {% set nav_filters = filters if filters is defined else chat_filters %}
+        {% set nav_show_history = sections is defined and db_configured %}
         <a href="/" class="{{ 'active' if request.path == '/' }}">Dashboard</a>
-        <a href="/chats" class="{{ 'active' if request.path.startswith('/chats') or request.path.startswith('/runs') or request.path.startswith('/worker-runs') }}">Chats</a>
+        <div class="site-nav-group nav-chats-group {{ 'is-active' if chats_section_active }}">
+            <div class="nav-chats-head">
+                <a href="/chats?kind={{ nav_kind }}"
+                   class="nav-chats-link {{ 'active' if chats_section_active }}">Chats</a>
+                <div class="nav-chats-actions">
+                    {% if nav_show_history %}
+                    <button type="button" class="nav-chats-icon-btn" id="runs-new-chat"
+                            title="Archive current and start fresh" aria-label="New chat">+</button>
+                    {% endif %}
+                    <div class="nav-chats-menu-wrap">
+                        <button type="button" class="nav-chats-icon-btn" id="nav-chats-menu-btn"
+                                title="Channel filter" aria-label="Channel filter"
+                                aria-haspopup="true" aria-expanded="false">⋯</button>
+                        <div class="nav-chats-menu" id="nav-chats-menu" hidden role="menu">
+                            <div class="nav-chats-menu-label">Channel</div>
+                            {% for fid, flabel in nav_filters %}
+                            <a role="menuitem"
+                               class="nav-chats-menu-item {% if nav_kind == fid %}is-selected{% endif %}"
+                               href="/chats?kind={{ fid }}">{{ flabel }}</a>
+                            {% endfor %}
+                        </div>
+                    </div>
+                </div>
+            </div>
+            {% if nav_show_history %}
+            <div class="nav-chats-body">
+                <div class="runs-list nav-chats-list" role="list" id="runs-list"
+                     data-kind="{{ nav_kind }}"
+                     data-selected="{{ selected_id or '' }}"
+                     data-next-page="2"
+                     data-has-more="{{ '1' if has_more else '0' }}">
+                    {% for section in sections %}
+                    <div class="runs-section-label" data-bucket="{{ section.id }}">{{ section.label }}</div>
+                    {% for item in section.rows %}
+                    <a role="listitem"
+                       class="runs-list-item {% if item.id == selected_id %}is-active{% endif %}"
+                       data-bucket="{{ item.bucket }}"
+                       data-chat-id="{{ item.id }}"
+                       data-store="{{ item.store }}"
+                       href="/chats?kind={{ nav_kind }}&id={{ item.id }}">
+                        <div class="runs-list-top">
+                            <span class="runs-list-time">{{ item.time }}</span>
+                            <span class="badge run-state-{{ item.state }} worker-state-{{ item.state }}">{{ item.state }}</span>
+                        </div>
+                        {% if nav_kind == 'all' %}
+                        <div class="runs-list-channel muted">{{ item.channel_label }}</div>
+                        {% endif %}
+                        <div class="runs-list-title">{{ item.title }}</div>
+                        <div class="runs-list-meta muted">{{ item.meta }}</div>
+                    </a>
+                    {% endfor %}
+                    {% else %}
+                    <p class="runs-empty muted" id="runs-empty">
+                        No histories for this filter.
+                        {% if nav_kind not in ('chat', 'all', 'worker') %}
+                        New {{ nav_kind }} turns are recorded from the next run onward.
+                        {% endif %}
+                    </p>
+                    {% endfor %}
+                    <div class="runs-load-sentinel" id="runs-load-sentinel" {% if not has_more %}hidden{% endif %}>
+                        <span class="muted" id="runs-load-status">Loading…</span>
+                    </div>
+                </div>
+            </div>
+            {% endif %}
+        </div>
         <a href="/apps" class="{{ 'active' if request.path.startswith('/apps') or request.path.startswith('/workflows') or request.path.startswith('/w/') or request.path.startswith('/approvals') }}">Apps</a>
         <div class="site-nav-group {{ 'is-active' if agent_section_active }}">
             <div class="site-nav-group-label">Agent</div>
@@ -30,11 +99,33 @@
         {% endif %}
     </nav>
     <div class="site-sidebar-footer">
-        {% if not control_plane_only %}
-        <a href="#" class="site-nav-cta" id="site-nav-chat" role="button">Chat</a>
-        {% endif %}
         <form method="post" action="/logout" class="site-nav-logout">
             <button type="submit" class="site-nav-logout-btn">Log out</button>
         </form>
     </div>
 </aside>
+<script>
+(function () {
+    const btn = document.getElementById('nav-chats-menu-btn');
+    const menu = document.getElementById('nav-chats-menu');
+    if (!btn || !menu) return;
+    function closeMenu() {
+        menu.hidden = true;
+        btn.setAttribute('aria-expanded', 'false');
+    }
+    btn.addEventListener('click', (event) => {
+        event.stopPropagation();
+        const open = menu.hidden;
+        menu.hidden = !open;
+        btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    });
+    document.addEventListener('click', (event) => {
+        if (!menu.hidden && !menu.contains(event.target) && event.target !== btn) {
+            closeMenu();
+        }
+    });
+    document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') closeMenu();
+    });
+})();
+</script>

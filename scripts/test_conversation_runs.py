@@ -3,11 +3,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from flask import Flask
 
@@ -15,7 +16,13 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from harness import conversation_run_store  # noqa: E402
-from tower.chats_board import register_chats_board  # noqa: E402
+from harness.agent import GaladrielAgent, MAIN_CHANNEL_ID  # noqa: E402
+from tower.chats_board import (  # noqa: E402
+    _main_items,
+    active_main_history,
+    history_for_run,
+    register_chats_board,
+)
 
 
 class SanitizationTests(unittest.TestCase):
@@ -28,6 +35,247 @@ class SanitizationTests(unittest.TestCase):
         self.assertEqual(safe["password"], "[redacted]")
         self.assertEqual(safe["content"][0]["type"], "image_omitted")
         self.assertEqual(stats, {"redactions": 1, "images_omitted": 1})
+
+
+class TitleTests(unittest.TestCase):
+    def test_title_from_tower_user_message(self):
+        self.assertEqual(
+            conversation_run_store.title_from_user_content("[Tower]: Plan the launch"),
+            "Plan the launch",
+        )
+
+    def test_title_truncates(self):
+        long = "[Tower]: " + ("x" * 100)
+        title = conversation_run_store.title_from_user_content(long)
+        self.assertTrue(title.endswith("…"))
+        self.assertLessEqual(len(title), 72)
+
+    def test_main_items_prefer_stored_title(self):
+        rows = [{
+            "run_id": "run-1",
+            "title": "First question",
+            "sources": ["tower"],
+            "started_at": datetime.now(timezone.utc),
+            "state": "active",
+            "llm_call_count": 1,
+            "cost_total": 0.01,
+        }]
+        items = _main_items(rows)
+        self.assertEqual(items[0]["title"], "First question")
+
+
+class RecorderFlushTests(unittest.TestCase):
+    def test_events_buffer_until_finalize(self):
+        run = {
+            "run_id": "run-flush",
+            "title": None,
+            "tokens": {},
+            "cost_total": 0,
+            "llm_call_count": 0,
+            "tool_call_count": 0,
+            "event_sequence": 0,
+            "system_prompt_versions": [],
+        }
+        recorder = conversation_run_store.ConversationRunRecorder(run, source="tower")
+        inserted = []
+
+        async def fake_insert_many(docs):
+            inserted.extend(docs)
+
+        mock_db = MagicMock()
+        mock_db[conversation_run_store.EVENTS].insert_many = AsyncMock(side_effect=fake_insert_many)
+        mock_db[conversation_run_store.EVENTS].count_documents = AsyncMock(return_value=2)
+        mock_db[conversation_run_store.RUNS].update_one = AsyncMock()
+
+        async def run_test():
+            await recorder.begin_turn("dedupe-1")
+            await recorder.record_message(
+                {"role": "user", "content": "[Tower]: hello world"},
+                visibility="user",
+                kind="direct_user",
+            )
+            await recorder.record_direct_reply("hi")
+            self.assertEqual(len(inserted), 0)
+            self.assertEqual(len(recorder._pending_events), 3)
+            with patch("scripts.lib.db.get_db", return_value=mock_db), \
+                 patch(
+                     "harness.chat_title.generate_chat_title",
+                     new=AsyncMock(return_value="Hello World"),
+                 ):
+                await recorder.finalize_turn(state="completed")
+            self.assertEqual(len(inserted), 3)
+            self.assertEqual(recorder._pending_events, [])
+            update = mock_db[conversation_run_store.RUNS].update_one.await_args.args[1]
+            self.assertEqual(update["$set"]["title"], "Hello World")
+            self.assertEqual(update["$set"]["current_turn_state"], "completed")
+
+        asyncio.run(run_test())
+
+    def test_title_falls_back_when_llm_fails(self):
+        run = {
+            "run_id": "run-flush-2",
+            "title": None,
+            "tokens": {},
+            "cost_total": 0,
+            "llm_call_count": 0,
+            "tool_call_count": 0,
+            "event_sequence": 0,
+            "system_prompt_versions": [],
+        }
+        recorder = conversation_run_store.ConversationRunRecorder(run, source="tower")
+        mock_db = MagicMock()
+        mock_db[conversation_run_store.EVENTS].insert_many = AsyncMock()
+        mock_db[conversation_run_store.EVENTS].count_documents = AsyncMock(return_value=1)
+        mock_db[conversation_run_store.RUNS].update_one = AsyncMock()
+
+        async def run_test():
+            await recorder.record_message(
+                {"role": "user", "content": "[Tower]: fallback title please"},
+                visibility="user",
+                kind="direct_user",
+            )
+            with patch("scripts.lib.db.get_db", return_value=mock_db), \
+                 patch(
+                     "harness.chat_title.generate_chat_title",
+                     new=AsyncMock(return_value=None),
+                 ):
+                await recorder.finalize_turn(state="completed")
+            update = mock_db[conversation_run_store.RUNS].update_one.await_args.args[1]
+            self.assertEqual(update["$set"]["title"], "fallback title please")
+
+        asyncio.run(run_test())
+
+
+class SwitchMainRunTests(unittest.TestCase):
+    def test_switch_rebuilds_buffer_and_reactivates(self):
+        agent = GaladrielAgent.__new__(GaladrielAgent)
+        agent.conversations = {MAIN_CHANNEL_ID: [{"role": "user", "content": "old"}]}
+        agent.working_dir = "/tmp/galadriel-test"
+        agent._post_recovery_archive_tag = {}
+        agent._output_ceiling_streak = {}
+        agent._compaction_summary = {}
+        agent._last_input_tokens = {}
+        agent._last_archived_len = {}
+        agent.is_channel_busy = lambda channel: False
+
+        target = {
+            "run_id": "run-b",
+            "channel_id": "main",
+            "state": "ended",
+            "title": "Older chat",
+        }
+        rebuilt = [
+            {"role": "user", "content": "[Tower]: resume me"},
+            {"role": "assistant", "content": [{"type": "text", "text": "ok"}]},
+        ]
+
+        with patch.object(conversation_run_store, "get_run", return_value=target), \
+             patch.object(conversation_run_store, "active_run", return_value={
+                 "run_id": "run-a", "channel_id": "main", "state": "active",
+             }), \
+             patch.object(conversation_run_store, "end_active_run", new_callable=AsyncMock) as end_mock, \
+             patch.object(
+                 conversation_run_store, "buffer_messages_for_run",
+                 return_value=(rebuilt, None),
+             ), \
+             patch.object(
+                 conversation_run_store, "reactivate_run",
+                 new_callable=AsyncMock, return_value=target,
+             ) as react_mock, \
+             patch("harness.conversation_store.save_channel") as save_mock:
+            result = asyncio.run(agent.switch_main_run("run-b"))
+
+        self.assertTrue(result["switched"])
+        self.assertEqual(result["run_id"], "run-b")
+        self.assertEqual(agent.conversations[MAIN_CHANNEL_ID], rebuilt)
+        end_mock.assert_awaited()
+        react_mock.assert_awaited_with("run-b")
+        self.assertTrue(save_mock.called)
+
+    def test_switch_rejects_when_busy(self):
+        agent = GaladrielAgent.__new__(GaladrielAgent)
+        agent.is_channel_busy = lambda channel: True
+        with self.assertRaises(RuntimeError):
+            asyncio.run(agent.switch_main_run("run-b"))
+
+
+class OverlayHistoryTests(unittest.TestCase):
+    def test_direct_user_plus_protocol_keeps_thoughts(self):
+        # Production shape: users are direct_user; assistants (with thought)
+        # are protocol_message. direct_reply is display-only and ignored here.
+        all_events = [
+            {
+                "kind": "direct_user",
+                "role": "user",
+                "content": "[Tower]: hello",
+                "visibility": "user",
+            },
+            {
+                "kind": "protocol_message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "hi there"}],
+                "thought": "considering the greeting",
+                "visibility": "internal",
+            },
+            {
+                "kind": "direct_reply",
+                "role": "assistant",
+                "content": "hi there",
+                "visibility": "user",
+            },
+        ]
+        direct = [e for e in all_events if e.get("visibility") == "user"]
+        with patch.object(
+            conversation_run_store, "events_for_run",
+            side_effect=lambda run_id, visibility=None: (
+                direct if visibility == "user" else all_events
+            ),
+        ):
+            history, protocol = history_for_run("run-1")
+        self.assertIs(history, protocol)
+        self.assertEqual(history[0]["text"], "hello")
+        self.assertEqual(history[1]["blocks"][0]["type"], "thought")
+        self.assertEqual(history[1]["blocks"][0]["text"], "considering the greeting")
+        self.assertEqual(history[1]["blocks"][1]["text"], "hi there")
+
+    def test_protocol_only_without_direct_user_yields_empty_then_direct_fallback(self):
+        # Bug regression: protocol_message assistants with no user protocol
+        # messages used to serialize to [] and wipe thoughts on rehydrate.
+        protocol_only = [
+            {
+                "kind": "protocol_message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "orphan"}],
+                "thought": "unreachable without a preceding user",
+            },
+        ]
+        direct = [
+            {"role": "user", "content": "[Tower]: only direct", "kind": "direct_user"},
+            {
+                "role": "assistant",
+                "content": "ok",
+                "kind": "direct_reply",
+                "thought": "kept on direct reply",
+            },
+        ]
+        with patch.object(
+            conversation_run_store, "events_for_run",
+            side_effect=lambda run_id, visibility=None: (
+                direct if visibility == "user" else protocol_only
+            ),
+        ):
+            history, protocol = history_for_run("run-1")
+        # serialize skips orphan assistants → empty protocol → direct fallback
+        self.assertEqual(protocol, [])
+        self.assertEqual(history[0]["text"], "only direct")
+        self.assertEqual(history[1]["blocks"][0]["type"], "thought")
+        self.assertEqual(history[1]["blocks"][0]["text"], "kept on direct reply")
+
+    def test_active_main_history_empty_without_run(self):
+        with patch.object(conversation_run_store, "active_run", return_value=None):
+            history, run_id = active_main_history()
+        self.assertEqual(history, [])
+        self.assertIsNone(run_id)
 
 
 class ChatsBoardTests(unittest.TestCase):
@@ -48,6 +296,7 @@ class ChatsBoardTests(unittest.TestCase):
             "state": "active",
             "started_at": datetime.now(timezone.utc),
             "sources": ["slack"],
+            "title": "Named chat",
             "event_count": 2,
             "token_total": 42,
             "cost_total": 0.01,
@@ -58,30 +307,60 @@ class ChatsBoardTests(unittest.TestCase):
              patch.object(conversation_run_store, "get_run", return_value=run), \
              patch.object(conversation_run_store, "events_for_run", return_value=[]), \
              patch.object(conversation_run_store, "checkpoints_for_run", return_value=[]), \
+             patch.object(conversation_run_store, "backfill_run_title", return_value=None), \
              patch.object(conversation_run_store, "calls_for_run", return_value=[]) as calls_mock:
             listed = self.client.get("/chats?kind=chat", follow_redirects=True)
             self.assertEqual(listed.status_code, 200)
             self.assertIn(b"Today", listed.data)
             self.assertIn(b"runs-shell", listed.data)
-            # List shell must not pull transcript internals.
+            self.assertIn(b"Named chat", listed.data)
             self.assertFalse(calls_mock.called)
             shell = self.client.get("/chats?kind=chat&id=run-1")
             self.assertEqual(shell.status_code, 200)
             self.assertIn(b"runs-shell", shell.data)
+            self.assertIn(b"runs-composer", shell.data)
             self.assertFalse(calls_mock.called)
             detail = self.client.get("/chats/detail?kind=chat&id=run-1")
             self.assertEqual(detail.status_code, 200)
             body = detail.get_json()
             self.assertEqual(body["id"], "run-1")
+            self.assertEqual(body["title"], "Named chat")
+            self.assertTrue(body["continuable"])
             self.assertIn("history", body)
             self.assertTrue(calls_mock.called)
             redirect_detail = self.client.get("/runs/user/run-1", follow_redirects=True)
             self.assertEqual(redirect_detail.status_code, 200)
-            # legacy kind=main aliases to chat
             legacy = self.client.get("/runs?kind=main&id=run-1", follow_redirects=True)
             self.assertEqual(legacy.status_code, 200)
         self.assertEqual(self.client.get("/runs/user/missing").status_code, 404)
         self.assertEqual(self.client.get("/chats/detail?kind=chat&id=missing").status_code, 404)
+
+
+class SelectApiTests(unittest.TestCase):
+    def test_select_busy_returns_409(self):
+        from flask import Flask, jsonify, request
+
+        class FakeAgent:
+            def is_channel_busy(self, channel):
+                return True
+
+        agent = FakeAgent()
+        app = Flask(__name__)
+
+        @app.route("/api/chat/select", methods=["POST"])
+        def api_chat_select():
+            data = request.json or {}
+            run_id = (data.get("run_id") or "").strip()
+            if not run_id:
+                return jsonify({"error": "run_id is required"}), 400
+            if agent.is_channel_busy(MAIN_CHANNEL_ID):
+                return jsonify({"error": "Channel is busy"}), 409
+            return jsonify({"run_id": run_id})
+
+        client = app.test_client()
+        res = client.post("/api/chat/select", json={"run_id": "run-1"})
+        self.assertEqual(res.status_code, 409)
+        self.assertIn("busy", res.get_json().get("error", "").lower())
 
 
 if __name__ == "__main__":

@@ -173,7 +173,7 @@ os.environ["REPLIKA_KMS_KEY_ID"] = "test-key"
 db = _DB()
 kms = _KMS()
 saved = provider_credentials.put("anthropic", "sk-secret-1234", kms_client=kms, db=db)
-_assert(saved["masked"] == "••••1234", "only a fingerprint may be returned")
+_assert(saved["masked"] == "****1234", "only a fingerprint may be returned")
 stored = next(iter(db.collection.docs.values()))
 _assert("sk-secret" not in str(stored), "plaintext key must not be stored")
 _assert(

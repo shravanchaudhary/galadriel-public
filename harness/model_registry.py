@@ -32,6 +32,8 @@ TASKS: dict[str, tuple[str, str]] = {
     "compaction": (GEMINI, "gemini-2.5-flash"),
     # Lightweight structured gate for shared Slack channel replies.
     "slack_reply_gate": (GEMINI, "gemini-2.5-flash"),
+    # One-shot short title for a new conversation run.
+    "chat_title": (GEMINI, "gemini-2.5-flash"),
 }
 
 # Previous Anthropic defaults — drop any of these back into TASKS to switch a
@@ -40,6 +42,7 @@ ANTHROPIC_DEFAULTS: dict[str, tuple[str, str]] = {
     "agent": (ANTHROPIC, "claude-opus-4-8"),
     "compaction": (ANTHROPIC, "claude-haiku-4-5-20251001"),
     "slack_reply_gate": (ANTHROPIC, "claude-haiku-4-5-20251001"),
+    "chat_title": (ANTHROPIC, "claude-haiku-4-5-20251001"),
 }
 
 # Env var each provider reads its API key from. Ollama needs none.
