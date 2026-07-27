@@ -468,14 +468,22 @@ class GeminiProvider(BaseModelProvider):
         # stream_with_llm_retry so Retry-After is honoured in one place.
         self.client = genai.Client(api_key=key)
 
-    def _thinking_config(self, model: str) -> types.ThinkingConfig | None:
+    def _thinking_config(
+        self, model: str, *, thinking: bool = True
+    ) -> types.ThinkingConfig | None:
         """Gemini 3.x Pro models always think; pin HIGH for the agent.
 
         `include_thoughts=True` surfaces thought summaries as `thought` parts,
         which the streaming path relays live to the UI. They're already billed
         (thoughts_token_count folds into output) and are dropped from final
         content by `_parts_to_blocks`, so this is free on the non-stream path.
+
+        Flash models also think by default and bill those tokens against
+        ``max_output_tokens`` — pass ``thinking=False`` to set
+        ``thinking_budget=0`` for cheap one-shot calls (titles, gates).
         """
+        if not thinking:
+            return types.ThinkingConfig(thinking_budget=0)
         m = model.lower()
         if "3.1-pro" in m or "3-pro" in m:
             return types.ThinkingConfig(
@@ -484,7 +492,7 @@ class GeminiProvider(BaseModelProvider):
             )
         return None
 
-    def _build_config(self, model, stable_system, tools, max_tokens):
+    def _build_config(self, model, stable_system, tools, max_tokens, *, thinking=True):
         kwargs = dict(
             system_instruction=stable_system,
             max_output_tokens=max_tokens,
@@ -493,17 +501,19 @@ class GeminiProvider(BaseModelProvider):
             # the SDK auto-invoke anything.
             automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
         )
-        thinking = self._thinking_config(model)
-        if thinking is not None:
-            kwargs["thinking_config"] = thinking
+        thinking_cfg = self._thinking_config(model, thinking=thinking)
+        if thinking_cfg is not None:
+            kwargs["thinking_config"] = thinking_cfg
         return types.GenerateContentConfig(**kwargs)
 
     async def create_message(
-        self, *, model, max_tokens, messages, system=None, tools=None
+        self, *, model, max_tokens, messages, system=None, tools=None, thinking=True
     ):
         stable, dynamic = _split_system(system)
         contents = _messages_to_contents(messages, trailing_text=dynamic)
-        config = self._build_config(model, stable, tools, max_tokens)
+        config = self._build_config(
+            model, stable, tools, max_tokens, thinking=thinking
+        )
 
         async def _once():
             response = await self.client.aio.models.generate_content(
@@ -516,7 +526,7 @@ class GeminiProvider(BaseModelProvider):
         return await with_llm_retry(_once)
 
     async def stream_message(
-        self, *, model, max_tokens, messages, system=None, tools=None
+        self, *, model, max_tokens, messages, system=None, tools=None, thinking=True
     ):
         """True chunk streaming. Yields ("thought"|"text", delta) as Gemini
         emits parts, then ("message", _Message) assembled from every part so
@@ -524,7 +534,9 @@ class GeminiProvider(BaseModelProvider):
         """
         stable, dynamic = _split_system(system)
         contents = _messages_to_contents(messages, trailing_text=dynamic)
-        config = self._build_config(model, stable, tools, max_tokens)
+        config = self._build_config(
+            model, stable, tools, max_tokens, thinking=thinking
+        )
 
         async def _stream_once():
             stream = await self.client.aio.models.generate_content_stream(

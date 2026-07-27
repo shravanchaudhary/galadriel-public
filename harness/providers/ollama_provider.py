@@ -397,20 +397,20 @@ class OllamaProvider(BaseModelProvider):
         }
 
     async def create_message(
-        self, *, model, max_tokens, messages, system=None, tools=None
+        self, *, model, max_tokens, messages, system=None, tools=None, thinking=True
     ):
         response = await self.client.chat(
             model=model,
             messages=_messages_to_ollama(messages, system=system),
             tools=_tools_to_ollama(tools),
             stream=False,
-            think=True,
+            think=thinking,
             options=self._options(max_tokens),
         )
         return _response_to_message(response)
 
     async def stream_message(
-        self, *, model, max_tokens, messages, system=None, tools=None
+        self, *, model, max_tokens, messages, system=None, tools=None, thinking=True
     ):
         """True chunk streaming. Yields ("thought"|"text", delta) as Ollama
         emits thinking/content, then ("message", _Message) assembled from the
@@ -422,7 +422,7 @@ class OllamaProvider(BaseModelProvider):
             messages=_messages_to_ollama(messages, system=system),
             tools=_tools_to_ollama(tools),
             stream=True,
-            think=True,
+            think=thinking,
             options=self._options(max_tokens),
         )
 

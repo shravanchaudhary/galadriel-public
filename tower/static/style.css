@@ -158,19 +158,38 @@ body {
 .nav-chats-head {
     display: flex;
     align-items: center;
-    gap: 0.2rem;
+    gap: 0.15rem;
     min-width: 0;
+    padding: 0.2rem 0.25rem 0.2rem 0.7rem;
+    border-radius: var(--radius-sm);
+    transition: color 0.15s, background 0.15s;
+}
+
+.nav-chats-head:hover {
+    background: rgba(0, 0, 0, 0.04);
+}
+
+.nav-chats-head.is-active {
+    background: rgba(0, 0, 0, 0.07);
 }
 
 .nav-chats-link {
     flex: 1 1 auto;
     min-width: 0;
+    padding: 0.3rem 0 !important;
+    background: transparent !important;
+    color: var(--text-secondary);
+}
+
+.nav-chats-head:hover .nav-chats-link,
+.nav-chats-head.is-active .nav-chats-link {
+    color: var(--text);
 }
 
 .nav-chats-actions {
     display: flex;
     align-items: center;
-    gap: 0.1rem;
+    gap: 0;
     flex-shrink: 0;
 }
 
@@ -180,21 +199,21 @@ body {
 
 .nav-chats-icon-btn {
     appearance: none;
-    width: 1.65rem;
-    height: 1.65rem;
+    width: 1.55rem;
+    height: 1.55rem;
     border: none;
     background: transparent;
     color: var(--muted);
     font: inherit;
     font-size: 1.05rem;
     line-height: 1;
-    border-radius: var(--radius-sm);
+    border-radius: 4px;
     cursor: pointer;
     padding: 0;
 }
 
 .nav-chats-icon-btn:hover {
-    background: rgba(0, 0, 0, 0.05);
+    background: rgba(0, 0, 0, 0.06);
     color: var(--text);
 }
 
@@ -255,37 +274,48 @@ body {
 }
 
 .nav-chats-list {
-    /* ~6 compact chat rows + section labels; scroll for the rest */
+    /* ~6 chat titles + section labels; scroll for the rest */
     max-height: 22rem;
     overflow-y: auto;
     min-height: 0;
     flex: none;
-    gap: 0.2rem;
-    padding-right: 0.1rem;
+    gap: 0.15rem;
+    padding-right: 0.15rem;
 }
 
 .nav-chats-list .runs-section-label {
-    margin: 0.35rem 0 0.05rem;
-    padding: 0.25rem 0.4rem;
-    font-size: 0.66rem;
-    background: linear-gradient(rgba(251, 251, 246, 0.96), rgba(251, 251, 246, 0.88));
+    position: static;
+    margin: 0.55rem 0 0.1rem;
+    padding: 0.15rem 0.55rem;
+    font-size: 0.68rem;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+    text-transform: none;
+    color: rgba(15, 12, 8, 0.4);
+    background: transparent;
 }
 
 .nav-chats-list .runs-list-item {
-    padding: 0.45rem 0.5rem;
+    padding: 0.4rem 0.55rem;
+    font-size: 0.84rem;
+    font-weight: 500;
+    line-height: 1.35;
+    color: var(--text-secondary);
+    border: none;
+    white-space: normal;
+    overflow: visible;
+    word-break: break-word;
 }
 
-.nav-chats-list .runs-list-title {
-    font-size: 0.8rem;
-    -webkit-line-clamp: 1;
+.nav-chats-list .runs-list-item:hover {
+    color: var(--text);
+    background: rgba(0, 0, 0, 0.04);
 }
 
-.nav-chats-list .runs-list-meta {
-    font-size: 0.68rem;
-}
-
-.nav-chats-list .runs-list-time {
-    font-size: 0.68rem;
+.nav-chats-list .runs-list-item.is-active {
+    color: var(--text);
+    background: rgba(0, 0, 0, 0.07);
+    border: none;
 }
 
 .nav-chats-body .runs-active-pill {
@@ -2165,7 +2195,7 @@ body.wfc-resizing * { cursor: inherit !important; }
         height: 60vh;
     }
     .nav-chats-list {
-        max-height: 14rem;
+        max-height: 18rem;
     }
 }
 
@@ -2178,7 +2208,7 @@ body.wfc-resizing * { cursor: inherit !important; }
         width: 100%;
     }
     .nav-chats-list {
-        max-height: 12rem;
+        max-height: 16rem;
     }
 }
 

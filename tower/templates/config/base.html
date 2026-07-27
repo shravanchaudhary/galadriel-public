@@ -5,8 +5,5 @@
 {% block subtitle %}{% block cfg_subtitle %}Agent settings, jobs, and state — live from disk{% endblock %}{% endblock %}
 
 {% block content %}
-<nav class="wf-nav">
-    <a href="/config/preview" class="{{ 'active' if request.path == '/config/preview' }}">Prompt Construction</a>
-</nav>
 {% block cfg_content %}{% endblock %}
 {% endblock %}

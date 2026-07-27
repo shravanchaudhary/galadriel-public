@@ -534,7 +534,6 @@
     };
 
     window.wfcClear = async function () {
-        if (!confirm('Start a fresh conversation? Current history will be archived to memory first.')) return;
         const btn = document.getElementById('wfc-clear');
         if (btn) btn.disabled = true;
         try {

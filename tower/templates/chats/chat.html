@@ -87,7 +87,6 @@
     const attachBtn = document.getElementById('runs-attach');
     const fileInput = document.getElementById('runs-file');
     const previews = document.getElementById('runs-previews');
-    const newChatBtn = document.getElementById('runs-new-chat');
     if (!list) return;
 
     const kind = list.dataset.kind || 'chat';
@@ -406,18 +405,8 @@
         a.dataset.chatId = item.id;
         a.dataset.store = item.store || '';
         a.href = `/chats?kind=${encodeURIComponent(kind)}&id=${encodeURIComponent(item.id)}`;
-        let html = `
-            <div class="runs-list-top">
-                <span class="runs-list-time">${escapeHtml(item.time)}</span>
-                <span class="badge run-state-${escapeHtml(item.state)} worker-state-${escapeHtml(item.state)}">${escapeHtml(item.state)}</span>
-            </div>`;
-        if (kind === 'all') {
-            html += `<div class="runs-list-channel muted">${escapeHtml(item.channel_label)}</div>`;
-        }
-        html += `
-            <div class="runs-list-title">${escapeHtml(item.title)}</div>
-            <div class="runs-list-meta muted">${escapeHtml(item.meta)}</div>`;
-        a.innerHTML = html;
+        a.title = item.title || '';
+        a.textContent = item.title || 'Chat';
         list.insertBefore(a, sentinel);
     }
 
@@ -490,7 +479,7 @@
                 } catch (err) {}
                 await refreshRail();
                 const titleNode = selectedId
-                    ? list.querySelector(`.runs-list-item[data-chat-id="${selectedId}"] .runs-list-title`)
+                    ? list.querySelector(`.runs-list-item[data-chat-id="${selectedId}"]`)
                     : null;
                 if (titleNode && titleNode.textContent) {
                     currentDetail.title = titleNode.textContent;
@@ -538,34 +527,26 @@
         try { await ChatLive.stopChat(); } catch (err) {}
         stopBtn.disabled = false;
     });
-    if (newChatBtn) newChatBtn.addEventListener('click', async () => {
+    window.__runsNewChat = async function () {
         if (streaming) return;
-        if (!confirm('Start a fresh conversation? Current history will be archived to memory first.')) return;
-        newChatBtn.disabled = true;
-        try {
-            await ChatLive.clearChat();
-            selectedId = '';
-            setActiveItem('');
-            history.pushState({}, '', `/chats?kind=${encodeURIComponent(kind)}`);
-            renderDetail({
-                store: 'run',
-                id: '',
-                title: 'New chat',
-                state: 'active',
-                started_label: 'now',
-                continuable: true,
-                stats: {},
-                history: [],
-                protocol: [],
-            }, []);
-            await refreshRail();
-            input && input.focus();
-        } catch (err) {
-            alert(err.message || 'Failed to start new chat');
-        } finally {
-            newChatBtn.disabled = false;
-        }
-    });
+        await ChatLive.clearChat();
+        selectedId = '';
+        setActiveItem('');
+        history.pushState({}, '', `/chats?kind=${encodeURIComponent(kind)}`);
+        renderDetail({
+            store: 'run',
+            id: '',
+            title: 'New chat',
+            state: 'active',
+            started_label: 'now',
+            continuable: true,
+            stats: {},
+            history: [],
+            protocol: [],
+        }, []);
+        await refreshRail();
+        input && input.focus();
+    };
 
     window.addEventListener('popstate', () => {
         const params = new URLSearchParams(window.location.search);

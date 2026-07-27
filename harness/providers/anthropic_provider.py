@@ -31,8 +31,9 @@ class AnthropicProvider(BaseModelProvider):
         return kwargs
 
     async def create_message(
-        self, *, model, max_tokens, messages, system=None, tools=None
+        self, *, model, max_tokens, messages, system=None, tools=None, thinking=True
     ):
+        del thinking  # Anthropic Messages API has no thinking toggle here.
         kwargs = self._build_kwargs(model, max_tokens, messages, system, tools)
 
         async def _once():

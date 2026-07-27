@@ -22,8 +22,13 @@ class BaseModelProvider(ABC):
         messages: list,
         system: Any = None,
         tools: list | None = None,
+        thinking: bool = True,
     ) -> Any:
-        """Single-shot completion. Returns the provider's message response."""
+        """Single-shot completion. Returns the provider's message response.
+
+        ``thinking=False`` asks the backend to skip chain-of-thought when it
+        supports that (Gemini thinking_budget=0, Ollama think=False).
+        """
         ...
 
     async def stream_message(
@@ -34,6 +39,7 @@ class BaseModelProvider(ABC):
         messages: list,
         system: Any = None,
         tools: list | None = None,
+        thinking: bool = True,
     ):
         """Streaming variant. Async-yields ("text"|"thought", str) deltas as
         they arrive, then a final ("message", response) carrying the assembled
@@ -49,6 +55,7 @@ class BaseModelProvider(ABC):
             messages=messages,
             system=system,
             tools=tools,
+            thinking=thinking,
         )
         for block in getattr(msg, "content", None) or []:
             if getattr(block, "type", None) == "text":

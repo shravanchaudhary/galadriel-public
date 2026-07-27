@@ -15,14 +15,11 @@
         {% set nav_show_history = sections is defined and db_configured %}
         <a href="/" class="{{ 'active' if request.path == '/' }}">Dashboard</a>
         <div class="site-nav-group nav-chats-group {{ 'is-active' if chats_section_active }}">
-            <div class="nav-chats-head">
-                <a href="/chats?kind={{ nav_kind }}"
-                   class="nav-chats-link {{ 'active' if chats_section_active }}">Chats</a>
+            <div class="nav-chats-head {{ 'is-active' if chats_section_active }}">
+                <a href="/chats?kind={{ nav_kind }}" class="nav-chats-link">Chats</a>
                 <div class="nav-chats-actions">
-                    {% if nav_show_history %}
                     <button type="button" class="nav-chats-icon-btn" id="runs-new-chat"
-                            title="Archive current and start fresh" aria-label="New chat">+</button>
-                    {% endif %}
+                            title="New chat" aria-label="New chat">+</button>
                     <div class="nav-chats-menu-wrap">
                         <button type="button" class="nav-chats-icon-btn" id="nav-chats-menu-btn"
                                 title="Channel filter" aria-label="Channel filter"
@@ -53,17 +50,8 @@
                        data-bucket="{{ item.bucket }}"
                        data-chat-id="{{ item.id }}"
                        data-store="{{ item.store }}"
-                       href="/chats?kind={{ nav_kind }}&id={{ item.id }}">
-                        <div class="runs-list-top">
-                            <span class="runs-list-time">{{ item.time }}</span>
-                            <span class="badge run-state-{{ item.state }} worker-state-{{ item.state }}">{{ item.state }}</span>
-                        </div>
-                        {% if nav_kind == 'all' %}
-                        <div class="runs-list-channel muted">{{ item.channel_label }}</div>
-                        {% endif %}
-                        <div class="runs-list-title">{{ item.title }}</div>
-                        <div class="runs-list-meta muted">{{ item.meta }}</div>
-                    </a>
+                       href="/chats?kind={{ nav_kind }}&id={{ item.id }}"
+                       title="{{ item.title }}">{{ item.title }}</a>
                     {% endfor %}
                     {% else %}
                     <p class="runs-empty muted" id="runs-empty">
@@ -108,24 +96,55 @@
 (function () {
     const btn = document.getElementById('nav-chats-menu-btn');
     const menu = document.getElementById('nav-chats-menu');
-    if (!btn || !menu) return;
     function closeMenu() {
+        if (!menu || !btn) return;
         menu.hidden = true;
         btn.setAttribute('aria-expanded', 'false');
     }
-    btn.addEventListener('click', (event) => {
-        event.stopPropagation();
-        const open = menu.hidden;
-        menu.hidden = !open;
-        btn.setAttribute('aria-expanded', open ? 'true' : 'false');
-    });
-    document.addEventListener('click', (event) => {
-        if (!menu.hidden && !menu.contains(event.target) && event.target !== btn) {
-            closeMenu();
-        }
-    });
-    document.addEventListener('keydown', (event) => {
-        if (event.key === 'Escape') closeMenu();
-    });
+    if (btn && menu) {
+        btn.addEventListener('click', (event) => {
+            event.stopPropagation();
+            const open = menu.hidden;
+            menu.hidden = !open;
+            btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+        });
+        document.addEventListener('click', (event) => {
+            if (!menu.hidden && !menu.contains(event.target) && event.target !== btn) {
+                closeMenu();
+            }
+        });
+        document.addEventListener('keydown', (event) => {
+            if (event.key === 'Escape') closeMenu();
+        });
+    }
+
+    const newChatBtn = document.getElementById('runs-new-chat');
+    if (newChatBtn) {
+        newChatBtn.addEventListener('click', async (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (newChatBtn.disabled) return;
+            newChatBtn.disabled = true;
+            try {
+                if (typeof window.__runsNewChat === 'function') {
+                    await window.__runsNewChat();
+                    return;
+                }
+                const res = await fetch('/api/clear', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ channel: 'main' }),
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(data.error || 'Failed to start new chat');
+                const kind = document.getElementById('runs-list')?.dataset?.kind || 'chat';
+                window.location.href = `/chats?kind=${encodeURIComponent(kind)}`;
+            } catch (err) {
+                alert(err.message || 'Failed to start new chat');
+            } finally {
+                newChatBtn.disabled = false;
+            }
+        });
+    }
 })();
 </script>

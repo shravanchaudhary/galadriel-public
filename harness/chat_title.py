@@ -8,8 +8,10 @@ import re
 log = logging.getLogger("galadriel.chat_title")
 
 _TITLE_MAX = 72
+# ~5–10 tokens of title text; small headroom, thinking disabled separately.
+_MAX_TOKENS = 24
 _SYSTEM = (
-    "Write a short chat title (3–6 words) for the user's message. "
+    "Write a short chat title (3–6 words, about 5–10 tokens) for the user's message. "
     "Return only the title — no quotes, no trailing punctuation, no explanation."
 )
 
@@ -51,9 +53,10 @@ async def generate_chat_title(user_text: str) -> str | None:
         model = model_registry.model_for("chat_title")
         response = await provider.create_message(
             model=model,
-            max_tokens=40,
+            max_tokens=_MAX_TOKENS,
             system=_SYSTEM,
             messages=[{"role": "user", "content": seed[:500]}],
+            thinking=False,
         )
         parts = [
             getattr(block, "text", "") or ""
