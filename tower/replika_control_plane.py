@@ -598,8 +598,7 @@ def register_replika_control_plane(app) -> None:
         if not replika_id or status not in CALLBACK_STATUSES:
             return jsonify({"error": "Invalid callback"}), 400
         if status == "deleted":
-            if not _store().delete_record(replika_id):
-                return jsonify({"error": "Unknown Replika"}), 404
+            _store().delete_record(replika_id)
             return jsonify({"status": "accepted"})
         document = _store().update_status(
             replika_id,

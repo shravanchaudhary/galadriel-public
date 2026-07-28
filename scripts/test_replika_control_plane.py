@@ -21,6 +21,7 @@ os.environ.update(
         "REPLIKA_PROVISIONING_MODE": "local",
         "REPLIKA_ALLOW_LOCAL_PROVISIONING": "true",
         "REPLIKA_CONTROL_PLANE_ONLY": "true",
+        "REPLIKA_PROVISIONER_CALLBACK_TOKEN": "callback-token",
     }
 )
 os.environ.pop("MONGO_URI", None)
@@ -288,6 +289,15 @@ _assert(store.find_by_id(first_id) is None, "record removed after teardown")
 _assert(
     client.get("/api/replikas/username/alice").get_json()["available"],
     "username frees after complete teardown",
+)
+duplicate_callback = client.post(
+    "/internal/replika/provisioning",
+    json={"replika_id": first_id, "status": "deleted"},
+    headers={"Authorization": "Bearer callback-token"},
+)
+_assert(
+    duplicate_callback.status_code == 200,
+    "duplicate deleted callbacks are accepted",
 )
 
 recreated = client.post(
