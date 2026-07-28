@@ -394,12 +394,17 @@ class VoiceDictationTests(unittest.TestCase):
                 "Expiration": expires,
             }
         }
-        with patch.dict(os.environ, {}, clear=False), patch(
+        with patch.dict(os.environ, {
+            "AWS_PROFILE": "",
+            "AWS_DEFAULT_PROFILE": "",
+        }, clear=False), patch(
             "boto3.client", return_value=sts
         ):
             os.environ.pop("VOICE_TRANSCRIBE_ROLE_ARN", None)
             os.environ.pop("VOICE_TRANSCRIBE_ROLE_NAME", None)
             _browser_transcribe_credentials()
+            self.assertNotIn("AWS_PROFILE", os.environ)
+            self.assertNotIn("AWS_DEFAULT_PROFILE", os.environ)
         sts.assume_role.assert_called_once_with(
             RoleArn=(
                 "arn:aws:iam::123456789012:"

@@ -23,6 +23,10 @@ MAX_IMAGE_BYTES = 5 * 1024 * 1024
 
 def _browser_transcribe_credentials() -> dict:
     """Assume the browser-only Transcribe role and serialize its short-lived credentials."""
+    for profile_var in ("AWS_PROFILE", "AWS_DEFAULT_PROFILE"):
+        if not os.environ.get(profile_var, "").strip():
+            os.environ.pop(profile_var, None)
+
     import boto3
 
     sts = boto3.client("sts")
