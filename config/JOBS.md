@@ -1,4 +1,4 @@
-# JOBS.md — Goals and recurring work
+# config/JOBS.md — Goals and recurring work
 
 This always-loaded index tells the Replika which recurring jobs are active. Detailed
 steps belong in `jobs/<id>.md`; one-off projects belong in `state/backlog.md`.

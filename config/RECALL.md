@@ -1,4 +1,4 @@
-# RECALL.md — Recall routing
+# config/RECALL.md — Recall routing
 
 Read this file before deciding where to recover context. Retrieval comes before
 guessing whenever a task depends on prior facts or decisions.

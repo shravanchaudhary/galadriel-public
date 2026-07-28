@@ -1,4 +1,4 @@
-# MEMORY.md — Essential user context
+# config/MEMORY.md — Essential user context
 
 This file is the small, always-loaded index of facts the Replika needs on most
 turns. It starts neutral for every new tenant.

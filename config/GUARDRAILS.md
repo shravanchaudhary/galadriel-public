@@ -1,4 +1,4 @@
-# GUARDRAILS.md — Always-on safety rules
+# config/GUARDRAILS.md — Always-on safety rules
 
 This file contains short rules that apply to every channel. Put detailed procedures
 in `knowledge/` or a job cookbook.
