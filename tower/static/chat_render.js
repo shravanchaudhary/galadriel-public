@@ -1,9 +1,57 @@
 /** Shared Tower chat history + block rendering (Mirror + overlay widget). */
 window.ChatRender = (function () {
+    let markedReady = false;
+
     function escapeHtml(text) {
         const d = document.createElement('div');
-        d.textContent = text;
+        d.textContent = text == null ? '' : String(text);
         return d.innerHTML;
+    }
+
+    function ensureMarked() {
+        if (markedReady || !window.marked) return !!window.marked;
+        const renderer = new marked.Renderer();
+        renderer.html = function ({ text }) {
+            return escapeHtml(text || '');
+        };
+        renderer.link = function ({ href, title, tokens }) {
+            const label = this.parser.parseInline(tokens);
+            const url = String(href || '').trim();
+            const safe = /^(https?:|mailto:|#)/i.test(url) ? url : '#';
+            const titleAttr = title ? ` title="${escapeHtml(title)}"` : '';
+            return `<a href="${escapeHtml(safe)}"${titleAttr} target="_blank" rel="noopener noreferrer">${label}</a>`;
+        };
+        marked.use({
+            gfm: true,
+            breaks: true,
+            renderer,
+        });
+        markedReady = true;
+        return true;
+    }
+
+    function renderMarkdown(text) {
+        const raw = text == null ? '' : String(text);
+        if (!raw) return '';
+        if (ensureMarked()) {
+            try {
+                return marked.parse(raw);
+            } catch (err) {
+                return '<p>' + escapeHtml(raw) + '</p>';
+            }
+        }
+        return '<p>' + escapeHtml(raw).replace(/\n/g, '<br>') + '</p>';
+    }
+
+    function setMarkdown(el, text) {
+        if (!el) return;
+        el.dataset.raw = text == null ? '' : String(text);
+        el.innerHTML = renderMarkdown(el.dataset.raw);
+    }
+
+    function appendMarkdown(el, delta) {
+        if (!el) return;
+        setMarkdown(el, (el.dataset.raw || '') + (delta == null ? '' : String(delta)));
     }
 
     function createThoughtBlock(text, openDefault) {
@@ -33,8 +81,8 @@ window.ChatRender = (function () {
 
     function createTextBlock(text) {
         const el = document.createElement('div');
-        el.className = 'msg-text';
-        el.textContent = text;
+        el.className = 'msg-text markdown-body';
+        setMarkdown(el, text);
         return el;
     }
 
@@ -100,6 +148,9 @@ window.ChatRender = (function () {
 
     return {
         escapeHtml,
+        renderMarkdown,
+        setMarkdown,
+        appendMarkdown,
         createThoughtBlock,
         createToolCard,
         createTextBlock,

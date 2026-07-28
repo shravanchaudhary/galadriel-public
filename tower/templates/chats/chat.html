@@ -2,6 +2,8 @@
 {% block title %}{% if new_chat %}New chat{% else %}Chats{% endif %}{% endblock %}
 {% block container_class %}runs-shell-page{% if new_chat %} new-chat-page{% endif %}{% endblock %}
 {% block page_header %}{% endblock %}
+{# Full chat page already has the transcript — hide floating overlay to avoid confusion. #}
+{% block chat_widget %}{% endblock %}
 
 {% block content %}
 {% if not db_configured %}
@@ -46,11 +48,20 @@
                     {% endif %}
                 </section>
             </div>
-            <div class="new-chat-prompt">
-                <form id="new-chat-form" class="wfc-form new-chat-form">
+            <div class="new-chat-prompt chat-composer">
+                <div id="new-chat-previews" class="wfc-previews" hidden></div>
+                <form id="new-chat-form" class="composer-form new-chat-form">
                     <textarea id="new-chat-input" class="wfc-input" rows="1"
                         placeholder="What's on your mind?"></textarea>
-                    <button type="submit" class="wfc-send" id="new-chat-send" title="Send">→</button>
+                    <div class="composer-bar">
+                        <button type="button" class="composer-icon-btn" id="new-chat-attach" title="Attach image (or paste one)" aria-label="Attach image">
+                            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M16.5 6.5v9.25a4.25 4.25 0 1 1-8.5 0V7.75a2.75 2.75 0 0 1 5.5 0v7.5a1.25 1.25 0 1 1-2.5 0V8.5h-1.5v6.75a2.75 2.75 0 1 0 5.5 0v-7.5a4.25 4.25 0 1 0-8.5 0v8a5.75 5.75 0 1 0 11.5 0V6.5h-1.5z"/></svg>
+                        </button>
+                        <input type="file" id="new-chat-file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
+                        <select id="new-chat-model-select" class="composer-model-select interval-select" title="Agent model"></select>
+                        <span class="composer-spacer"></span>
+                        <button type="submit" class="composer-send" id="new-chat-send" title="Send">→</button>
+                    </div>
                 </form>
             </div>
         </div>
@@ -68,15 +79,21 @@
 
             <div class="runs-chat-log wfc-log" id="runs-history"></div>
 
-            <div class="runs-chat-composer" id="runs-composer" hidden>
+            <div class="runs-chat-composer chat-composer" id="runs-composer" hidden>
                 <div id="runs-previews" class="wfc-previews" hidden></div>
-                <form id="runs-form" class="wfc-form">
-                    <button type="button" class="wfc-attach" id="runs-attach" title="Attach image (or paste one)">📎</button>
-                    <input type="file" id="runs-file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
+                <form id="runs-form" class="composer-form">
                     <textarea id="runs-input" class="wfc-input" rows="1"
-                        placeholder="Tell the agent what to do…"></textarea>
-                    <button type="submit" class="wfc-send" id="runs-send" title="Send">→</button>
-                    <button type="button" class="wfc-stop" id="runs-stop" title="Stop agent" hidden>■</button>
+                        placeholder="Message the agent…"></textarea>
+                    <div class="composer-bar">
+                        <button type="button" class="composer-icon-btn" id="runs-attach" title="Attach image (or paste one)" aria-label="Attach image">
+                            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M16.5 6.5v9.25a4.25 4.25 0 1 1-8.5 0V7.75a2.75 2.75 0 0 1 5.5 0v7.5a1.25 1.25 0 1 1-2.5 0V8.5h-1.5v6.75a2.75 2.75 0 1 0 5.5 0v-7.5a4.25 4.25 0 1 0-8.5 0v8a5.75 5.75 0 1 0 11.5 0V6.5h-1.5z"/></svg>
+                        </button>
+                        <input type="file" id="runs-file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
+                        <select id="runs-model-select" class="composer-model-select interval-select" title="Agent model"></select>
+                        <span class="composer-spacer"></span>
+                        <button type="submit" class="composer-send" id="runs-send" title="Send">→</button>
+                        <button type="button" class="composer-stop" id="runs-stop" title="Stop agent" hidden>■</button>
+                    </div>
                 </form>
             </div>
             <p class="runs-chat-readonly-note muted" id="runs-readonly-note" hidden>
@@ -101,6 +118,7 @@
 
 {% block scripts %}
 {% if db_configured %}
+<script src="/static/vendor/marked.min.js"></script>
 <script src="/static/chat_render.js"></script>
 <script src="/static/chat_live.js"></script>
 <script>
@@ -130,6 +148,11 @@
     const newChatForm = document.getElementById('new-chat-form');
     const newChatInput = document.getElementById('new-chat-input');
     const newChatSend = document.getElementById('new-chat-send');
+    const newChatAttach = document.getElementById('new-chat-attach');
+    const newChatFile = document.getElementById('new-chat-file');
+    const newChatPreviews = document.getElementById('new-chat-previews');
+    const runsModelSelect = document.getElementById('runs-model-select');
+    const newChatModelSelect = document.getElementById('new-chat-model-select');
     if (!list) return;
 
     const kind = list.dataset.kind || 'chat';
@@ -142,8 +165,12 @@
     let currentDetail = null;
     let streaming = false;
     let pendingImages = [];
+    let pendingNewImages = [];
     const MAX_IMAGES = 5;
     const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+    const modelSelects = [runsModelSelect, newChatModelSelect].filter(Boolean);
+    ChatLive.bindModelSelects(modelSelects);
+    ChatLive.loadModelSelects(modelSelects);
 
     function escapeHtml(value) {
         return String(value == null ? '' : value)
@@ -225,10 +252,11 @@
         showLanding();
     }
 
-    async function startNewChatFromPrompt(message) {
+    async function startNewChatFromPrompt(message, images) {
         if (streaming) return;
         const text = (message || '').trim();
-        if (!text) return;
+        const imgs = (images || []).slice();
+        if (!text && !imgs.length) return;
         streaming = true;
         if (newChatSend) newChatSend.disabled = true;
         if (newChatInput) newChatInput.disabled = true;
@@ -255,7 +283,7 @@
             await ChatLive.streamChat({
                 log: historyEl,
                 message: text,
-                images: [],
+                images: imgs,
                 context: {
                     surface: 'tower',
                     view: 'chat_detail',
@@ -303,10 +331,11 @@
         }
     }
 
-    function renderPreviews() {
-        previews.innerHTML = '';
-        previews.hidden = pendingImages.length === 0;
-        pendingImages.forEach((img, idx) => {
+    function renderImagePreviews(target, images, onChange) {
+        if (!target) return;
+        target.innerHTML = '';
+        target.hidden = images.length === 0;
+        images.forEach((img, idx) => {
             const chip = document.createElement('span');
             chip.className = 'wfc-preview-chip';
             const thumb = document.createElement('img');
@@ -316,18 +345,26 @@
             x.textContent = '×';
             x.title = 'Remove image';
             x.addEventListener('click', () => {
-                pendingImages.splice(idx, 1);
-                renderPreviews();
+                images.splice(idx, 1);
+                onChange();
             });
             chip.appendChild(thumb);
             chip.appendChild(x);
-            previews.appendChild(chip);
+            target.appendChild(chip);
         });
     }
 
-    function addImageFile(file) {
+    function renderPreviews() {
+        renderImagePreviews(previews, pendingImages, renderPreviews);
+    }
+
+    function renderNewPreviews() {
+        renderImagePreviews(newChatPreviews, pendingNewImages, renderNewPreviews);
+    }
+
+    function addImageTo(file, images, onAdded) {
         if (!file || !file.type.startsWith('image/')) return;
-        if (pendingImages.length >= MAX_IMAGES) {
+        if (images.length >= MAX_IMAGES) {
             alert(`Max ${MAX_IMAGES} images per message.`);
             return;
         }
@@ -338,10 +375,18 @@
         const reader = new FileReader();
         reader.onload = () => {
             const dataUrl = reader.result;
-            pendingImages.push({ data: dataUrl.split(',', 2)[1], dataUrl });
-            renderPreviews();
+            images.push({ data: dataUrl.split(',', 2)[1], dataUrl });
+            onAdded();
         };
         reader.readAsDataURL(file);
+    }
+
+    function addImageFile(file) {
+        addImageTo(file, pendingImages, renderPreviews);
+    }
+
+    function addNewChatImage(file) {
+        addImageTo(file, pendingNewImages, renderNewPreviews);
     }
 
     function renderDetails(detail) {
@@ -660,6 +705,11 @@
         for (const f of fileInput.files) addImageFile(f);
         fileInput.value = '';
     });
+    if (newChatAttach) newChatAttach.addEventListener('click', () => newChatFile.click());
+    if (newChatFile) newChatFile.addEventListener('change', () => {
+        for (const f of newChatFile.files) addNewChatImage(f);
+        newChatFile.value = '';
+    });
     if (stopBtn) stopBtn.addEventListener('click', async () => {
         stopBtn.disabled = true;
         try { await ChatLive.stopChat(); } catch (err) {}
@@ -670,22 +720,41 @@
         await ChatLive.clearChat();
         selectedId = '';
         setActiveItem('');
+        pendingNewImages = [];
+        renderNewPreviews();
         history.pushState({}, '', '/chats?kind=chat');
         showLanding();
         await refreshRail();
     };
 
+    function submitNewChat() {
+        const text = newChatInput ? newChatInput.value : '';
+        const images = pendingNewImages.slice();
+        if (newChatInput) newChatInput.value = '';
+        pendingNewImages = [];
+        renderNewPreviews();
+        startNewChatFromPrompt(text, images);
+    }
+
     if (newChatForm) {
         newChatForm.addEventListener('submit', (event) => {
             event.preventDefault();
-            startNewChatFromPrompt(newChatInput ? newChatInput.value : '');
+            submitNewChat();
         });
     }
     if (newChatInput) {
         newChatInput.addEventListener('keydown', (e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
-                startNewChatFromPrompt(newChatInput.value);
+                submitNewChat();
+            }
+        });
+        newChatInput.addEventListener('paste', (e) => {
+            for (const item of (e.clipboardData || {}).items || []) {
+                if (item.type && item.type.startsWith('image/')) {
+                    e.preventDefault();
+                    addNewChatImage(item.getAsFile());
+                }
             }
         });
     }

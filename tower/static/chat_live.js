@@ -49,10 +49,10 @@ window.ChatLive = (function () {
         clearTyping(turn);
         if (!turn.textEl) {
             turn.textEl = document.createElement('div');
-            turn.textEl.className = 'msg-text';
+            turn.textEl.className = 'msg-text markdown-body';
             turn.bodyEl.appendChild(turn.textEl);
         }
-        turn.textEl.textContent += delta;
+        ChatRender.appendMarkdown(turn.textEl, delta);
         return turn;
     }
 
@@ -244,6 +244,67 @@ window.ChatLive = (function () {
         return data;
     }
 
+    /** Populate one or more <select> elements from /api/model and keep them in sync. */
+    async function loadModelSelects(selects) {
+        const nodes = (Array.isArray(selects) ? selects : [selects]).filter(Boolean);
+        if (!nodes.length) return null;
+        try {
+            const res = await fetch('/api/model?channel=main');
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Failed to load model');
+            for (const el of nodes) {
+                el.innerHTML = '';
+                for (const m of data.options || []) {
+                    const opt = document.createElement('option');
+                    opt.value = m;
+                    opt.textContent = m;
+                    if (m === data.model) opt.selected = true;
+                    el.appendChild(opt);
+                }
+                el.dataset.current = data.model || '';
+                el.hidden = !(data.options || []).length;
+                if (!data.persisted) {
+                    el.title = 'Model resets on restart — set MONGO_URI / MONGO_DB to persist';
+                } else {
+                    el.title = 'Agent model';
+                }
+            }
+            return data;
+        } catch (e) {
+            for (const el of nodes) el.hidden = true;
+            return null;
+        }
+    }
+
+    function bindModelSelects(selects) {
+        const nodes = (Array.isArray(selects) ? selects : [selects]).filter(Boolean);
+        async function changeModel(source) {
+            const model = source.value;
+            const prev = source.dataset.current || model;
+            try {
+                const res = await fetch('/api/model', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ model, channel: 'main' }),
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || 'Failed to set model');
+                for (const el of nodes) {
+                    el.value = data.model;
+                    el.dataset.current = data.model;
+                }
+                const dash = document.getElementById('model-select');
+                if (dash) dash.value = data.model;
+            } catch (err) {
+                source.value = prev;
+                alert(err.message || 'Failed to set model');
+            }
+        }
+        for (const el of nodes) {
+            el.addEventListener('change', () => changeModel(el));
+        }
+    }
+
     return {
         RENDER_OPTS,
         hydrate,
@@ -253,6 +314,8 @@ window.ChatLive = (function () {
         selectRun,
         clearChat,
         fetchHistory,
+        loadModelSelects,
+        bindModelSelects,
         appendUser,
         startAssistant,
         handleEvent,
