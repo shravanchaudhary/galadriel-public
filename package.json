@@ -1,0 +1,18 @@
+{
+  "name": "galadriel-public",
+  "version": "1.0.0",
+  "description": "**A self-hosted AI agent that remembers everything it has ever done — and rewrites its own code to get better at doing it.**",
+  "private": true,
+  "scripts": {
+    "build:voice": "esbuild tower/static/src/voice_dictation.js --bundle --minify --format=iife --platform=browser --outfile=tower/static/voice_dictation.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@aws-sdk/client-transcribe-streaming": "^3.1096.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.1"
+  }
+}

@@ -198,6 +198,11 @@ def _task_role(iam, owner_id: str, access_point_arn: str) -> str:
                     }
                 },
             },
+            {
+                "Effect": "Allow",
+                "Action": "sts:AssumeRole",
+                "Resource": _required("VOICE_TRANSCRIBE_ROLE_ARN"),
+            },
         ],
     }
     iam.put_role_policy(

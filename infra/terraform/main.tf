@@ -1,4 +1,5 @@
 data "aws_caller_identity" "current" {}
+data "aws_iam_roles" "managed_runtime" { name_regex = "^replika-" }
 data "aws_ecs_cluster" "staging" { cluster_name = var.ecs_cluster_name }
 data "aws_lb" "staging" { name = var.alb_name }
 data "aws_lb_listener" "https" {
@@ -53,6 +54,8 @@ locals {
       PHONE_BRIDGE_AUTH_STORE          = "/mnt/efs/state/phone_bridge_auth.json"
       PHONE_TOOLS_ENABLED              = var.replika_control_plane_only ? "0" : "1"
       TMPDIR                           = "/dev/shm"
+      VOICE_TRANSCRIBE_REGION          = var.aws_region
+      VOICE_TRANSCRIBE_ROLE_ARN        = aws_iam_role.browser_transcription.arn
     }) : { name = name, value = value }
   ]
   runtime_base_environment_list = [
@@ -76,6 +79,8 @@ locals {
       PHONE_BRIDGE_AUTH_STORE    = "/mnt/efs/state/phone_bridge_auth.json"
       PHONE_TOOLS_ENABLED        = "1"
       TMPDIR                     = "/dev/shm"
+      VOICE_TRANSCRIBE_REGION    = var.aws_region
+      VOICE_TRANSCRIBE_ROLE_ARN  = aws_iam_role.browser_transcription.arn
     }) : { name = name, value = value }
   ]
 }
@@ -421,6 +426,73 @@ resource "aws_iam_role_policy" "execution_secrets" {
 resource "aws_iam_role" "task" {
   name               = "${local.name}-task"
   assume_role_policy = data.aws_iam_policy_document.execution_assume.json
+}
+
+data "aws_iam_policy_document" "browser_transcription_assume" {
+  statement {
+    sid     = "AllowTerraformOperatorForLocalDevelopment"
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "AWS"
+      identifiers = [data.aws_caller_identity.current.arn]
+    }
+  }
+  statement {
+    sid     = "AllowExistingRuntimeTasks"
+    actions = ["sts:AssumeRole"]
+    principals {
+      type = "AWS"
+      identifiers = concat(
+        [aws_iam_role.task.arn],
+        sort(tolist(data.aws_iam_roles.managed_runtime.arns)),
+      )
+    }
+  }
+  statement {
+    sid     = "AllowManagedRuntimeTasks"
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "AWS"
+      identifiers = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"]
+    }
+    condition {
+      test     = "ArnLike"
+      variable = "aws:PrincipalArn"
+      values   = ["arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/replika-*"]
+    }
+  }
+}
+
+resource "aws_iam_role" "browser_transcription" {
+  name                 = "${local.name}-browser-transcription"
+  assume_role_policy   = data.aws_iam_policy_document.browser_transcription_assume.json
+  max_session_duration = 3600
+}
+
+data "aws_iam_policy_document" "browser_transcription" {
+  statement {
+    actions   = ["transcribe:StartStreamTranscriptionWebSocket"]
+    resources = ["*"]
+  }
+}
+
+resource "aws_iam_role_policy" "browser_transcription" {
+  name   = "streaming-transcription-only"
+  role   = aws_iam_role.browser_transcription.id
+  policy = data.aws_iam_policy_document.browser_transcription.json
+}
+
+data "aws_iam_policy_document" "task_browser_transcription" {
+  statement {
+    actions   = ["sts:AssumeRole"]
+    resources = [aws_iam_role.browser_transcription.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "task_browser_transcription" {
+  name   = "assume-browser-transcription"
+  role   = aws_iam_role.task.id
+  policy = data.aws_iam_policy_document.task_browser_transcription.json
 }
 
 data "aws_iam_policy_document" "task_s3files" {

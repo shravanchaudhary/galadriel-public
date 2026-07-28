@@ -23,6 +23,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.txt
 
+# ---------- frontend: bundle browser-only dependencies ----------
+FROM public.ecr.aws/docker/library/node:22-alpine AS frontend
+WORKDIR /build
+COPY package.json package-lock.json ./
+RUN npm ci
+COPY tower/static/src/ tower/static/src/
+RUN npm run build:voice
+
 # ---------- runtime: slim final image ----------
 FROM public.ecr.aws/docker/library/python:3.12-slim
 LABEL org.opencontainers.image.title="Replika" \
@@ -53,6 +61,7 @@ RUN pip install --no-cache-dir --no-index --find-links=/wheels -r requirements.t
 
 # Application code. .dockerignore keeps keys/, .env, memory logs and bloat out.
 COPY . .
+COPY --from=frontend /build/tower/static/voice_dictation.js /app/tower/static/voice_dictation.js
 
 # Keep immutable first-boot defaults separately from persisted runtime paths.
 # The entrypoint copies only absent files, so upgrades never overwrite state.

@@ -21,6 +21,32 @@ MAX_CHAT_IMAGES = 5
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
 
 
+def _browser_transcribe_credentials() -> dict:
+    """Assume the browser-only Transcribe role and serialize its short-lived credentials."""
+    role_arn = os.environ.get("VOICE_TRANSCRIBE_ROLE_ARN", "").strip()
+    if not role_arn:
+        raise RuntimeError("Voice dictation is not configured")
+
+    import boto3
+
+    response = boto3.client("sts").assume_role(
+        RoleArn=role_arn,
+        RoleSessionName="replika-browser-dictation",
+        DurationSeconds=900,
+    )
+    credentials = response["Credentials"]
+    expiration = credentials["Expiration"]
+    if isinstance(expiration, datetime):
+        expiration = expiration.astimezone(timezone.utc).isoformat()
+    return {
+        "accessKeyId": credentials["AccessKeyId"],
+        "secretAccessKey": credentials["SecretAccessKey"],
+        "sessionToken": credentials["SessionToken"],
+        "expiration": expiration,
+        "region": os.environ.get("VOICE_TRANSCRIBE_REGION", "ap-south-1"),
+    }
+
+
 def _image_blocks_from_payload(images: list) -> tuple[list, str | None]:
     """Validate base64 chat-upload images and return (image blocks, error).
     Media type is sniffed from magic bytes, not trusted from the client."""
@@ -271,6 +297,19 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
                 return jsonify({"error": str(e)}), 500
             finally:
                 loop.close()
+
+    @app.route("/api/transcribe/credentials", methods=["POST"])
+    def api_transcribe_credentials():
+        """Issue authenticated users credentials scoped to live transcription."""
+        try:
+            response = jsonify(_browser_transcribe_credentials())
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc)}), 503
+        except Exception:
+            log.exception("Could not issue browser transcription credentials")
+            return jsonify({"error": "Voice dictation is temporarily unavailable"}), 503
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     @app.route("/api/chat/stream", methods=["POST"])
     def api_chat_stream():

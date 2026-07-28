@@ -10,6 +10,7 @@ __pycache__/
 dist/
 build/
 .eggs/
+node_modules/
 memory/*.md
 memory/*.json
 !memory/.gitkeep

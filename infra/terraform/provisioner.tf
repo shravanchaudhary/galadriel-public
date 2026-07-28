@@ -147,6 +147,7 @@ resource "aws_lambda_function" "replika_provisioner" {
       S3FILES_FILE_SYSTEM_ID          = aws_s3files_file_system.clyra.id
       TASK_SECURITY_GROUP_ID          = aws_security_group.task.id
       VPC_ID                          = var.vpc_id
+      VOICE_TRANSCRIBE_ROLE_ARN       = aws_iam_role.browser_transcription.arn
     }
   }
 
