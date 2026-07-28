@@ -134,6 +134,7 @@ class BCEClient:
         body: dict[str, Any] | None = None,
         *,
         auth: bool = True,
+        timeout_ms: int | None = None,
     ) -> Any:
         url = f"{self.base_url}{path}"
         data = json.dumps(body).encode() if body is not None else None
@@ -142,7 +143,10 @@ class BCEClient:
             headers["Authorization"] = f"Bearer {self.api_key}"
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(req) as resp:
+            with urllib.request.urlopen(
+                req,
+                timeout=max(1.0, (timeout_ms or self.default_timeout_ms) / 1000),
+            ) as resp:
                 raw = resp.read().decode()
                 return json.loads(raw) if raw else None
         except urllib.error.HTTPError as exc:
@@ -164,14 +168,16 @@ class BCEClient:
     ) -> CommandResult:
         if not self.pairing_code:
             raise BCEError("Not connected — call connect(pairing_code) first")
+        effective_timeout = timeout_ms or self.default_timeout_ms
         payload = self._request(
             "POST",
             f"/devices/by-code/{self.pairing_code}/commands",
             {
                 "command": command,
                 "args": args or {},
-                "timeout_ms": timeout_ms or self.default_timeout_ms,
+                "timeout_ms": effective_timeout,
             },
+            timeout_ms=effective_timeout + 5000,
         )
         result = CommandResult(
             id=payload["id"],

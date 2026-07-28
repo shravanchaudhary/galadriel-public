@@ -94,9 +94,8 @@ TOOL_DEFINITIONS = [
             "disconnects — it does not wipe the profile.\n\n"
             "MULTIPLE ACCOUNTS: by default this drives the single `main` profile "
             "(unchanged, single-account behavior). To manage more than one account "
-            "at once (e.g. a second LinkedIn login), register a named profile in "
-            "state/browser_profiles.md (read that file for the exact format/"
-            "procedure), then pass `profile=<id>` on every call for that account — "
+            "at once (e.g. a second LinkedIn login), register a named profile with "
+            "the browser_devices tool, then pass `profile=<id>` on every call — "
             "it gets its own isolated Chrome, cookie jar, and daemon session, and "
             "can run at the same time as other profiles.\n\n"
             "Core loop:\n"
@@ -145,18 +144,54 @@ TOOL_DEFINITIONS = [
                     "description": (
                         "Which browser profile to drive. Omit for the default "
                         "`main` profile (single persistent Chrome, exactly the "
-                        "prior behavior). Pass a profile_id registered in "
-                        "state/browser_profiles.md to drive a separate, fully "
-                        "isolated Chrome + account instead — e.g. a second "
-                        "LinkedIn login. Different profiles can run "
-                        "concurrently. To register a new one: read_file "
-                        "state/browser_profiles.md for the exact procedure, "
-                        "then write_file the new row yourself — there is no "
-                        "dedicated tool for this, it's a plain file."
+                        "prior behavior). Pass a profile_id registered with "
+                        "browser_devices to drive a separate, fully isolated "
+                        "Chrome + account. Different profiles can run concurrently."
                     ),
                 },
             },
             "required": ["args"],
+        },
+    },
+    {
+        "name": "browser_devices",
+        "description": (
+            "Read or configure browser connections used by the browser tool. "
+            "Use list/status before first browser use or after a connection failure. "
+            "Use connect to save a BCE pairing code or local Chrome CDP port, and "
+            "remove to delete a saved profile. Returns concise JSON and never "
+            "returns BCE API credentials."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["list", "status", "connect", "remove"],
+                },
+                "profile_id": {
+                    "type": "string",
+                    "description": "Profile name. Defaults to main for status/connect.",
+                },
+                "backend": {
+                    "type": "string",
+                    "enum": ["bce", "browser-use"],
+                    "description": "Required on connect when different from the configured backend.",
+                },
+                "pairing_code": {
+                    "type": "string",
+                    "description": "BCE extension pairing code for connect (XXXX-XXXX).",
+                },
+                "cdp_port": {
+                    "type": "integer",
+                    "description": "Local Chrome debugging port for browser-use connect.",
+                },
+                "purpose": {
+                    "type": "string",
+                    "description": "Short human-readable description of this browser.",
+                },
+            },
+            "required": ["action"],
         },
     },
     {
@@ -679,11 +714,10 @@ def _browser_tool_description() -> str:
             "**PAIRING — ask before first use:** Each browser is identified by a "
             "pairing code (`XXXX-XXXX`, e.g. `KJ2D-H96M`) shown in the Chrome "
             "extension popup (Agent must be ON). Before your first browser call "
-            "for a profile, read `state/browser_profiles.md`. If no pairing code "
+            "for a profile, call `browser_devices` with action=status. If no code "
             "is registered, STOP and ask the user for their code. Once they "
-            "provide it, persist it with `write_file` to "
-            "`state/browser_profiles.md` (row: profile_id | pairing_code | reason) "
-            "— use `main` for the default browser — then retry.\n\n"
+            "provide it, persist it with `browser_devices` action=connect — use "
+            "`main` for the default browser — then retry.\n\n"
             "Prerequisites (human setup): MongoDB + BCE server running; extension "
             "Agent ON (Connected).\n\n"
             "Core loop:\n"
@@ -727,8 +761,8 @@ def _browser_tool_description() -> str:
             "<index>`, `get html`, `eval \"<js>\"`, `wait text \"Welcome\"`, "
             "`scroll down`, `back`, `tab list`. Add `--json` for machine-readable "
             "output. Run `--help` for the full surface.\n\n"
-            "MULTIPLE BROWSERS: register each with its own pairing code in "
-            "`state/browser_profiles.md`, then pass `profile=<profile_id>` on "
+            "MULTIPLE BROWSERS: register each with its own pairing code using "
+            "`browser_devices`, then pass `profile=<profile_id>` on "
             "every call for that browser.\n\n"
             "BLOCKED PAGES — decide by importance: if you hit a login wall, CAPTCHA, "
             "OTP, or bot-detection AND the content is essential, STOP and ask the "
@@ -762,10 +796,9 @@ def visible_tool_definitions() -> list:
                 props["profile"] = {
                     "type": "string",
                     "description": (
-                        "Which browser profile to drive (pairing code looked up in "
-                        "state/browser_profiles.md). Omit for `main`. Register new "
-                        "profiles by asking the user for their extension pairing code "
-                        "and write_file the row yourself — see that file's header."
+                        "Which browser profile to drive. Omit for `main`. Register "
+                        "new profiles with browser_devices after asking the user "
+                        "for their extension pairing code."
                     ),
                 }
                 props["tab"] = {
@@ -867,6 +900,15 @@ async def _execute_tool_impl(
         return await _run_browser(
             inputs["args"], inputs.get("profile"), int(tab) if tab is not None else None
         )
+    elif name == "browser_devices":
+        from . import browser_devices
+
+        result = await asyncio.to_thread(
+            browser_devices.execute,
+            inputs["action"],
+            **{key: value for key, value in inputs.items() if key != "action"},
+        )
+        return json.dumps(result, default=str, ensure_ascii=False)
     elif name == "generate_totp":
         return _generate_totp(inputs["secret_key"])
     elif name == "memory_log":
@@ -1034,10 +1076,9 @@ async def _execute_tool_impl(
 # only when establishing the daemon). `close` only disconnects the CDP session
 # — it never kills our Chrome, so the profile survives between runs.
 #
-# MULTIPLE PROFILES: additional named profiles, registered by the agent as
-# plain rows (profile_id, cdp_port, reason) in state/browser_profiles.md via
-# read_file/write_file — no dedicated tool, no DB, that file's own header has
-# the procedure. Each gets its own Chrome + CDP port + browser-use session
+# MULTIPLE PROFILES: additional named profiles are stored in the tenant-scoped
+# browser profile repository and managed through browser_devices. Each gets its
+# own Chrome + CDP port + browser-use session
 # under BROWSER_PROFILES_DIR, so several accounts (e.g. two LinkedIn logins)
 # can run fully isolated and concurrently. A per-session asyncio.Lock
 # serializes calls *within* one profile (so overlapping agent turns never
@@ -1077,65 +1118,15 @@ def _profiles_base_dir() -> str:
     )
 
 
-def _valid_profile_id(profile_id: str) -> bool:
-    import re
-
-    return bool(re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", profile_id or ""))
-
-
-# Named profiles are registered in a plain markdown table (state/browser_profiles.md),
-# not the DB — this is harness-internal config (a name + why it exists), not
-# operational/business state, so it doesn't belong behind db_ops/workflows or in
-# the Tower UI. profile_id and reason are free text; cdp_port is the one
-# mechanically-required field (assigned once at creation, kept stable).
-_PROFILES_MD_PATH = Path("state/browser_profiles.md")
-
-
-def _read_browser_profiles() -> list[dict]:
-    """Parse profile rows out of state/browser_profiles.md.
-
-    BCE rows: profile_id | pairing_code | reason  (XXXX-XXXX in col 2)
-    browser-use rows: profile_id | cdp_port | reason  (integer in col 2)
-    """
-    if not _PROFILES_MD_PATH.exists():
-        return []
-    rows = []
-    for line in _PROFILES_MD_PATH.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not (line.startswith("|") and line.endswith("|")):
-            continue
-        cells = [c.strip() for c in line.strip("|").split("|")]
-        if len(cells) != 3 or not _valid_profile_id(cells[0]):
-            continue
-        row: dict = {"profile_id": cells[0], "reason": cells[2]}
-        col2 = cells[1]
-        try:
-            from .bce_client import BCEError, normalize_pairing_code
-
-            row["pairing_code"] = normalize_pairing_code(col2)
-        except BCEError:
-            try:
-                row["cdp_port"] = int(col2)
-            except ValueError:
-                continue
-        rows.append(row)
-    return rows
-
-
-def _bce_pairing_env_key(profile_id: str) -> str:
-    return f"BCE_PAIRING_CODE_{profile_id.upper().replace('-', '_')}"
-
-
 def _bce_pairing_required_message(profile: str) -> str:
     return (
         f"[browser pairing required] No pairing code for profile {profile!r}.\n\n"
         "Ask the user for their Chrome extension pairing code (format XXXX-XXXX, "
         "e.g. KJ2D-H96M). They find it in the extension popup — Agent must be ON "
         "(status: Connected).\n\n"
-        "Once they provide it, persist it:\n"
-        "1. read_file state/browser_profiles.md\n"
-        f"2. write_file — add or update row: | {profile} | XXXX-XXXX | <who/what this browser is for> |\n"
-        "3. Retry the browser command.\n\n"
+        "Once they provide it, call browser_devices with action=connect, "
+        f"profile_id={profile!r}, backend='bce', pairing_code='<code>', and a "
+        "short purpose, then retry the browser command.\n\n"
         "Prerequisites: MongoDB + BCE FastAPI server running."
     )
 
@@ -1143,35 +1134,26 @@ def _bce_pairing_required_message(profile: str) -> str:
 def _resolve_bce_pairing_code(profile: str | None) -> tuple[str, str | None]:
     """Resolve BCE pairing code for a profile name."""
     from .bce_client import BCEError, normalize_pairing_code
+    from .browser_devices import resolve
 
     profile = (profile or _DEFAULT_PROFILE).strip() or _DEFAULT_PROFILE
-
-    if profile == _DEFAULT_PROFILE:
-        code = os.environ.get("BCE_PAIRING_CODE", "").strip()
-        if code:
-            try:
-                return normalize_pairing_code(code), None
-            except BCEError as exc:
-                return "", f"[error] {exc}"
-    else:
-        env_key = _bce_pairing_env_key(profile)
-        code = os.environ.get(env_key, "").strip()
-        if code:
-            try:
-                return normalize_pairing_code(code), None
-            except BCEError as exc:
-                return "", f"[error] {exc}"
-
-    rows = _read_browser_profiles()
-    row = next((r for r in rows if r["profile_id"] == profile), None)
-    if row and row.get("pairing_code"):
-        return row["pairing_code"], None
-
-    if profile != _DEFAULT_PROFILE and not row:
+    row = resolve(profile)
+    if not row:
         return "", (
-            f"[error] unknown browser profile {profile!r}. Ask the user for their "
-            f"pairing code, register it in state/browser_profiles.md, then retry."
+            f"[error] unknown browser profile {profile!r}. Register it with "
+            "browser_devices, then retry."
         )
+    if row.get("backend") != "bce":
+        return "", (
+            f"[error] profile {profile!r} uses {row.get('backend')!r}, but "
+            "BROWSER_BACKEND=bce."
+        )
+    code = row.get("pairing_code", "")
+    if code:
+        try:
+            return normalize_pairing_code(code), None
+        except BCEError as exc:
+            return "", f"[error] {exc}"
 
     return "", _bce_pairing_required_message(profile)
 
@@ -1181,32 +1163,28 @@ async def _resolve_browser_profile(profile: str | None) -> tuple[dict, str | Non
 
     None/""/"main" reproduces the original single-profile behavior exactly
     (same env vars as before), so existing single-account jobs are unaffected.
-    Any other id must already be a row in state/browser_profiles.md — the
-    agent registers new profiles itself with read_file/write_file, per that
-    file's own instructions; there is no dedicated tool for it.
+    Any other id must already be registered through browser_devices.
     """
     profile = (profile or _DEFAULT_PROFILE).strip() or _DEFAULT_PROFILE
+    from .browser_devices import resolve
+
+    row = await asyncio.to_thread(resolve, profile)
+    if not row:
+        return {}, (
+            f"[error] unknown browser profile {profile!r}. Register it first with "
+            "browser_devices, then retry."
+        )
+    if row.get("backend") != "browser-use" or "cdp_port" not in row:
+        return {}, (
+            f"[error] profile {profile!r} uses {row.get('backend')!r}, but "
+            "BROWSER_BACKEND=browser-use."
+        )
     if profile == _DEFAULT_PROFILE:
         return {
             "profile_dir": _profile_dir(),
-            "cdp_port": _cdp_port(),
+            "cdp_port": row["cdp_port"],
             "session_name": _session_name(),
         }, None
-
-    rows = await asyncio.to_thread(_read_browser_profiles)
-    row = next((r for r in rows if r["profile_id"] == profile), None)
-    if not row:
-        return {}, (
-            f"[error] unknown browser profile {profile!r}. Register it first as "
-            f"a row in state/browser_profiles.md (read that file for the exact "
-            "format/procedure), then retry."
-        )
-    if "cdp_port" not in row:
-        return {}, (
-            f"[error] profile {profile!r} is registered for BCE (pairing code) but "
-            f"BROWSER_BACKEND=browser-use. Set BROWSER_BACKEND=bce or register a "
-            f"browser-use profile with a cdp_port column."
-        )
     return {
         "profile_dir": os.path.join(_profiles_base_dir(), profile),
         "cdp_port": row["cdp_port"],

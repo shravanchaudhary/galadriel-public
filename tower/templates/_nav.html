@@ -77,10 +77,11 @@
                 <a href="/palace" class="{{ 'active' if request.path.startswith('/palace') }}">Memory</a>
             </div>
         </div>
-        <div class="site-nav-group {{ 'is-active' if request.path.startswith('/phone-bridge') }}">
+        <div class="site-nav-group {{ 'is-active' if request.path.startswith('/devices') or request.path.startswith('/phone-bridge') }}">
             <div class="site-nav-group-label">Devices</div>
             <div class="site-nav-group-links">
-                <a href="/phone-bridge" class="{{ 'active' if request.path.startswith('/phone-bridge') }}">Phone</a>
+                <a href="/devices/browser" class="{{ 'active' if request.path.startswith('/devices/browser') }}">Browser</a>
+                <a href="/devices/phone" class="{{ 'active' if request.path.startswith('/devices/phone') or request.path.startswith('/phone-bridge') }}">Phone</a>
             </div>
         </div>
         <a href="/costs" class="{{ 'active' if request.path.startswith('/costs') }}">Costs</a>

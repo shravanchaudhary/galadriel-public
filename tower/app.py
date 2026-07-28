@@ -185,6 +185,8 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
     register_slack_runtime(app, agent, scheduler, MAIN_CHANNEL_ID)
     from .phone_bridge import register_phone_bridge
     register_phone_bridge(app)
+    from .devices_board import register_devices_board
+    register_devices_board(app)
 
     @app.template_filter("truncate_label")
     def truncate_label(value, length=24):

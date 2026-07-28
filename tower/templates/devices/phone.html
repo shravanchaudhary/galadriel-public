@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+{% block title %}Phone Devices{% endblock %}
+{% block heading %}Phone{% endblock %}
+{% block subtitle %}Enroll the phone allowed to connect to your agent{% endblock %}
+
+{% block content %}
+<section class="devices-section">
+    <div class="devices-heading">
+        <p class="muted">One enrolled phone can provide the local ADB connection.</p>
+        <button type="button" class="btn btn-secondary" onclick="createCode()">Enroll phone</button>
+    </div>
+    <div id="enrollment-code" class="devices-enrollment-code" aria-live="polite"></div>
+    <div class="status-grid devices-grid" id="phone-list">
+        {% for device in phone.devices %}
+        <article class="card device-card">
+            <div class="device-card-head">
+                <div class="card-value">{{ device.device_id }}</div>
+                <span class="device-status {{ 'is-online' if device.connected else 'is-offline' }}">
+                    {{ 'streaming' if device.stream_active else ('connected' if device.connected else ('revoked' if device.revoked_at else 'offline')) }}
+                </span>
+            </div>
+            <p>Enrolled {{ device.enrolled_at }}</p>
+            {% if not device.revoked_at %}
+            <button type="button" class="btn btn-small btn-danger" onclick="revokePhone('{{ device.device_id }}')">Revoke</button>
+            {% endif %}
+        </article>
+        {% else %}
+        <p class="muted">No phones enrolled.</p>
+        {% endfor %}
+    </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function renderPhones(phone) {
+    const list = document.getElementById('phone-list');
+    list.replaceChildren();
+    if (!phone.devices.length) {
+        const empty = document.createElement('p');
+        empty.className = 'muted';
+        empty.textContent = 'No phones enrolled.';
+        list.append(empty);
+        return;
+    }
+    phone.devices.forEach(device => {
+        const card = document.createElement('article');
+        card.className = 'card device-card';
+        const head = document.createElement('div');
+        head.className = 'device-card-head';
+        const title = document.createElement('div');
+        title.className = 'card-value';
+        title.textContent = device.device_id;
+        const state = device.stream_active ? 'streaming' : (device.connected ? 'connected' : (device.revoked_at ? 'revoked' : 'offline'));
+        const badge = document.createElement('span');
+        badge.className = `device-status ${device.connected ? 'is-online' : 'is-offline'}`;
+        badge.textContent = state;
+        head.append(title, badge);
+        const detail = document.createElement('p');
+        detail.textContent = `Enrolled ${device.enrolled_at}`;
+        card.append(head, detail);
+        if (!device.revoked_at) {
+            const revoke = document.createElement('button');
+            revoke.type = 'button';
+            revoke.className = 'btn btn-small btn-danger';
+            revoke.textContent = 'Revoke';
+            revoke.onclick = () => revokePhone(device.device_id);
+            card.append(revoke);
+        }
+        list.append(card);
+    });
+}
+
+async function refreshPhones() {
+    const response = await fetch('/api/devices/phone/status');
+    if (!response.ok) return;
+    renderPhones((await response.json()).phone || {devices: []});
+}
+
+async function createCode() {
+    const response = await fetch('/api/phone-bridge/enrollment-code', {method: 'POST'});
+    const data = await response.json();
+    document.getElementById('enrollment-code').textContent =
+        response.ok ? `${data.code} — expires ${data.expires_at}` : (data.error || 'Could not create code.');
+}
+
+async function revokePhone(deviceId) {
+    const response = await fetch(
+        `/api/phone-bridge/devices/${encodeURIComponent(deviceId)}/revoke`,
+        {method: 'POST'},
+    );
+    if (response.ok) await refreshPhones();
+}
+
+window.setInterval(refreshPhones, 5000);
+</script>
+{% endblock %}

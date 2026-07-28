@@ -1,6 +1,6 @@
 """Authenticated Tower management endpoints for phone enrollment."""
 
-from flask import Blueprint, jsonify, render_template
+from flask import Blueprint, jsonify, redirect
 
 from phone_bridge.auth import current_tenant_id, get_auth_store
 
@@ -10,8 +10,7 @@ def register_phone_bridge(app) -> None:
 
     @blueprint.get("/phone-bridge")
     def phone_bridge_page():
-        devices = get_auth_store().list_devices(current_tenant_id())
-        return render_template("phone_bridge.html", devices=devices)
+        return redirect("/devices/phone")
 
     @blueprint.get("/api/phone-bridge/devices")
     def list_devices():

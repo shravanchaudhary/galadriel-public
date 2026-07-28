@@ -19,3 +19,8 @@ No user-defined workflow collections are configured.
 The Replika runtime may maintain internal audit, conversation, worker, cost, and
 memory-delivery collections. These are implementation records, not user-authored
 workflow entities.
+
+- `browser_profiles`: tenant-scoped browser connection configuration. Unique key
+  `tenant_id:profile_id`; fields include `profile_id`, `backend`, `pairing_code`
+  or `cdp_port`, `purpose`, and timestamps. Managed through Tower Devices and the
+  agent's `browser_devices` tool.
