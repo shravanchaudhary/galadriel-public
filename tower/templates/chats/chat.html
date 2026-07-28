@@ -1,6 +1,6 @@
 {% extends "base.html" %}
-{% block title %}Chats{% endblock %}
-{% block container_class %}runs-shell-page{% endblock %}
+{% block title %}{% if new_chat %}New chat{% else %}Chats{% endif %}{% endblock %}
+{% block container_class %}runs-shell-page{% if new_chat %} new-chat-page{% endif %}{% endblock %}
 {% block page_header %}{% endblock %}
 
 {% block content %}
@@ -9,12 +9,54 @@
 {% else %}
 <div class="runs-shell runs-shell-main">
     <section class="runs-chat" aria-label="Chat transcript" id="runs-chat-pane">
-        <div class="runs-chat-empty" id="runs-chat-placeholder">
-            <h1>Chats</h1>
-            <p class="muted" id="runs-chat-placeholder-msg">Pick a chat from the left.</p>
+        <div class="runs-chat-empty new-chat-landing" id="runs-chat-placeholder" {% if not new_chat %}hidden{% endif %}>
+            {% if saved %}
+            <div class="wf-toolbar new-chat-saved">
+                <span class="badge" style="border-color:#27ae60;color:#27ae60;background:rgba(39,174,96,0.08);">
+                    Saved {{ saved }}
+                </span>
+            </div>
+            {% endif %}
+            <div class="actions-board-grid dash-todo-grid new-chat-todo">
+                <section class="actions-panel">
+                    <div class="actions-panel-head">
+                        <h2>Plan</h2>
+                        <span class="muted">{{ plan_relpath or '' }}</span>
+                    </div>
+                    <form method="post" action="/todo/save">
+                        <input type="hidden" name="kind" value="plan">
+                        <input type="hidden" name="date" value="{{ todo_date or '' }}">
+                        <textarea name="content" class="editor-textarea actions-editor dash-todo-editor" spellcheck="false" placeholder="What should happen today?">{{ plan_content or '' }}</textarea>
+                        <div class="wf-toolbar">
+                            <button type="submit" class="btn">Save plan</button>
+                        </div>
+                    </form>
+                </section>
+                <section class="actions-panel">
+                    <div class="actions-panel-head">
+                        <h2>Progress</h2>
+                        <span class="muted">{{ progress_relpath or '' }}</span>
+                    </div>
+                    <form method="post" action="/todo/save">
+                        <input type="hidden" name="kind" value="progress">
+                        <input type="hidden" name="date" value="{{ todo_date or '' }}">
+                        <textarea name="content" class="editor-textarea actions-editor dash-todo-editor" spellcheck="false" placeholder="What got done, blockers, evidence…">{{ progress_content or '' }}</textarea>
+                        <div class="wf-toolbar">
+                            <button type="submit" class="btn">Save progress</button>
+                        </div>
+                    </form>
+                </section>
+            </div>
+            <div class="new-chat-prompt">
+                <form id="new-chat-form" class="wfc-form new-chat-form">
+                    <textarea id="new-chat-input" class="wfc-input" rows="1"
+                        placeholder="What's on your mind?"></textarea>
+                    <button type="submit" class="wfc-send" id="new-chat-send" title="Send">→</button>
+                </form>
+            </div>
         </div>
 
-        <div id="runs-chat-loaded" hidden>
+        <div id="runs-chat-loaded" {% if new_chat %}hidden{% endif %}>
             <header class="runs-chat-head">
                 <div class="runs-chat-titles">
                     <h1 id="runs-chat-title"></h1>
@@ -68,7 +110,6 @@
     const sentinel = document.getElementById('runs-load-sentinel');
     const status = document.getElementById('runs-load-status');
     const placeholder = document.getElementById('runs-chat-placeholder');
-    const placeholderMsg = document.getElementById('runs-chat-placeholder-msg');
     const loaded = document.getElementById('runs-chat-loaded');
     const historyEl = document.getElementById('runs-history');
     const titleEl = document.getElementById('runs-chat-title');
@@ -87,6 +128,9 @@
     const attachBtn = document.getElementById('runs-attach');
     const fileInput = document.getElementById('runs-file');
     const previews = document.getElementById('runs-previews');
+    const newChatForm = document.getElementById('new-chat-form');
+    const newChatInput = document.getElementById('new-chat-input');
+    const newChatSend = document.getElementById('new-chat-send');
     if (!list) return;
 
     const kind = list.dataset.kind || 'chat';
@@ -164,14 +208,100 @@
         });
     }
 
-    function showPlaceholder(message) {
+    function showLanding() {
         if (loaded) loaded.hidden = true;
         if (placeholder) placeholder.hidden = false;
-        if (placeholderMsg) placeholderMsg.textContent = message || 'Pick a chat from the left.';
+        document.querySelector('.container')?.classList.add('new-chat-page');
         setDetails(false);
         currentDetail = null;
         if (composer) composer.hidden = true;
         if (readonlyNote) readonlyNote.hidden = true;
+        if (newChatInput) {
+            newChatInput.value = '';
+            newChatInput.focus();
+        }
+    }
+
+    function showPlaceholder() {
+        showLanding();
+    }
+
+    async function startNewChatFromPrompt(message) {
+        if (streaming) return;
+        const text = (message || '').trim();
+        if (!text) return;
+        streaming = true;
+        if (newChatSend) newChatSend.disabled = true;
+        if (newChatInput) newChatInput.disabled = true;
+        try {
+            await ChatLive.clearChat();
+            selectedId = '';
+            setActiveItem('');
+            if (placeholder) placeholder.hidden = true;
+            document.querySelector('.container')?.classList.remove('new-chat-page');
+            renderDetail({
+                store: 'run',
+                id: '',
+                title: 'New chat',
+                state: 'active',
+                started_label: 'now',
+                continuable: true,
+                stats: {},
+                history: [],
+                protocol: [],
+            }, []);
+            if (stopBtn) stopBtn.hidden = false;
+            if (sendBtn) sendBtn.disabled = true;
+            if (input) input.disabled = true;
+            await ChatLive.streamChat({
+                log: historyEl,
+                message: text,
+                images: [],
+                context: {
+                    surface: 'tower',
+                    view: 'chat_detail',
+                    label: 'chats',
+                    reload_on_done: false,
+                },
+                onDone: async () => {
+                    streaming = false;
+                    if (stopBtn) stopBtn.hidden = true;
+                    if (sendBtn) sendBtn.disabled = false;
+                    if (input) input.disabled = false;
+                    if (newChatSend) newChatSend.disabled = false;
+                    if (newChatInput) newChatInput.disabled = false;
+                    try {
+                        const hist = await ChatLive.fetchHistory();
+                        if (hist.run_id) {
+                            currentDetail.id = hist.run_id;
+                            selectedId = hist.run_id;
+                            setActiveItem(hist.run_id);
+                            const url = `/chats?kind=${encodeURIComponent(kind)}&id=${encodeURIComponent(hist.run_id)}`;
+                            history.replaceState({ id: hist.run_id, kind }, '', url);
+                        }
+                        ChatLive.hydrate(historyEl, hist.history || []);
+                    } catch (err) {}
+                    await refreshRail();
+                    const titleNode = selectedId
+                        ? list.querySelector(`.runs-list-item[data-chat-id="${selectedId}"]`)
+                        : null;
+                    if (titleNode && titleNode.textContent) {
+                        currentDetail.title = titleNode.textContent;
+                        titleEl.textContent = titleNode.textContent;
+                    }
+                    input && input.focus();
+                },
+            });
+        } catch (err) {
+            streaming = false;
+            if (newChatSend) newChatSend.disabled = false;
+            if (newChatInput) newChatInput.disabled = false;
+            if (stopBtn) stopBtn.hidden = true;
+            if (sendBtn) sendBtn.disabled = false;
+            if (input) input.disabled = false;
+            alert(err.message || 'Failed to start chat');
+            showLanding();
+        }
     }
 
     function renderPreviews() {
@@ -304,6 +434,7 @@
     function renderDetail(detail, historyOverride) {
         if (placeholder) placeholder.hidden = true;
         if (loaded) loaded.hidden = false;
+        document.querySelector('.container')?.classList.remove('new-chat-page');
         currentDetail = detail;
         titleEl.textContent = detail.title || 'Chat';
         metaEl.innerHTML = `
@@ -328,7 +459,7 @@
             nextPage = 2;
             hasMore = !!data.has_more;
             sentinel.hidden = !hasMore;
-            if (status) status.textContent = hasMore ? 'Loading…' : '';
+            if (status) status.textContent = '';
             for (const item of (data.items || [])) appendItem(item);
             setActiveItem(selectedId);
             if (hasMore && list.scrollHeight <= list.clientHeight + 8) loadMore();
@@ -337,7 +468,7 @@
 
     async function loadDetail(id, { push = false, select = true } = {}) {
         if (!id) {
-            showPlaceholder();
+            showLanding();
             return;
         }
         const seq = ++detailSeq;
@@ -347,12 +478,21 @@
             const url = `/chats?kind=${encodeURIComponent(kind)}&id=${encodeURIComponent(id)}`;
             history.pushState({ id, kind }, '', url);
         }
-        showPlaceholder('Loading…');
+        if (placeholder) placeholder.hidden = true;
+        if (loaded) {
+            loaded.hidden = false;
+            document.querySelector('.container')?.classList.remove('new-chat-page');
+            titleEl.textContent = 'Loading…';
+            metaEl.textContent = '';
+            ChatLive.hydrate(historyEl, []);
+            setComposerEnabled(false);
+        }
         try {
             const res = await fetch(`/chats/detail?kind=${encodeURIComponent(kind)}&id=${encodeURIComponent(id)}`);
             if (seq !== detailSeq) return;
             if (res.status === 404) {
-                showPlaceholder('Chat not found.');
+                alert('Chat not found.');
+                showLanding();
                 return;
             }
             if (!res.ok) throw new Error('detail failed');
@@ -368,7 +508,7 @@
                     detail.state = 'active';
                 } catch (err) {
                     if (String(err.message || '').toLowerCase().includes('busy')) {
-                        showPlaceholder('Agent is busy — wait for the current turn, then try again.');
+                        alert('Agent is busy — wait for the current turn, then try again.');
                         return;
                     }
                     throw err;
@@ -379,7 +519,8 @@
             refreshRail();
         } catch (err) {
             if (seq !== detailSeq) return;
-            showPlaceholder(err.message || 'Could not load chat.');
+            alert(err.message || 'Could not load chat.');
+            showLanding();
         } finally {
             if (seq === detailSeq) loadingDetail = false;
         }
@@ -422,10 +563,8 @@
             for (const item of (data.items || [])) appendItem(item);
             nextPage = (data.page || nextPage) + 1;
             hasMore = !!data.has_more;
-            if (!hasMore) {
-                if (status) status.textContent = '';
-                sentinel.hidden = true;
-            }
+            if (status) status.textContent = '';
+            if (!hasMore) sentinel.hidden = true;
         } catch (err) {
             if (status) status.textContent = 'Could not load more';
             hasMore = false;
@@ -532,25 +671,31 @@
         await ChatLive.clearChat();
         selectedId = '';
         setActiveItem('');
-        history.pushState({}, '', `/chats?kind=${encodeURIComponent(kind)}`);
-        renderDetail({
-            store: 'run',
-            id: '',
-            title: 'New chat',
-            state: 'active',
-            started_label: 'now',
-            continuable: true,
-            stats: {},
-            history: [],
-            protocol: [],
-        }, []);
+        history.pushState({}, '', '/chats?kind=chat');
+        showLanding();
         await refreshRail();
-        input && input.focus();
     };
+
+    if (newChatForm) {
+        newChatForm.addEventListener('submit', (event) => {
+            event.preventDefault();
+            startNewChatFromPrompt(newChatInput ? newChatInput.value : '');
+        });
+    }
+    if (newChatInput) {
+        newChatInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                startNewChatFromPrompt(newChatInput.value);
+            }
+        });
+    }
 
     window.addEventListener('popstate', () => {
         const params = new URLSearchParams(window.location.search);
-        loadDetail(params.get('id') || '', { push: false, select: true });
+        const id = params.get('id') || '';
+        if (id) loadDetail(id, { push: false, select: true });
+        else showLanding();
     });
 
     if (sentinel) {
@@ -562,7 +707,7 @@
     }
 
     if (selectedId) loadDetail(selectedId, { push: false, select: true });
-    else showPlaceholder();
+    else showLanding();
 })();
 </script>
 {% endif %}

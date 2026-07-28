@@ -5,93 +5,110 @@
     </a>
     <nav class="site-nav" aria-label="Main">
         {% if control_plane_only %}
-        <a href="/replika" class="{{ 'active' if request.path.startswith('/replika') }}">My Replika</a>
-        <a href="/integrations" class="{{ 'active' if request.path.startswith('/integrations') }}">Integrations</a>
+        <div class="site-nav-upper">
+            <a href="/replika" class="{{ 'active' if request.path.startswith('/replika') }}">My Replika</a>
+            <a href="/integrations" class="{{ 'active' if request.path.startswith('/integrations') }}">Integrations</a>
+        </div>
+        <div class="site-nav-lower">
+            <form method="post" action="/logout" class="site-nav-logout">
+                <button type="submit" class="site-nav-logout-btn">Log out</button>
+            </form>
+        </div>
         {% else %}
         {% set agent_section_active = request.path.startswith('/agent') or request.path.startswith('/loops') or request.path.startswith('/config') or request.path.startswith('/palace') %}
-        {% set chats_section_active = request.path.startswith('/chats') or request.path.startswith('/runs') or request.path.startswith('/worker-runs') %}
+        {% set devices_section_active = request.path.startswith('/devices') or request.path.startswith('/phone-bridge') %}
+        {% set chats_section_active = request.path == '/' or request.path.startswith('/chats') or request.path.startswith('/runs') or request.path.startswith('/worker-runs') %}
         {% set nav_kind = kind if kind is defined else 'chat' %}
         {% set nav_filters = filters if filters is defined else chat_filters %}
-        {% set nav_show_history = sections is defined and db_configured %}
-        <a href="/" class="{{ 'active' if request.path == '/' }}">Dashboard</a>
-        <div class="site-nav-group nav-chats-group {{ 'is-active' if chats_section_active }}">
-            <div class="nav-chats-head {{ 'is-active' if chats_section_active }}">
-                <a href="/chats?kind={{ nav_kind }}" class="nav-chats-link">Chats</a>
-                <div class="nav-chats-actions">
-                    <button type="button" class="nav-chats-icon-btn" id="runs-new-chat"
-                            title="New chat" aria-label="New chat">+</button>
-                    <div class="nav-chats-menu-wrap">
-                        <button type="button" class="nav-chats-icon-btn" id="nav-chats-menu-btn"
-                                title="Channel filter" aria-label="Channel filter"
-                                aria-haspopup="true" aria-expanded="false">⋯</button>
-                        <div class="nav-chats-menu" id="nav-chats-menu" hidden role="menu">
-                            <div class="nav-chats-menu-label">Channel</div>
-                            {% for fid, flabel in nav_filters %}
-                            <a role="menuitem"
-                               class="nav-chats-menu-item {% if nav_kind == fid %}is-selected{% endif %}"
-                               href="/chats?kind={{ fid }}">{{ flabel }}</a>
-                            {% endfor %}
+        {% set nav_sections = sections if sections is defined else [] %}
+        {% set nav_db = db_configured if db_configured is defined else False %}
+        {% set nav_has_more = has_more if has_more is defined else False %}
+        <div class="site-nav-upper">
+            <div class="site-nav-group nav-chats-group is-open {{ 'is-active' if chats_section_active }}">
+                <div class="nav-chats-head {{ 'is-active' if chats_section_active }}">
+                    <span class="nav-chats-label">Chats</span>
+                    <div class="nav-chats-actions">
+                        <button type="button" class="nav-chats-icon-btn" id="runs-new-chat"
+                                title="New chat" aria-label="New chat">+</button>
+                        <div class="nav-chats-menu-wrap">
+                            <button type="button" class="nav-chats-icon-btn" id="nav-chats-menu-btn"
+                                    title="Channel filter" aria-label="Channel filter"
+                                    aria-haspopup="true" aria-expanded="false">⋯</button>
+                            <div class="nav-chats-menu" id="nav-chats-menu" hidden role="menu">
+                                <div class="nav-chats-menu-label">Channel</div>
+                                {% for fid, flabel in nav_filters %}
+                                <a role="menuitem"
+                                   class="nav-chats-menu-item {% if nav_kind == fid %}is-selected{% endif %}"
+                                   href="/chats?kind={{ fid }}">{{ flabel }}</a>
+                                {% endfor %}
+                            </div>
                         </div>
                     </div>
                 </div>
-            </div>
-            {% if nav_show_history %}
-            <div class="nav-chats-body">
-                <div class="runs-list nav-chats-list" role="list" id="runs-list"
-                     data-kind="{{ nav_kind }}"
-                     data-selected="{{ selected_id or '' }}"
-                     data-next-page="2"
-                     data-has-more="{{ '1' if has_more else '0' }}">
-                    {% for section in sections %}
-                    <div class="runs-section-label" data-bucket="{{ section.id }}">{{ section.label }}</div>
-                    {% for item in section.rows %}
-                    <a role="listitem"
-                       class="runs-list-item {% if item.id == selected_id %}is-active{% endif %}"
-                       data-bucket="{{ item.bucket }}"
-                       data-chat-id="{{ item.id }}"
-                       data-store="{{ item.store }}"
-                       href="/chats?kind={{ nav_kind }}&id={{ item.id }}"
-                       title="{{ item.title }}">{{ item.title }}</a>
-                    {% endfor %}
-                    {% else %}
-                    <p class="runs-empty muted" id="runs-empty">
-                        No histories for this filter.
-                        {% if nav_kind not in ('chat', 'all', 'worker') %}
-                        New {{ nav_kind }} turns are recorded from the next run onward.
+                <div class="nav-chats-body">
+                    <div class="runs-list nav-chats-list" role="list" id="runs-list"
+                         data-kind="{{ nav_kind }}"
+                         data-selected="{{ selected_id or '' }}"
+                         data-next-page="2"
+                         data-has-more="{{ '1' if nav_has_more else '0' }}">
+                        {% if nav_db %}
+                        {% for section in nav_sections %}
+                        <div class="runs-section-label" data-bucket="{{ section.id }}">{{ section.label }}</div>
+                        {% for item in section.rows %}
+                        <a role="listitem"
+                           class="runs-list-item {% if item.id == selected_id %}is-active{% endif %}"
+                           data-bucket="{{ item.bucket }}"
+                           data-chat-id="{{ item.id }}"
+                           data-store="{{ item.store }}"
+                           href="/chats?kind={{ nav_kind }}&id={{ item.id }}"
+                           title="{{ item.title }}">{{ item.title }}</a>
+                        {% endfor %}
+                        {% else %}
+                        <p class="runs-empty muted" id="runs-empty">
+                            No histories for this filter.
+                            {% if nav_kind not in ('chat', 'all', 'worker') %}
+                            New {{ nav_kind }} turns are recorded from the next run onward.
+                            {% endif %}
+                        </p>
+                        {% endfor %}
+                        <div class="runs-load-sentinel" id="runs-load-sentinel" {% if not nav_has_more %}hidden{% endif %}>
+                            <span class="muted" id="runs-load-status"></span>
+                        </div>
+                        {% else %}
+                        <p class="runs-empty muted">Chat history unavailable.</p>
                         {% endif %}
-                    </p>
-                    {% endfor %}
-                    <div class="runs-load-sentinel" id="runs-load-sentinel" {% if not has_more %}hidden{% endif %}>
-                        <span class="muted" id="runs-load-status">Loading…</span>
                     </div>
                 </div>
             </div>
-            {% endif %}
         </div>
-        <a href="/apps" class="{{ 'active' if request.path.startswith('/apps') or request.path.startswith('/workflows') or request.path.startswith('/w/') or request.path.startswith('/approvals') }}">Apps</a>
-        <div class="site-nav-group {{ 'is-active' if agent_section_active }}">
-            <div class="site-nav-group-label">Agent</div>
-            <div class="site-nav-group-links">
-                <a href="/agent" class="{{ 'active' if request.path.startswith('/agent') or request.path.startswith('/loops') }}">Schedules</a>
-                <a href="/config" class="{{ 'active' if request.path.startswith('/config') }}">Configuration</a>
-                <a href="/palace" class="{{ 'active' if request.path.startswith('/palace') }}">Memory</a>
+        <div class="site-nav-lower">
+            <a href="/apps" class="{{ 'active' if request.path.startswith('/apps') or request.path.startswith('/workflows') or request.path.startswith('/w/') or request.path.startswith('/approvals') }}">Apps</a>
+            <div class="site-nav-group nav-collapsible {{ 'is-active is-open' if devices_section_active }}"
+                 data-nav-collapsible data-nav-lower>
+                <button type="button" class="site-nav-group-toggle"
+                        aria-expanded="{{ 'true' if devices_section_active else 'false' }}">Devices</button>
+                <div class="site-nav-group-links nav-sublist" {% if not devices_section_active %}hidden{% endif %}>
+                    <a href="/devices/browser" class="nav-sublist-item {{ 'active' if request.path.startswith('/devices/browser') }}">Browser</a>
+                    <a href="/devices/phone" class="nav-sublist-item {{ 'active' if request.path.startswith('/devices/phone') or request.path.startswith('/phone-bridge') }}">Phone</a>
+                </div>
             </div>
-        </div>
-        <div class="site-nav-group {{ 'is-active' if request.path.startswith('/devices') or request.path.startswith('/phone-bridge') }}">
-            <div class="site-nav-group-label">Devices</div>
-            <div class="site-nav-group-links">
-                <a href="/devices/browser" class="{{ 'active' if request.path.startswith('/devices/browser') }}">Browser</a>
-                <a href="/devices/phone" class="{{ 'active' if request.path.startswith('/devices/phone') or request.path.startswith('/phone-bridge') }}">Phone</a>
+            <div class="site-nav-group nav-collapsible {{ 'is-active is-open' if agent_section_active }}"
+                 data-nav-collapsible data-nav-lower>
+                <button type="button" class="site-nav-group-toggle"
+                        aria-expanded="{{ 'true' if agent_section_active else 'false' }}">Agent</button>
+                <div class="site-nav-group-links nav-sublist" {% if not agent_section_active %}hidden{% endif %}>
+                    <a href="/config" class="nav-sublist-item {{ 'active' if request.path.startswith('/config') }}">Configuration</a>
+                    <a href="/agent" class="nav-sublist-item {{ 'active' if request.path.startswith('/agent') or request.path.startswith('/loops') }}">Schedules</a>
+                    <a href="/palace" class="nav-sublist-item {{ 'active' if request.path.startswith('/palace') }}">Memory</a>
+                </div>
             </div>
+            <a href="/costs" class="{{ 'active' if request.path.startswith('/costs') }}">Costs</a>
+            <form method="post" action="/logout" class="site-nav-logout">
+                <button type="submit" class="site-nav-logout-btn">Log out</button>
+            </form>
         </div>
-        <a href="/costs" class="{{ 'active' if request.path.startswith('/costs') }}">Costs</a>
         {% endif %}
     </nav>
-    <div class="site-sidebar-footer">
-        <form method="post" action="/logout" class="site-nav-logout">
-            <button type="submit" class="site-nav-logout-btn">Log out</button>
-        </form>
-    </div>
 </aside>
 <script>
 (function () {
@@ -138,8 +155,7 @@
                 });
                 const data = await res.json().catch(() => ({}));
                 if (!res.ok) throw new Error(data.error || 'Failed to start new chat');
-                const kind = document.getElementById('runs-list')?.dataset?.kind || 'chat';
-                window.location.href = `/chats?kind=${encodeURIComponent(kind)}`;
+                window.location.href = '/';
             } catch (err) {
                 alert(err.message || 'Failed to start new chat');
             } finally {
@@ -147,5 +163,28 @@
             }
         });
     }
+
+    function setGroupOpen(group, open) {
+        const toggle = group.querySelector('.site-nav-group-toggle');
+        const panel = group.querySelector('.site-nav-group-links');
+        group.classList.toggle('is-open', open);
+        if (panel) panel.hidden = !open;
+        if (toggle) toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    }
+
+    document.querySelectorAll('[data-nav-collapsible]').forEach((group) => {
+        const toggle = group.querySelector('.site-nav-group-toggle');
+        const panel = group.querySelector('.site-nav-group-links');
+        if (!toggle || !panel) return;
+        toggle.addEventListener('click', () => {
+            const open = !group.classList.contains('is-open');
+            if (open && group.hasAttribute('data-nav-lower')) {
+                document.querySelectorAll('[data-nav-lower].is-open').forEach((other) => {
+                    if (other !== group) setGroupOpen(other, false);
+                });
+            }
+            setGroupOpen(group, open);
+        });
+    });
 })();
 </script>

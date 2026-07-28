@@ -203,21 +203,10 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
             "1", "true", "yes",
         }:
             return redirect(url_for("replika_control_plane.replika_setup"))
-        from . import ui_context as ui_ctx
-        from .todo_board import dashboard_todo_vars
-
-        todo = dashboard_todo_vars()
-        return render_template(
-            "index.html",
-            saved=request.args.get("saved"),
-            page_context=ui_ctx.todo(
-                todo["todo_date"],
-                todo["plan_relpath"],
-                todo["progress_relpath"],
-                "dashboard",
-            ),
-            **todo,
-        )
+        # Default home is the new-chat landing (plan/progress + prompt).
+        return redirect(url_for("chats_board.chats_index", kind="chat", **{
+            k: v for k, v in request.args.items() if k == "saved"
+        }))
 
     @app.route("/api/chat", methods=["POST"])
     def api_chat():
@@ -777,7 +766,7 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
     from .apps import register_apps
     register_apps(app, scheduler)
 
-    # Plan / progress save endpoints (editors live on Dashboard).
+    # Plan / progress save endpoints (editors live on new-chat landing).
     from .todo_board import register_todo_board
     register_todo_board(app)
 

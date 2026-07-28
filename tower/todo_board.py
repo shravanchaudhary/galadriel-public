@@ -1,4 +1,4 @@
-"""Tower UI — daily plan / progress save endpoints (editors live on Dashboard).
+"""Tower UI — daily plan / progress save endpoints (editors live on new-chat landing).
 
 Files live under `state/plan/` and `state/progress/` (one markdown file per day).
 """
@@ -37,7 +37,7 @@ def _read_or_empty(path: Path) -> str:
 
 
 def dashboard_todo_vars() -> dict:
-    """Template vars for today's plan/progress editors on the dashboard."""
+    """Template vars for today's plan/progress editors on the new-chat landing."""
     date = _today()
     plan_path = PLAN_DIR / f"{date}.md"
     progress_path = PROGRESS_DIR / f"{date}.md"
@@ -69,7 +69,7 @@ def register_todo_board(app):
         path = base / f"{date}.md"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
-        return redirect(url_for("index", saved=kind))
+        return redirect(url_for("chats_board.chats_index", kind="chat", saved=kind))
 
     @bp.route("/actions")
     def actions_legacy_index():

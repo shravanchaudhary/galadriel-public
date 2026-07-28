@@ -51,7 +51,7 @@ BUCKET_ORDER = [
     ("week", "Past week"),
     ("older", "Older"),
 ]
-PAGE_SIZE = 6
+PAGE_SIZE = 25
 
 
 def _today() -> str:
@@ -505,7 +505,30 @@ def register_chats_board(app):
 
     @app.context_processor
     def _inject_chat_nav_defaults():
-        return {"chat_filters": FILTERS}
+        """Chat filters everywhere; history rail on non-chats pages too."""
+        out = {"chat_filters": FILTERS}
+        ep = request.endpoint or ""
+        path = request.path or ""
+        if (
+            ep.startswith("chats_board.")
+            or path.startswith("/api/")
+            or path.startswith("/static/")
+        ):
+            return out
+        try:
+            items, has_more, db_configured, _active = _collect_items("chat", page=1)
+            out.update({
+                "sections": _group_sections(items),
+                "has_more": has_more,
+                "db_configured": db_configured,
+            })
+        except Exception:
+            out.update({
+                "sections": [],
+                "has_more": False,
+                "db_configured": False,
+            })
+        return out
 
     @app.template_filter("run_time")
     def _run_time(value):
@@ -589,12 +612,18 @@ def register_chats_board(app):
         page_ids = [item["id"] for item in items]
         page_context = ui_ctx.chats_index(_today(), page_ids)
 
-        if not selected_id and items:
+        # Chat filter with no selection → new-chat landing (plan/progress + prompt).
+        # Other filters still open the newest item.
+        if not selected_id and items and kind != "chat":
             return redirect(url_for(
                 "chats_board.chats_index",
                 kind=kind,
                 id=items[0]["id"],
             ))
+
+        new_chat = kind == "chat" and not selected_id
+        from .todo_board import dashboard_todo_vars
+        todo = dashboard_todo_vars()
 
         return render_template(
             "chats/chat.html",
@@ -609,6 +638,9 @@ def register_chats_board(app):
             page_size=PAGE_SIZE,
             has_more=has_more,
             page_context=page_context,
+            new_chat=new_chat,
+            saved=request.args.get("saved"),
+            **todo,
         )
 
     @bp.route("/chats/user/<run_id>")
