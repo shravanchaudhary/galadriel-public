@@ -65,7 +65,7 @@ body {
     padding: 1.15rem 0.85rem;
     background: rgba(251, 251, 246, 0.92);
     backdrop-filter: blur(12px);
-    border-right: 1px solid var(--border);
+    border-right: none;
     overflow: hidden;
 }
 
@@ -106,6 +106,7 @@ body {
     display: flex;
     flex-direction: column;
     gap: 0.15rem;
+    margin-right: -0.85rem;
     overflow: hidden;
 }
 
@@ -117,10 +118,36 @@ body {
     flex-direction: column;
     gap: 0.15rem;
     margin-top: auto;
+    margin-right: -0.85rem;
     padding-top: 0.65rem;
     border-top: 1px solid var(--border);
     overflow-x: hidden;
     overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
+}
+
+.site-nav-lower:hover {
+    scrollbar-color: rgba(15, 12, 8, 0.24) transparent;
+}
+
+.site-nav-lower::-webkit-scrollbar {
+    width: 4px;
+}
+
+.site-nav-lower::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.site-nav-lower::-webkit-scrollbar-thumb {
+    background-color: transparent;
+    background-clip: padding-box;
+    border-block: 20px solid transparent;
+    border-radius: 999px;
+}
+
+.site-nav-lower:hover::-webkit-scrollbar-thumb {
+    background-color: rgba(15, 12, 8, 0.24);
 }
 
 .site-nav a {
@@ -231,6 +258,7 @@ body {
     align-items: center;
     gap: 0.15rem;
     min-width: 0;
+    margin-right: 0.85rem;
     padding: 0.2rem 0.25rem 0.2rem 0.7rem;
     border-radius: var(--radius-sm);
     transition: color 0.15s, background 0.15s;
@@ -356,7 +384,32 @@ body {
     min-height: 0;
     flex: 1 1 auto;
     gap: 0.15rem;
-    padding-right: 0.15rem;
+    padding-right: 0;
+    scrollbar-width: thin;
+    scrollbar-color: transparent transparent;
+}
+
+.nav-chats-list:hover {
+    scrollbar-color: rgba(15, 12, 8, 0.24) transparent;
+}
+
+.nav-chats-list::-webkit-scrollbar {
+    width: 4px;
+}
+
+.nav-chats-list::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.nav-chats-list::-webkit-scrollbar-thumb {
+    background-color: transparent;
+    background-clip: padding-box;
+    border-block: 20px solid transparent;
+    border-radius: 999px;
+}
+
+.nav-chats-list:hover::-webkit-scrollbar-thumb {
+    background-color: rgba(15, 12, 8, 0.24);
 }
 
 .nav-chats-list .runs-section-label {
@@ -372,7 +425,7 @@ body {
 }
 
 .nav-chats-list .runs-list-item {
-    padding: 0.4rem 0.55rem;
+    padding: 0.4rem 0.25rem 0.4rem 0.55rem;
     font-size: 0.84rem;
     font-weight: 500;
     line-height: 1.35;
@@ -859,6 +912,8 @@ h3 {
     display: flex;
     flex-direction: column;
     align-items: center;
+    overflow-y: auto;
+    scrollbar-gutter: stable;
 }
 
 .new-chat-form {
@@ -2118,6 +2173,37 @@ body.wfc-resizing * { cursor: inherit !important; }
     color: var(--text);
 }
 
+.composer-meta {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    min-width: 0;
+    flex: 1 1 auto;
+}
+
+.composer-meta[hidden] {
+    display: none !important;
+}
+
+.composer-meta-chip {
+    display: inline-flex;
+    align-items: center;
+    max-width: 100%;
+    font-size: 0.72rem;
+    line-height: 1.2;
+    padding: 0.2rem 0.55rem;
+    border-radius: 999px;
+    background: var(--bg-subtle);
+    border: 1px solid transparent;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    pointer-events: none;
+    user-select: none;
+    cursor: default;
+}
+
 .composer-send,
 .composer-stop {
     display: inline-flex;
@@ -2277,21 +2363,22 @@ body.wfc-resizing * { cursor: inherit !important; }
 /* ── Unified Runs shell (ChatGPT-like) ───────────────────────── */
 .container.runs-shell-page {
     max-width: none;
-    padding: 0.85rem;
+    padding: 0;
     height: calc(100vh - 0px);
     min-height: 0;
     display: flex;
     flex-direction: column;
+    background: var(--surface);
 }
 
 .runs-shell,
 .runs-shell-main {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
-    gap: 0.85rem;
+    gap: 0;
     flex: 1;
     min-height: 0;
-    height: calc(100vh - 1.7rem);
+    height: 100%;
 }
 
 .runs-active-pill {
@@ -2404,15 +2491,17 @@ body.wfc-resizing * { cursor: inherit !important; }
 }
 
 .runs-chat {
+    --chat-col: 780px;
+    --chat-side: 1.25rem;
     position: relative;
     display: flex;
     flex-direction: column;
     min-width: 0;
     min-height: 0;
     background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 14px;
-    box-shadow: var(--shadow-sm);
+    border: none;
+    border-radius: 0;
+    box-shadow: none;
     overflow: hidden;
 }
 
@@ -2427,74 +2516,66 @@ body.wfc-resizing * { cursor: inherit !important; }
     height: 100%;
 }
 
-.runs-chat-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 1rem;
-    flex-shrink: 0;
-    padding: 0.7rem 1.25rem;
-    border-bottom: 1px solid var(--border);
-    background: rgba(251, 251, 246, 0.85);
-    backdrop-filter: blur(8px);
-}
-
-.runs-chat-titles {
-    min-width: 0;
-    max-width: min(720px, 100%);
-    margin: 0 auto 0 0;
-}
-
-.runs-chat-titles h1 {
-    font-size: 0.98rem;
-    font-weight: 600;
-    letter-spacing: -0.01em;
-    margin: 0;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.runs-chat-titles .muted {
-    margin-top: 0.15rem;
-    font-size: 0.75rem;
-}
-
+/* Shared reading column: both panes are scroll containers with the same
+   scrollbar-gutter, then center identical max-width children. */
 .runs-chat-log {
     flex: 1 1 auto;
     min-height: 0;
     overflow-x: hidden;
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
-    padding: 1.35rem 1.25rem 1.75rem;
+    padding: 1.35rem 0 1.75rem;
     display: flex;
     flex-direction: column;
     align-items: center;
     gap: 1.35rem;
-    background:
-        radial-gradient(ellipse 80% 40% at 50% 0%, rgba(0, 0, 0, 0.02), transparent 70%),
-        var(--surface);
+    background: transparent;
     scroll-behavior: smooth;
+    scrollbar-gutter: stable both-edges;
 }
 
-/* Centered reading column — ChatGPT / Claude style */
 .runs-chat-log > .wfc-msg {
-    width: min(720px, 100%);
-    margin-left: auto;
-    margin-right: auto;
+    width: min(var(--chat-col), calc(100% - (var(--chat-side) * 2)));
+    max-width: none;
+    margin-left: 0;
+    margin-right: 0;
     box-sizing: border-box;
 }
 
 .runs-chat-log .wfc-msg { font-size: 0.95rem; line-height: 1.7; }
 .runs-chat-log .wfc-msg-user {
-    width: fit-content;
-    max-width: min(34rem, 85%, 720px);
-    margin-left: auto;
-    margin-right: max(0px, calc((100% - min(720px, 100%)) / 2));
+    /* Same column width as assistant/composer; bubble hugs the right edge. */
+    width: min(var(--chat-col), calc(100% - (var(--chat-side) * 2)));
+    max-width: none;
+    align-self: center;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    padding: 0;
+}
+.runs-chat-log .wfc-msg-user .wfc-msg-text {
+    max-width: min(34rem, 85%);
+    background: var(--bg-subtle);
+    border-radius: 1.15rem 1.15rem 0.35rem 1.15rem;
+    padding: 0.65rem 0.9rem;
+}
+.runs-chat-log .wfc-msg-user .wfc-msg-images {
+    max-width: min(34rem, 85%);
 }
 .runs-chat-log .wfc-msg-assistant {
-    max-width: min(720px, 100%);
-    padding: 0.15rem 0.1rem;
+    width: min(var(--chat-col), calc(100% - (var(--chat-side) * 2)));
+    max-width: none;
+    align-self: center;
+    padding: 0.15rem 0;
+}
+
+.runs-chat-log .typing {
+    padding: 0.35rem 0;
+    width: min(var(--chat-col), calc(100% - (var(--chat-side) * 2)));
+    box-sizing: border-box;
 }
 
 .runs-chat-composer {
@@ -2504,14 +2585,18 @@ body.wfc-resizing * { cursor: inherit !important; }
     display: flex;
     flex-direction: column;
     align-items: center;
-    padding: 0.35rem 1.25rem 1.1rem;
+    /* The transcript viewport ends exactly where the visible input begins. */
+    padding: 0 0 1.1rem;
+    overflow: visible;
 }
 
 .runs-chat-composer .composer-form,
 .runs-chat-composer .wfc-previews,
 .new-chat-prompt .composer-form,
 .new-chat-prompt .wfc-previews {
-    width: min(720px, 100%);
+    width: min(var(--chat-col), calc(100% - (var(--chat-side) * 2)));
+    max-width: none;
+    box-sizing: border-box;
 }
 
 .runs-chat-composer[hidden],
@@ -2534,39 +2619,15 @@ body.wfc-resizing * { cursor: inherit !important; }
     padding: 2rem;
 }
 
-.runs-details {
-    position: absolute;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    width: min(420px, 100%);
-    background: var(--surface);
-    border-left: 1px solid var(--border);
-    box-shadow: var(--shadow-lg);
-    overflow-y: auto;
-    z-index: 5;
-}
-
-.runs-details-inner { padding: 1rem 1.1rem 2rem; }
-.runs-details-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 0.75rem;
-    margin-bottom: 0.85rem;
-}
-.runs-details-head h2 { margin: 0; }
-.runs-details-stats { margin-bottom: 1rem; }
-
 @media (max-width: 960px) {
     .runs-shell {
         height: auto;
-        min-height: calc(100vh - 1.7rem);
+        min-height: 100vh;
     }
     .container.runs-shell-page {
         height: auto;
         min-height: 100vh;
-        padding: 0.85rem;
+        padding: 0;
     }
     .runs-chat {
         min-height: 60vh;
