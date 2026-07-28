@@ -21,8 +21,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from flask import Blueprint, current_app, g, jsonify, redirect, render_template, request, session
-from pymongo import ASCENDING, MongoClient
-from pymongo.errors import DuplicateKeyError
+from pymongo import ASCENDING, DESCENDING, MongoClient
+from pymongo.errors import DuplicateKeyError, OperationFailure
 
 from .auth import SESSION_USER_KEY
 
@@ -248,22 +248,30 @@ class SlackInstallationStore:
         self.installations = db[INSTALLATIONS]
         self.states = db[OAUTH_STATES]
         self.outbox = db[OUTBOX]
-        self._ensure_indexes()
+        # Migrate before unique indexes — null/missing replika_id values collide.
         self._migrate_legacy_installations()
+        self._ensure_indexes()
 
     def _ensure_indexes(self) -> None:
         try:
             self.installations.drop_index("unique_slack_owner")
         except Exception:
             pass
-        self.installations.create_index(
-            [("replika_id", ASCENDING)], unique=True, name="unique_slack_replika"
+        self._create_unique_index(
+            self.installations,
+            [("replika_id", ASCENDING)],
+            name="unique_slack_replika",
+            dedupe_field="replika_id",
         )
         self.installations.create_index(
             [("owner_id", ASCENDING)], unique=False, name="slack_owner"
         )
-        self.installations.create_index(
-            [("team_id", ASCENDING)], unique=True, name="unique_slack_team_route"
+        self._create_unique_index(
+            self.installations,
+            [("team_id", ASCENDING)],
+            name="unique_slack_team_route",
+            dedupe_field="team_id",
+            sparse=True,
         )
         self.states.create_index(
             [("expires_at", ASCENDING)], expireAfterSeconds=0, name="expire_slack_oauth_state"
@@ -275,6 +283,54 @@ class SlackInstallationStore:
             [("status", ASCENDING), ("next_attempt_at", ASCENDING), ("created_at", ASCENDING)],
             name="slack_outbox_delivery",
         )
+
+    def _create_unique_index(
+        self,
+        collection,
+        keys,
+        *,
+        name: str,
+        dedupe_field: str,
+        sparse: bool = False,
+    ) -> None:
+        kwargs: dict[str, Any] = {"unique": True, "name": name}
+        if sparse:
+            kwargs["sparse"] = True
+        try:
+            collection.create_index(keys, **kwargs)
+            return
+        except DuplicateKeyError:
+            self._dedupe_by_field(collection, dedupe_field)
+        except OperationFailure as exc:
+            # Same key already indexed under another name/options.
+            if exc.code != 85 and "already exists with different options" not in str(exc):
+                raise
+            try:
+                collection.drop_index(name)
+            except Exception:
+                pass
+            for existing in collection.list_indexes():
+                if list(existing.get("key", {}).items()) == [(dedupe_field, 1)]:
+                    try:
+                        collection.drop_index(existing["name"])
+                    except Exception:
+                        pass
+            self._dedupe_by_field(collection, dedupe_field)
+        collection.create_index(keys, **kwargs)
+
+    def _dedupe_by_field(self, collection, field: str) -> None:
+        """Keep the newest document per field value; delete older duplicates."""
+        seen: set[Any] = set()
+        for document in collection.find({field: {"$type": "string"}}).sort(
+            [("updated_at", DESCENDING), ("created_at", DESCENDING)]
+        ):
+            key = document.get(field)
+            if not key:
+                continue
+            if key in seen:
+                collection.delete_one({"_id": document["_id"]})
+                continue
+            seen.add(key)
 
     def _migrate_legacy_installations(self) -> None:
         for document in self.installations.find(

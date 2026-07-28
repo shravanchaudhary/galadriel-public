@@ -101,7 +101,12 @@ class BCEClient:
         pairing_code: str = "",
         default_timeout_ms: int = 10000,
     ) -> None:
-        self.base_url = base_url.rstrip("/")
+        cleaned = (base_url or "").strip().rstrip("/")
+        if not cleaned.startswith(("http://", "https://")):
+            raise BCEError(
+                f"BCE_BASE_URL must be an absolute http(s) URL, got {base_url!r}"
+            )
+        self.base_url = cleaned
         self.api_key = api_key
         self.pairing_code = normalize_pairing_code(pairing_code) if pairing_code else ""
         self.default_timeout_ms = default_timeout_ms
@@ -112,7 +117,8 @@ class BCEClient:
         load_dotenv(override=True)
         code = os.environ.get("BCE_PAIRING_CODE", "")
         return cls(
-            base_url=os.environ.get("BCE_BASE_URL", "http://localhost:8000"),
+            base_url=(os.environ.get("BCE_BASE_URL") or "").strip()
+            or "http://localhost:8000",
             api_key=os.environ.get("BCE_API_KEY", "dev-api-key"),
             pairing_code=code,
             default_timeout_ms=int(os.environ.get("BCE_TIMEOUT_MS", "10000")),

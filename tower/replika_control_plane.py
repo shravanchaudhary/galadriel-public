@@ -109,10 +109,11 @@ class ReplikaStore:
         self._migrate_legacy_documents()
 
     def _ensure_owner_index(self) -> None:
-        try:
-            self.collection.drop_index("one_replika_per_owner")
-        except OperationFailure:
-            pass
+        for name in ("one_replika_per_owner", "replika_owner"):
+            try:
+                self.collection.drop_index(name)
+            except OperationFailure:
+                pass
         self.collection.create_index(
             [("owner_id", ASCENDING)], unique=False, name="replika_owner"
         )

@@ -66,7 +66,8 @@ def _bce_status(profile: dict) -> dict:
         return {"state": "not_configured", "online": False}
     try:
         client = BCEClient(
-            base_url=os.environ.get("BCE_BASE_URL", "http://localhost:8000"),
+            base_url=(os.environ.get("BCE_BASE_URL") or "").strip()
+            or "http://localhost:8000",
             api_key=os.environ.get("BCE_API_KEY", "dev-api-key"),
             pairing_code=code,
             default_timeout_ms=min(
