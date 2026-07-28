@@ -16,3 +16,4 @@ when a technique becomes reusable; keep personal history in the memory palace.
 | data | Using operational data safely | `knowledge/reference/data.md` | `database tools system of record` |
 | workflows | Authoring a structured workflow | `knowledge/reference/workflows.md` | `workflow spec authoring` |
 | coding-principles | Making a small, verifiable file change | `knowledge/reference/coding_principles.md` | `coding principles surgical changes` |
+| user-facing-html | Updating the daily plan or progress artifact | `knowledge/reference/user_facing_html_artifacts.md` | `user-facing HTML artifact plan progress` |

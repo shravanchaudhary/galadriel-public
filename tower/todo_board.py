@@ -1,6 +1,6 @@
-"""Tower UI — daily plan / progress save endpoints (editors live on new-chat landing).
+"""Tower UI — secure, read-only daily plan and progress artifacts.
 
-Files live under `state/plan/` and `state/progress/` (one markdown file per day).
+Files live under `state/plan/` and `state/progress/` (one HTML file per day).
 """
 
 import re
@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from flask import Blueprint, abort, redirect, request, url_for
+from flask import Blueprint, Response, abort, redirect, request, url_for
 
 CET = ZoneInfo("Europe/Stockholm")
 PLAN_DIR = Path("state/plan")
@@ -30,54 +30,60 @@ def _valid_date(date: str) -> bool:
     return True
 
 
-def _read_or_empty(path: Path) -> str:
-    if path.is_file():
-        return path.read_text(encoding="utf-8")
-    return ""
+def _artifact_path(kind: str, date: str) -> Path:
+    if kind not in ("plan", "progress") or not _valid_date(date):
+        abort(404)
+    base = PLAN_DIR if kind == "plan" else PROGRESS_DIR
+    return base / f"{date}.html"
 
 
 def dashboard_todo_vars() -> dict:
-    """Template vars for today's plan/progress editors on the new-chat landing."""
+    """Template vars for today's plan/progress artifacts on the new-chat landing."""
     date = _today()
-    plan_path = PLAN_DIR / f"{date}.md"
-    progress_path = PROGRESS_DIR / f"{date}.md"
+    plan_path = _artifact_path("plan", date)
+    progress_path = _artifact_path("progress", date)
     return {
         "todo_date": date,
         "plan_relpath": plan_path.as_posix(),
         "progress_relpath": progress_path.as_posix(),
-        "plan_content": _read_or_empty(plan_path),
-        "progress_content": _read_or_empty(progress_path),
+        "plan_artifact_url": url_for(
+            "todo_board.todo_artifact", kind="plan", date=date
+        ),
+        "progress_artifact_url": url_for(
+            "todo_board.todo_artifact", kind="progress", date=date
+        ),
+        "plan_exists": plan_path.is_file(),
+        "progress_exists": progress_path.is_file(),
     }
 
 
 def register_todo_board(app):
-    """Register plan/progress save + legacy redirects (no dedicated TODO page)."""
+    """Register read-only artifacts and legacy page redirects."""
     bp = Blueprint("todo_board", __name__)
 
     @bp.route("/todo")
     def todo_index():
         return redirect(url_for("index", **request.args))
 
-    @bp.route("/todo/save", methods=["POST"])
-    def todo_save():
-        kind = request.form.get("kind", "")
-        date = request.form.get("date", "")
-        content = request.form.get("content", "")
-        if kind not in ("plan", "progress") or not _valid_date(date):
-            abort(400)
-        base = PLAN_DIR if kind == "plan" else PROGRESS_DIR
-        path = base / f"{date}.md"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
-        return redirect(url_for("chats_board.chats_index", kind="chat", saved=kind))
+    @bp.route("/todo/artifact/<kind>/<date>.html")
+    def todo_artifact(kind: str, date: str):
+        path = _artifact_path(kind, date)
+        if not path.is_file():
+            abort(404)
+        response = Response(path.read_text(encoding="utf-8"), mimetype="text/html")
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'none'; style-src 'unsafe-inline'; img-src data:; "
+            "base-uri 'none'; form-action 'none'; frame-ancestors 'self'; "
+            "sandbox allow-popups"
+        )
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Cache-Control"] = "no-store"
+        return response
 
     @bp.route("/actions")
     def actions_legacy_index():
         return redirect(url_for("index", **request.args))
-
-    @bp.route("/actions/save", methods=["POST"])
-    def actions_legacy_save():
-        return todo_save()
 
     app.register_blueprint(bp)
 

@@ -797,6 +797,7 @@ h3 {
     min-height: 0;
     margin: 0;
     align-items: stretch;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .actions-board-grid.new-chat-todo .actions-panel {
@@ -805,19 +806,48 @@ h3 {
     flex-direction: column;
 }
 
-.actions-board-grid.new-chat-todo .actions-panel form {
+.daily-artifact-frame {
     flex: 1 1 auto;
+    display: block;
+    width: 100%;
     min-height: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 0.65rem;
+    border: 0;
+    background: var(--surface);
 }
 
-.actions-board-grid.new-chat-todo .actions-editor,
-.dash-todo-grid.new-chat-todo .actions-editor {
+.dash-todo-grid:not(.new-chat-todo) .daily-artifact-frame {
+    min-height: 34rem;
+}
+
+.daily-artifact-empty {
     flex: 1 1 auto;
-    min-height: 12rem;
-    height: auto;
+    min-height: 16rem;
+    display: grid;
+    place-content: center;
+    justify-items: center;
+    gap: 0.35rem;
+    padding: 2rem;
+    color: var(--muted);
+    text-align: center;
+    background:
+        radial-gradient(circle at center, var(--bg-subtle) 0, transparent 68%);
+}
+
+.daily-artifact-empty strong {
+    color: var(--text);
+    font-size: 0.95rem;
+}
+
+.daily-artifact-empty p {
+    max-width: 18rem;
+    margin: 0;
+    font-size: 0.85rem;
+}
+
+.daily-artifact-empty-mark {
+    color: var(--border-strong);
+    font-size: 1.6rem;
+    line-height: 1;
 }
 
 .new-chat-prompt {
@@ -858,6 +888,19 @@ h3 {
 }
 
 @media (max-width: 760px) {
+    #runs-chat-placeholder.new-chat-landing:not([hidden]) {
+        overflow-y: auto;
+    }
+
+    .actions-board-grid.new-chat-todo {
+        flex: 0 0 auto;
+        grid-template-columns: 1fr;
+    }
+
+    .actions-board-grid.new-chat-todo .artifact-panel {
+        min-height: 26rem;
+    }
+
     .dash-overview {
         grid-template-columns: 1fr;
     }
@@ -2354,6 +2397,27 @@ body.wfc-resizing * { cursor: inherit !important; }
     border-radius: var(--radius);
     padding: 1rem;
     box-shadow: var(--shadow-sm);
+}
+
+.actions-panel.artifact-panel {
+    padding: 0;
+    overflow: hidden;
+    box-shadow: none;
+}
+
+.artifact-panel .actions-panel-head {
+    flex: 0 0 auto;
+    margin: 0;
+    padding: 0.7rem 0.9rem;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg-subtle);
+}
+
+.artifact-panel .actions-panel-head .muted {
+    overflow: hidden;
+    font-size: 0.72rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .actions-panel-head {

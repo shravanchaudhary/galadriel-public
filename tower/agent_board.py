@@ -111,7 +111,7 @@ def _build_agent_items(scheduler, agent, today: str, worker=None) -> list[dict]:
             "source": "harness/loop_prompts.py → morning_prompt()",
             "editable": False,
             "prompt": morning_prompt(today),
-            "note": "Plans the day: writes state/plan/<today>.md, pauses worker during planning.",
+            "note": "Plans the day: writes state/plan/<today>.html, pauses worker during planning.",
             "time_editable": True,
             "time_hhmm": morning_hhmm,
             "time_label": "Daily time (CET, workdays)",

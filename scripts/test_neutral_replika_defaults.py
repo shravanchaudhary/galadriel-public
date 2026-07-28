@@ -34,7 +34,7 @@ FORBIDDEN_IDENTITY = re.compile(
     r"\b(shravan|rachit|clodexa|clyra|galadriel)\b", re.IGNORECASE
 )
 PAIRING_CODE = re.compile(r"\b(?=[A-Z0-9-]*\d)[A-Z0-9]{4}-[A-Z0-9]{4}\b")
-DATED_STATE = re.compile(r"^\d{4}-\d{2}-\d{2}\.md$")
+DATED_STATE = re.compile(r"^\d{4}-\d{2}-\d{2}\.(?:md|html)$")
 
 
 def main() -> None:
@@ -54,7 +54,7 @@ def main() -> None:
             relative = path.relative_to(ROOT).as_posix()
             if path.name == "scheduler_state.json":
                 continue
-            if path.suffix in {".md", ".json", ".txt", ".yaml", ".yml"}:
+            if path.suffix in {".md", ".html", ".json", ".txt", ".yaml", ".yml"}:
                 text = path.read_text(encoding="utf-8")
                 match = FORBIDDEN_IDENTITY.search(text) or PAIRING_CODE.search(text)
                 if match:

@@ -2,7 +2,7 @@
 
 A second channel of the same GaladrielAgent that executes day-to-day work while
 the main channel stays free to talk to the user. Curator (main) and worker
-(this) never share memory; they coordinate ONLY through markdown files (plus
+(this) never share memory; they coordinate ONLY through board files (plus
 config/JOBS.md, which is auto-loaded into both hats' context — no board file
 needed for that one):
 
@@ -236,8 +236,8 @@ class WorkerLoop:
             f"session_elapsed = {elapsed}\n"
             f"project_slice_cap = {PROJECT_SLICE_CAP_MIN}m "
             "(if you have spent longer than this on one project, checkpoint and re-scan)\n"
-            f"today_progress_file = state/progress/{today}.md\n"
-            f"today_plan_file = state/plan/{today}.md"
+            f"today_progress_file = state/progress/{today}.html\n"
+            f"today_plan_file = state/plan/{today}.html"
         )
 
     def _parse(self, text: str) -> tuple[str, str]:

@@ -664,7 +664,7 @@ Ambient reflection thinks; the **background worker** *does*. Enabled with
 **curator** (the normal chat — talks to you, plans, verifies) and the **worker**
 (a second `worker` channel on a 10-min work-conserving loop, `harness/worker.py`).
 They share the same model, tools, and palace but have **isolated channel
-histories**, and they coordinate *only* through markdown files under `jobs/` and
+histories**, and they coordinate *only* through board files under `jobs/` and
 `state/` (plus `config/JOBS.md`, auto-loaded into both hats' context). The DB is
 the authoritative ledger for irreversible actions; the shared `state/progress/`
 (one file per day) is human-readable narration on top of it:
@@ -675,8 +675,8 @@ the authoritative ledger for irreversible actions; the shared `state/progress/`
 | `jobs/<id>.md` | curator | per-job cookbook — key steps + success check |
 | `state/backlog.md` | curator | projects (one-offs), carry forward until done |
 | `state/worker_control.md` | curator | `active` / `paused` (first line is the state) |
-| `state/progress/YYYY-MM-DD.md` | curator + worker | shared work ledger (narration), one file per day — status, blockers, every completed/irreversible action + evidence, from both hats; DB is the authority behind it |
-| `state/plan/YYYY-MM-DD.md` | curator + scheduler | dated daily planning ledger, one file per day — morning writes today's file, reflection amends on re-plan, catch-up reads it for pending work |
+| `state/progress/YYYY-MM-DD.html` | curator + worker | user-facing standalone HTML work ledger, one file per day — append-style status, blockers, every completed/irreversible action + evidence; DB is the authority behind it |
+| `state/plan/YYYY-MM-DD.html` | curator + scheduler | user-facing standalone HTML planning ledger, one file per day — morning writes today's file, reflection amends on re-plan, catch-up reads it for pending work |
 | `state/steering.md` | reflection (append-only) | corrections from the ambient audit; worker + morning read before acting |
 
 The model mirrors how a person actually runs a day: **rituals** (e.g. "check DMs
@@ -756,7 +756,7 @@ See `.env.example` for the full list with inline documentation.
 Operational docs above reflect this branch. Highlights:
 
 - **Slack gateway:** shared-channel Socket Mode with durable observations, sender identity propagated into each agent turn, read-only permissions for ordinary organization members, and admin-only Block Kit approvals. Pushes go to the configured channel. Only one gateway runs per deployment — see [Slack](#slack).
-- **Shared work ledger:** `state/progress/` (one file per day) is written by curator *and* worker (append-style narration); main-chat sends/completions must be recorded there too, and the DB is the authoritative ledger behind it (`config/GUARDRAILS.md`, `config/RECALL.md`, `config/SOUL.md`).
+- **Shared work ledger:** `state/progress/` (one standalone HTML file per day) is written by curator *and* worker (append-style narration); main-chat sends/completions must be recorded there too, and the DB is the authoritative ledger behind it (`config/GUARDRAILS.md`, `config/RECALL.md`, `config/SOUL.md`).
 - **No double-work guard:** the DB atomic precondition-guarded transition on a unique key makes a double-action impossible by construction — no separate ownership-claim file; coarse coordination is `state/worker_control.md` (pause the worker while the curator drives).
 - **Coordination files:** `state/steering.md` (reflection corrections).
 - **Ambient reflection:** no longer silent — each slot files to the palace, audits the worker, may pause it, and posts a brief status summary. (The 1.13 release note below describes the original silent design.)

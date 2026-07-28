@@ -5,43 +5,39 @@
 {% block container_class %}dashboard-page{% endblock %}
 
 {% block content %}
-{% if saved %}
-<div class="wf-toolbar">
-    <span class="badge" style="border-color:#27ae60;color:#27ae60;background:rgba(39,174,96,0.08);">
-        Saved {{ saved }}
-    </span>
-</div>
-{% endif %}
-
 <div class="actions-board-grid dash-todo-grid">
-    <section class="actions-panel">
+    <section class="actions-panel artifact-panel">
         <div class="actions-panel-head">
             <h2>Plan</h2>
             <span class="muted">{{ plan_relpath }}</span>
         </div>
-        <form method="post" action="/todo/save">
-            <input type="hidden" name="kind" value="plan">
-            <input type="hidden" name="date" value="{{ todo_date }}">
-            <textarea name="content" class="editor-textarea actions-editor dash-todo-editor" spellcheck="false" placeholder="What should happen today?">{{ plan_content }}</textarea>
-            <div class="wf-toolbar">
-                <button type="submit" class="btn">Save plan</button>
-            </div>
-        </form>
+        {% if plan_exists %}
+        <iframe class="daily-artifact-frame" src="{{ plan_artifact_url }}"
+            title="Daily plan for {{ todo_date }}" sandbox="allow-popups"
+            referrerpolicy="no-referrer"></iframe>
+        {% else %}
+        <div class="daily-artifact-empty">
+            <strong>No plan yet</strong>
+            <p>The morning agent will create today’s plan.</p>
+        </div>
+        {% endif %}
     </section>
 
-    <section class="actions-panel">
+    <section class="actions-panel artifact-panel">
         <div class="actions-panel-head">
             <h2>Progress</h2>
             <span class="muted">{{ progress_relpath }}</span>
         </div>
-        <form method="post" action="/todo/save">
-            <input type="hidden" name="kind" value="progress">
-            <input type="hidden" name="date" value="{{ todo_date }}">
-            <textarea name="content" class="editor-textarea actions-editor dash-todo-editor" spellcheck="false" placeholder="What got done, blockers, evidence…">{{ progress_content }}</textarea>
-            <div class="wf-toolbar">
-                <button type="submit" class="btn">Save progress</button>
-            </div>
-        </form>
+        {% if progress_exists %}
+        <iframe class="daily-artifact-frame" src="{{ progress_artifact_url }}"
+            title="Daily progress for {{ todo_date }}" sandbox="allow-popups"
+            referrerpolicy="no-referrer"></iframe>
+        {% else %}
+        <div class="daily-artifact-empty">
+            <strong>No progress yet</strong>
+            <p>Agent activity and evidence will appear here.</p>
+        </div>
+        {% endif %}
     </section>
 </div>
 {% endblock %}

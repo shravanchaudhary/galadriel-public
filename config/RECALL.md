@@ -8,8 +8,8 @@ guessing whenever a task depends on prior facts or decisions.
 | Past fact, decision, date, cost, name, or preference | `palace_search` or `palace_kg_query` |
 | Known procedure, failure, or reusable technique | `knowledge/INDEX.md`, then the matching entry |
 | Starting a recurring or user-defined job | The matching `jobs/<id>.md` cookbook |
-| Planning or checking today's intended work | `state/plan/<today>.md` |
-| Reporting completed work or blockers | The operational source of truth plus `state/progress/<today>.md` |
+| Planning or checking today's intended work | `state/plan/<today>.html`, preserving its standalone document contract |
+| Reporting completed work or blockers | The operational source of truth plus `state/progress/<today>.html`, read before append |
 | Previous conversation after a restart | Recent conversation records, then palace search |
 | Credentials or an authenticated action | `state/credentials_map.md`, then the credential store |
 
