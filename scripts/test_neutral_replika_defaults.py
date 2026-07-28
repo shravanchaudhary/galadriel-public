@@ -54,9 +54,6 @@ def main() -> None:
             relative = path.relative_to(ROOT).as_posix()
             if path.name == "scheduler_state.json":
                 continue
-            if relative == "state/browser_profiles.md":
-                # Legacy per-tenant registry, imported into MongoDB on first read.
-                continue
             if path.suffix in {".md", ".json", ".txt", ".yaml", ".yml"}:
                 text = path.read_text(encoding="utf-8")
                 match = FORBIDDEN_IDENTITY.search(text) or PAIRING_CODE.search(text)
