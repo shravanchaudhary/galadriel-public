@@ -1,34 +1,41 @@
 {% extends "base.html" %}
 {% block title %}Costs{% endblock %}
-{% block container_class %}wf-container{% endblock %}
-{% block heading %}Costs{% endblock %}
-{% block subtitle %}LLM API spend — tagged by channel and model{% endblock %}
+{% block container_class %}settings-page settings-page-wide{% endblock %}
+{% block page_header %}{% endblock %}
 
 {% block content %}
+<div class="settings-page-inner">
+    <header class="settings-page-head">
+        <h1 class="settings-page-title">Costs</h1>
+        <p class="settings-page-subtitle">LLM API spend by channel and model</p>
+    </header>
+
 {% if not db_configured %}
-<p class="empty-state">MONGO_URI / MONGO_DB not configured — cost logging has nowhere to write. Set them in the environment to start tracking.</p>
+<p class="settings-empty">Database not configured — cost logging has nowhere to write.</p>
 {% else %}
 
-<div class="status-grid">
-    <div class="card">
-        <div class="card-label">Today</div>
-        <div class="card-value">{{ cost_today | usd }}</div>
+<div class="settings-summary">
+    <div class="settings-summary-item">
+        <span class="settings-summary-label">Today</span>
+        <span class="settings-summary-value">{{ cost_today | usd }}</span>
     </div>
-    <div class="card">
-        <div class="card-label">This month</div>
-        <div class="card-value">{{ cost_month | usd }}</div>
+    <div class="settings-summary-item">
+        <span class="settings-summary-label">This month</span>
+        <span class="settings-summary-value">{{ cost_month | usd }}</span>
     </div>
-    <div class="card">
-        <div class="card-label">All time</div>
-        <div class="card-value">{{ cost_all_time | usd }}</div>
+    <div class="settings-summary-item">
+        <span class="settings-summary-label">All time</span>
+        <span class="settings-summary-value">{{ cost_all_time | usd }}</span>
     </div>
 </div>
 
-<div class="wf-toolbar">
-    <a href="/costs?range=today{{ query_suffix }}" class="btn btn-small {{ 'btn-danger' if range_key == 'today' else '' }}">Today</a>
-    <a href="/costs?range=7d{{ query_suffix }}" class="btn btn-small {{ 'btn-danger' if range_key == '7d' else '' }}">7 days</a>
-    <a href="/costs?range=30d{{ query_suffix }}" class="btn btn-small {{ 'btn-danger' if range_key == '30d' else '' }}">30 days</a>
-    <a href="/costs?range=all{{ query_suffix }}" class="btn btn-small {{ 'btn-danger' if range_key == 'all' else '' }}">All time</a>
+<div class="settings-actions">
+    <div class="settings-segmented">
+        <a href="/costs?range=today{{ query_suffix }}" class="{{ 'is-active' if range_key == 'today' }}">Today</a>
+        <a href="/costs?range=7d{{ query_suffix }}" class="{{ 'is-active' if range_key == '7d' }}">7 days</a>
+        <a href="/costs?range=30d{{ query_suffix }}" class="{{ 'is-active' if range_key == '30d' }}">30 days</a>
+        <a href="/costs?range=all{{ query_suffix }}" class="{{ 'is-active' if range_key == 'all' }}">All time</a>
+    </div>
 </div>
 
 {% if all_models %}
@@ -44,12 +51,11 @@
 </div>
 {% endif %}
 
-<section class="costs-section">
-    <h2>Headroom ON vs OFF</h2>
-    <p class="muted" style="margin-bottom:0.75rem">
-        Compare billed input tokens and cost when in-process Headroom compression
-        was enabled vs disabled (same range / model filter as below).
-    </p>
+<section class="settings-section costs-section">
+    <div class="settings-section-head">
+        <h2 class="settings-section-title">Headroom ON vs OFF</h2>
+        <p class="settings-section-desc">Compare billed input tokens with compression enabled vs disabled</p>
+    </div>
     {% if headroom_rows %}
     <table class="wf-table">
         <thead>
@@ -76,12 +82,14 @@
         </tbody>
     </table>
     {% else %}
-    <p class="empty-state">No calls logged in this range yet.</p>
+    <p class="settings-empty">No calls logged in this range yet.</p>
     {% endif %}
 </section>
 
-<section class="costs-section">
-    <h2>By day</h2>
+<section class="settings-section costs-section">
+    <div class="settings-section-head">
+        <h2 class="settings-section-title">By day</h2>
+    </div>
     {% if daily_rows %}
     <table class="wf-table">
         <thead>
@@ -110,12 +118,14 @@
         </tbody>
     </table>
     {% else %}
-    <p class="empty-state">No calls logged in this range yet.</p>
+    <p class="settings-empty">No calls logged in this range yet.</p>
     {% endif %}
 </section>
 
-<section class="costs-section">
-    <h2>By channel</h2>
+<section class="settings-section costs-section">
+    <div class="settings-section-head">
+        <h2 class="settings-section-title">By channel</h2>
+    </div>
     {% if channel_rows %}
     <table class="wf-table">
         <thead>
@@ -145,12 +155,14 @@
         </tbody>
     </table>
     {% else %}
-    <p class="empty-state">No calls logged in this range yet.</p>
+    <p class="settings-empty">No calls logged in this range yet.</p>
     {% endif %}
 </section>
 
-<section class="costs-section">
-    <h2>By model</h2>
+<section class="settings-section costs-section">
+    <div class="settings-section-head">
+        <h2 class="settings-section-title">By model</h2>
+    </div>
     {% if model_rows %}
     <table class="wf-table">
         <thead>
@@ -185,11 +197,12 @@
         </tbody>
     </table>
     {% else %}
-    <p class="empty-state">No models to display.</p>
+    <p class="settings-empty">No models to display.</p>
     {% endif %}
 </section>
 
 {% endif %}
+</div>
 {% endblock %}
 
 {% block scripts %}

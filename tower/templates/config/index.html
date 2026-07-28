@@ -2,83 +2,91 @@
 {% block title %}Configuration{% endblock %}
 
 {% block cfg_content %}
-<section class="agent-runtime" aria-label="Runtime settings">
-    <div class="agent-runtime-head">
-        <h2 class="agent-runtime-title">Runtime</h2>
-        <span class="muted agent-runtime-hint">Time, headroom, model providers</span>
+<section class="settings-section" aria-label="Runtime settings">
+    <div class="settings-section-head">
+        <h2 class="settings-section-title">Runtime</h2>
+        <p class="settings-section-desc">Time, context management, and model access</p>
     </div>
-    <div class="dash-overview">
-        <div class="card dash-tile card-with-menu" id="server-time-card">
-            <button type="button" class="card-menu-btn" id="tz-menu-btn" aria-label="Timezone options" aria-haspopup="true" aria-expanded="false">⋯</button>
-            <div class="card-menu" id="tz-menu" hidden>
-                <label class="card-menu-label" for="tz-select">Timezone</label>
-                <select id="tz-select" class="interval-select"></select>
+    <div class="settings-rows">
+        <div class="settings-row card-with-menu" id="server-time-card">
+            <div class="settings-row-main">
+                <span class="settings-row-label">Agent time</span>
+                <span class="settings-row-hint" id="server-time-tz"></span>
             </div>
-            <div class="card-label">Agent time</div>
-            <div class="dash-time" id="server-time" data-iso="{{ now_iso }}">—</div>
-            <div class="dash-meta muted" id="server-time-tz"></div>
-        </div>
-
-        <div class="card dash-tile">
-            <div class="dash-tile-top">
-                <div class="card-label">Headroom</div>
-                <div class="toggle-row dash-toggle">
-                    <label class="toggle-switch">
-                        <input type="checkbox" id="headroom-toggle"
-                            {% if headroom_enabled %}checked{% endif %}
-                            onchange="toggleHeadroom()">
-                        <span class="toggle-slider"></span>
-                    </label>
-                    <span id="headroom-status" class="heartbeat-status {{ 'status-on' if headroom_enabled else 'status-off' }}">
-                        {{ 'ON' if headroom_enabled else 'Off' }}
-                    </span>
+            <div class="settings-row-control">
+                <span class="dash-time" id="server-time" data-iso="{{ now_iso }}">—</span>
+                <button type="button" class="composer-icon-btn" id="tz-menu-btn" aria-label="Timezone options" aria-haspopup="true" aria-expanded="false">⋯</button>
+                <div class="card-menu" id="tz-menu" hidden>
+                    <label class="card-menu-label" for="tz-select">Timezone</label>
+                    <select id="tz-select" class="interval-select"></select>
                 </div>
             </div>
-            <p class="dash-copy">Compress tool outputs before each API call. Cache-safe freeze during cascades.</p>
         </div>
 
-        <div class="card dash-tile dash-providers-tile">
-            <div class="card-label">Model providers</div>
-            <div class="dash-provider-row">
-                <label class="dash-field">
-                    <span class="interval-label">Provider</span>
+        <div class="settings-row">
+            <div class="settings-row-main">
+                <span class="settings-row-label">Headroom</span>
+                <span class="settings-row-hint">Compress tool outputs before API calls</span>
+            </div>
+            <div class="toggle-row settings-row-control">
+                <label class="toggle-switch">
+                    <input type="checkbox" id="headroom-toggle"
+                        {% if headroom_enabled %}checked{% endif %}
+                        onchange="toggleHeadroom()">
+                    <span class="toggle-slider"></span>
+                </label>
+                <span id="headroom-status" class="heartbeat-status {{ 'status-on' if headroom_enabled else 'status-off' }}">
+                    {{ 'ON' if headroom_enabled else 'Off' }}
+                </span>
+            </div>
+        </div>
+
+        <div class="settings-row">
+            <div class="settings-row-main">
+                <label class="settings-row-label" for="provider-select">Model provider</label>
+                <span class="settings-row-hint" id="provider-key-status">Checking…</span>
+            </div>
+            <div class="settings-row-control stacked">
+                <div class="settings-inline-form">
                     <select id="provider-select" class="interval-select" onchange="onProviderChange()">
                         <option value="anthropic">Anthropic</option>
                         <option value="gemini">Gemini</option>
                     </select>
-                </label>
-                <label class="dash-field dash-field-grow">
-                    <span class="interval-label">API key</span>
                     <input type="password" id="provider-key-input" autocomplete="off" placeholder="Paste API key">
-                </label>
-            </div>
-            <div class="dash-provider-actions">
-                <button type="button" class="btn btn-small" onclick="saveProviderKey()">Save</button>
-                <button type="button" class="btn btn-small btn-secondary" onclick="deleteProviderKey()">Remove</button>
-                <span class="dash-provider-status muted" id="provider-key-status">Checking…</span>
+                </div>
+                <div class="settings-row-control">
+                    <button type="button" class="btn btn-small" onclick="saveProviderKey()">Save</button>
+                    <button type="button" class="btn btn-small btn-secondary" onclick="deleteProviderKey()">Remove</button>
+                </div>
             </div>
         </div>
     </div>
 </section>
 
-<div class="wf-toolbar">
-    <span class="muted" style="font-size:0.84rem;">Files below are read fresh from disk — edits apply on the agent's next turn.</span>
-</div>
-
-<div class="icon-grid">
-    <a class="icon-tile" href="/config/preview" title="Prompt Construction">
-        <span class="icon-glyph icon-folder"></span>
-        <span class="icon-label">Prompt Construction</span>
-        <span class="icon-note">Live system blocks and next channel message</span>
-    </a>
-    {% for c in categories %}
-    <a class="icon-tile" href="/config/browse?cat={{ c.key }}" title="{{ c.label }}">
-        <span class="icon-glyph icon-folder"></span>
-        <span class="icon-label">{{ c.label | truncate_label(22) }}</span>
-        <span class="icon-note">{{ c.note }}</span>
-    </a>
-    {% endfor %}
-</div>
+<section class="settings-section">
+    <div class="settings-section-head">
+        <h2 class="settings-section-title">Agent files</h2>
+        <p class="settings-section-desc">Read fresh from disk and applied on the agent's next turn</p>
+    </div>
+    <div class="settings-list">
+        <a class="settings-list-item" href="/config/preview">
+            <span class="settings-list-content">
+                <span class="settings-list-title">Prompt Construction</span>
+                <span class="settings-list-note">Live system blocks and next channel message</span>
+            </span>
+            <span class="settings-list-arrow">›</span>
+        </a>
+        {% for c in categories %}
+        <a class="settings-list-item" href="/config/browse?cat={{ c.key }}" title="{{ c.label }}">
+            <span class="settings-list-content">
+                <span class="settings-list-title">{{ c.label | truncate_label(40) }}</span>
+                <span class="settings-list-note">{{ c.note }}</span>
+            </span>
+            <span class="settings-list-arrow">›</span>
+        </a>
+        {% endfor %}
+    </div>
+</section>
 {% endblock %}
 
 {% block scripts %}

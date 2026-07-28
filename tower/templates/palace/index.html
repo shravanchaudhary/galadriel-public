@@ -6,38 +6,49 @@
 <div class="notice-banner">{{ notice }}</div>
 {% endif %}
 
-<div class="wf-toolbar">
-    <form action="/palace/search" method="get" style="display:flex;gap:0.5rem;flex:1;">
-        <input type="text" name="q" placeholder="Search memory…" class="chat-input" style="flex:1;">
-        <button type="submit" class="btn btn-small">Search</button>
+<div class="settings-search">
+    <form action="/palace/search" method="get" class="settings-inline-form" style="width:100%;">
+        <input type="text" name="q" placeholder="Search memory…" aria-label="Search memory">
+        <button type="submit" class="composer-send" aria-label="Search">→</button>
     </form>
 </div>
 
 {% if data.total == 0 %}
-<p class="empty-state">Memory store is empty or not initialized yet.</p>
+<p class="settings-empty">Memory is empty or has not been initialized yet.</p>
 {% else %}
-<p class="muted">{{ data.total }} drawer(s) total.</p>
+<p class="settings-meta" style="margin-top:1rem;">{{ data.total }} drawers total</p>
 
-<h2>Wings</h2>
-<div class="icon-grid">
-    {% for wing, rooms in data.wings.items() %}
-    <a class="icon-tile" href="/palace/browse?wing={{ wing | urlencode }}" title="{{ wing }}">
-        <span class="icon-glyph icon-folder"></span>
-        <span class="icon-label">{{ wing | truncate_label }}</span>
-        <span class="icon-note">{{ rooms.values() | sum }} drawer(s)</span>
-    </a>
-    {% endfor %}
-</div>
+<section class="settings-section">
+    <div class="settings-section-head"><h2 class="settings-section-title">Wings</h2></div>
+    <div class="settings-list">
+        {% for wing, rooms in data.wings.items() %}
+        <a class="settings-list-item" href="/palace/browse?wing={{ wing | urlencode }}" title="{{ wing }}">
+            <span class="settings-list-content">
+                <span class="settings-list-title">{{ wing | truncate_label }}</span>
+                <span class="settings-list-note">{{ rooms.values() | sum }} drawers</span>
+            </span>
+            <span class="settings-list-arrow">›</span>
+        </a>
+        {% endfor %}
+    </div>
+</section>
 
-<h2>Halls <span class="muted" style="font-weight:400;font-size:0.7em;">— topic auto-classification, cross-cuts rooms</span></h2>
-<div class="icon-grid">
-    {% for hall, count in data.halls.items() %}
-    <a class="icon-tile" href="/palace/room?hall={{ hall | urlencode }}" title="{{ hall }}">
-        <span class="icon-glyph icon-tag"></span>
-        <span class="icon-label">{{ hall | truncate_label }}</span>
-        <span class="icon-note">{{ count }} drawer(s)</span>
-    </a>
-    {% endfor %}
-</div>
+<section class="settings-section">
+    <div class="settings-section-head">
+        <h2 class="settings-section-title">Halls</h2>
+        <p class="settings-section-desc">Topics that cut across rooms</p>
+    </div>
+    <div class="settings-list">
+        {% for hall, count in data.halls.items() %}
+        <a class="settings-list-item" href="/palace/room?hall={{ hall | urlencode }}" title="{{ hall }}">
+            <span class="settings-list-content">
+                <span class="settings-list-title">{{ hall | truncate_label }}</span>
+                <span class="settings-list-note">{{ count }} drawers</span>
+            </span>
+            <span class="settings-list-arrow">›</span>
+        </a>
+        {% endfor %}
+    </div>
+</section>
 {% endif %}
 {% endblock %}

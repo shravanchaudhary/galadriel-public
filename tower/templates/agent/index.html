@@ -5,15 +5,11 @@
 
 {% block loops_content %}
 {% if saved %}
-<div class="wf-toolbar">
-    <span class="badge" style="border-color:#27ae60;color:#27ae60;background:rgba(39,174,96,0.08);">
-        Saved {{ saved }}
-    </span>
-</div>
+<div class="notice-banner">Saved {{ saved }}</div>
 {% endif %}
 
 {% if scheduler %}
-<div class="loops-status-bar muted">
+<div class="settings-meta">
     CET now: <strong>{{ scheduler.server_time_cet }}</strong>
     · Heartbeat: <strong id="hb-bar-status">{{ 'ON' if scheduler.heartbeat_enabled else 'OFF' }}</strong><span id="hb-bar-interval">{% if scheduler.heartbeat_enabled %} ({{ scheduler.heartbeat_interval }}m){% endif %}</span>
     · Wake: <strong>{{ 'armed' if scheduler.pending_wake else 'disarmed' }}</strong>
@@ -21,37 +17,27 @@
 </div>
 {% endif %}
 
-<p class="loops-intro muted">
-    Each loop runs on its own <code>channel_id</code> — isolated from main chat (<code>main</code>).
-    Pick a model per loop; that model is used when the loop fires.
-    Main chat model stays in the chat overlay.
-    Fixed prompts are defined in <code>harness/loop_prompts.py</code>.
-    Date-sensitive previews use today (<code>{{ today }}</code>).
-</p>
-
 <div class="loops-list">
     {% for item in loops %}
-    <section class="loops-panel" id="loop-{{ item.id }}">
+    <section class="settings-section loops-panel" id="loop-{{ item.id }}">
         <div class="loops-panel-head">
             <div>
                 <h2>{{ item.name }}</h2>
-                <div class="loops-meta">
-                    <span class="badge">channel: {{ item.channel }}</span>
-                    <span class="badge loops-status-{{ item.status | lower | replace(' ', '-') }}">{{ item.status }}</span>
-                </div>
+                <div class="settings-section-desc">{{ item.note or ('Channel ' ~ item.channel) }}</div>
             </div>
-            <div class="loops-schedule muted">{{ item.schedule }}</div>
+            <div class="loops-schedule">{{ item.schedule }}</div>
         </div>
-        {% if item.note %}
-        <p class="loops-note muted">{{ item.note }}</p>
-        {% endif %}
+        <div class="settings-meta loops-meta">Channel {{ item.channel }} · <span class="loop-state loops-status-{{ item.status | lower | replace(' ', '-') }}">{{ item.status }}</span></div>
 
         {% if item.model_selectable or item.time_editable or item.heartbeat_controls or item.idle_interval_controls %}
-        <div class="loops-controls">
+        <div class="settings-rows loops-controls">
             {% if item.idle_interval_controls %}
-            <div class="loops-control">
-                <label class="interval-label" for="worker-idle-interval">Idle poll</label>
-                <select id="worker-idle-interval" class="interval-select"
+            <div class="settings-row loops-control">
+                <div class="settings-row-main">
+                    <label class="settings-row-label" for="worker-idle-interval">Idle poll</label>
+                    <div class="settings-row-hint">How often the worker checks for new work</div>
+                </div>
+                <select id="worker-idle-interval" class="interval-select settings-row-control"
                         onchange="changeWorkerIdleInterval()">
                     {% for iv in item.valid_idle_intervals %}
                     <option value="{{ iv }}" {% if iv == item.idle_interval_minutes %}selected{% endif %}>
@@ -62,9 +48,12 @@
             </div>
             {% endif %}
             {% if item.heartbeat_controls %}
-            <div class="loops-control">
-                <label class="interval-label">Heartbeat</label>
-                <div class="toggle-row">
+            <div class="settings-row loops-control">
+                <div class="settings-row-main">
+                    <span class="settings-row-label">Heartbeat</span>
+                    <div class="settings-row-hint">Run autonomously at the selected interval</div>
+                </div>
+                <div class="toggle-row settings-row-control">
                     <label class="toggle-switch">
                         <input type="checkbox" id="heartbeat-toggle"
                             {% if item.heartbeat_enabled %}checked{% endif %}
@@ -76,9 +65,9 @@
                     </span>
                 </div>
             </div>
-            <div class="loops-control">
-                <label class="interval-label" for="heartbeat-interval">Interval</label>
-                <select id="heartbeat-interval" class="interval-select" onchange="changeHeartbeatInterval()">
+            <div class="settings-row loops-control">
+                <label class="settings-row-label" for="heartbeat-interval">Interval</label>
+                <select id="heartbeat-interval" class="interval-select settings-row-control" onchange="changeHeartbeatInterval()">
                     {% for iv in item.valid_intervals %}
                     <option value="{{ iv }}" {% if iv == item.heartbeat_interval %}selected{% endif %}>
                         {{ iv }} min
@@ -88,9 +77,9 @@
             </div>
             {% endif %}
             {% if item.model_selectable %}
-            <div class="loops-control">
-                <label class="interval-label" for="model-{{ item.id }}">Model</label>
-                <select id="model-{{ item.id }}" class="interval-select"
+            <div class="settings-row loops-control">
+                <label class="settings-row-label" for="model-{{ item.id }}">Model</label>
+                <select id="model-{{ item.id }}" class="interval-select settings-row-control"
                         data-channel="{{ item.channel }}"
                         onchange="changeLoopModel(this)">
                     {% for m in model_options %}
@@ -100,9 +89,9 @@
             </div>
             {% endif %}
             {% if item.time_editable %}
-            <div class="loops-control">
-                <label class="interval-label" for="time-{{ item.id }}">{{ item.time_label }}</label>
-                <input type="time" id="time-{{ item.id }}" class="interval-select loops-time-input"
+            <div class="settings-row loops-control">
+                <label class="settings-row-label" for="time-{{ item.id }}">{{ item.time_label }}</label>
+                <input type="time" id="time-{{ item.id }}" class="interval-select loops-time-input settings-row-control"
                        value="{{ item.time_hhmm }}"
                        data-routine="{{ item.id }}"
                        onchange="changeRoutineTime(this)">
@@ -115,35 +104,41 @@
         {% endif %}
 
         {% if item.id == 'worker' %}
-        <div class="wf-toolbar"><a href="/chats?kind=worker" class="btn btn-small">View recorded chats →</a></div>
+        <div class="settings-actions"><a href="/chats?kind=worker" class="btn btn-small btn-secondary">View recorded chats</a></div>
         {% endif %}
-        <div class="muted loops-source">Source: {{ item.source }}</div>
 
         {% if item.editable and item.editable_kind == 'heartbeat' %}
-        <form method="post" action="/agent/heartbeat" class="loops-edit-form">
-            <textarea name="prompt" class="editor-textarea loops-editor" spellcheck="false">{{ item.prompt }}</textarea>
-            <div class="wf-toolbar">
-                <button type="submit" class="btn">Save heartbeat prompt</button>
-                <label class="muted" style="display:flex;align-items:center;gap:0.35rem;">
-                    <input type="checkbox" name="use_default" value="1"> Reset to default
-                </label>
-            </div>
-        </form>
+        <details class="settings-prompt" open>
+            <summary>Prompt · {{ item.source }}</summary>
+            <form method="post" action="/agent/heartbeat" class="loops-edit-form settings-editor">
+                <textarea name="prompt" class="editor-textarea loops-editor" spellcheck="false">{{ item.prompt }}</textarea>
+                <div class="settings-actions">
+                    <button type="submit" class="btn">Save prompt</button>
+                    <label class="muted" style="display:flex;align-items:center;gap:0.35rem;">
+                        <input type="checkbox" name="use_default" value="1"> Reset to default
+                    </label>
+                </div>
+            </form>
+        </details>
         {% elif item.editable and item.editable_kind == 'wake' %}
-        <form method="post" action="/agent/wake" class="loops-edit-form">
-            <textarea name="prompt" class="editor-textarea loops-editor" spellcheck="false" placeholder="Prompt to run once on next boot…">{{ item.prompt if item.status == 'ARMED' else '' }}</textarea>
-            <div class="wf-toolbar">
-                <button type="submit" class="btn">Arm wake</button>
-            </div>
-        </form>
+        <details class="settings-prompt" open>
+            <summary>One-time prompt · {{ item.source }}</summary>
+            <form method="post" action="/agent/wake" class="loops-edit-form settings-editor">
+                <textarea name="prompt" class="editor-textarea loops-editor" spellcheck="false" placeholder="Prompt to run once on next boot…">{{ item.prompt if item.status == 'ARMED' else '' }}</textarea>
+                <div class="settings-actions"><button type="submit" class="btn">Arm wake</button></div>
+            </form>
         {% if item.status == 'ARMED' %}
-        <form method="post" action="/agent/wake" class="wf-toolbar" onsubmit="return confirm('Disarm the one-shot wake?');">
+        <form method="post" action="/agent/wake" class="settings-actions" onsubmit="return confirm('Disarm the one-shot wake?');">
             <input type="hidden" name="disarm" value="1">
             <button type="submit" class="btn btn-small btn-danger">Disarm wake</button>
         </form>
         {% endif %}
+        </details>
         {% else %}
-        <pre class="loops-prompt">{{ item.prompt }}</pre>
+        <details class="settings-prompt">
+            <summary>View prompt · {{ item.source }}</summary>
+            <pre class="loops-prompt">{{ item.prompt }}</pre>
+        </details>
         {% endif %}
     </section>
     {% endfor %}
@@ -166,7 +161,7 @@ async function postHeartbeat(enabled, interval) {
 function updateHeartbeatUI(data) {
     const toggle = document.getElementById('heartbeat-toggle');
     const status = document.getElementById('heartbeat-status');
-    const badge = document.querySelector('#loop-heartbeat .loops-meta .badge:last-child');
+    const badge = document.querySelector('#loop-heartbeat .loop-state');
     const schedule = document.querySelector('#loop-heartbeat .loops-schedule');
     const barStatus = document.getElementById('hb-bar-status');
     const barInterval = document.getElementById('hb-bar-interval');
@@ -177,7 +172,7 @@ function updateHeartbeatUI(data) {
     }
     if (badge) {
         badge.textContent = data.heartbeat_enabled ? 'ON' : 'OFF';
-        badge.className = 'badge loops-status-' + (data.heartbeat_enabled ? 'on' : 'off');
+        badge.className = 'loop-state loops-status-' + (data.heartbeat_enabled ? 'on' : 'off');
     }
     if (schedule && data.heartbeat_interval != null) {
         schedule.textContent = `Every ${data.heartbeat_interval} min when enabled`;

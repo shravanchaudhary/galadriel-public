@@ -1,9 +1,14 @@
 {% extends "base.html" %}
 {% block title %}{% block loops_title %}Schedules{% endblock %}{% endblock %}
-{% block container_class %}wf-container{% endblock %}
-{% block heading %}{% block loops_heading %}Schedules{% endblock %}{% endblock %}
-{% block subtitle %}{% block loops_subtitle %}Autonomous channel prompts{% endblock %}{% endblock %}
+{% block container_class %}settings-page{% endblock %}
+{% block page_header %}{% endblock %}
 
 {% block content %}
-{% block loops_content %}{% endblock %}
+<div class="settings-page-inner">
+    <header class="settings-page-head">
+        <h1 class="settings-page-title">{% block heading %}Schedules{% endblock %}</h1>
+        <p class="settings-page-subtitle">{% block subtitle %}Autonomous channel prompts{% endblock %}</p>
+    </header>
+    {% block loops_content %}{% endblock %}
+</div>
 {% endblock %}

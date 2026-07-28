@@ -4,38 +4,50 @@
 {% block subtitle %}{{ note }}{% endblock %}
 
 {% block cfg_content %}
-<div class="wf-toolbar">
-    <a href="/config" class="btn btn-small btn-secondary">← Configuration</a>
-    <span class="muted">
-        <a href="/config/browse?cat={{ cat }}">{{ label }}</a>
-        {% for c in crumbs %} / <a href="/config/browse?cat={{ cat }}&path={{ c.path | urlencode }}">{{ c.name }}</a>{% endfor %}
-    </span>
-    <span class="spacer"></span>
-    <form method="post" action="/config/create" class="wf-toolbar" style="margin:0;">
+<nav class="settings-crumb" aria-label="Breadcrumb">
+    <a href="/config">Configuration</a>
+    <span class="settings-crumb-separator">/</span>
+    <a href="/config/browse?cat={{ cat }}">{{ label }}</a>
+    {% for c in crumbs %}
+    <span class="settings-crumb-separator">/</span>
+    <a href="/config/browse?cat={{ cat }}&path={{ c.path | urlencode }}">{{ c.name }}</a>
+    {% endfor %}
+</nav>
+
+<section class="settings-section">
+    <div class="settings-section-head">
+        <h2 class="settings-section-title">Files</h2>
+        <form method="post" action="/config/create" class="settings-inline-form settings-actions">
         <input type="hidden" name="cat" value="{{ cat }}">
         <input type="hidden" name="path" value="{{ subpath }}">
         <input type="text" name="filename" placeholder="new_file.md" class="chat-input" style="max-width:180px;" required>
         <button type="submit" class="btn btn-small">Create file</button>
-    </form>
-</div>
+        </form>
+    </div>
 
 {% if folders or files %}
-<div class="icon-grid">
+<div class="settings-list">
     {% for name in folders %}
-    <a class="icon-tile" href="/config/browse?cat={{ cat }}&path={{ (subpath ~ '/' ~ name if subpath else name) | urlencode }}" title="{{ name }}">
-        <span class="icon-glyph icon-folder"></span>
-        <span class="icon-label">{{ name | truncate_label }}</span>
+    <a class="settings-list-item" href="/config/browse?cat={{ cat }}&path={{ (subpath ~ '/' ~ name if subpath else name) | urlencode }}" title="{{ name }}">
+        <span class="settings-list-content">
+            <span class="settings-list-title">{{ name | truncate_label }}</span>
+            <span class="settings-list-note">Folder</span>
+        </span>
+        <span class="settings-list-arrow">›</span>
     </a>
     {% endfor %}
     {% for f in files %}
-    <a class="icon-tile" href="/config/file?f={{ f.path | urlencode }}" title="{{ f.name }}">
-        <span class="icon-glyph">📄</span>
-        <span class="icon-label">{{ f.name | truncate_label }}</span>
-        <span class="icon-note" title="{{ f.size }} bytes">{{ f.size }} bytes</span>
+    <a class="settings-list-item" href="/config/file?f={{ f.path | urlencode }}" title="{{ f.name }}">
+        <span class="settings-list-content">
+            <span class="settings-list-title">{{ f.name | truncate_label }}</span>
+            <span class="settings-list-note" title="{{ f.size }} bytes">{{ f.size }} bytes</span>
+        </span>
+        <span class="settings-list-arrow">›</span>
     </a>
     {% endfor %}
 </div>
 {% else %}
-<p class="empty-state">Nothing here — create a file above.</p>
+<p class="settings-empty">Nothing here yet. Create a file above.</p>
 {% endif %}
+</section>
 {% endblock %}

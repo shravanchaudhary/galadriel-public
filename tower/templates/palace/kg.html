@@ -4,24 +4,20 @@
 {% block subtitle %}Temporal subject–predicate–object facts{% endblock %}
 
 {% block palace_content %}
-<div class="wf-toolbar">
-    <a href="/palace" class="btn btn-small btn-secondary">← Memory</a>
-</div>
-
-<form action="/palace/kg" method="get" class="wf-toolbar">
-    <input type="text" name="entity" value="{{ entity }}" placeholder="Entity timeline lookup…" class="chat-input" style="flex:1;">
-    <button type="submit" class="btn btn-small">Timeline</button>
+<form action="/palace/kg" method="get" class="settings-search">
+    <input type="text" name="entity" value="{{ entity }}" placeholder="Entity timeline lookup…" aria-label="Entity timeline lookup">
+    <button type="submit" class="composer-send" aria-label="View timeline">→</button>
 </form>
 
 {% if timeline %}
-<section class="memory-section">
-    <h2>Timeline — {{ entity }}</h2>
+<section class="settings-section">
+    <h2 class="settings-section-title">Timeline — {{ entity }}</h2>
     <pre class="runs-log">{{ timeline }}</pre>
 </section>
 {% endif %}
 
-<section class="memory-section">
-    <h2>Facts</h2>
+<section class="settings-section">
+    <h2 class="settings-section-title">Facts</h2>
     {% if facts %}
     <table class="wf-table">
         <thead><tr><th>Subject</th><th>Predicate</th><th>Object</th><th>Valid From</th><th>Valid To</th><th></th></tr></thead>
@@ -55,7 +51,7 @@
         </tbody>
     </table>
     {% else %}
-    <p class="empty-state">No KG facts found (or the listing API needs adjusting for the installed mempalace version — see harness/palace.py kg_list()).</p>
+    <p class="settings-empty">No knowledge graph facts found.</p>
     {% endif %}
 </section>
 {% endblock %}

@@ -1,31 +1,40 @@
 {% extends "apps/base.html" %}
 {% block title %}Apps{% endblock %}
 {% block heading %}Apps{% endblock %}
-{% block subtitle %}Each entity is a state machine defined in workflows/*.json{% endblock %}
+{% block subtitle %}Each app is a workflow defined in workflows/*.json{% endblock %}
 
 {% block wf_content %}
 {% if not db_ok %}
-<p class="empty-state">DB not configured (MONGO_URI / MONGO_DB unset) — no live data to show.</p>
+<p class="settings-empty">Database not configured — live record counts are unavailable.</p>
 {% endif %}
 
 {% if items %}
-<div class="status-grid" id="apps-grid">
-    {% for item in items %}
-    <div class="card" data-entity="{{ item.spec.name }}">
-        <div class="card-label">{{ item.spec.workflow }}</div>
-        <div class="card-value">{{ item.spec.name }}</div>
-        <p class="muted" style="font-size:0.8rem;margin-top:0.4rem;">
-            <span class="apps-count">…</span> record(s) · {{ item.spec.states | length }} states
-        </p>
-        <div class="wf-nav" style="margin-top:0.75rem;margin-bottom:0;">
-            <a href="/w/{{ item.spec.name }}">Table</a>
-            <a href="/w/{{ item.spec.name }}/kanban">Kanban</a>
-        </div>
+<section class="settings-section">
+    <div class="settings-section-head">
+        <h2 class="settings-section-title">Workflows</h2>
+        <p class="settings-section-desc">Open a table or kanban view for each entity</p>
     </div>
-    {% endfor %}
-</div>
+    <div class="settings-list" id="apps-grid">
+        {% for item in items %}
+        <div class="settings-list-item" data-entity="{{ item.spec.name }}" style="cursor:default;">
+            <span class="settings-list-content">
+                <span class="settings-list-title">{{ item.spec.name }}</span>
+                <span class="settings-list-note">
+                    {{ item.spec.workflow }} ·
+                    <span class="apps-count">…</span> records ·
+                    {{ item.spec.states | length }} states
+                </span>
+            </span>
+            <span class="settings-row-control">
+                <a href="/w/{{ item.spec.name }}" class="btn btn-small btn-secondary">Table</a>
+                <a href="/w/{{ item.spec.name }}/kanban" class="btn btn-small btn-secondary">Kanban</a>
+            </span>
+        </div>
+        {% endfor %}
+    </div>
+</section>
 {% else %}
-<p class="empty-state">No apps defined yet. Author a spec in <code>workflows/*.json</code> (see <code>knowledge/reference/workflows.md</code>).</p>
+<p class="settings-empty">No apps defined yet. Add a spec in <code>workflows/*.json</code>.</p>
 {% endif %}
 {% endblock %}
 
@@ -33,13 +42,13 @@
 {{ super() }}
 <script>
 (function () {
-    const approvalsLink = document.querySelector('.wf-nav a[href="/approvals"]');
+    const approvalsLink = document.querySelector('.settings-tabs a[href="/approvals"]');
     fetch('/apps/stats')
         .then((res) => res.ok ? res.json() : null)
         .then((data) => {
             if (!data) return;
             const counts = data.counts || {};
-            document.querySelectorAll('#apps-grid .card[data-entity]').forEach((card) => {
+            document.querySelectorAll('#apps-grid [data-entity]').forEach((card) => {
                 const name = card.dataset.entity;
                 const el = card.querySelector('.apps-count');
                 if (el) el.textContent = String(counts[name] != null ? counts[name] : 0);

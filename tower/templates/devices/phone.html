@@ -1,34 +1,44 @@
 {% extends "base.html" %}
 {% block title %}Phone Devices{% endblock %}
-{% block heading %}Phone{% endblock %}
-{% block subtitle %}Enroll the phone allowed to connect to your agent{% endblock %}
+{% block container_class %}settings-page{% endblock %}
+{% block page_header %}{% endblock %}
 
 {% block content %}
-<section class="devices-section">
-    <div class="devices-heading">
-        <p class="muted">One enrolled phone can provide the local ADB connection.</p>
-        <button type="button" class="btn btn-secondary" onclick="createCode()">Enroll phone</button>
-    </div>
-    <div id="enrollment-code" class="devices-enrollment-code" aria-live="polite"></div>
-    <div class="status-grid devices-grid" id="phone-list">
-        {% for device in phone.devices %}
-        <article class="card device-card">
-            <div class="device-card-head">
-                <div class="card-value">{{ device.device_id }}</div>
+<div class="settings-page-inner">
+    <header class="settings-page-head">
+        <h1 class="settings-page-title">Phone</h1>
+        <p class="settings-page-subtitle">Enroll the phone allowed to connect to your agent</p>
+    </header>
+
+    <section class="settings-section devices-section">
+        <div class="settings-section-head" style="display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;">
+            <div>
+                <h2 class="settings-section-title">Enrolled phones</h2>
+                <p class="settings-section-desc">One enrolled phone can provide the local ADB connection</p>
+            </div>
+            <button type="button" class="btn btn-small btn-secondary" onclick="createCode()">Enroll phone</button>
+        </div>
+        <div id="enrollment-code" class="devices-enrollment-code" aria-live="polite"></div>
+        <div class="settings-list" id="phone-list">
+            {% for device in phone.devices %}
+            <div class="settings-list-item" style="cursor:default;">
+                <span class="settings-list-content">
+                    <span class="settings-list-title">{{ device.device_id }}</span>
+                    <span class="settings-list-note">Enrolled {{ device.enrolled_at }}</span>
+                </span>
                 <span class="device-status {{ 'is-online' if device.connected else 'is-offline' }}">
                     {{ 'streaming' if device.stream_active else ('connected' if device.connected else ('revoked' if device.revoked_at else 'offline')) }}
                 </span>
+                {% if not device.revoked_at %}
+                <button type="button" class="btn btn-small btn-danger" onclick="revokePhone('{{ device.device_id }}')">Revoke</button>
+                {% endif %}
             </div>
-            <p>Enrolled {{ device.enrolled_at }}</p>
-            {% if not device.revoked_at %}
-            <button type="button" class="btn btn-small btn-danger" onclick="revokePhone('{{ device.device_id }}')">Revoke</button>
-            {% endif %}
-        </article>
-        {% else %}
-        <p class="muted">No phones enrolled.</p>
-        {% endfor %}
-    </div>
-</section>
+            {% else %}
+            <p class="settings-empty">No phones enrolled.</p>
+            {% endfor %}
+        </div>
+    </section>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -38,36 +48,38 @@ function renderPhones(phone) {
     list.replaceChildren();
     if (!phone.devices.length) {
         const empty = document.createElement('p');
-        empty.className = 'muted';
+        empty.className = 'settings-empty';
         empty.textContent = 'No phones enrolled.';
         list.append(empty);
         return;
     }
     phone.devices.forEach(device => {
-        const card = document.createElement('article');
-        card.className = 'card device-card';
-        const head = document.createElement('div');
-        head.className = 'device-card-head';
-        const title = document.createElement('div');
-        title.className = 'card-value';
+        const row = document.createElement('div');
+        row.className = 'settings-list-item';
+        row.style.cursor = 'default';
+        const content = document.createElement('span');
+        content.className = 'settings-list-content';
+        const title = document.createElement('span');
+        title.className = 'settings-list-title';
         title.textContent = device.device_id;
+        const note = document.createElement('span');
+        note.className = 'settings-list-note';
+        note.textContent = `Enrolled ${device.enrolled_at}`;
+        content.append(title, note);
         const state = device.stream_active ? 'streaming' : (device.connected ? 'connected' : (device.revoked_at ? 'revoked' : 'offline'));
         const badge = document.createElement('span');
         badge.className = `device-status ${device.connected ? 'is-online' : 'is-offline'}`;
         badge.textContent = state;
-        head.append(title, badge);
-        const detail = document.createElement('p');
-        detail.textContent = `Enrolled ${device.enrolled_at}`;
-        card.append(head, detail);
+        row.append(content, badge);
         if (!device.revoked_at) {
             const revoke = document.createElement('button');
             revoke.type = 'button';
             revoke.className = 'btn btn-small btn-danger';
             revoke.textContent = 'Revoke';
             revoke.onclick = () => revokePhone(device.device_id);
-            card.append(revoke);
+            row.append(revoke);
         }
-        list.append(card);
+        list.append(row);
     });
 }
 

@@ -1,9 +1,14 @@
 {% extends "base.html" %}
 {% block title %}{% block cfg_title %}Configuration{% endblock %}{% endblock %}
-{% block container_class %}wf-container{% endblock %}
-{% block heading %}{% block cfg_heading %}Configuration{% endblock %}{% endblock %}
-{% block subtitle %}{% block cfg_subtitle %}Agent settings, jobs, and state — live from disk{% endblock %}{% endblock %}
+{% block container_class %}settings-page{% endblock %}
+{% block page_header %}{% endblock %}
 
 {% block content %}
-{% block cfg_content %}{% endblock %}
+<div class="settings-page-inner">
+    <header class="settings-page-head">
+        <h1 class="settings-page-title">{% block heading %}Configuration{% endblock %}</h1>
+        <p class="settings-page-subtitle">{% block subtitle %}Agent settings and persistent files{% endblock %}</p>
+    </header>
+    {% block cfg_content %}{% endblock %}
+</div>
 {% endblock %}

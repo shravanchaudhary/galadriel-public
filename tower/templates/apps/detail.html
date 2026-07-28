@@ -4,12 +4,20 @@
 {% block subtitle %}{{ spec.name }} · <span class="badge {{ 'approval' if doc.get('status') in spec.approval_states }}">{{ doc.get('status', '—') }}</span>{% endblock %}
 
 {% block wf_content %}
-<div class="wf-toolbar">
-    <a href="/w/{{ spec.name }}" class="btn btn-small">← Table</a>
-    <a href="/w/{{ spec.name }}/kanban" class="btn btn-small">Kanban</a>
+<nav class="settings-crumb">
+    <a href="/apps">Apps</a>
+    <span class="settings-crumb-separator">/</span>
+    <a href="/w/{{ spec.name }}">{{ spec.name }}</a>
+    <span class="settings-crumb-separator">/</span>
+    <span>{{ doc.get(spec.key) }}</span>
+</nav>
+<div class="settings-actions" style="justify-content:space-between;">
+    <div class="settings-row-control">
+        <a href="/w/{{ spec.name }}" class="btn btn-small btn-secondary">Table</a>
+        <a href="/w/{{ spec.name }}/kanban" class="btn btn-small btn-secondary">Kanban</a>
+    </div>
     {% if allowed %}
-    <span class="spacer"></span>
-    <span class="muted" style="font-size:0.8rem;">Allowed next: {{ allowed | join(', ') }}</span>
+    <span class="settings-meta" style="margin:0;">Next: {{ allowed | join(', ') }}</span>
     {% endif %}
 </div>
 

@@ -1,15 +1,20 @@
 {% extends "base.html" %}
 {% block title %}{% block wf_title %}Apps{% endblock %}{% endblock %}
-{% block container_class %}wf-container{% endblock %}
-{% block heading %}{% block wf_heading %}Apps{% endblock %}{% endblock %}
-{% block subtitle %}{% block wf_subtitle %}Live view of the operational database{% endblock %}{% endblock %}
+{% block container_class %}settings-page settings-page-wide{% endblock %}
+{% block page_header %}{% endblock %}
 
 {% block content %}
-<nav class="wf-nav">
-    <a href="/apps" class="{{ 'active' if request.path in ('/apps', '/workflows') }}">All Apps</a>
-    <a href="/approvals" class="{{ 'active' if request.path == '/approvals' }}">Approvals{% if approvals_count %} ({{ approvals_count }}){% endif %}</a>
-</nav>
-{% block wf_content %}{% endblock %}
+<div class="settings-page-inner">
+    <header class="settings-page-head">
+        <h1 class="settings-page-title">{% block heading %}Apps{% endblock %}</h1>
+        <p class="settings-page-subtitle">{% block subtitle %}Operational workflows backed by the database{% endblock %}</p>
+    </header>
+    <nav class="settings-tabs" aria-label="Apps">
+        <a href="/apps" class="{{ 'active' if request.path in ('/apps', '/workflows') }}">All Apps</a>
+        <a href="/approvals" class="{{ 'active' if request.path == '/approvals' }}">Approvals{% if approvals_count %} ({{ approvals_count }}){% endif %}</a>
+    </nav>
+    {% block wf_content %}{% endblock %}
+</div>
 {% endblock %}
 
 {% block scripts %}

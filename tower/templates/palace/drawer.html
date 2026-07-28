@@ -4,36 +4,40 @@
 {% block subtitle %}<code>{{ drawer.id | truncate_label(36) }}</code>{% if drawer.source_file %} · {{ drawer.source_file | truncate_label(32) }}{% endif %}{% endblock %}
 
 {% block palace_content %}
-<div class="wf-toolbar">
-    <a href="/palace/room?wing={{ back_wing | urlencode }}&room={{ back_room | urlencode }}" class="btn btn-small">← Room</a>
+<nav class="settings-crumb">
+    <a href="/palace">Memory</a><span class="settings-crumb-separator">/</span>
+    <a href="/palace/room?wing={{ back_wing | urlencode }}&room={{ back_room | urlencode }}">{{ back_room }}</a>
+    <span class="settings-crumb-separator">/</span><span>Drawer</span>
     {% if saved %}
-    <span class="badge" style="border-color:#27ae60;color:#27ae60;background:rgba(39,174,96,0.08);">Saved</span>
+    <span class="status-on">Saved</span>
     {% endif %}
-</div>
+</nav>
 
 <form method="post" action="/palace/drawer/{{ drawer.id }}">
-    <section class="memory-section">
-        <h2>Text</h2>
+    <section class="settings-section">
+        <div class="settings-section-head">
+            <h2 class="settings-section-title">Content</h2>
+            <p class="settings-section-desc">Saving re-embeds this drawer and reconciles memory.</p>
+        </div>
         <textarea name="text" class="editor-textarea" spellcheck="false">{{ drawer.text }}</textarea>
-        <p class="muted" style="font-size:0.78rem;margin-top:0.4rem;">Save re-embeds this drawer and runs reconcile automatically.</p>
     </section>
 
-    <section class="memory-section">
-        <h2>Metadata</h2>
-        <ul class="field-list">
-            <li><span class="k">wing</span><span class="v"><input type="text" name="wing" value="{{ drawer.wing }}" class="chat-input"></span></li>
-            <li><span class="k">room</span><span class="v"><input type="text" name="room" value="{{ drawer.room }}" class="chat-input"></span></li>
-            <li><span class="k">hall</span><span class="v"><input type="text" name="hall" value="{{ drawer.hall }}" class="chat-input"></span></li>
-            <li><span class="k">source_file</span><span class="v muted" title="{{ drawer.source_file }}">{{ drawer.source_file | truncate_label(48) }}</span></li>
-        </ul>
+    <section class="settings-section">
+        <div class="settings-section-head"><h2 class="settings-section-title">Metadata</h2></div>
+        <div class="settings-rows">
+            <label class="settings-row"><span class="settings-row-label">Wing</span><input type="text" name="wing" value="{{ drawer.wing }}" class="chat-input settings-row-control"></label>
+            <label class="settings-row"><span class="settings-row-label">Room</span><input type="text" name="room" value="{{ drawer.room }}" class="chat-input settings-row-control"></label>
+            <label class="settings-row"><span class="settings-row-label">Hall</span><input type="text" name="hall" value="{{ drawer.hall }}" class="chat-input settings-row-control"></label>
+            <div class="settings-row"><span class="settings-row-label">Source file</span><span class="settings-row-hint" title="{{ drawer.source_file }}">{{ drawer.source_file | truncate_label(48) }}</span></div>
+        </div>
     </section>
 
-    <div class="wf-toolbar">
+    <div class="settings-actions">
         <button type="submit" class="btn">Save</button>
     </div>
 </form>
 
-<form method="post" action="/palace/drawer/{{ drawer.id }}" class="wf-toolbar" onsubmit="return confirm('Delete this drawer permanently?');">
+<form method="post" action="/palace/drawer/{{ drawer.id }}" class="settings-actions settings-section" onsubmit="return confirm('Delete this drawer permanently?');">
     <input type="hidden" name="_action" value="delete">
     <button type="submit" class="btn btn-small btn-danger">Delete drawer</button>
 </form>

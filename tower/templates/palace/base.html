@@ -1,17 +1,23 @@
 {% extends "base.html" %}
 {% block title %}{% block palace_title %}Memory{% endblock %}{% endblock %}
-{% block container_class %}wf-container{% endblock %}
-{% block heading %}{% block palace_heading %}Memory{% endblock %}{% endblock %}
-{% block subtitle %}{% block palace_subtitle %}Structured knowledge store — wings, rooms, and drawers{% endblock %}{% endblock %}
+{% block container_class %}settings-page{% endblock %}
+{% block page_header %}{% endblock %}
 
 {% block content %}
-<nav class="wf-nav">
-    <a href="/palace/search" class="{{ 'active' if request.path == '/palace/search' }}">Search</a>
-    <a href="/palace/kg" class="{{ 'active' if request.path == '/palace/kg' }}">Knowledge Graph</a>
-    <a href="/palace/diary" class="{{ 'active' if request.path == '/palace/diary' }}">Diary</a>
-    <form method="post" action="/palace/reconcile" style="display:inline;margin-left:auto;" onsubmit="this.querySelector('button').disabled=true;">
-        <button type="submit" class="btn btn-small btn-secondary">Reconcile</button>
-    </form>
-</nav>
-{% block palace_content %}{% endblock %}
+<div class="settings-page-inner">
+    <header class="settings-page-head">
+        <h1 class="settings-page-title">{% block heading %}Memory{% endblock %}</h1>
+        <p class="settings-page-subtitle">{% block subtitle %}Structured knowledge across wings, rooms, and drawers{% endblock %}</p>
+    </header>
+    <nav class="settings-tabs" aria-label="Memory">
+        <a href="/palace" class="{{ 'active' if request.path == '/palace' }}">Browse</a>
+        <a href="/palace/search" class="{{ 'active' if request.path == '/palace/search' }}">Search</a>
+        <a href="/palace/kg" class="{{ 'active' if request.path == '/palace/kg' }}">Knowledge Graph</a>
+        <a href="/palace/diary" class="{{ 'active' if request.path == '/palace/diary' }}">Diary</a>
+        <form class="settings-tabs-action" method="post" action="/palace/reconcile" onsubmit="this.querySelector('button').disabled=true;">
+            <button type="submit" class="btn btn-small btn-secondary">Reconcile</button>
+        </form>
+    </nav>
+    {% block palace_content %}{% endblock %}
+</div>
 {% endblock %}

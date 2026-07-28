@@ -1,59 +1,60 @@
 {% extends "palace/base.html" %}
 {% block title %}{{ room or hall or wing or 'Drawers' }}{% endblock %}
 {% block heading %}{{ room or hall or 'Drawers' }}{% endblock %}
-{% block subtitle %}
-    {%- if wing %}wing=<code>{{ wing }}</code>{% endif -%}
-    {%- if room %} · room=<code>{{ room }}</code>{% endif -%}
-    {%- if hall %} · hall=<code>{{ hall }}</code>{% endif -%}
-    · {{ total }} drawer(s)
-{% endblock %}
+{% block subtitle %}{{ total }} drawer{% if total != 1 %}s{% endif %}{% if wing %} in {{ wing }}{% endif %}{% endblock %}
 
 {% block palace_content %}
 {% if notice %}
 <div class="notice-banner warn">{{ notice }}</div>
 {% endif %}
 
-<div class="wf-toolbar">
+<nav class="settings-crumb">
     {% if wing %}
-    <a href="/palace/browse?wing={{ wing | urlencode }}" class="btn btn-small">← {{ wing }}</a>
+    <a href="/palace">Memory</a><span class="settings-crumb-separator">/</span>
+    <a href="/palace/browse?wing={{ wing | urlencode }}">{{ wing }}</a>
+    {% if room %}<span class="settings-crumb-separator">/</span><span>{{ room }}</span>{% endif %}
     {% else %}
-    <a href="/palace" class="btn btn-small btn-secondary">← Memory</a>
+    <a href="/palace">Memory</a><span class="settings-crumb-separator">/</span><span>{{ hall or 'Drawers' }}</span>
     {% endif %}
-</div>
+</nav>
 
 {% if wing or room or hall %}
-<form method="post" action="/palace/drawer/create" class="memory-section">
-    <h2>Create drawer</h2>
+<details class="settings-prompt">
+    <summary>Create drawer</summary>
+<form method="post" action="/palace/drawer/create" class="settings-editor">
     <input type="hidden" name="wing" value="{{ wing or 'agent' }}">
     <input type="hidden" name="room" value="{{ room or 'general' }}">
     <input type="hidden" name="hall" value="{{ hall or 'general' }}">
     <textarea name="text" class="chat-input" rows="3" placeholder="Drawer content…" required style="width:100%;margin-bottom:0.5rem;"></textarea>
     <button type="submit" class="btn btn-small">Create drawer</button>
 </form>
+</details>
 {% endif %}
 
 {% if drawers %}
-<div class="icon-grid">
+<div class="settings-list" style="margin-top:1.5rem;">
     {% for d in drawers %}
     {% set label = d.source_file or d.text %}
-    <a class="icon-tile" href="/palace/drawer/{{ d.id }}" title="{{ label }}">
-        <span class="icon-glyph">🗂️</span>
-        <span class="icon-label">{{ label | truncate_label }}</span>
-        <span class="icon-note">{{ d.hall }}</span>
+    <a class="settings-list-item" href="/palace/drawer/{{ d.id }}" title="{{ label }}">
+        <span class="settings-list-content">
+            <span class="settings-list-title">{{ label | truncate_label(64) }}</span>
+            <span class="settings-list-note">{{ d.hall }}</span>
+        </span>
+        <span class="settings-list-arrow">›</span>
     </a>
     {% endfor %}
 </div>
 
-<div class="wf-toolbar">
+<div class="settings-actions">
     {% if page > 1 %}
-    <a class="btn btn-small" href="?wing={{ wing or '' }}&room={{ room or '' }}&hall={{ hall or '' }}&page={{ page - 1 }}">← Prev</a>
+    <a class="btn btn-small btn-secondary" href="?wing={{ wing or '' }}&room={{ room or '' }}&hall={{ hall or '' }}&page={{ page - 1 }}">Previous</a>
     {% endif %}
     <span class="muted">Page {{ page }}</span>
     {% if page * page_size < total %}
-    <a class="btn btn-small" href="?wing={{ wing or '' }}&room={{ room or '' }}&hall={{ hall or '' }}&page={{ page + 1 }}">Next →</a>
+    <a class="btn btn-small btn-secondary" href="?wing={{ wing or '' }}&room={{ room or '' }}&hall={{ hall or '' }}&page={{ page + 1 }}">Next</a>
     {% endif %}
 </div>
 {% else %}
-<p class="empty-state">No drawers here yet — create one above.</p>
+<p class="settings-empty">No drawers here yet.</p>
 {% endif %}
 {% endblock %}

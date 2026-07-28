@@ -4,21 +4,21 @@
 {% block subtitle %}{{ rooms | length }} room(s){% endblock %}
 
 {% block palace_content %}
-<div class="wf-toolbar">
-    <a href="/palace" class="btn btn-small btn-secondary">← Memory</a>
-</div>
+<nav class="settings-crumb"><a href="/palace">Memory</a><span class="settings-crumb-separator">/</span><span>{{ wing }}</span></nav>
 
 {% if rooms %}
-<div class="icon-grid">
+<div class="settings-list">
     {% for room, count in rooms.items() %}
-    <a class="icon-tile" href="/palace/room?wing={{ wing | urlencode }}&room={{ room | urlencode }}" title="{{ room }}">
-        <span class="icon-glyph icon-folder"></span>
-        <span class="icon-label">{{ room | truncate_label }}</span>
-        <span class="icon-note">{{ count }} drawer(s)</span>
+    <a class="settings-list-item" href="/palace/room?wing={{ wing | urlencode }}&room={{ room | urlencode }}" title="{{ room }}">
+        <span class="settings-list-content">
+            <span class="settings-list-title">{{ room | truncate_label }}</span>
+            <span class="settings-list-note">{{ count }} drawers</span>
+        </span>
+        <span class="settings-list-arrow">›</span>
     </a>
     {% endfor %}
 </div>
 {% else %}
-<p class="empty-state">No rooms in this wing.</p>
+<p class="settings-empty">No rooms in this wing.</p>
 {% endif %}
 {% endblock %}

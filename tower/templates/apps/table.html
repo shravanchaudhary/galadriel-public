@@ -4,14 +4,20 @@
 {% block subtitle %}{{ spec.workflow }} · table view · backed by <code>{{ spec.collection }}</code>{% endblock %}
 
 {% block wf_content %}
-<div class="wf-toolbar">
-    <a href="/w/{{ spec.name }}" class="btn btn-small">All</a>
-    {% for state in spec.states %}
-    <a href="/w/{{ spec.name }}?status={{ state | urlencode }}"
-       class="btn btn-small {{ 'btn-danger' if state == status else '' }}">{{ state }}</a>
-    {% endfor %}
-    <span class="spacer"></span>
-    <a href="/w/{{ spec.name }}/kanban" class="btn btn-small">Kanban →</a>
+<nav class="settings-crumb">
+    <a href="/apps">Apps</a>
+    <span class="settings-crumb-separator">/</span>
+    <span>{{ spec.name }}</span>
+</nav>
+<div class="settings-actions" style="justify-content:space-between;">
+    <div class="settings-segmented">
+        <a href="/w/{{ spec.name }}" class="{{ 'is-active' if not status }}">All</a>
+        {% for state in spec.states %}
+        <a href="/w/{{ spec.name }}?status={{ state | urlencode }}"
+           class="{{ 'is-active' if state == status }}">{{ state }}</a>
+        {% endfor %}
+    </div>
+    <a href="/w/{{ spec.name }}/kanban" class="btn btn-small btn-secondary">Kanban</a>
 </div>
 
 {% if docs %}
@@ -41,17 +47,17 @@
 </table>
 
 {% if page > 1 or has_more %}
-<div class="wf-toolbar">
+<div class="settings-actions">
     {% if page > 1 %}
-    <a class="btn btn-small" href="?{% if status %}status={{ status | urlencode }}&{% endif %}page={{ page - 1 }}">← Prev</a>
+    <a class="btn btn-small btn-secondary" href="?{% if status %}status={{ status | urlencode }}&{% endif %}page={{ page - 1 }}">Previous</a>
     {% endif %}
     <span class="muted">Page {{ page }}</span>
     {% if has_more %}
-    <a class="btn btn-small" href="?{% if status %}status={{ status | urlencode }}&{% endif %}page={{ page + 1 }}">Next →</a>
+    <a class="btn btn-small btn-secondary" href="?{% if status %}status={{ status | urlencode }}&{% endif %}page={{ page + 1 }}">Next</a>
     {% endif %}
 </div>
 {% endif %}
 {% else %}
-<p class="empty-state">No records{% if status %} in status <strong>{{ status }}</strong>{% endif %}.</p>
+<p class="settings-empty">No records{% if status %} in status <strong>{{ status }}</strong>{% endif %}.</p>
 {% endif %}
 {% endblock %}

@@ -103,7 +103,10 @@ class DailyArtifactContractTests(unittest.TestCase):
                     self.assertIn("<!doctype html>", text)
                     self.assertIn("<html", text)
                     self.assertIn("<meta name=\"viewport\"", text)
-                    self.assertIn("prefers-color-scheme:dark", text)
+                    self.assertRegex(text, r"prefers-color-scheme:\s*dark")
+                    self.assertIn('class="artifact"', text)
+                    self.assertIn("page-title", text)
+                    self.assertIn("--bg: #ffffff", text)
                     self.assertNotIn("<script", text)
                     self.assertNotIn("<form", text)
 
@@ -121,6 +124,22 @@ class DailyArtifactContractTests(unittest.TestCase):
         self.assertIn("state/plan/{today}.html", prompt_source)
         self.assertIn("state/progress/{today}.html", prompt_source)
         self.assertIn("preserve the document shell/styles", prompt_source)
+        self.assertIn(
+            "knowledge/reference/user_facing_html_artifacts.md", prompt_source
+        )
+        style_ref = (
+            ROOT / "knowledge" / "reference" / "user_facing_html_artifacts.md"
+        ).read_text(encoding="utf-8")
+        self.assertIn("enterprise settings", style_ref.lower())
+        self.assertIn("canonical shell", style_ref.lower())
+        plan_readme = (ROOT / "state" / "plan" / "README.md").read_text(
+            encoding="utf-8"
+        )
+        progress_readme = (ROOT / "state" / "progress" / "README.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("user_facing_html_artifacts.md", plan_readme)
+        self.assertIn("user_facing_html_artifacts.md", progress_readme)
 
     def test_chat_template_is_read_only_and_sandboxed(self) -> None:
         template = (ROOT / "tower" / "templates" / "chats" / "chat.html").read_text(

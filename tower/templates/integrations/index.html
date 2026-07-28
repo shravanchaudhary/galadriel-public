@@ -1,59 +1,93 @@
 {% extends "base.html" %}
 {% block title %}Integrations{% endblock %}
-{% block heading %}Integrations{% endblock %}
-{% block subtitle %}Connect your Replika to the services you use{% endblock %}
+{% block container_class %}settings-page{% endblock %}
+{% block page_header %}{% endblock %}
 
 {% block content %}
-<section class="card" style="max-width: 680px;">
-    <div class="card-label">Slack</div>
-    {% if configuration_error %}
-        <p class="muted">{{ configuration_error }}</p>
-    {% elif not slack.connected %}
-        <p style="margin-bottom: 1rem;">
-            Connect Slack to use
-            {{ "one shared channel" if replika_type == "organization" else "a private DM with your Replika" }}.
-        </p>
-        <a class="btn" href="/integrations/slack/install">Add to Slack</a>
-    {% else %}
-        <div class="card-value">{{ slack.team_name }}</div>
-        {% if slack.mode == "dm" %}
-            <p style="margin: 0.75rem 0;">
-                DM mode is active for installer
-                <strong>{{ slack.installer_user_id or "unknown" }}</strong>.
-            </p>
-            <p class="muted">Messages are routed only from direct conversations with the Replika.</p>
-        {% else %}
-            <label for="slack-channel" style="display: block; margin: 1rem 0 0.4rem;">
-                Replika channel
-            </label>
-            <select id="slack-channel" class="interval-select" style="min-width: 280px;">
-                {% if slack.selected_channel %}
-                <option value="{{ slack.selected_channel.id }}">
-                    #{{ slack.selected_channel.name }}
-                </option>
+<div class="settings-page-inner">
+    <header class="settings-page-head">
+        <h1 class="settings-page-title">Integrations</h1>
+        <p class="settings-page-subtitle">Connect your Replika to the services you use</p>
+    </header>
+
+    <section class="settings-section">
+        <div class="settings-section-head">
+            <h2 class="settings-section-title">Slack</h2>
+            <p class="settings-section-desc">
+                {% if configuration_error %}
+                {{ configuration_error }}
+                {% elif not slack.connected %}
+                {{ "Share one channel with your team" if replika_type == "organization" else "Private DM with your Replika" }}
                 {% else %}
-                <option value="">Loading accessible channels…</option>
+                Connected to {{ slack.team_name }}
                 {% endif %}
-            </select>
-            <p id="slack-channel-message" class="muted" style="margin-top: 0.5rem;">
-                Select exactly one public channel or private channel the app has been invited to.
             </p>
-            <label for="slack-admins" style="display: block; margin: 1rem 0 0.4rem;">
-                Additional admin Slack user IDs
-            </label>
-            <input id="slack-admins" type="text" style="min-width: 360px;"
-                   value="{{ slack.admin_user_ids|reject('equalto', slack.installer_user_id)|join(', ') }}"
-                   placeholder="U012ABCDEF, U034GHIJKL">
-            <button type="button" class="btn" id="slack-save-admins">Save admins</button>
-            <p id="slack-admin-message" class="muted" style="margin-top: 0.5rem;">
-                The OAuth installer is always an admin. Additional admins must be active members of the selected channel.
-            </p>
+        </div>
+
+        {% if configuration_error %}
+        <p class="settings-empty">{{ configuration_error }}</p>
+        {% elif not slack.connected %}
+        <div class="settings-actions">
+            <a class="btn" href="/integrations/slack/install">Add to Slack</a>
+        </div>
+        {% else %}
+        <div class="settings-rows">
+            <div class="settings-row">
+                <div class="settings-row-main">
+                    <span class="settings-row-label">Workspace</span>
+                    <span class="settings-row-hint">{{ slack.team_name }}</span>
+                </div>
+                <div class="settings-row-control">
+                    <button type="button" class="btn btn-small btn-danger" id="slack-disconnect">Disconnect</button>
+                </div>
+            </div>
+
+            {% if slack.mode == "dm" %}
+            <div class="settings-row">
+                <div class="settings-row-main">
+                    <span class="settings-row-label">Mode</span>
+                    <span class="settings-row-hint">DM for installer {{ slack.installer_user_id or "unknown" }}</span>
+                </div>
+            </div>
+            {% else %}
+            <div class="settings-row">
+                <div class="settings-row-main">
+                    <label class="settings-row-label" for="slack-channel">Channel</label>
+                    <span class="settings-row-hint" id="slack-channel-message">
+                        Select one public or private channel the app can access
+                    </span>
+                </div>
+                <div class="settings-row-control">
+                    <select id="slack-channel" class="interval-select" style="min-width: 220px;">
+                        {% if slack.selected_channel %}
+                        <option value="{{ slack.selected_channel.id }}">
+                            #{{ slack.selected_channel.name }}
+                        </option>
+                        {% else %}
+                        <option value="">Loading accessible channels…</option>
+                        {% endif %}
+                    </select>
+                </div>
+            </div>
+            <div class="settings-row">
+                <div class="settings-row-main">
+                    <label class="settings-row-label" for="slack-admins">Additional admins</label>
+                    <span class="settings-row-hint" id="slack-admin-message">
+                        Installer is always an admin. Extra admins must be in the channel.
+                    </span>
+                </div>
+                <div class="settings-row-control stacked">
+                    <input id="slack-admins" type="text" class="chat-input"
+                           value="{{ slack.admin_user_ids|reject('equalto', slack.installer_user_id)|join(', ') }}"
+                           placeholder="U012ABCDEF, U034GHIJKL">
+                    <button type="button" class="btn btn-small" id="slack-save-admins">Save admins</button>
+                </div>
+            </div>
+            {% endif %}
+        </div>
         {% endif %}
-        <button type="button" class="btn btn-danger" id="slack-disconnect" style="margin-top: 1rem;">
-            Disconnect Slack
-        </button>
-    {% endif %}
-</section>
+    </section>
+</div>
 {% endblock %}
 
 {% block scripts %}

@@ -4,28 +4,34 @@
 {% block subtitle %}Live system blocks and the channel-specific next message{% endblock %}
 
 {% block cfg_content %}
-<div class="wf-toolbar">
-    <a href="/config" class="btn btn-small btn-secondary">← Configuration</a>
-</div>
+<nav class="settings-crumb"><a href="/config">Configuration</a><span class="settings-crumb-separator">/</span><span>Prompt Construction</span></nav>
 
-<form class="wf-toolbar" method="get" action="/config/preview">
-    <label for="channel">Channel</label>
-    <select id="channel" name="channel" onchange="this.form.submit()">
-        {% for channel, label in channels %}
-        <option value="{{ channel }}" {% if channel == selected_channel %}selected{% endif %}>{{ label }}</option>
-        {% endfor %}
-    </select>
-    <noscript><button class="btn btn-small" type="submit">Show</button></noscript>
-</form>
+<section class="settings-section">
+    <div class="settings-rows">
+        <form class="settings-row" method="get" action="/config/preview">
+            <label class="settings-row-label" for="channel">Channel</label>
+            <div class="settings-row-control">
+                <select id="channel" name="channel" class="interval-select" onchange="this.form.submit()">
+                    {% for channel, label in channels %}
+                    <option value="{{ channel }}" {% if channel == selected_channel %}selected{% endif %}>{{ label }}</option>
+                    {% endfor %}
+                </select>
+                <noscript><button class="btn btn-small" type="submit">Show</button></noscript>
+            </div>
+        </form>
+    </div>
+</section>
 
-<section class="memory-section">
-    <h2>Construction order</h2>
-    <p class="muted">The agent combines the system blocks below with this channel's prior conversation ({{ history_count }} message{% if history_count != 1 %}s{% endif %}) and its next message. Providers serialize that construction differently; Gemini moves non-cached blocks into a closing context turn to preserve its stable cache prefix.</p>
+<section class="settings-section">
+    <div class="settings-section-head">
+        <h2 class="settings-section-title">Construction order</h2>
+        <p class="settings-section-desc">{{ history_count }} prior message{% if history_count != 1 %}s{% endif %}, followed by the system blocks and next channel message.</p>
+    </div>
 </section>
 
 {% for block in system_blocks %}
-<section class="memory-section">
-    <h2>
+<section class="settings-section">
+    <h2 class="settings-section-title">
         System block {{ loop.index }}
         {% if loop.index == 1 %}
         <span class="muted" style="font-weight:400;">— stable core (cached)</span>
@@ -39,8 +45,8 @@
 </section>
 {% endfor %}
 
-<section class="memory-section">
-    <h2>Next channel message <span class="muted" style="font-weight:400;">— appended after conversation history</span></h2>
+<section class="settings-section">
+    <h2 class="settings-section-title">Next channel message <span class="muted" style="font-weight:400;">— appended after conversation history</span></h2>
     <pre class="runs-log">{{ trigger }}</pre>
     <p class="muted">{{ trigger_note }}</p>
 </section>

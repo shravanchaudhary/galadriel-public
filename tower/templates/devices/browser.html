@@ -1,50 +1,60 @@
 {% extends "base.html" %}
 {% block title %}Browser Devices{% endblock %}
-{% block heading %}Browsers{% endblock %}
-{% block subtitle %}Let Replika use your browser to get things done{% endblock %}
+{% block container_class %}settings-page{% endblock %}
+{% block page_header %}{% endblock %}
 
 {% block content %}
-{% if devices_error %}
-<p class="devices-error" role="alert">{{ devices_error }}</p>
-{% endif %}
+<div class="settings-page-inner">
+    <header class="settings-page-head">
+        <h1 class="settings-page-title">Browsers</h1>
+        <p class="settings-page-subtitle">Let Replika use your browser to get things done</p>
+    </header>
 
-<section class="devices-section">
-    <div class="devices-heading">
-        <p class="muted">Add a browser so Replika can complete tasks on websites for you.</p>
-        <button type="button" class="btn btn-secondary" onclick="toggleBrowserForm()">Add browser</button>
-    </div>
+    {% if devices_error %}
+    <p class="devices-error" role="alert">{{ devices_error }}</p>
+    {% endif %}
 
-    <form class="card devices-form" id="browser-form" hidden>
-        <div class="devices-fields">
-            <label>Pairing code<input name="pairing_code" placeholder="XXXX-XXXX" required autocomplete="off"></label>
-            <label>Purpose (optional)<input name="purpose" maxlength="200" placeholder="Work browser"></label>
-        </div>
-        <div class="devices-actions">
-            <button type="submit" class="btn">Save browser</button>
-            <button type="button" class="btn btn-secondary" onclick="toggleBrowserForm(false)">Cancel</button>
-            <span class="muted" id="browser-form-message" aria-live="polite"></span>
-        </div>
-    </form>
-
-    <div class="status-grid devices-grid" id="browser-list">
-        {% for browser in browsers %}
-        <article class="card device-card">
-            <div class="device-card-head">
-                <div class="card-value">{{ browser.purpose or 'Browser' }}</div>
-                <span class="device-status {{ 'is-online' if browser.online else 'is-offline' }}">{{ browser.state }}</span>
+    <section class="settings-section devices-section">
+        <div class="settings-section-head" style="display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;">
+            <div>
+                <h2 class="settings-section-title">Connected browsers</h2>
+                <p class="settings-section-desc">Pair a browser so Replika can complete tasks on websites</p>
             </div>
-            {% if browser.pairing_code %}
-            <p>Pairing code: <code>{{ browser.pairing_code }}</code></p>
-            {% endif %}
-            {% if browser.source != 'environment' %}
-            <button type="button" class="btn btn-small btn-danger" onclick="removeBrowser('{{ browser.profile_id }}')">Remove</button>
-            {% endif %}
-        </article>
-        {% else %}
-        <p class="muted">No browser profiles configured.</p>
-        {% endfor %}
-    </div>
-</section>
+            <button type="button" class="btn btn-small btn-secondary" onclick="toggleBrowserForm()">Add browser</button>
+        </div>
+
+        <form class="devices-form" id="browser-form" hidden>
+            <div class="devices-fields">
+                <label>Pairing code<input name="pairing_code" placeholder="XXXX-XXXX" required autocomplete="off"></label>
+                <label>Purpose (optional)<input name="purpose" maxlength="200" placeholder="Work browser"></label>
+            </div>
+            <div class="settings-actions devices-actions">
+                <button type="submit" class="btn">Save browser</button>
+                <button type="button" class="btn btn-secondary" onclick="toggleBrowserForm(false)">Cancel</button>
+                <span class="muted" id="browser-form-message" aria-live="polite"></span>
+            </div>
+        </form>
+
+        <div class="settings-list" id="browser-list">
+            {% for browser in browsers %}
+            <div class="settings-list-item" style="cursor:default;">
+                <span class="settings-list-content">
+                    <span class="settings-list-title">{{ browser.purpose or 'Browser' }}</span>
+                    <span class="settings-list-note">
+                        {% if browser.pairing_code %}Pairing code {{ browser.pairing_code }}{% else %}Environment profile{% endif %}
+                    </span>
+                </span>
+                <span class="device-status {{ 'is-online' if browser.online else 'is-offline' }}">{{ browser.state }}</span>
+                {% if browser.source != 'environment' %}
+                <button type="button" class="btn btn-small btn-danger" onclick="removeBrowser('{{ browser.profile_id }}')">Remove</button>
+                {% endif %}
+            </div>
+            {% else %}
+            <p class="settings-empty">No browser profiles configured.</p>
+            {% endfor %}
+        </div>
+    </section>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -60,41 +70,39 @@ function renderBrowsers(browsers) {
     list.replaceChildren();
     if (!browsers.length) {
         const empty = document.createElement('p');
-        empty.className = 'muted';
+        empty.className = 'settings-empty';
         empty.textContent = 'No browser profiles configured.';
         list.append(empty);
         return;
     }
     browsers.forEach(browser => {
-        const card = document.createElement('article');
-        card.className = 'card device-card';
-        const head = document.createElement('div');
-        head.className = 'device-card-head';
-        const title = document.createElement('div');
-        title.className = 'card-value';
+        const row = document.createElement('div');
+        row.className = 'settings-list-item';
+        row.style.cursor = 'default';
+        const content = document.createElement('span');
+        content.className = 'settings-list-content';
+        const title = document.createElement('span');
+        title.className = 'settings-list-title';
         title.textContent = browser.purpose || 'Browser';
+        const note = document.createElement('span');
+        note.className = 'settings-list-note';
+        note.textContent = browser.pairing_code
+            ? `Pairing code ${browser.pairing_code}`
+            : 'Environment profile';
+        content.append(title, note);
         const badge = document.createElement('span');
         badge.className = `device-status ${browser.online ? 'is-online' : 'is-offline'}`;
         badge.textContent = browser.state || 'offline';
-        head.append(title, badge);
-        card.append(head);
-        if (browser.pairing_code) {
-            const pairing = document.createElement('p');
-            pairing.append('Pairing code: ');
-            const code = document.createElement('code');
-            code.textContent = browser.pairing_code;
-            pairing.append(code);
-            card.append(pairing);
-        }
+        row.append(content, badge);
         if (browser.source !== 'environment') {
             const remove = document.createElement('button');
             remove.type = 'button';
             remove.className = 'btn btn-small btn-danger';
             remove.textContent = 'Remove';
             remove.onclick = () => removeBrowser(browser.profile_id);
-            card.append(remove);
+            row.append(remove);
         }
-        list.append(card);
+        list.append(row);
     });
 }
 

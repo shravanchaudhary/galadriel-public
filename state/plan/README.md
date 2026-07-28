@@ -15,8 +15,10 @@ day's file** — for history, `read_file` a specific date or `ls` this directory
 
 - Write a complete standalone document: doctype, `html`, `head`, UTF-8 and
   viewport metadata, a descriptive `title`, and semantic body content.
-- Keep styling minimal, responsive, inline, and compatible with light and dark
-  color schemes. Use clear date/title hierarchy and compact sections.
+- Match Replika’s enterprise settings chrome (quiet white surface, section
+  hairlines, list rows). Full visual rules + copy-pasteable `<style>` shell:
+  `knowledge/reference/user_facing_html_artifacts.md`. When creating a new day,
+  start from that shell; when amending, preserve its styles and class names.
 - Do not add scripts, forms, event handlers, remote assets, or external
   dependencies. Tower displays this file in a sandboxed, read-only frame.
 - Read the existing document before editing. Preserve its shell, styles, prior

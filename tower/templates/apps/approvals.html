@@ -1,40 +1,41 @@
 {% extends "apps/base.html" %}
 {% block title %}Approval Inbox{% endblock %}
-{% block heading %}Approval Inbox{% endblock %}
+{% block heading %}Approvals{% endblock %}
 {% block subtitle %}Records waiting for a human decision{% endblock %}
 
 {% block wf_content %}
 {% if not db_ok %}
-<p class="empty-state">DB not configured — nothing to show.</p>
+<p class="settings-empty">Database not configured — nothing to show.</p>
 {% elif cards %}
+<div class="settings-list">
 {% for card in cards %}
-<div class="approval-card">
-    <div class="head">
-        <span class="badge approval">{{ card.doc.get('status') }}</span>
-        <strong>{{ card.doc.get(card.spec.table_columns[0], card.doc.get(card.spec.key)) }}</strong>
-        <span class="muted" style="font-size:0.8rem;">{{ card.spec.name }}</span>
-    </div>
-    <ul class="field-list">
-        {% for col in card.spec.table_columns %}
-        {% if col != 'status' %}
-        <li><span class="k">{{ col }}</span><span class="v">{{ card.doc.get(col, '') | humantime }}</span></li>
-        {% endif %}
-        {% endfor %}
-    </ul>
-    <div class="actions">
-        <a href="/w/{{ card.spec.name }}/item?key={{ card.doc.get(card.spec.key) | urlencode }}" class="btn btn-small">Details</a>
-        {% for to in card.allowed %}
-        <form method="post" action="/approvals/act">
-            <input type="hidden" name="entity" value="{{ card.spec.name }}">
-            <input type="hidden" name="key" value="{{ card.doc.get(card.spec.key) }}">
-            <input type="hidden" name="to" value="{{ to }}">
-            <button type="submit" class="btn btn-small">→ {{ to }}</button>
-        </form>
-        {% endfor %}
-    </div>
+<div class="settings-list-item" style="align-items:flex-start;cursor:default;">
+    <span class="settings-list-content">
+        <span class="settings-list-title">{{ card.doc.get(card.spec.table_columns[0], card.doc.get(card.spec.key)) }}</span>
+        <span class="settings-list-note">{{ card.spec.name }} · {{ card.doc.get('status') }}</span>
+        <ul class="field-list" style="margin-top:0.55rem;">
+            {% for col in card.spec.table_columns %}
+            {% if col != 'status' %}
+            <li><span class="k">{{ col }}</span><span class="v">{{ card.doc.get(col, '') | humantime }}</span></li>
+            {% endif %}
+            {% endfor %}
+        </ul>
+        <div class="settings-actions">
+            <a href="/w/{{ card.spec.name }}/item?key={{ card.doc.get(card.spec.key) | urlencode }}" class="btn btn-small btn-secondary">Details</a>
+            {% for to in card.allowed %}
+            <form method="post" action="/approvals/act" style="display:inline;">
+                <input type="hidden" name="entity" value="{{ card.spec.name }}">
+                <input type="hidden" name="key" value="{{ card.doc.get(card.spec.key) }}">
+                <input type="hidden" name="to" value="{{ to }}">
+                <button type="submit" class="btn btn-small">{{ to }}</button>
+            </form>
+            {% endfor %}
+        </div>
+    </span>
 </div>
 {% endfor %}
+</div>
 {% else %}
-<p class="empty-state">Nothing waiting for approval. ✨</p>
+<p class="settings-empty">Nothing waiting for approval.</p>
 {% endif %}
 {% endblock %}
