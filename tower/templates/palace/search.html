@@ -10,17 +10,18 @@
         <button type="submit" class="composer-send" aria-label="Search">→</button>
     </div>
     <div class="settings-actions">
-        <input type="text" name="wing" value="{{ wing or '' }}" placeholder="Wing" class="chat-input" style="max-width:140px;">
-        <input type="text" name="room" value="{{ room or '' }}" placeholder="Room" class="chat-input" style="max-width:140px;">
-        <input type="text" name="hall" value="{{ hall or '' }}" placeholder="Hall" class="chat-input" style="max-width:140px;">
+        <input type="text" name="wing" value="{{ wing or '' }}" placeholder="Wing" class="chat-input palace-filter-input">
+        <input type="text" name="room" value="{{ room or '' }}" placeholder="Room" class="chat-input palace-filter-input">
+        <input type="text" name="hall" value="{{ hall or '' }}" placeholder="Hall" class="chat-input palace-filter-input">
     </div>
 </form>
 
 {% if query and not results %}
 <p class="settings-empty">No drawers matched <strong>{{ query }}</strong>.</p>
 {% elif results %}
+<div class="table-wrap" role="region" aria-label="Search results" tabindex="0">
 <table class="wf-table">
-    <thead><tr><th>Text</th><th>Wing</th><th>Room</th><th>Hall</th><th>Distance</th><th></th></tr></thead>
+    <thead><tr><th scope="col">Text</th><th scope="col">Wing</th><th scope="col">Room</th><th scope="col">Hall</th><th scope="col">Distance</th><th scope="col"><span class="sr-only">Open</span></th></tr></thead>
     <tbody>
         {% for d in results %}
         <tr>
@@ -34,5 +35,6 @@
         {% endfor %}
     </tbody>
 </table>
+</div>
 {% endif %}
 {% endblock %}

@@ -58,7 +58,7 @@
                     </span>
                 </div>
                 <div class="settings-row-control">
-                    <select id="slack-channel" class="interval-select" style="min-width: 220px;">
+                    <select id="slack-channel" class="interval-select slack-channel-select">
                         {% if slack.selected_channel %}
                         <option value="{{ slack.selected_channel.id }}">
                             #{{ slack.selected_channel.name }}
@@ -148,9 +148,23 @@ if (saveAdmins) {
 }
 
 document.getElementById('slack-disconnect').addEventListener('click', async () => {
-    if (!confirm('Disconnect this Slack workspace?')) return;
+    const ok = window.towerConfirm
+        ? await window.towerConfirm('Disconnect this Slack workspace?', {
+            title: 'Disconnect Slack',
+            confirmLabel: 'Disconnect',
+            danger: true,
+        })
+        : confirm('Disconnect this Slack workspace?');
+    if (!ok) return;
     const response = await fetch('/api/integrations/slack', {method: 'DELETE'});
-    if (response.ok) window.location.reload();
+    if (response.ok) {
+        window.location.reload();
+        return;
+    }
+    const data = await response.json().catch(() => ({}));
+    if (window.towerToast) {
+        window.towerToast(data.error || 'Could not disconnect Slack.', { type: 'error' });
+    }
 });
 </script>
 {% endif %}

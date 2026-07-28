@@ -1,80 +1,237 @@
 {% extends "base.html" %}
-{% block title %}Your Replika{% endblock %}
-{% block heading %}Your Replika{% endblock %}
-{% block subtitle %}Choose how your Replika works and where it lives{% endblock %}
+{% block title %}My Replika{% endblock %}
+{% block container_class %}settings-page{% endblock %}
+{% block page_header %}{% endblock %}
 
 {% block content %}
-<section class="card" style="max-width: 640px;">
-    <div id="replika-ready" {% if not replika %}hidden{% endif %}>
-        <div class="card-label">Your address</div>
-        <div class="card-value" id="replika-url">{{ replika.url if replika else "" }}</div>
-        <p id="replika-type">{{ replika.replika_type|capitalize if replika else "" }}</p>
-        <p id="replika-status">{{ replika.status|capitalize if replika else "" }}</p>
-        <a id="replika-open" href="{{ replika.url if replika else '#' }}">Open Replika</a>
-    </div>
+<div class="settings-page-inner">
+    <header class="settings-page-head">
+        <h1 class="settings-page-title">My Replika</h1>
+        <p class="settings-page-subtitle">Choose how your Replika works and where it lives</p>
+    </header>
 
-    <form id="replika-form" {% if replika %}hidden{% endif %}>
-        <fieldset style="border: 0; margin-bottom: 1rem;">
-            <legend style="font-weight: 500; margin-bottom: 0.5rem;">Replika type</legend>
-            <label style="display: block; margin-bottom: 0.5rem;">
-                <input type="radio" name="replika_type" value="individual" checked required>
-                Individual — install for yourself and talk in Slack DMs
-            </label>
-            <label style="display: block;">
-                <input type="radio" name="replika_type" value="organization" required>
-                Organization — connect one shared Slack channel
-            </label>
-        </fieldset>
-        <label for="replika-username">Username</label>
-        <div class="model-controls">
-            <input
-                id="replika-username"
-                name="username"
-                minlength="3"
-                maxlength="32"
-                pattern="[a-z0-9](?:[a-z0-9-]{1,30}[a-z0-9])?"
-                autocomplete="off"
-                required
-                placeholder="your-name"
-            >
-            <span class="muted" id="replika-domain"></span>
+    <section
+        class="settings-section"
+        id="replika-ready"
+        data-username="{{ replika.username if replika else '' }}"
+        data-type="{{ replika.replika_type if replika else '' }}"
+        {% if not replika %}hidden{% endif %}
+    >
+        <div class="settings-section-head">
+            <h2 class="settings-section-title">Your Replika</h2>
+            <p class="settings-section-desc" id="replika-status-desc">
+                {% if replika and replika.status == 'ready' %}
+                Ready to open
+                {% elif replika and replika.status == 'creating' %}
+                Creating your Replika…
+                {% elif replika %}
+                {{ replika.message or 'Temporarily unavailable' }}
+                {% endif %}
+            </p>
         </div>
-        <p id="replika-message" class="muted">Lowercase letters, numbers, and hyphens.</p>
-        <button type="submit">Create your Replika</button>
+        <div class="settings-rows">
+            <div class="settings-row">
+                <div class="settings-row-main">
+                    <span class="settings-row-label">Address</span>
+                    <span class="settings-row-hint" id="replika-url">{{ replika.url if replika else "" }}</span>
+                </div>
+                <div class="settings-row-control">
+                    <span class="status-pill" id="replika-status-pill"
+                          data-status="{{ replika.status if replika else '' }}">
+                        {% if replika and replika.status == 'ready' %}Ready
+                        {% elif replika and replika.status == 'creating' %}Creating
+                        {% elif replika %}Unavailable
+                        {% endif %}
+                    </span>
+                </div>
+            </div>
+            <div class="settings-row">
+                <div class="settings-row-main">
+                    <span class="settings-row-label">Type</span>
+                    <span class="settings-row-hint" id="replika-type">
+                        {% if replika %}
+                        {{ 'Organization' if replika.replika_type == 'organization' else 'Individual' }}
+                        {% endif %}
+                    </span>
+                </div>
+            </div>
+        </div>
+        <div class="settings-actions" id="replika-ready-actions">
+            <a class="btn" id="replika-open" href="{{ replika.url if replika else '#' }}"
+               {% if not replika or replika.status != 'ready' %}hidden{% endif %}>Open Replika</a>
+            <button type="button" class="btn btn-secondary" id="replika-retry"
+                    {% if not replika or replika.status != 'error' %}hidden{% endif %}>Try again</button>
+            <p class="settings-row-hint" id="replika-progress" aria-live="polite"
+               {% if not replika or replika.status != 'creating' %}hidden{% endif %}>
+                Provisioning usually finishes within a minute.
+            </p>
+        </div>
+    </section>
+
+    <form class="settings-section" id="replika-form" {% if replika %}hidden{% endif %}>
+        <div class="settings-section-head">
+            <h2 class="settings-section-title">Replika type</h2>
+            <p class="settings-section-desc">This cannot be changed after creation</p>
+        </div>
+        <div class="settings-choice-grid" role="radiogroup" aria-label="Replika type">
+            <label class="settings-choice">
+                <input type="radio" name="replika_type" value="individual" checked required>
+                <span class="settings-choice-body">
+                    <span class="settings-choice-title">Individual</span>
+                    <span class="settings-choice-hint">Install for yourself and talk in Slack DMs</span>
+                </span>
+            </label>
+            <label class="settings-choice">
+                <input type="radio" name="replika_type" value="organization" required>
+                <span class="settings-choice-body">
+                    <span class="settings-choice-title">Organization</span>
+                    <span class="settings-choice-hint">Connect one shared Slack channel for your team</span>
+                </span>
+            </label>
+        </div>
+
+        <div class="settings-subsection">
+            <div class="settings-section-head">
+                <h2 class="settings-section-title">Username</h2>
+                <p class="settings-section-desc">Lowercase letters, numbers, and hyphens</p>
+            </div>
+            <div class="settings-rows">
+                <div class="settings-row">
+                    <div class="settings-row-main">
+                        <label class="settings-row-label" for="replika-username">Address</label>
+                        <span class="settings-row-hint" id="replika-message" aria-live="polite">
+                            Pick a unique subdomain for your Replika
+                        </span>
+                    </div>
+                    <div class="settings-row-control stacked">
+                        <div class="replika-username-field">
+                            <input
+                                id="replika-username"
+                                class="chat-input"
+                                name="username"
+                                minlength="3"
+                                maxlength="32"
+                                pattern="[a-z0-9](?:[a-z0-9-]{1,30}[a-z0-9])?"
+                                autocomplete="off"
+                                required
+                                placeholder="your-name"
+                                aria-describedby="replika-message"
+                            >
+                            <span class="replika-domain" id="replika-domain">.{{ product_domain }}</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="settings-actions">
+                <button type="submit" class="btn" id="replika-submit">Create your Replika</button>
+            </div>
+        </div>
     </form>
-</section>
+</div>
 {% endblock %}
 
 {% block chat_widget %}{% endblock %}
 {% block scripts %}
 <script>
 const form = document.getElementById('replika-form');
+const ready = document.getElementById('replika-ready');
 const input = document.getElementById('replika-username');
 const message = document.getElementById('replika-message');
+const submitBtn = document.getElementById('replika-submit');
+const retryBtn = document.getElementById('replika-retry');
 let availabilityTimer;
+
+function setStatusPill(status) {
+    const pill = document.getElementById('replika-status-pill');
+    pill.dataset.status = status || '';
+    pill.textContent =
+        status === 'ready' ? 'Ready' :
+        status === 'creating' ? 'Creating' :
+        status === 'error' ? 'Unavailable' :
+        (status ? status : '');
+}
 
 function showReplika(replika) {
     form.hidden = true;
-    document.getElementById('replika-ready').hidden = false;
+    ready.hidden = false;
+    ready.dataset.username = replika.username || '';
+    ready.dataset.type = replika.replika_type || '';
     document.getElementById('replika-url').textContent = replika.url;
     document.getElementById('replika-type').textContent =
         replika.replika_type === 'organization' ? 'Organization' : 'Individual';
-    document.getElementById('replika-status').textContent =
-        replika.status === 'ready' ? 'Ready' :
+    const desc = document.getElementById('replika-status-desc');
+    desc.textContent =
+        replika.status === 'ready' ? 'Ready to open' :
         replika.status === 'creating' ? 'Creating your Replika…' :
         (replika.message || 'Temporarily unavailable');
+    setStatusPill(replika.status);
     const link = document.getElementById('replika-open');
     link.href = replika.url;
     link.hidden = replika.status !== 'ready';
+    document.getElementById('replika-progress').hidden = replika.status !== 'creating';
+    retryBtn.hidden = replika.status !== 'error';
     if (replika.status === 'creating') {
         setTimeout(refreshStatus, 2000);
     }
 }
 
 async function refreshStatus() {
-    const response = await fetch('/api/replika');
-    const data = await response.json();
-    if (response.ok && data.replika) showReplika(data.replika);
+    try {
+        const response = await fetch('/api/replika');
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            if (window.towerToast) {
+                window.towerToast(data.error || 'Could not refresh status.', { type: 'error' });
+            }
+            return;
+        }
+        if (data.replika) showReplika(data.replika);
+    } catch (err) {
+        if (window.towerToast) {
+            window.towerToast(err.message || 'Could not refresh status.', { type: 'error' });
+        }
+    }
+}
+
+async function createReplika(username, replikaType, statusEl) {
+    if (statusEl) {
+        statusEl.textContent = 'Creating your Replika…';
+        statusEl.dataset.state = 'pending';
+    }
+    if (submitBtn) submitBtn.disabled = true;
+    if (retryBtn) retryBtn.disabled = true;
+    try {
+        const response = await fetch('/api/replika', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                username,
+                replika_type: replikaType,
+            }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            if (statusEl) {
+                statusEl.textContent = data.error || 'Please try again.';
+                statusEl.dataset.state = 'error';
+            } else if (window.towerToast) {
+                window.towerToast(data.error || 'Please try again.', { type: 'error' });
+            }
+            return;
+        }
+        if (statusEl) statusEl.dataset.state = '';
+        showReplika(data.replika);
+    } catch (err) {
+        if (statusEl) {
+            statusEl.textContent = err.message || 'Please try again.';
+            statusEl.dataset.state = 'error';
+        } else if (window.towerToast) {
+            window.towerToast(err.message || 'Please try again.', { type: 'error' });
+        }
+    } finally {
+        if (submitBtn) submitBtn.disabled = false;
+        if (retryBtn) retryBtn.disabled = false;
+    }
 }
 
 if (input) {
@@ -82,34 +239,39 @@ if (input) {
         clearTimeout(availabilityTimer);
         const username = input.value.trim().toLowerCase();
         input.value = username;
+        message.dataset.state = '';
         if (username.length < 3) {
-            message.textContent = 'Lowercase letters, numbers, and hyphens.';
+            message.textContent = 'Pick a unique subdomain for your Replika';
             return;
         }
+        message.textContent = 'Checking availability…';
         availabilityTimer = setTimeout(async () => {
-            const response = await fetch(`/api/replika/username/${encodeURIComponent(username)}`);
-            const data = await response.json();
-            message.textContent = data.available ? 'Available' : (data.error || 'Not available');
+            try {
+                const response = await fetch(`/api/replika/username/${encodeURIComponent(username)}`);
+                const data = await response.json().catch(() => ({}));
+                if (data.available) {
+                    message.textContent = 'Available';
+                    message.dataset.state = 'ok';
+                } else {
+                    message.textContent = data.error || 'Not available';
+                    message.dataset.state = 'error';
+                }
+            } catch (err) {
+                message.textContent = 'Could not check availability.';
+                message.dataset.state = 'error';
+            }
         }, 250);
     });
 
     form.addEventListener('submit', async (event) => {
         event.preventDefault();
-        message.textContent = 'Creating your Replika…';
-        const response = await fetch('/api/replika', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-                username: input.value,
-                replika_type: form.elements.replika_type.value,
-            }),
-        });
-        const data = await response.json();
-        if (!response.ok) {
-            message.textContent = data.error || 'Please try again.';
-            return;
-        }
-        showReplika(data.replika);
+        await createReplika(input.value, form.elements.replika_type.value, message);
+    });
+}
+
+if (retryBtn) {
+    retryBtn.addEventListener('click', async () => {
+        await createReplika(ready.dataset.username, ready.dataset.type, null);
     });
 }
 </script>

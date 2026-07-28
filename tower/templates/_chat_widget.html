@@ -39,6 +39,8 @@
                 <input type="file" id="wfc-file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
                 <select id="wfc-model-select" class="composer-model-select interval-select" title="Agent model"></select>
                 <span class="composer-spacer"></span>
+                <button type="button" class="composer-icon-btn voice-dictation-btn" id="wfc-mic"
+                        title="Start voice dictation" aria-label="Start voice dictation"></button>
                 <button type="submit" class="composer-send" id="wfc-send" title="Send">→</button>
                 <button type="button" class="composer-stop" id="wfc-stop" title="Stop agent" hidden>■</button>
             </div>
@@ -49,11 +51,13 @@
 <script src="/static/vendor/marked.min.js"></script>
 <script src="/static/chat_render.js"></script>
 <script src="/static/chat_live.js"></script>
+<script src="/static/voice_dictation.js"></script>
 <script>
 (function () {
     const log = document.getElementById('wfc-log');
     const input = document.getElementById('wfc-input');
     const sendBtn = document.getElementById('wfc-send');
+    const micBtn = document.getElementById('wfc-mic');
     const stopBtn = document.getElementById('wfc-stop');
     const queueStatus = document.getElementById('wfc-queue-status');
     const queueItems = document.getElementById('wfc-queue-items');
@@ -64,6 +68,7 @@
     const LAYOUT_DEFAULTS = { width: 380, height: 540, expanded: false };
     const MIN_W = 320, MIN_H = 280;
     const RENDER_OPTS = ChatLive.RENDER_OPTS;
+    VoiceDictation.bind({ input, button: micBtn });
 
     let pageContext = {};
     try {
@@ -111,11 +116,11 @@
     function addImageFile(file) {
         if (!file || !file.type.startsWith('image/')) return;
         if (pendingImages.length >= MAX_IMAGES) {
-            alert(`Max ${MAX_IMAGES} images per message.`);
+            if (window.towerToast) window.towerToast(`Max ${MAX_IMAGES} images per message.`, { type: 'error' }); else alert(`Max ${MAX_IMAGES} images per message.`);
             return;
         }
         if (file.size > MAX_IMAGE_BYTES) {
-            alert(`${file.name || 'Image'} is over the 5MB limit.`);
+            if (window.towerToast) window.towerToast(`${file.name || 'Image'} is over the 5MB limit.`, { type: 'error' }); else alert(`${file.name || 'Image'} is over the 5MB limit.`);
             return;
         }
         const reader = new FileReader();
@@ -203,7 +208,7 @@
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ revision: item.revision, display_text: next }),
                         });
-                    } catch (err) { alert(err.message); }
+                    } catch (err) { if (window.towerToast) window.towerToast(err.message, { type: 'error' }); else alert(err.message); }
                 });
                 const del = document.createElement('button');
                 del.type = 'button'; del.textContent = 'Delete';
@@ -214,7 +219,7 @@
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify({ revision: item.revision }),
                         });
-                    } catch (err) { alert(err.message); }
+                    } catch (err) { if (window.towerToast) window.towerToast(err.message, { type: 'error' }); else alert(err.message); }
                 });
                 row.append(text, edit, del);
                 queueItems.appendChild(row);
@@ -246,7 +251,7 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ channel: 'main', items }),
             });
-        } catch (err) { alert(err.message); await wfcLoadQueue(); }
+        } catch (err) { if (window.towerToast) window.towerToast(err.message, { type: 'error' }); else alert(err.message); await wfcLoadQueue(); }
         draggedQueueItem = null;
     });
 
@@ -510,7 +515,7 @@
             });
             const data = await res.json().catch(() => ({}));
             if (!res.ok) {
-                alert(data.error || 'Failed to clear conversation');
+                if (window.towerToast) window.towerToast(data.error || 'Failed to clear conversation', { type: 'error' }); else alert(data.error || 'Failed to clear conversation');
                 return;
             }
             log.innerHTML = '';
@@ -518,7 +523,7 @@
             renderPreviews();
             input.focus();
         } catch (err) {
-            alert(err.message || 'Failed to start a new chat');
+            if (window.towerToast) window.towerToast(err.message || 'Failed to start a new chat', { type: 'error' }); else alert(err.message || 'Failed to start a new chat');
         } finally {
             if (btn) btn.disabled = false;
         }

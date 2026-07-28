@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 import unittest
 from datetime import datetime, timezone
@@ -17,12 +18,14 @@ sys.path.insert(0, str(ROOT))
 
 from harness import conversation_run_store  # noqa: E402
 from harness.agent import GaladrielAgent, MAIN_CHANNEL_ID  # noqa: E402
+from tower.app import _browser_transcribe_credentials, create_tower  # noqa: E402
 from tower.chats_board import (  # noqa: E402
     _main_items,
     active_main_history,
     history_for_run,
     register_chats_board,
 )
+from tower.todo_board import register_todo_board  # noqa: E402
 
 
 class SanitizationTests(unittest.TestCase):
@@ -283,6 +286,7 @@ class ChatsBoardTests(unittest.TestCase):
         app = Flask(__name__, template_folder=str(ROOT / "tower" / "templates"))
         app.secret_key = "test"
         app.context_processor(lambda: {"page_context": {}})
+        register_todo_board(app)
         register_chats_board(app)
         self.client = app.test_client()
 
@@ -314,11 +318,17 @@ class ChatsBoardTests(unittest.TestCase):
             self.assertIn(b"Today", listed.data)
             self.assertIn(b"runs-shell", listed.data)
             self.assertIn(b"Named chat", listed.data)
+            self.assertIn(b"skip-link", listed.data)
+            self.assertIn(b"site-menu-btn", listed.data)
+            self.assertIn(b"/static/ui.js", listed.data)
             self.assertFalse(calls_mock.called)
             shell = self.client.get("/chats?kind=chat&id=run-1")
             self.assertEqual(shell.status_code, 200)
             self.assertIn(b"runs-shell", shell.data)
             self.assertIn(b"runs-composer", shell.data)
+            self.assertIn(b'id="new-chat-mic"', shell.data)
+            self.assertIn(b'id="runs-mic"', shell.data)
+            self.assertIn(b"/static/voice_dictation.js", shell.data)
             self.assertFalse(calls_mock.called)
             detail = self.client.get("/chats/detail?kind=chat&id=run-1")
             self.assertEqual(detail.status_code, 200)
@@ -328,12 +338,112 @@ class ChatsBoardTests(unittest.TestCase):
             self.assertTrue(body["continuable"])
             self.assertIn("history", body)
             self.assertTrue(calls_mock.called)
-            redirect_detail = self.client.get("/runs/user/run-1", follow_redirects=True)
-            self.assertEqual(redirect_detail.status_code, 200)
+            legacy_index = self.client.get("/runs?kind=main&id=run-1", follow_redirects=False)
+            self.assertEqual(legacy_index.status_code, 302)
+            self.assertIn("/chats", legacy_index.headers["Location"])
+            redirect_detail = self.client.get("/runs/user/run-1", follow_redirects=False)
+            self.assertEqual(redirect_detail.status_code, 302)
+            self.assertIn("/chats", redirect_detail.headers["Location"])
+            self.assertIn("id=run-1", redirect_detail.headers["Location"])
+            followed = self.client.get("/runs/user/run-1", follow_redirects=True)
+            self.assertEqual(followed.status_code, 200)
             legacy = self.client.get("/runs?kind=main&id=run-1", follow_redirects=True)
             self.assertEqual(legacy.status_code, 200)
         self.assertEqual(self.client.get("/runs/user/missing").status_code, 404)
         self.assertEqual(self.client.get("/chats/detail?kind=chat&id=missing").status_code, 404)
+
+
+class LegacyRedirectTests(unittest.TestCase):
+    def test_phone_bridge_page_redirects_to_devices(self):
+        from tower.phone_bridge import register_phone_bridge
+
+        app = Flask(__name__)
+        register_phone_bridge(app)
+        response = app.test_client().get("/phone-bridge", follow_redirects=False)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.headers["Location"], "/devices/phone")
+
+
+class VoiceDictationTests(unittest.TestCase):
+    class Agent:
+        model = "test-model"
+        conversations = {}
+        headroom_enabled = False
+
+        class memory:
+            memory_dir = str(ROOT / "memory")
+
+        def model_for_channel(self, _channel_id):
+            return self.model
+
+    def test_credentials_require_role_configuration(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("VOICE_TRANSCRIBE_ROLE_ARN", None)
+            with self.assertRaisesRegex(RuntimeError, "not configured"):
+                _browser_transcribe_credentials()
+
+    def test_credentials_are_short_lived_and_serialized_for_browser(self):
+        expires = datetime(2026, 7, 28, 20, 0, tzinfo=timezone.utc)
+        sts = MagicMock()
+        sts.assume_role.return_value = {
+            "Credentials": {
+                "AccessKeyId": "temporary-access",
+                "SecretAccessKey": "temporary-secret",
+                "SessionToken": "temporary-token",
+                "Expiration": expires,
+            }
+        }
+        with patch.dict(os.environ, {
+            "VOICE_TRANSCRIBE_ROLE_ARN": "arn:aws:iam::123456789012:role/browser",
+            "VOICE_TRANSCRIBE_REGION": "ap-south-1",
+        }), patch("boto3.client", return_value=sts):
+            result = _browser_transcribe_credentials()
+        self.assertEqual(result["accessKeyId"], "temporary-access")
+        self.assertEqual(result["region"], "ap-south-1")
+        self.assertEqual(result["expiration"], expires.isoformat())
+        sts.assume_role.assert_called_once_with(
+            RoleArn="arn:aws:iam::123456789012:role/browser",
+            RoleSessionName="replika-browser-dictation",
+            DurationSeconds=900,
+        )
+
+    def test_credentials_route_is_authenticated_and_not_cached(self):
+        credentials = {
+            "accessKeyId": "a",
+            "secretAccessKey": "s",
+            "sessionToken": "t",
+            "expiration": "2026-07-28T20:00:00+00:00",
+            "region": "ap-south-1",
+        }
+        with patch.dict(os.environ, {
+            "TOWER_AUTH_REQUIRED": "false",
+            "TOWER_SECRET_KEY": "voice-test-secret",
+        }), patch("tower.app._browser_transcribe_credentials", return_value=credentials):
+            client = create_tower(self.Agent()).test_client()
+            response = client.post("/api/transcribe/credentials", json={})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), credentials)
+        self.assertEqual(response.headers["Cache-Control"], "no-store")
+
+        with patch.dict(os.environ, {
+            "TOWER_AUTH_REQUIRED": "false",
+            "TOWER_SECRET_KEY": "voice-test-secret",
+        }, clear=False):
+            os.environ.pop("VOICE_TRANSCRIBE_ROLE_ARN", None)
+            client = create_tower(self.Agent()).test_client()
+            unavailable = client.post("/api/transcribe/credentials", json={})
+        self.assertEqual(unavailable.status_code, 503)
+        self.assertIn("not configured", unavailable.get_json()["error"])
+
+        with patch.dict(os.environ, {
+            "TOWER_AUTH_REQUIRED": "true",
+            "TOWER_AUTH_USERNAME": "voice-test",
+            "TOWER_AUTH_TOKEN": "voice-test-token",
+            "TOWER_SECRET_KEY": "voice-test-secret",
+        }):
+            client = create_tower(self.Agent()).test_client()
+            response = client.post("/api/transcribe/credentials", json={})
+        self.assertEqual(response.status_code, 401)
 
 
 class SelectApiTests(unittest.TestCase):

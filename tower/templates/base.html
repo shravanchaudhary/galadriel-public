@@ -6,9 +6,19 @@
     {% block extra_head %}{% endblock %}
 </head>
 <body class="app-body">
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    <div class="site-topbar">
+        <button type="button" class="site-menu-btn" id="site-menu-btn"
+                aria-controls="site-sidebar" aria-expanded="false" aria-label="Open navigation">☰</button>
+        <a href="/" class="site-topbar-brand">
+            <img src="/static/img/clodexa-logo.png" alt="" class="site-logo" width="28" height="28">
+            <span>Replika</span>
+        </a>
+    </div>
+    <div class="site-nav-backdrop" id="site-nav-backdrop"></div>
     <div class="app-shell">
         {% include "_nav.html" %}
-        <main class="container {% block container_class %}{% endblock %}">
+        <main id="main-content" class="container {% block container_class %}{% endblock %}" tabindex="-1">
             {% block page_header %}
             <header class="page-header">
                 <h1>{% block heading %}{% endblock %}</h1>
@@ -21,6 +31,7 @@
     {% block chat_widget %}
     {% include "_chat_widget.html" %}
     {% endblock %}
+    <script src="/static/ui.js" defer></script>
     {% block scripts %}{% endblock %}
 </body>
 </html>

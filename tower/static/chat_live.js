@@ -297,7 +297,7 @@ window.ChatLive = (function () {
                 if (dash) dash.value = data.model;
             } catch (err) {
                 source.value = prev;
-                alert(err.message || 'Failed to set model');
+                if (window.towerToast) window.towerToast(err.message || 'Failed to set model', { type: 'error' }); else alert(err.message || 'Failed to set model');
             }
         }
         for (const el of nodes) {

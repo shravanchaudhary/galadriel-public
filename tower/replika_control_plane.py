@@ -279,6 +279,9 @@ def register_replika_control_plane(app) -> None:
         return render_template(
             "replika/setup.html",
             replika=_customer_view(document) if document else None,
+            product_domain=os.environ.get(
+                "REPLIKA_PRODUCT_DOMAIN", "replika.local"
+            ).strip().lower(),
         )
 
     @bp.get("/api/replika")

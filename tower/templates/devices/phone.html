@@ -11,17 +11,17 @@
     </header>
 
     <section class="settings-section devices-section">
-        <div class="settings-section-head" style="display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;">
+        <div class="settings-section-head settings-section-head-row">
             <div>
                 <h2 class="settings-section-title">Enrolled phones</h2>
                 <p class="settings-section-desc">One enrolled phone can provide the local ADB connection</p>
             </div>
-            <button type="button" class="btn btn-small btn-secondary" onclick="createCode()">Enroll phone</button>
+            <button type="button" class="btn btn-small btn-secondary" id="phone-enroll-btn">Enroll phone</button>
         </div>
         <div id="enrollment-code" class="devices-enrollment-code" aria-live="polite"></div>
         <div class="settings-list" id="phone-list">
             {% for device in phone.devices %}
-            <div class="settings-list-item" style="cursor:default;">
+            <div class="settings-list-item is-static">
                 <span class="settings-list-content">
                     <span class="settings-list-title">{{ device.device_id }}</span>
                     <span class="settings-list-note">Enrolled {{ device.enrolled_at }}</span>
@@ -30,7 +30,7 @@
                     {{ 'streaming' if device.stream_active else ('connected' if device.connected else ('revoked' if device.revoked_at else 'offline')) }}
                 </span>
                 {% if not device.revoked_at %}
-                <button type="button" class="btn btn-small btn-danger" onclick="revokePhone('{{ device.device_id }}')">Revoke</button>
+                <button type="button" class="btn btn-small btn-danger" data-revoke-phone="{{ device.device_id }}">Revoke</button>
                 {% endif %}
             </div>
             {% else %}
@@ -55,8 +55,7 @@ function renderPhones(phone) {
     }
     phone.devices.forEach(device => {
         const row = document.createElement('div');
-        row.className = 'settings-list-item';
-        row.style.cursor = 'default';
+        row.className = 'settings-list-item is-static';
         const content = document.createElement('span');
         content.className = 'settings-list-content';
         const title = document.createElement('span');
@@ -75,8 +74,8 @@ function renderPhones(phone) {
             const revoke = document.createElement('button');
             revoke.type = 'button';
             revoke.className = 'btn btn-small btn-danger';
+            revoke.dataset.revokePhone = device.device_id;
             revoke.textContent = 'Revoke';
-            revoke.onclick = () => revokePhone(device.device_id);
             row.append(revoke);
         }
         list.append(row);
@@ -84,26 +83,64 @@ function renderPhones(phone) {
 }
 
 async function refreshPhones() {
-    const response = await fetch('/api/devices/phone/status');
-    if (!response.ok) return;
-    renderPhones((await response.json()).phone || {devices: []});
+    try {
+        const response = await fetch('/api/devices/phone/status');
+        if (!response.ok) {
+            if (window.towerToast) window.towerToast('Could not refresh phones.', { type: 'error' });
+            return;
+        }
+        renderPhones((await response.json()).phone || {devices: []});
+    } catch (err) {
+        if (window.towerToast) window.towerToast(err.message || 'Could not refresh phones.', { type: 'error' });
+    }
 }
 
 async function createCode() {
-    const response = await fetch('/api/phone-bridge/enrollment-code', {method: 'POST'});
-    const data = await response.json();
-    document.getElementById('enrollment-code').textContent =
-        response.ok ? `${data.code} — expires ${data.expires_at}` : (data.error || 'Could not create code.');
+    try {
+        const response = await fetch('/api/phone-bridge/enrollment-code', {method: 'POST'});
+        const data = await response.json().catch(() => ({}));
+        const target = document.getElementById('enrollment-code');
+        if (response.ok) {
+            target.textContent = `${data.code} — expires ${data.expires_at}`;
+        } else {
+            target.textContent = '';
+            if (window.towerToast) window.towerToast(data.error || 'Could not create code.', { type: 'error' });
+        }
+    } catch (err) {
+        if (window.towerToast) window.towerToast(err.message || 'Could not create code.', { type: 'error' });
+    }
 }
 
 async function revokePhone(deviceId) {
-    const response = await fetch(
-        `/api/phone-bridge/devices/${encodeURIComponent(deviceId)}/revoke`,
-        {method: 'POST'},
-    );
-    if (response.ok) await refreshPhones();
+    const ok = window.towerConfirm
+        ? await window.towerConfirm(`Revoke phone ${deviceId}?`, {
+            title: 'Revoke phone',
+            confirmLabel: 'Revoke',
+            danger: true,
+        })
+        : confirm(`Revoke phone ${deviceId}?`);
+    if (!ok) return;
+    try {
+        const response = await fetch(
+            `/api/phone-bridge/devices/${encodeURIComponent(deviceId)}/revoke`,
+            {method: 'POST'},
+        );
+        if (!response.ok) {
+            const data = await response.json().catch(() => ({}));
+            if (window.towerToast) window.towerToast(data.error || 'Could not revoke phone.', { type: 'error' });
+            return;
+        }
+        await refreshPhones();
+    } catch (err) {
+        if (window.towerToast) window.towerToast(err.message || 'Could not revoke phone.', { type: 'error' });
+    }
 }
 
+document.getElementById('phone-enroll-btn').addEventListener('click', createCode);
+document.getElementById('phone-list').addEventListener('click', (event) => {
+    const btn = event.target.closest('[data-revoke-phone]');
+    if (btn) revokePhone(btn.dataset.revokePhone);
+});
 window.setInterval(refreshPhones, 5000);
 </script>
 {% endblock %}

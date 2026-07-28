@@ -15,12 +15,12 @@
     {% endif %}
 
     <section class="settings-section devices-section">
-        <div class="settings-section-head" style="display:flex;align-items:flex-start;justify-content:space-between;gap:1rem;">
+        <div class="settings-section-head settings-section-head-row">
             <div>
                 <h2 class="settings-section-title">Connected browsers</h2>
                 <p class="settings-section-desc">Pair a browser so Replika can complete tasks on websites</p>
             </div>
-            <button type="button" class="btn btn-small btn-secondary" onclick="toggleBrowserForm()">Add browser</button>
+            <button type="button" class="btn btn-small btn-secondary" id="browser-add-btn">Add browser</button>
         </div>
 
         <form class="devices-form" id="browser-form" hidden>
@@ -30,14 +30,14 @@
             </div>
             <div class="settings-actions devices-actions">
                 <button type="submit" class="btn">Save browser</button>
-                <button type="button" class="btn btn-secondary" onclick="toggleBrowserForm(false)">Cancel</button>
+                <button type="button" class="btn btn-secondary" id="browser-cancel-btn">Cancel</button>
                 <span class="muted" id="browser-form-message" aria-live="polite"></span>
             </div>
         </form>
 
         <div class="settings-list" id="browser-list">
             {% for browser in browsers %}
-            <div class="settings-list-item" style="cursor:default;">
+            <div class="settings-list-item is-static">
                 <span class="settings-list-content">
                     <span class="settings-list-title">{{ browser.purpose or 'Browser' }}</span>
                     <span class="settings-list-note">
@@ -46,7 +46,7 @@
                 </span>
                 <span class="device-status {{ 'is-online' if browser.online else 'is-offline' }}">{{ browser.state }}</span>
                 {% if browser.source != 'environment' %}
-                <button type="button" class="btn btn-small btn-danger" onclick="removeBrowser('{{ browser.profile_id }}')">Remove</button>
+                <button type="button" class="btn btn-small btn-danger" data-remove-browser="{{ browser.profile_id }}">Remove</button>
                 {% endif %}
             </div>
             {% else %}
@@ -77,8 +77,7 @@ function renderBrowsers(browsers) {
     }
     browsers.forEach(browser => {
         const row = document.createElement('div');
-        row.className = 'settings-list-item';
-        row.style.cursor = 'default';
+        row.className = 'settings-list-item is-static';
         const content = document.createElement('span');
         content.className = 'settings-list-content';
         const title = document.createElement('span');
@@ -98,8 +97,8 @@ function renderBrowsers(browsers) {
             const remove = document.createElement('button');
             remove.type = 'button';
             remove.className = 'btn btn-small btn-danger';
+            remove.dataset.removeBrowser = browser.profile_id;
             remove.textContent = 'Remove';
-            remove.onclick = () => removeBrowser(browser.profile_id);
             row.append(remove);
         }
         list.append(row);
@@ -107,10 +106,20 @@ function renderBrowsers(browsers) {
 }
 
 async function refreshBrowsers() {
-    const response = await fetch('/api/devices/browsers/status');
-    if (!response.ok) return;
-    renderBrowsers((await response.json()).browsers || []);
+    try {
+        const response = await fetch('/api/devices/browsers/status');
+        if (!response.ok) {
+            if (window.towerToast) window.towerToast('Could not refresh browsers.', { type: 'error' });
+            return;
+        }
+        renderBrowsers((await response.json()).browsers || []);
+    } catch (err) {
+        if (window.towerToast) window.towerToast(err.message || 'Could not refresh browsers.', { type: 'error' });
+    }
 }
+
+document.getElementById('browser-add-btn').addEventListener('click', () => toggleBrowserForm());
+document.getElementById('browser-cancel-btn').addEventListener('click', () => toggleBrowserForm(false));
 
 browserForm.addEventListener('submit', async event => {
     event.preventDefault();
@@ -119,24 +128,50 @@ browserForm.addEventListener('submit', async event => {
         pairing_code: form.get('pairing_code'),
         purpose: form.get('purpose'),
     };
-    const response = await fetch('/api/devices/browsers', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(payload),
-    });
-    const data = await response.json();
-    document.getElementById('browser-form-message').textContent =
-        response.ok ? 'Saved.' : (data.error || 'Could not save browser.');
-    if (response.ok) {
-        toggleBrowserForm(false);
-        await refreshBrowsers();
+    try {
+        const response = await fetch('/api/devices/browsers', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload),
+        });
+        const data = await response.json().catch(() => ({}));
+        document.getElementById('browser-form-message').textContent =
+            response.ok ? 'Saved.' : (data.error || 'Could not save browser.');
+        if (response.ok) {
+            toggleBrowserForm(false);
+            await refreshBrowsers();
+        }
+    } catch (err) {
+        document.getElementById('browser-form-message').textContent = err.message || 'Could not save browser.';
     }
 });
 
 async function removeBrowser(profileId) {
-    const response = await fetch(`/api/devices/browsers/${encodeURIComponent(profileId)}`, {method: 'DELETE'});
-    if (response.ok) await refreshBrowsers();
+    const ok = window.towerConfirm
+        ? await window.towerConfirm('Remove this browser profile?', {
+            title: 'Remove browser',
+            confirmLabel: 'Remove',
+            danger: true,
+        })
+        : confirm('Remove this browser profile?');
+    if (!ok) return;
+    try {
+        const response = await fetch(`/api/devices/browsers/${encodeURIComponent(profileId)}`, {method: 'DELETE'});
+        if (!response.ok) {
+            const data = await response.json().catch(() => ({}));
+            if (window.towerToast) window.towerToast(data.error || 'Could not remove browser.', { type: 'error' });
+            return;
+        }
+        await refreshBrowsers();
+    } catch (err) {
+        if (window.towerToast) window.towerToast(err.message || 'Could not remove browser.', { type: 'error' });
+    }
 }
+
+document.getElementById('browser-list').addEventListener('click', (event) => {
+    const btn = event.target.closest('[data-remove-browser]');
+    if (btn) removeBrowser(btn.dataset.removeBrowser);
+});
 
 window.setInterval(() => {
     if (!document.hidden) refreshBrowsers();

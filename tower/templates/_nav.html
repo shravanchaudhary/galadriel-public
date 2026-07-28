@@ -1,4 +1,4 @@
-<aside class="site-sidebar" aria-label="Primary">
+<aside class="site-sidebar" id="site-sidebar" aria-label="Primary">
     <a href="/" class="site-brand">
         <img src="/static/img/clodexa-logo.png" alt="Clodexa" class="site-logo">
         <span class="site-brand-text">Replika</span>
@@ -157,7 +157,7 @@
                 if (!res.ok) throw new Error(data.error || 'Failed to start new chat');
                 window.location.href = '/';
             } catch (err) {
-                alert(err.message || 'Failed to start new chat');
+                if (window.towerToast) window.towerToast(err.message || 'Failed to start new chat', { type: 'error' }); else alert(err.message || 'Failed to start new chat');
             } finally {
                 newChatBtn.disabled = false;
             }

@@ -57,6 +57,7 @@
         <p class="settings-section-desc">Compare billed input tokens with compression enabled vs disabled</p>
     </div>
     {% if headroom_rows %}
+<div class="table-wrap" role="region" tabindex="0">
     <table class="wf-table">
         <thead>
             <tr>
@@ -81,6 +82,7 @@
             {% endfor %}
         </tbody>
     </table>
+</div>
     {% else %}
     <p class="settings-empty">No calls logged in this range yet.</p>
     {% endif %}
@@ -91,6 +93,7 @@
         <h2 class="settings-section-title">By day</h2>
     </div>
     {% if daily_rows %}
+<div class="table-wrap" role="region" tabindex="0">
     <table class="wf-table">
         <thead>
             <tr>
@@ -117,6 +120,7 @@
             {% endfor %}
         </tbody>
     </table>
+</div>
     {% else %}
     <p class="settings-empty">No calls logged in this range yet.</p>
     {% endif %}
@@ -127,6 +131,7 @@
         <h2 class="settings-section-title">By channel</h2>
     </div>
     {% if channel_rows %}
+<div class="table-wrap" role="region" tabindex="0">
     <table class="wf-table">
         <thead>
             <tr>
@@ -154,6 +159,7 @@
             {% endfor %}
         </tbody>
     </table>
+</div>
     {% else %}
     <p class="settings-empty">No calls logged in this range yet.</p>
     {% endif %}
@@ -164,6 +170,7 @@
         <h2 class="settings-section-title">By model</h2>
     </div>
     {% if model_rows %}
+<div class="table-wrap" role="region" tabindex="0">
     <table class="wf-table">
         <thead>
             <tr>
@@ -196,6 +203,7 @@
             {% endfor %}
         </tbody>
     </table>
+</div>
     {% else %}
     <p class="settings-empty">No models to display.</p>
     {% endif %}

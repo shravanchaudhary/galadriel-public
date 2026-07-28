@@ -27,6 +27,26 @@ assert root.headers["Location"] == "/replika"
 replika = client.get("/replika")
 assert replika.status_code == 200
 assert b'href="/integrations"' in replika.data
+assert b'settings-page' in replika.data
+assert b'skip-link' in replika.data
+assert b'site-menu-btn' in replika.data
+assert b'id="site-sidebar"' in replika.data
+assert b'/static/ui.js' in replika.data
+assert b'replika-form' in replika.data
+assert b'settings-choice-grid' in replika.data
 assert client.get("/api/chat").status_code == 404
+
+ui_js = client.get("/static/ui.js")
+assert ui_js.status_code == 200
+assert b'towerToast' in ui_js.data
+assert b'towerConfirm' in ui_js.data
+assert b'renderRelativeTimes' in ui_js.data
+
+style = client.get("/static/style.css")
+assert style.status_code == 200
+assert b'.table-wrap' in style.data
+assert b'.site-topbar' in style.data
+assert b'.ui-dialog' in style.data
+assert b'@media (max-width: 640px)' in style.data
 
 print("Control-plane app check passed.")

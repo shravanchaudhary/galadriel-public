@@ -23,6 +23,7 @@ from flask import Flask  # noqa: E402
 from harness import worker_tick_store  # noqa: E402
 from harness.worker import WorkerLoop  # noqa: E402
 from tower.chats_board import register_chats_board  # noqa: E402
+from tower.todo_board import register_todo_board  # noqa: E402
 
 
 class _Recorder:
@@ -110,6 +111,7 @@ class WorkerBoardTests(unittest.TestCase):
         app = Flask(__name__, template_folder=str(ROOT / "tower" / "templates"))
         app.secret_key = "test"
         app.context_processor(lambda: {"page_context": {}})
+        register_todo_board(app)
         register_chats_board(app)
         self.client = app.test_client()
 
@@ -138,9 +140,15 @@ class WorkerBoardTests(unittest.TestCase):
              patch.object(worker_tick_store, "get_tick", return_value=tick), \
              patch.object(worker_tick_store, "events_for_tick", return_value=[]), \
              patch.object(worker_tick_store, "calls_for_tick", return_value=[]) as calls_mock:
-            listed = self.client.get("/worker-runs", follow_redirects=True)
-            self.assertEqual(listed.status_code, 200)
-            self.assertIn(b"Today", listed.data)
+            listed = self.client.get("/worker-runs", follow_redirects=False)
+            self.assertEqual(listed.status_code, 302)
+            self.assertIn("/chats", listed.headers["Location"])
+            self.assertIn("kind=worker", listed.headers["Location"])
+            followed = self.client.get("/worker-runs", follow_redirects=True)
+            self.assertEqual(followed.status_code, 200)
+            self.assertIn(b"Today", followed.data)
+            self.assertIn(b"skip-link", followed.data)
+            self.assertIn(b"/static/ui.js", followed.data)
             self.assertFalse(calls_mock.called)
             shell = self.client.get("/chats?kind=worker&id=tick-1")
             self.assertEqual(shell.status_code, 200)
@@ -150,8 +158,12 @@ class WorkerBoardTests(unittest.TestCase):
             self.assertEqual(detail.status_code, 200)
             self.assertEqual(detail.get_json()["id"], "tick-1")
             self.assertTrue(calls_mock.called)
-            legacy = self.client.get("/worker-runs/tick-1", follow_redirects=True)
-            self.assertEqual(legacy.status_code, 200)
+            legacy = self.client.get("/worker-runs/tick-1", follow_redirects=False)
+            self.assertEqual(legacy.status_code, 302)
+            self.assertIn("/chats", legacy.headers["Location"])
+            self.assertIn("id=tick-1", legacy.headers["Location"])
+            followed_detail = self.client.get("/worker-runs/tick-1", follow_redirects=True)
+            self.assertEqual(followed_detail.status_code, 200)
         self.assertEqual(self.client.get("/worker-runs/missing").status_code, 404)
 
 

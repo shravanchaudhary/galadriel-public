@@ -9,7 +9,7 @@
     <span class="settings-crumb-separator">/</span>
     <span>{{ spec.name }}</span>
 </nav>
-<div class="settings-actions" style="justify-content:space-between;">
+<div class="settings-actions settings-section-head-row">
     <div class="settings-segmented">
         <a href="/w/{{ spec.name }}" class="{{ 'is-active' if not status }}">All</a>
         {% for state in spec.states %}
@@ -21,11 +21,12 @@
 </div>
 
 {% if docs %}
+<div class="table-wrap" role="region" aria-label="{{ spec.name }} records" tabindex="0">
 <table class="wf-table">
     <thead>
         <tr>
-            {% for col in spec.table_columns %}<th>{{ col }}</th>{% endfor %}
-            <th></th>
+            {% for col in spec.table_columns %}<th scope="col">{{ col }}</th>{% endfor %}
+            <th scope="col"><span class="sr-only">Open</span></th>
         </tr>
     </thead>
     <tbody>
@@ -45,6 +46,7 @@
         {% endfor %}
     </tbody>
 </table>
+</div>
 
 {% if page > 1 or has_more %}
 <div class="settings-actions">

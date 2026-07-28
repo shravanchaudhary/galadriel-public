@@ -37,7 +37,12 @@
     </div>
 </form>
 
-<form method="post" action="/palace/drawer/{{ drawer.id }}" class="settings-actions settings-section" onsubmit="return confirm('Delete this drawer permanently?');">
+<form method="post" action="/palace/drawer/{{ drawer.id }}"
+      class="settings-actions settings-section"
+      data-confirm="Delete this drawer permanently?"
+      data-confirm-title="Delete drawer"
+      data-confirm-label="Delete"
+      data-confirm-danger>
     <input type="hidden" name="_action" value="delete">
     <button type="submit" class="btn btn-small btn-danger">Delete drawer</button>
 </form>

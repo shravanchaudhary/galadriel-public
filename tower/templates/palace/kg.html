@@ -19,8 +19,9 @@
 <section class="settings-section">
     <h2 class="settings-section-title">Facts</h2>
     {% if facts %}
+    <div class="table-wrap" role="region" aria-label="Knowledge graph facts" tabindex="0">
     <table class="wf-table">
-        <thead><tr><th>Subject</th><th>Predicate</th><th>Object</th><th>Valid From</th><th>Valid To</th><th></th></tr></thead>
+        <thead><tr><th scope="col">Subject</th><th scope="col">Predicate</th><th scope="col">Object</th><th scope="col">Valid From</th><th scope="col">Valid To</th><th scope="col"><span class="sr-only">Edit</span></th></tr></thead>
         <tbody>
             {% for f in facts %}
             {% set s = f.get('subject', '?') %}
@@ -34,14 +35,14 @@
                 <td class="muted">{{ f.get('valid_to') or 'current' }}</td>
                 <td>
                     <details>
-                        <summary class="btn btn-small" style="display:inline-block;">Edit</summary>
-                        <form method="post" action="/palace/kg/edit" style="margin-top:0.5rem;display:flex;gap:0.4rem;flex-wrap:wrap;">
+                        <summary class="btn btn-small kg-edit-summary">Edit</summary>
+                        <form method="post" action="/palace/kg/edit" class="kg-edit-form">
                             <input type="hidden" name="old_subject" value="{{ s }}">
                             <input type="hidden" name="old_predicate" value="{{ p }}">
                             <input type="hidden" name="old_object" value="{{ o }}">
-                            <input type="text" name="subject" value="{{ s }}" class="chat-input" style="max-width:130px;">
-                            <input type="text" name="predicate" value="{{ p }}" class="chat-input" style="max-width:130px;">
-                            <input type="text" name="object" value="{{ o }}" class="chat-input" style="max-width:130px;">
+                            <input type="text" name="subject" value="{{ s }}" class="chat-input palace-filter-input">
+                            <input type="text" name="predicate" value="{{ p }}" class="chat-input palace-filter-input">
+                            <input type="text" name="object" value="{{ o }}" class="chat-input palace-filter-input">
                             <button type="submit" class="btn btn-small">Save (invalidate + refile)</button>
                         </form>
                     </details>
@@ -50,6 +51,7 @@
             {% endfor %}
         </tbody>
     </table>
+    </div>
     {% else %}
     <p class="settings-empty">No knowledge graph facts found.</p>
     {% endif %}

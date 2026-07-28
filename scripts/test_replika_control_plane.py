@@ -137,6 +137,13 @@ app = Flask(
     static_folder=str(ROOT / "tower" / "static"),
 )
 tower_auth.configure_app_sessions(app)
+
+
+@app.context_processor
+def _inject_page_context():
+    return {"page_context": {}, "control_plane_only": True}
+
+
 register_replika_control_plane(app)
 store = _Store()
 provisioner = _Provisioner()
@@ -150,6 +157,14 @@ _assert(anonymous.status_code == 401, "anonymous control-plane access must be de
 with client.session_transaction() as session:
     session[tower_auth.SESSION_AUTH_KEY] = True
     session[tower_auth.SESSION_USER_KEY] = "account-123"
+
+setup = client.get("/replika")
+_assert(setup.status_code == 200, "setup page should render")
+_assert(b'settings-page' in setup.data, "setup uses settings design system")
+_assert(b'id="replika-form"' in setup.data, "empty state shows create form")
+_assert(b'.replika.example' in setup.data, "product domain is shown")
+_assert(b'skip-link' in setup.data, "accessible skip link is present")
+_assert(b'site-menu-btn' in setup.data, "mobile navigation toggle is present")
 
 available = client.get("/api/replika/username/alice")
 _assert(available.status_code == 200 and available.get_json()["available"], "availability")
@@ -167,6 +182,14 @@ _assert(body["replika"]["replika_type"] == "organization", "customer type")
 _assert(provisioner.calls == [("alice", "organization")], "provisioner type payload")
 _assert("internal_error" not in str(body), "internal fields must never be exposed")
 
+ready_page = client.get("/replika")
+_assert(ready_page.status_code == 200, "ready page should render")
+_assert(b'id="replika-ready"' in ready_page.data, "ready section is present")
+_assert(b'Open Replika' in ready_page.data, "ready state exposes open action")
+_assert(b'data-status="ready"' in ready_page.data, "ready status pill is set")
+_assert(b'hidden' in ready_page.data and b'id="replika-form"' in ready_page.data,
+        "create form is hidden once provisioned")
+
 again = client.post(
     "/api/replika",
     json={"username": "alice", "replika_type": "organization"},
@@ -175,7 +198,16 @@ again = client.post(
 _assert(again.status_code == 202, "same reservation should be idempotent")
 _assert(provisioner.calls == [("alice", "organization")], "ready Replika must not be reprovisioned")
 
+store.update_status("account-123", "creating")
+creating_page = client.get("/replika")
+_assert(b'data-status="creating"' in creating_page.data, "creating status pill renders")
+_assert(b'Creating your Replika' in creating_page.data, "creating copy renders")
+
 store.update_status("account-123", "error")
+error_page = client.get("/replika")
+_assert(b'data-status="error"' in error_page.data, "error status pill renders")
+_assert(b'id="replika-retry"' in error_page.data, "error state exposes retry")
+
 retried = client.post(
     "/api/replika",
     json={"username": "alice", "replika_type": "organization"},

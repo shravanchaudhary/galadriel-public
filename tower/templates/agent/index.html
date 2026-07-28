@@ -128,7 +128,11 @@
                 <div class="settings-actions"><button type="submit" class="btn">Arm wake</button></div>
             </form>
         {% if item.status == 'ARMED' %}
-        <form method="post" action="/agent/wake" class="settings-actions" onsubmit="return confirm('Disarm the one-shot wake?');">
+        <form method="post" action="/agent/wake" class="settings-actions"
+              data-confirm="Disarm the one-shot wake?"
+              data-confirm-title="Disarm wake"
+              data-confirm-label="Disarm"
+              data-confirm-danger>
             <input type="hidden" name="disarm" value="1">
             <button type="submit" class="btn btn-small btn-danger">Disarm wake</button>
         </form>
@@ -194,7 +198,7 @@ async function toggleHeartbeat() {
     } catch (err) {
         console.error('Failed to toggle heartbeat:', err);
         toggle.checked = !toggle.checked;
-        alert(err.message || 'Failed to toggle heartbeat');
+        if (window.towerToast) window.towerToast(err.message || 'Failed to toggle heartbeat', { type: 'error' }); else alert(err.message || 'Failed to toggle heartbeat');
     }
 }
 
@@ -210,7 +214,7 @@ async function changeHeartbeatInterval() {
     } catch (err) {
         console.error('Failed to change heartbeat interval:', err);
         select.value = previous;
-        alert(err.message || 'Failed to change interval');
+        if (window.towerToast) window.towerToast(err.message || 'Failed to change interval', { type: 'error' }); else alert(err.message || 'Failed to change interval');
     }
 }
 
@@ -236,7 +240,7 @@ async function changeWorkerIdleInterval() {
     } catch (err) {
         console.error('Failed to set worker idle interval:', err);
         select.value = previous;
-        alert(err.message || 'Failed to set idle interval');
+        if (window.towerToast) window.towerToast(err.message || 'Failed to set idle interval', { type: 'error' }); else alert(err.message || 'Failed to set idle interval');
     }
 }
 
@@ -256,7 +260,7 @@ async function changeLoopModel(select) {
     } catch (err) {
         console.error('Failed to set loop model:', err);
         if (previous) select.value = previous;
-        alert(err.message || 'Failed to set model');
+        if (window.towerToast) window.towerToast(err.message || 'Failed to set model', { type: 'error' }); else alert(err.message || 'Failed to set model');
     }
 }
 
@@ -287,7 +291,7 @@ async function changeRoutineTime(input) {
     } catch (err) {
         console.error('Failed to set routine time:', err);
         if (previous) input.value = previous;
-        alert(err.message || 'Failed to set time');
+        if (window.towerToast) window.towerToast(err.message || 'Failed to set time', { type: 'error' }); else alert(err.message || 'Failed to set time');
     }
 }
 

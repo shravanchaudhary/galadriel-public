@@ -92,7 +92,6 @@
 {% block scripts %}
 <script>
 const TZ_STORAGE_KEY = 'tower-display-timezone';
-const PROVIDER_STORAGE_KEY = 'tower-selected-provider';
 const TZ_OPTIONS = [
     { value: 'local', label: 'Local (browser)' },
     { value: 'UTC', label: 'UTC' },
@@ -208,7 +207,8 @@ async function toggleHeadroom() {
     } catch (err) {
         console.error('Failed to toggle headroom:', err);
         toggle.checked = !toggle.checked;
-        alert(err.message || 'Failed to toggle headroom');
+        if (window.towerToast) window.towerToast(err.message || 'Failed to toggle headroom', { type: 'error' });
+        else alert(err.message || 'Failed to toggle headroom');
     }
 }
 
@@ -238,17 +238,31 @@ function updateProviderKeyUI() {
 }
 
 function onProviderChange() {
-    localStorage.setItem(PROVIDER_STORAGE_KEY, selectedProvider());
     updateProviderKeyUI();
 }
 
-async function refreshProviderKeys() {
-    const response = await fetch('/api/provider-keys');
+async function refreshProviderKeys(syncToActiveModel = false) {
+    const [response, modelResponse] = await Promise.all([
+        fetch('/api/provider-keys'),
+        syncToActiveModel ? fetch('/api/model?channel=main') : Promise.resolve(null),
+    ]);
     if (!response.ok) return;
     const data = await response.json();
     providerKeyState = {};
     for (const row of data.providers || []) {
         providerKeyState[row.provider] = row;
+    }
+    if (modelResponse?.ok) {
+        const modelData = await modelResponse.json();
+        const provider = modelData.model?.startsWith('gemini')
+            ? 'gemini'
+            : modelData.model?.startsWith('claude')
+                ? 'anthropic'
+                : null;
+        const select = document.getElementById('provider-select');
+        if (provider && [...select.options].some(o => o.value === provider)) {
+            select.value = provider;
+        }
     }
     updateProviderKeyUI();
 }
@@ -263,7 +277,8 @@ async function saveProviderKey() {
     });
     const data = await response.json();
     if (!response.ok) {
-        alert(data.error || 'Could not save that provider key');
+        if (window.towerToast) window.towerToast(data.error || 'Could not save that provider key', { type: 'error' });
+        else alert(data.error || 'Could not save that provider key');
         return;
     }
     input.value = '';
@@ -275,21 +290,14 @@ async function deleteProviderKey() {
     const response = await fetch(`/api/provider-keys/${provider}`, {method: 'DELETE'});
     const data = await response.json();
     if (!response.ok) {
-        alert(data.error || 'Could not remove that provider key');
+        if (window.towerToast) window.towerToast(data.error || 'Could not remove that provider key', { type: 'error' });
+        else alert(data.error || 'Could not remove that provider key');
         return;
     }
     await refreshProviderKeys();
 }
 
-(function initProviderSelect() {
-    const select = document.getElementById('provider-select');
-    const saved = localStorage.getItem(PROVIDER_STORAGE_KEY);
-    if (saved && [...select.options].some(o => o.value === saved)) {
-        select.value = saved;
-    }
-})();
-
 initTimezoneMenu();
-refreshProviderKeys();
+refreshProviderKeys(true);
 </script>
 {% endblock %}
