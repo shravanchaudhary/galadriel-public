@@ -16,19 +16,18 @@ services:
     image: galadriel:latest
     container_name: galadriel
     env_file: .env
+    environment:
+      GALADRIEL_ENV: local
+      GALADRIEL_LOCAL_STATE_ROOT: /mnt/efs
+      GALADRIEL_LOCAL_DEFAULTS_ROOT: /opt/galadriel-defaults
     ports:
       # SECURITY: enable TOWER_AUTH_REQUIRED + TOWER_AUTH_TOKEN + TOWER_SECRET_KEY
       # for form/session auth. Still bound to localhost by default; do NOT change
       # this to "8080:8080" on a public host without auth (or a reverse proxy).
       - "127.0.0.1:8080:8080"
     volumes:
-      - palace:/data                 # memory palace + archive (persists)
-      - ./memory:/app/memory         # daily memory logs (visible on host)
-      - ./config:/app/config         # scheduler/ambient state + active_vision
-      - ./knowledge:/app/knowledge   # agent-authored durable knowledge
-      - ./state:/app/state           # worker/runtime state
-      - ./jobs:/app/jobs             # agent job board
-      - ./workflows:/app/workflows   # agent-authored workflows
+      # Mirrors the production /mnt/efs layout without dirtying repo defaults.
+      - ./.galadriel-local:/mnt/efs
     restart: unless-stopped
 
   mongo:
@@ -41,5 +40,4 @@ services:
     restart: unless-stopped
 
 volumes:
-  palace:
   mongo-data:

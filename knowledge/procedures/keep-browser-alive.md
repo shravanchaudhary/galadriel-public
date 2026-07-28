@@ -2,13 +2,13 @@
 
 **Trigger:** About to close a browser tab or end a headed browser session.
 
-**Rule:** Never close the last tab. Release ownership in `state/browser_tabs.md`
-instead so the session stays warm for the next tick.
+**Rule:** Never close the last tab. Browser commands and the Python-side profile
+lock are the source of truth; do not maintain a Markdown tab registry.
 
 **Steps:**
-1. Check how many tabs are open / owned.
+1. Run `tab list` through the browser tool.
 2. If this is the last tab, stop — do not close it.
-3. Update `state/browser_tabs.md` to release ownership / mark idle.
+3. Otherwise close only the tab used by the completed work unit.
 4. Leave the browser process running unless an explicit restart is required.
 
-**Palace:** `palace_search("browser last tab ownership", room="knowledge")`
+**Palace:** `palace_search("browser keep last tab alive", room="knowledge")`

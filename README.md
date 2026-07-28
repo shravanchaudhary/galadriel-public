@@ -343,6 +343,64 @@ python main.py
 
 **Skipping step 4?** That's fine — the harness runs normally and palace tools just return `[palace unavailable]` until drawers exist. You can initialize any time.
 
+### Local development state
+
+Set `GALADRIEL_ENV=local` in `.env` when running the application directly.
+Docker Compose sets local mode and its storage paths automatically. In local
+mode, the application reads and writes mutable agent state under the gitignored
+`.galadriel-local/` directory:
+
+- `.galadriel-local/config/` contains the local user's memory, scheduler state,
+  and other mutable configuration.
+- `.galadriel-local/memory/`, `state/`, and `knowledge/` contain agent-created
+  history, plans, progress, steering, and learned procedures.
+- `.galadriel-local/data/` contains the local memory palace and archive.
+
+The repository's `config/`, `knowledge/`, `memory/`, `state/`, `jobs/`, and
+`workflows/` directories are developer-owned first-boot defaults. Keep them
+small, tenant-neutral, and free of dated runtime history. A local agent should
+never write to them.
+
+On the first local start, missing defaults are copied into
+`.galadriel-local/`. Existing local files are never overwritten. Runtime
+history such as dated memory, plans, and progress is not seeded from the
+repository. Mutable scheduler and ambient state have no repository seed; the
+application creates them under local or tenant storage when needed.
+
+When intentionally changing a repository default, refresh the local runtime
+copy with:
+
+```bash
+python3 scripts/sync_local_state.py
+```
+
+The script compares repository defaults with the previous snapshot stored under
+`.galadriel-local/.defaults/`. It applies only developer defaults that changed
+since that snapshot. Agent-customized files whose repository source did not
+change remain untouched. Scheduler history and dated runtime files are never
+overwritten by the sync.
+
+Browser state is not file-backed. Connection profiles live in the tenant
+database and are managed through the Python `browser_devices` tool. Tab
+selection and concurrency are handled by browser commands plus the Python-side
+profile lock; do not create `state/browser_profiles.md` or
+`state/browser_tabs.md`.
+
+Development workflow:
+
+1. Run locally with `GALADRIEL_ENV=local`.
+2. Let the agent update `.galadriel-local/`; these changes do not appear in Git.
+3. For an intentional product/default change, edit the corresponding repository
+   file and keep it generic enough for every new tenant.
+4. Run `python3 scripts/sync_local_state.py` to apply that developer change to
+   the existing local state.
+5. Verify the boundary with
+   `python3 scripts/test_local_state.py` and
+   `python3 scripts/test_neutral_replika_defaults.py`.
+
+Restart an already-running process after enabling local mode; environment
+changes do not redirect a process that was started earlier.
+
 ---
 
 ## Run with Docker
@@ -369,14 +427,16 @@ docker compose exec galadriel mempalace init
 
 ### What persists
 
-State lives on volumes, not inside the image, so `docker compose down` won't
-forget anything:
+Docker Compose mounts `./.galadriel-local` at `/mnt/efs`, matching the managed
+runtime's persistent-storage layout. Agent configuration, daily memory,
+knowledge, state, jobs, workflows, completion markers, and memory-palace data
+therefore survive container replacement without modifying repository defaults.
 
-| Mount | Holds |
-|---|---|
-| `palace` (named volume → `/data`) | The memory palace + conversation archive (`~/.mempalace`) |
-| `./memory` | Daily memory logs (markdown — also visible on your host) |
-| `./config` | `scheduler_state.json`, `ambient_state.json`, `active_vision.txt` |
+Staging and production do not use `GALADRIEL_ENV=local`. Their immutable image
+contains the same repository defaults under `/opt/galadriel-defaults`, and the
+entrypoint copies only files absent from tenant storage. Deploying a new image
+can add a new default file, but it does not overwrite an existing tenant's
+memory or runtime state.
 
 ### Notes
 

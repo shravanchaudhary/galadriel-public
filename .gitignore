@@ -1,4 +1,5 @@
 .env
+.galadriel-local/
 .cursor/
 infra/terraform/.terraform/
 infra/terraform/*.tfstate*
@@ -11,9 +12,11 @@ dist/
 build/
 .eggs/
 node_modules/
+config/scheduler_state.json
+config/ambient_state.json
 memory/*.md
 memory/*.json
-!memory/.gitkeep
+!memory/README.md
 *.log
 .venv/
 venv/
@@ -25,6 +28,7 @@ mempalace.yaml
 entities.json
 .vscode/
 todo
-state/conversation_buffers/
+state/conversation_buffers/*
+!state/conversation_buffers/README.md
 state/screenshots/
 state/phone_bridge_auth.json

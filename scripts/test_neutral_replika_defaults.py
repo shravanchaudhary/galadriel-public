@@ -18,7 +18,6 @@ REQUIRED_MARKDOWN = (
     "memory/README.md",
     "state/steering.md",
     "state/backlog.md",
-    "state/browser_tabs.md",
     "state/credentials_map.md",
     "state/db_index.md",
     "state/worker_control.md",
@@ -29,6 +28,12 @@ REQUIRED_MARKDOWN = (
     "jobs/_template.md",
     "workflows/README.md",
     "sme/README.md",
+)
+RUNTIME_ONLY_FILES = (
+    "config/ambient_state.json",
+    "config/scheduler_state.json",
+    "state/browser_profiles.md",
+    "state/browser_tabs.md",
 )
 FORBIDDEN_IDENTITY = re.compile(
     r"\b(shravan|rachit|clodexa|clyra|galadriel)\b", re.IGNORECASE
@@ -47,13 +52,15 @@ def main() -> None:
         elif not path.read_text(encoding="utf-8").strip():
             errors.append(f"empty required scaffold: {relative}")
 
+    for relative in RUNTIME_ONLY_FILES:
+        if (ROOT / relative).exists():
+            errors.append(f"runtime-only file present in defaults: {relative}")
+
     for root_name in DEFAULT_ROOTS:
         for path in (ROOT / root_name).rglob("*"):
             if not path.is_file():
                 continue
             relative = path.relative_to(ROOT).as_posix()
-            if path.name == "scheduler_state.json":
-                continue
             if path.suffix in {".md", ".html", ".json", ".txt", ".yaml", ".yml"}:
                 text = path.read_text(encoding="utf-8")
                 match = FORBIDDEN_IDENTITY.search(text) or PAIRING_CODE.search(text)

@@ -13,7 +13,6 @@ keys/
 # Local state (lives on volumes at runtime, not in the image)
 memory/*.md
 memory/*.json
-!memory/.gitkeep
 !memory/README.md
 config/scheduler_state.json
 config/ambient_state.json

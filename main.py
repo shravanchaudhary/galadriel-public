@@ -11,6 +11,7 @@ import atexit
 import logging
 import asyncio
 import threading
+from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv(override=True)
@@ -76,6 +77,12 @@ def main():
         os.environ["GALADRIEL_NO_PALACE"] = "1"
         log.info("Stateless mode: --no-palace set; memory palace tools are DISABLED for this session.")
 
+    # Keep mutable local agent state out of repository-owned default files.
+    source_root = Path(__file__).resolve().parent
+    from harness.local_state import prepare_local_state
+
+    runtime_root = prepare_local_state(source_root)
+
     # Validate required env vars
     from harness.model_registry import missing_env_keys
 
@@ -89,10 +96,8 @@ def main():
         if not os.environ.get("REPLIKA_TENANT_ID"):
             sys.exit(1)
 
-    # Resolve config and memory paths relative to this file
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    config_dir = os.path.join(base_dir, "config")
-    memory_dir = os.path.join(base_dir, "memory")
+    config_dir = str(runtime_root / "config")
+    memory_dir = str(runtime_root / "memory")
 
     from harness.agent import GaladrielAgent
     from harness.scheduler import Scheduler
@@ -102,7 +107,7 @@ def main():
     agent = GaladrielAgent(
         config_dir=config_dir,
         memory_dir=memory_dir,
-        working_dir=base_dir,
+        working_dir=str(runtime_root),
     )
     log.info(f"Agent initialized (model: {agent.model})")
 
@@ -121,7 +126,7 @@ def main():
     # while the main channel stays free for the user.
     worker = None
     if os.environ.get("GALADRIEL_WORKER", "0") == "1":
-        worker = WorkerLoop(agent=agent, working_dir=base_dir)
+        worker = WorkerLoop(agent=agent, working_dir=str(runtime_root))
 
     # Attach scheduler to agent so it can be accessed for REST commands
     agent.scheduler = scheduler
