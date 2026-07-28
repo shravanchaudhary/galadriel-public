@@ -12,7 +12,10 @@ sys.path.insert(0, str(ROOT))
 
 from harness.path_policy import assert_agent_readable, assert_agent_writable  # noqa: E402
 from harness import provider_credentials  # noqa: E402
-from harness.tenant_database import ensure_tenant_identity  # noqa: E402
+from harness.tenant_database import (  # noqa: E402
+    delete_tenant_identity,
+    ensure_tenant_identity,
+)
 from scripts.migrate_replika_state import migrate  # noqa: E402
 
 
@@ -80,10 +83,14 @@ class _ExternalDatabase:
 class _MongoClient:
     def __init__(self):
         self.external = _ExternalDatabase()
+        self.dropped = []
 
     def __getitem__(self, name):
         assert name == "$external"
         return self.external
+
+    def drop_database(self, name):
+        self.dropped.append(name)
 
 
 def _assert(condition, message):
@@ -206,5 +213,18 @@ _assert(
     == [{"role": "readWrite", "db": "replika_tenant-a"}],
     "DocumentDB identity must be scoped to one tenant database",
 )
+
+deleted = delete_tenant_identity(
+    "tenant-a",
+    task_role_arn="arn:aws:iam::123456789012:role/replika-tenant-a",
+    client=mongo,
+)
+_assert(deleted["status"] == "deleted", "tenant identity teardown succeeds")
+_assert(
+    {"dropUser": "arn:aws:iam::123456789012:role/replika-tenant-a"}
+    in mongo.external.commands,
+    "teardown drops the IAM database user",
+)
+_assert("replika_tenant-a" in mongo.dropped, "teardown drops the tenant database")
 
 print("Replika V0 boundary checks passed.")

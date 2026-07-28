@@ -3417,6 +3417,24 @@ body.wfc-resizing * { cursor: inherit !important; }
     background: var(--danger-bg);
     border-color: rgba(220, 38, 38, 0.25);
 }
+.status-pill[data-status="deleting"] {
+    color: var(--warning);
+    background: var(--warning-bg);
+    border-color: rgba(217, 119, 6, 0.25);
+}
+
+.replika-card {
+    display: flex;
+    flex-direction: column;
+    gap: 0.85rem;
+}
+.replika-card-actions {
+    flex-wrap: wrap;
+}
+#replika-deleted-toast {
+    color: var(--success);
+    margin-top: 0.75rem;
+}
 
 .settings-subsection {
     margin-top: 2rem;

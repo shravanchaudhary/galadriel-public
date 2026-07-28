@@ -26,13 +26,15 @@ assert root.status_code == 302
 assert root.headers["Location"] == "/replika"
 replika = client.get("/replika")
 assert replika.status_code == 200
-assert b'href="/integrations"' in replika.data
+assert b'href="/replika"' in replika.data
+assert b'My Replikas' in replika.data
 assert b'settings-page' in replika.data
 assert b'skip-link' in replika.data
 assert b'site-menu-btn' in replika.data
 assert b'id="site-sidebar"' in replika.data
 assert b'/static/ui.js' in replika.data
 assert b'replika-form' in replika.data
+assert b'replika-list' in replika.data
 assert b'settings-choice-grid' in replika.data
 assert client.get("/api/chat").status_code == 404
 

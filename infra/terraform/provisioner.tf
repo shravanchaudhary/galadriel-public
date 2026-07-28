@@ -35,6 +35,7 @@ data "aws_iam_policy_document" "replika_provisioner" {
     actions = [
       "secretsmanager:CreateSecret",
       "secretsmanager:DescribeSecret",
+      "secretsmanager:DeleteSecret",
       "secretsmanager:TagResource",
     ]
     resources = local.slack_secret_arns
@@ -43,6 +44,7 @@ data "aws_iam_policy_document" "replika_provisioner" {
   statement {
     actions = [
       "s3files:CreateAccessPoint",
+      "s3files:DeleteAccessPoint",
       "s3files:DescribeAccessPoints",
       "s3files:ListAccessPoints",
       "s3files:TagResource",
@@ -55,6 +57,7 @@ data "aws_iam_policy_document" "replika_provisioner" {
     content {
       actions = [
         "cognito-idp:CreateUserPoolClient",
+        "cognito-idp:DeleteUserPoolClient",
         "cognito-idp:DescribeUserPoolClient",
         "cognito-idp:ListUserPoolClients",
       ]
@@ -66,6 +69,8 @@ data "aws_iam_policy_document" "replika_provisioner" {
     actions = [
       "elasticloadbalancing:CreateRule",
       "elasticloadbalancing:CreateTargetGroup",
+      "elasticloadbalancing:DeleteRule",
+      "elasticloadbalancing:DeleteTargetGroup",
       "elasticloadbalancing:DescribeRules",
       "elasticloadbalancing:DescribeTargetGroups",
       "elasticloadbalancing:AddTags",
@@ -77,8 +82,11 @@ data "aws_iam_policy_document" "replika_provisioner" {
   statement {
     actions = [
       "ecs:CreateService",
+      "ecs:DeleteService",
+      "ecs:DeregisterTaskDefinition",
       "ecs:DescribeServices",
       "ecs:DescribeTaskDefinition",
+      "ecs:ListTaskDefinitions",
       "ecs:RegisterTaskDefinition",
       "ecs:TagResource",
       "ecs:UpdateService",
@@ -89,6 +97,8 @@ data "aws_iam_policy_document" "replika_provisioner" {
   statement {
     actions = [
       "iam:CreateRole",
+      "iam:DeleteRole",
+      "iam:DeleteRolePolicy",
       "iam:GetRole",
       "iam:PutRolePolicy",
       "iam:TagRole",

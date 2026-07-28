@@ -7,7 +7,10 @@ from flask import Flask, g, jsonify, redirect, render_template, request, url_for
 
 from harness.runtime_dependencies import readiness_error
 from . import auth as tower_auth
-from .replika_control_plane import register_replika_control_plane, replika_type_for_owner
+from .replika_control_plane import (
+    register_replika_control_plane,
+    replika_type_for_id,
+)
 from .slack_integration import register_slack_integration, start_slack_dispatcher
 
 
@@ -43,6 +46,13 @@ def create_control_app(config: dict | None = None) -> Flask:
             or request.path.startswith("/api/replika")
             or request.path.startswith("/api/integrations/slack")
             or request.path.startswith("/internal/replika/")
+            or (
+                request.path.startswith("/replika/")
+                and (
+                    request.path.endswith("/integrations")
+                    or "/integrations/slack/" in request.path
+                )
+            )
         )
         if not allowed:
             return jsonify({"error": "Not found"}), 404
@@ -119,7 +129,7 @@ def create_control_app(config: dict | None = None) -> Flask:
         return {"page_context": {}, "control_plane_only": True}
 
     register_replika_control_plane(app)
-    app.config["REPLIKA_TYPE_RESOLVER"] = replika_type_for_owner
+    app.config["REPLIKA_TYPE_RESOLVER"] = replika_type_for_id
     register_slack_integration(app)
     start_slack_dispatcher(app)
 

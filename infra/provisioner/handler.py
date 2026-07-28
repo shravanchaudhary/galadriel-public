@@ -75,18 +75,41 @@ def _provider_post(url: str, payload: dict) -> dict:
         return json.loads(response.read().decode("utf-8"))
 
 
-def _callback(owner_id: str, status: str, error: str | None = None) -> None:
+def _callback(
+    replika_id: str,
+    owner_id: str,
+    status: str,
+    error: str | None = None,
+) -> None:
     _provider_post(
         _required("CALLBACK_URL"),
-        {"owner_id": owner_id, "status": status, "error": error},
+        {
+            "replika_id": replika_id,
+            "owner_id": owner_id,
+            "status": status,
+            "error": error,
+        },
     )
 
 
-def _database_identity(owner_id: str, task_role_arn: str) -> dict:
-    return _provider_post(
-        _required("DATABASE_BROKER_URL"),
-        {"owner_id": owner_id, "task_role_arn": task_role_arn},
-    )
+def _database_identity(
+    replika_id: str,
+    task_role_arn: str,
+    *,
+    action: str = "create",
+) -> dict:
+    payload = {
+        "replika_id": replika_id,
+        "owner_id": replika_id,
+        "task_role_arn": task_role_arn,
+        "action": action,
+    }
+    return _provider_post(_required("DATABASE_BROKER_URL"), payload)
+
+
+def _ignore_missing(exc: ClientError, *codes: str) -> bool:
+    code = exc.response.get("Error", {}).get("Code", "")
+    return code in codes
 
 
 def _create_access_point(s3files, owner_id: str) -> tuple[str, str]:
@@ -447,6 +470,7 @@ def _ensure_rule(
 
 def _task_definition(
     ecs,
+    replika_id: str,
     owner_id: str,
     username: str,
     replika_type: str,
@@ -463,7 +487,7 @@ def _task_definition(
         for key, value in current.items()
         if key in REGISTERABLE_TASK_FIELDS
     }
-    request["family"] = f"replika-{_slug(owner_id)}"
+    request["family"] = f"replika-{_slug(replika_id)}"
     request["taskRoleArn"] = task_role_arn
     request["volumes"] = copy.deepcopy(current.get("volumes", []))
     for volume in request["volumes"]:
@@ -483,7 +507,8 @@ def _task_definition(
         }
         environment.update(
             {
-                "REPLIKA_TENANT_ID": owner_id,
+                "REPLIKA_TENANT_ID": replika_id,
+                "REPLIKA_OWNER_ID": owner_id,
                 "REPLIKA_USERNAME": username,
                 "REPLIKA_TYPE": replika_type,
                 "REPLIKA_PRODUCT_DOMAIN": _required("PRODUCT_DOMAIN"),
@@ -518,7 +543,8 @@ def _task_definition(
     request["tags"] = [
         {"key": "ReplikaManaged", "value": "true"},
         {"key": "ReplikaPlane", "value": "runtime"},
-        {"key": "ReplikaTenant", "value": owner_id},
+        {"key": "ReplikaTenant", "value": replika_id},
+        {"key": "ReplikaOwner", "value": owner_id},
     ]
     return ecs.register_task_definition(**request)["taskDefinition"]["taskDefinitionArn"]
 
@@ -597,59 +623,279 @@ def _service(
     )
 
 
-def handler(event, _context):
-    owner_id = str(event["owner_id"])
-    username = str(event["username"])
-    replika_type = str(event["replika_type"])
-    if replika_type not in {"organization", "individual"}:
-        raise ValueError("invalid replika_type")
+def _delete_service(ecs, replika_id: str) -> None:
+    name = f"replika-{_slug(replika_id)}"
+    cluster = _required("ECS_CLUSTER")
     try:
-        s3files = boto3.client("s3files")
-        iam = boto3.client("iam")
-        secretsmanager = boto3.client("secretsmanager")
-        elbv2 = boto3.client("elbv2")
-        cognito = boto3.client("cognito-idp")
-        ecs = boto3.client("ecs")
-        access_point_arn, _ = _create_access_point(s3files, owner_id)
-        slack_auth_secret_arn = _slack_auth_secret(secretsmanager, owner_id)
-        role_arn = _task_role(iam, owner_id, access_point_arn)
-        runtime_database = _database_identity(owner_id, role_arn)
-        target_group_arn = _target_group(elbv2, username)
-        phone_target_group_arn = _target_group(
-            elbv2,
-            username,
-            phone_bridge=True,
+        ecs.update_service(cluster=cluster, service=name, desiredCount=0)
+    except ClientError as exc:
+        if not _ignore_missing(exc, "ServiceNotFoundException", "ClusterNotFoundException"):
+            raise
+        return
+    try:
+        ecs.delete_service(cluster=cluster, service=name, force=True)
+    except ClientError as exc:
+        if not _ignore_missing(exc, "ServiceNotFoundException", "ClusterNotFoundException"):
+            raise
+        return
+    try:
+        ecs.get_waiter("services_inactive").wait(
+            cluster=cluster,
+            services=[name],
+            WaiterConfig={"Delay": 10, "MaxAttempts": 60},
         )
-        _ensure_rule(
-            elbv2,
-            cognito,
-            username,
-            owner_id,
-            target_group_arn,
-            phone_target_group_arn,
+    except Exception:
+        # Service may already be gone; continue teardown.
+        pass
+
+
+def _delete_listener_rules(elbv2, username: str) -> None:
+    listener = _required("HTTPS_LISTENER_ARN")
+    host = f"{username}.{_required('PRODUCT_DOMAIN')}"
+    rules = elbv2.describe_rules(ListenerArn=listener)["Rules"]
+    for rule in rules:
+        values = [
+            value
+            for condition in rule.get("Conditions", [])
+            if condition.get("Field") == "host-header"
+            for value in condition.get("Values", [])
+        ]
+        if host not in values:
+            continue
+        try:
+            elbv2.delete_rule(RuleArn=rule["RuleArn"])
+        except ClientError as exc:
+            if not _ignore_missing(exc, "RuleNotFound"):
+                raise
+
+
+def _delete_target_groups(elbv2, username: str) -> None:
+    for phone_bridge in (False, True):
+        suffix = "-phone" if phone_bridge else ""
+        name = f"rp-{_slug(username, 29 - len(suffix))}{suffix}"[:32]
+        try:
+            groups = elbv2.describe_target_groups(Names=[name]).get("TargetGroups", [])
+        except ClientError as exc:
+            if _ignore_missing(exc, "TargetGroupNotFound"):
+                continue
+            raise
+        for group in groups:
+            try:
+                elbv2.delete_target_group(TargetGroupArn=group["TargetGroupArn"])
+            except ClientError as exc:
+                if not _ignore_missing(exc, "TargetGroupNotFound"):
+                    raise
+
+
+def _delete_cognito_client(cognito, username: str) -> None:
+    if os.environ.get("MANAGED_AUTH_ENABLED", "").lower() != "true":
+        return
+    user_pool_id = _required("COGNITO_USER_POOL_ARN").rsplit("/", 1)[-1]
+    client_name = f"replika-{_slug(username)}"
+    next_token = None
+    client_id = None
+    while True:
+        request = {"UserPoolId": user_pool_id, "MaxResults": 60}
+        if next_token:
+            request["NextToken"] = next_token
+        response = cognito.list_user_pool_clients(**request)
+        for client in response.get("UserPoolClients", []):
+            if client.get("ClientName") == client_name:
+                client_id = client["ClientId"]
+                break
+        if client_id or not response.get("NextToken"):
+            break
+        next_token = response.get("NextToken")
+    if not client_id:
+        return
+    try:
+        cognito.delete_user_pool_client(UserPoolId=user_pool_id, ClientId=client_id)
+    except ClientError as exc:
+        if not _ignore_missing(exc, "ResourceNotFoundException"):
+            raise
+
+
+def _deregister_task_definitions(ecs, replika_id: str) -> None:
+    family_prefix = f"replika-{_slug(replika_id)}"
+    paginator = ecs.get_paginator("list_task_definitions")
+    for page in paginator.paginate(
+        familyPrefix=family_prefix, status="ACTIVE", sort="DESC"
+    ):
+        for arn in page.get("taskDefinitionArns", []):
+            try:
+                ecs.deregister_task_definition(taskDefinition=arn)
+            except ClientError as exc:
+                if not _ignore_missing(exc, "ClientException"):
+                    raise
+
+
+def _delete_task_role(iam, replika_id: str) -> str | None:
+    role_name = f"replika-{_slug(replika_id)}"
+    role_arn = None
+    try:
+        role_arn = iam.get_role(RoleName=role_name)["Role"]["Arn"]
+    except ClientError as exc:
+        if not _ignore_missing(exc, "NoSuchEntity"):
+            raise
+        return None
+    try:
+        iam.delete_role_policy(RoleName=role_name, PolicyName="replika-runtime")
+    except ClientError as exc:
+        if not _ignore_missing(exc, "NoSuchEntity"):
+            raise
+    try:
+        iam.delete_role(RoleName=role_name)
+    except ClientError as exc:
+        if not _ignore_missing(exc, "NoSuchEntity"):
+            raise
+    return role_arn
+
+
+def _delete_slack_auth_secret(secretsmanager, replika_id: str) -> None:
+    prefix = os.environ.get(
+        "SLACK_TENANT_AUTH_SECRET_PREFIX", "replika/slack-auth"
+    ).strip("/")
+    name = f"{prefix}/{hashlib.sha256(replika_id.encode()).hexdigest()}"
+    try:
+        secretsmanager.delete_secret(SecretId=name, ForceDeleteWithoutRecovery=True)
+    except ClientError as exc:
+        if not _ignore_missing(exc, "ResourceNotFoundException"):
+            raise
+
+
+def _delete_access_point(s3files, replika_id: str) -> None:
+    file_system_id = _required("S3FILES_FILE_SYSTEM_ID")
+    path = f"/tenants/{replika_id}"
+    access_point_id = None
+    for page in s3files.get_paginator("list_access_points").paginate(
+        fileSystemId=file_system_id
+    ):
+        for access_point in page.get("accessPoints", []):
+            if access_point.get("rootDirectory", {}).get("path") == path:
+                access_point_id = access_point["accessPointId"]
+                break
+        if access_point_id:
+            break
+    if not access_point_id:
+        return
+    try:
+        s3files.delete_access_point(
+            fileSystemId=file_system_id, accessPointId=access_point_id
         )
-        task_definition = _task_definition(
-            ecs,
-            owner_id,
-            username,
-            replika_type,
-            access_point_arn,
-            role_arn,
-            runtime_database,
-            slack_auth_secret_arn,
+    except ClientError as exc:
+        if not _ignore_missing(exc, "AccessPointNotFound", "ResourceNotFoundException"):
+            raise
+
+
+def _create_replika(
+    *,
+    replika_id: str,
+    owner_id: str,
+    username: str,
+    replika_type: str,
+    release_version: str,
+) -> dict:
+    s3files = boto3.client("s3files")
+    iam = boto3.client("iam")
+    secretsmanager = boto3.client("secretsmanager")
+    elbv2 = boto3.client("elbv2")
+    cognito = boto3.client("cognito-idp")
+    ecs = boto3.client("ecs")
+    access_point_arn, _ = _create_access_point(s3files, replika_id)
+    slack_auth_secret_arn = _slack_auth_secret(secretsmanager, replika_id)
+    role_arn = _task_role(iam, replika_id, access_point_arn)
+    runtime_database = _database_identity(replika_id, role_arn)
+    target_group_arn = _target_group(elbv2, username)
+    phone_target_group_arn = _target_group(
+        elbv2,
+        username,
+        phone_bridge=True,
+    )
+    _ensure_rule(
+        elbv2,
+        cognito,
+        username,
+        replika_id,
+        target_group_arn,
+        phone_target_group_arn,
+    )
+    task_definition = _task_definition(
+        ecs,
+        replika_id,
+        owner_id,
+        username,
+        replika_type,
+        access_point_arn,
+        role_arn,
+        runtime_database,
+        slack_auth_secret_arn,
+    )
+    _service(
+        ecs,
+        replika_id,
+        task_definition,
+        target_group_arn,
+        phone_target_group_arn,
+        release_version,
+    )
+    _callback(replika_id, owner_id, "ready")
+    return {"status": "ready"}
+
+
+def _delete_replika(
+    *,
+    replika_id: str,
+    owner_id: str,
+    username: str,
+) -> dict:
+    s3files = boto3.client("s3files")
+    iam = boto3.client("iam")
+    secretsmanager = boto3.client("secretsmanager")
+    elbv2 = boto3.client("elbv2")
+    cognito = boto3.client("cognito-idp")
+    ecs = boto3.client("ecs")
+
+    _delete_service(ecs, replika_id)
+    _delete_listener_rules(elbv2, username)
+    _delete_target_groups(elbv2, username)
+    _delete_cognito_client(cognito, username)
+    _deregister_task_definitions(ecs, replika_id)
+    role_arn = _delete_task_role(iam, replika_id)
+    _delete_slack_auth_secret(secretsmanager, replika_id)
+    _delete_access_point(s3files, replika_id)
+    _database_identity(replika_id, role_arn or "", action="delete")
+    _callback(replika_id, owner_id, "deleted")
+    return {"status": "deleted"}
+
+
+def handler(event, _context):
+    operation = str(event.get("operation") or "create").strip().lower()
+    replika_id = str(event.get("replika_id") or event.get("owner_id") or "")
+    owner_id = str(event.get("owner_id") or replika_id)
+    username = str(event["username"])
+    replika_type = str(event.get("replika_type") or "individual")
+    if not replika_id:
+        raise ValueError("replika_id is required")
+    if operation == "create" and replika_type not in {"organization", "individual"}:
+        raise ValueError("invalid replika_type")
+    if operation not in {"create", "delete"}:
+        raise ValueError("invalid operation")
+    try:
+        if operation == "delete":
+            return _delete_replika(
+                replika_id=replika_id,
+                owner_id=owner_id,
+                username=username,
+            )
+        return _create_replika(
+            replika_id=replika_id,
+            owner_id=owner_id,
+            username=username,
+            replika_type=replika_type,
+            release_version=str(event.get("release_version") or "v0"),
         )
-        _service(
-            ecs,
-            owner_id,
-            task_definition,
-            target_group_arn,
-            phone_target_group_arn,
-            str(event.get("release_version") or "v0"),
-        )
-        _callback(owner_id, "ready")
-        return {"status": "ready"}
     except Exception as exc:
         try:
-            _callback(owner_id, "error", str(exc))
+            _callback(replika_id, owner_id, "error", str(exc))
         finally:
             raise

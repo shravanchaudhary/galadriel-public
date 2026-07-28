@@ -57,3 +57,26 @@ def ensure_tenant_identity(
             raise
         external.command({"updateUser": task_role_arn, "roles": roles})
     return {"mongo_uri": iam_runtime_uri(admin_uri), "mongo_db": db_name}
+
+
+def delete_tenant_identity(
+    tenant_id: str,
+    *,
+    task_role_arn: str | None = None,
+    client=None,
+) -> dict[str, str]:
+    """Drop the tenant database and optional IAM database user. Idempotent."""
+    admin_uri = os.environ.get("MONGO_URI", "")
+    if not admin_uri:
+        raise RuntimeError("MONGO_URI is not configured")
+    db_name = database_name(tenant_id)
+    mongo = client or MongoClient(admin_uri)
+    if task_role_arn:
+        try:
+            mongo["$external"].command({"dropUser": task_role_arn})
+        except OperationFailure as exc:
+            message = str(exc).lower()
+            if exc.code not in {11, 13} and "not found" not in message:
+                raise
+    mongo.drop_database(db_name)
+    return {"status": "deleted", "mongo_db": db_name}

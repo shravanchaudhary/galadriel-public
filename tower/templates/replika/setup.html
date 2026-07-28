@@ -1,77 +1,89 @@
 {% extends "base.html" %}
-{% block title %}My Replika{% endblock %}
+{% block title %}My Replikas{% endblock %}
 {% block container_class %}settings-page{% endblock %}
 {% block page_header %}{% endblock %}
 
 {% block content %}
 <div class="settings-page-inner">
     <header class="settings-page-head">
-        <h1 class="settings-page-title">My Replika</h1>
-        <p class="settings-page-subtitle">Choose how your Replika works and where it lives</p>
+        <h1 class="settings-page-title">My Replikas</h1>
+        <p class="settings-page-subtitle">Create and manage multiple Replikas on this account</p>
     </header>
 
-    <section
-        class="settings-section"
-        id="replika-ready"
-        data-username="{{ replika.username if replika else '' }}"
-        data-type="{{ replika.replika_type if replika else '' }}"
-        {% if not replika %}hidden{% endif %}
-    >
+    <section class="settings-section" id="replika-list-section">
         <div class="settings-section-head">
-            <h2 class="settings-section-title">Your Replika</h2>
-            <p class="settings-section-desc" id="replika-status-desc">
-                {% if replika and replika.status == 'ready' %}
-                Ready to open
-                {% elif replika and replika.status == 'creating' %}
-                Creating your Replika…
-                {% elif replika %}
-                {{ replika.message or 'Temporarily unavailable' }}
+            <h2 class="settings-section-title">Your Replikas</h2>
+            <p class="settings-section-desc" id="replika-list-desc">
+                {% if replikas %}
+                {{ replikas|length }} Replika{% if replikas|length != 1 %}s{% endif %}
+                {% else %}
+                No Replikas yet
                 {% endif %}
             </p>
         </div>
-        <div class="settings-rows">
-            <div class="settings-row">
-                <div class="settings-row-main">
-                    <span class="settings-row-label">Address</span>
-                    <span class="settings-row-hint" id="replika-url">{{ replika.url if replika else "" }}</span>
+        <div class="settings-list" id="replika-list" aria-live="polite">
+            {% for replika in replikas %}
+            <article
+                class="settings-list-item replika-card"
+                data-replika-id="{{ replika.id }}"
+                data-username="{{ replika.username }}"
+                data-type="{{ replika.replika_type }}"
+                data-status="{{ replika.status }}"
+            >
+                <div class="settings-row">
+                    <div class="settings-row-main">
+                        <span class="settings-row-label">{{ replika.username }}</span>
+                        <span class="settings-row-hint replika-card-url">{{ replika.url }}</span>
+                        <span class="settings-row-hint replika-card-desc">
+                            {% if replika.status == 'ready' %}Ready to open
+                            {% elif replika.status == 'creating' %}Creating your Replika…
+                            {% elif replika.status == 'deleting' %}Deleting your Replika…
+                            {% else %}{{ replika.message or 'Temporarily unavailable' }}
+                            {% endif %}
+                        </span>
+                    </div>
+                    <div class="settings-row-control">
+                        <span class="status-pill" data-status="{{ replika.status }}">
+                            {{ replika.status_label }}
+                        </span>
+                    </div>
                 </div>
-                <div class="settings-row-control">
-                    <span class="status-pill" id="replika-status-pill"
-                          data-status="{{ replika.status if replika else '' }}">
-                        {% if replika and replika.status == 'ready' %}Ready
-                        {% elif replika and replika.status == 'creating' %}Creating
-                        {% elif replika %}Unavailable
+                <div class="settings-actions replika-card-actions">
+                    <a class="btn"
+                       href="{{ replika.url }}"
+                       {% if replika.status != 'ready' %}hidden{% endif %}>Open</a>
+                    <a class="btn btn-secondary"
+                       href="/replika/{{ replika.id }}/integrations"
+                       {% if replika.status != 'ready' %}hidden{% endif %}>Integrations</a>
+                    <button type="button" class="btn btn-secondary replika-retry"
+                            data-replika-id="{{ replika.id }}"
+                            {% if replika.status != 'error' %}hidden{% endif %}>Try again</button>
+                    <button type="button" class="btn btn-danger replika-delete"
+                            data-replika-id="{{ replika.id }}"
+                            data-username="{{ replika.username }}"
+                            {% if replika.status == 'deleting' %}disabled{% endif %}>Delete</button>
+                    <p class="settings-row-hint replika-progress" aria-live="polite"
+                       {% if replika.status not in ['creating', 'deleting'] %}hidden{% endif %}>
+                        {% if replika.status == 'deleting' %}
+                        Deletion usually finishes within a minute.
+                        {% else %}
+                        Provisioning usually finishes within a minute.
                         {% endif %}
-                    </span>
+                    </p>
                 </div>
-            </div>
-            <div class="settings-row">
-                <div class="settings-row-main">
-                    <span class="settings-row-label">Type</span>
-                    <span class="settings-row-hint" id="replika-type">
-                        {% if replika %}
-                        {{ 'Organization' if replika.replika_type == 'organization' else 'Individual' }}
-                        {% endif %}
-                    </span>
-                </div>
-            </div>
+            </article>
+            {% endfor %}
         </div>
-        <div class="settings-actions" id="replika-ready-actions">
-            <a class="btn" id="replika-open" href="{{ replika.url if replika else '#' }}"
-               {% if not replika or replika.status != 'ready' %}hidden{% endif %}>Open Replika</a>
-            <button type="button" class="btn btn-secondary" id="replika-retry"
-                    {% if not replika or replika.status != 'error' %}hidden{% endif %}>Try again</button>
-            <p class="settings-row-hint" id="replika-progress" aria-live="polite"
-               {% if not replika or replika.status != 'creating' %}hidden{% endif %}>
-                Provisioning usually finishes within a minute.
-            </p>
-        </div>
+        <p class="settings-empty" id="replika-empty" {% if replikas %}hidden{% endif %}>
+            Create your first Replika below.
+        </p>
+        <p class="settings-row-hint" id="replika-deleted-toast" hidden>Deleted</p>
     </section>
 
-    <form class="settings-section" id="replika-form" {% if replika %}hidden{% endif %}>
+    <form class="settings-section" id="replika-form">
         <div class="settings-section-head">
-            <h2 class="settings-section-title">Replika type</h2>
-            <p class="settings-section-desc">This cannot be changed after creation</p>
+            <h2 class="settings-section-title">Create a Replika</h2>
+            <p class="settings-section-desc">Type cannot be changed after creation</p>
         </div>
         <div class="settings-choice-grid" role="radiogroup" aria-label="Replika type">
             <label class="settings-choice">
@@ -123,7 +135,7 @@
                 </div>
             </div>
             <div class="settings-actions">
-                <button type="submit" class="btn" id="replika-submit">Create your Replika</button>
+                <button type="submit" class="btn" id="replika-submit">Create Replika</button>
             </div>
         </div>
     </form>
@@ -134,50 +146,100 @@
 {% block scripts %}
 <script>
 const form = document.getElementById('replika-form');
-const ready = document.getElementById('replika-ready');
+const list = document.getElementById('replika-list');
+const empty = document.getElementById('replika-empty');
+const listDesc = document.getElementById('replika-list-desc');
 const input = document.getElementById('replika-username');
 const message = document.getElementById('replika-message');
 const submitBtn = document.getElementById('replika-submit');
-const retryBtn = document.getElementById('replika-retry');
+const deletedToast = document.getElementById('replika-deleted-toast');
 let availabilityTimer;
+let pollTimer;
+let knownIds = new Set(
+    Array.from(list.querySelectorAll('[data-replika-id]')).map((el) => el.dataset.replikaId)
+);
 
-function setStatusPill(status) {
-    const pill = document.getElementById('replika-status-pill');
-    pill.dataset.status = status || '';
-    pill.textContent =
-        status === 'ready' ? 'Ready' :
-        status === 'creating' ? 'Creating' :
-        status === 'error' ? 'Unavailable' :
-        (status ? status : '');
+const STATUS_LABELS = {
+    creating: 'Creating',
+    ready: 'Created',
+    error: 'Unavailable',
+    deleting: 'Deleting',
+};
+
+function statusDescription(replika) {
+    if (replika.status === 'ready') return 'Ready to open';
+    if (replika.status === 'creating') return 'Creating your Replika…';
+    if (replika.status === 'deleting') return 'Deleting your Replika…';
+    return replika.message || 'Temporarily unavailable';
 }
 
-function showReplika(replika) {
-    form.hidden = true;
-    ready.hidden = false;
-    ready.dataset.username = replika.username || '';
-    ready.dataset.type = replika.replika_type || '';
-    document.getElementById('replika-url').textContent = replika.url;
-    document.getElementById('replika-type').textContent =
-        replika.replika_type === 'organization' ? 'Organization' : 'Individual';
-    const desc = document.getElementById('replika-status-desc');
-    desc.textContent =
-        replika.status === 'ready' ? 'Ready to open' :
-        replika.status === 'creating' ? 'Creating your Replika…' :
-        (replika.message || 'Temporarily unavailable');
-    setStatusPill(replika.status);
-    const link = document.getElementById('replika-open');
-    link.href = replika.url;
-    link.hidden = replika.status !== 'ready';
-    document.getElementById('replika-progress').hidden = replika.status !== 'creating';
-    retryBtn.hidden = replika.status !== 'error';
-    if (replika.status === 'creating') {
-        setTimeout(refreshStatus, 2000);
+function cardHtml(replika) {
+    const typeLabel = replika.replika_type === 'organization' ? 'Organization' : 'Individual';
+    const label = STATUS_LABELS[replika.status] || replika.status_label || replika.status;
+    const progressCopy = replika.status === 'deleting'
+        ? 'Deletion usually finishes within a minute.'
+        : 'Provisioning usually finishes within a minute.';
+    return `
+        <article
+            class="settings-list-item replika-card"
+            data-replika-id="${replika.id}"
+            data-username="${replika.username || ''}"
+            data-type="${replika.replika_type || ''}"
+            data-status="${replika.status || ''}"
+        >
+            <div class="settings-row">
+                <div class="settings-row-main">
+                    <span class="settings-row-label">${replika.username || ''}</span>
+                    <span class="settings-row-hint replika-card-url">${replika.url || ''}</span>
+                    <span class="settings-row-hint replika-card-desc">${statusDescription(replika)} · ${typeLabel}</span>
+                </div>
+                <div class="settings-row-control">
+                    <span class="status-pill" data-status="${replika.status || ''}">${label}</span>
+                </div>
+            </div>
+            <div class="settings-actions replika-card-actions">
+                <a class="btn" href="${replika.url || '#'}" ${replika.status !== 'ready' ? 'hidden' : ''}>Open</a>
+                <a class="btn btn-secondary" href="/replika/${replika.id}/integrations" ${replika.status !== 'ready' ? 'hidden' : ''}>Integrations</a>
+                <button type="button" class="btn btn-secondary replika-retry" data-replika-id="${replika.id}" ${replika.status !== 'error' ? 'hidden' : ''}>Try again</button>
+                <button type="button" class="btn btn-danger replika-delete" data-replika-id="${replika.id}" data-username="${replika.username || ''}" ${replika.status === 'deleting' ? 'disabled' : ''}>Delete</button>
+                <p class="settings-row-hint replika-progress" aria-live="polite" ${['creating', 'deleting'].includes(replika.status) ? '' : 'hidden'}>${progressCopy}</p>
+            </div>
+        </article>
+    `;
+}
+
+function renderList(replikas) {
+    const nextIds = new Set((replikas || []).map((item) => item.id));
+    for (const id of knownIds) {
+        if (!nextIds.has(id)) {
+            deletedToast.hidden = false;
+            deletedToast.textContent = 'Deleted';
+            setTimeout(() => { deletedToast.hidden = true; }, 2500);
+        }
+    }
+    knownIds = nextIds;
+    list.innerHTML = (replikas || []).map(cardHtml).join('');
+    empty.hidden = Boolean(replikas && replikas.length);
+    listDesc.textContent = replikas && replikas.length
+        ? `${replikas.length} Replika${replikas.length === 1 ? '' : 's'}`
+        : 'No Replikas yet';
+    bindCardActions();
+    schedulePoll(replikas || []);
+}
+
+function schedulePoll(replikas) {
+    clearTimeout(pollTimer);
+    const transitioning = (replikas || []).some(
+        (item) => item.status === 'creating' || item.status === 'deleting'
+    );
+    if (transitioning) {
+        pollTimer = setTimeout(refreshStatus, 2000);
     }
 }
 
 async function refreshStatus() {
     try {
-        const response = await fetch('/api/replika');
+        const response = await fetch('/api/replikas');
         const data = await response.json().catch(() => ({}));
         if (!response.ok) {
             if (window.towerToast) {
@@ -185,7 +247,7 @@ async function refreshStatus() {
             }
             return;
         }
-        if (data.replika) showReplika(data.replika);
+        renderList(data.replikas || []);
     } catch (err) {
         if (window.towerToast) {
             window.towerToast(err.message || 'Could not refresh status.', { type: 'error' });
@@ -193,21 +255,19 @@ async function refreshStatus() {
     }
 }
 
-async function createReplika(username, replikaType, statusEl) {
+async function createReplika(username, replikaType, statusEl, replikaId) {
     if (statusEl) {
         statusEl.textContent = 'Creating your Replika…';
         statusEl.dataset.state = 'pending';
     }
     if (submitBtn) submitBtn.disabled = true;
-    if (retryBtn) retryBtn.disabled = true;
     try {
-        const response = await fetch('/api/replika', {
+        const body = { username, replika_type: replikaType };
+        if (replikaId) body.replika_id = replikaId;
+        const response = await fetch('/api/replikas', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-                username,
-                replika_type: replikaType,
-            }),
+            body: JSON.stringify(body),
         });
         const data = await response.json().catch(() => ({}));
         if (!response.ok) {
@@ -220,7 +280,12 @@ async function createReplika(username, replikaType, statusEl) {
             return;
         }
         if (statusEl) statusEl.dataset.state = '';
-        showReplika(data.replika);
+        await refreshStatus();
+        if (input) input.value = '';
+        if (message) {
+            message.textContent = 'Pick a unique subdomain for your Replika';
+            message.dataset.state = '';
+        }
     } catch (err) {
         if (statusEl) {
             statusEl.textContent = err.message || 'Please try again.';
@@ -230,8 +295,55 @@ async function createReplika(username, replikaType, statusEl) {
         }
     } finally {
         if (submitBtn) submitBtn.disabled = false;
-        if (retryBtn) retryBtn.disabled = false;
     }
+}
+
+async function deleteReplika(replikaId, username) {
+    const confirmed = window.confirm(
+        `Delete ${username}? This permanently erases its infrastructure and data, and frees the username.`
+    );
+    if (!confirmed) return;
+    try {
+        const response = await fetch(`/api/replikas/${encodeURIComponent(replikaId)}`, {
+            method: 'DELETE',
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            if (window.towerToast) {
+                window.towerToast(data.error || 'Could not delete Replika.', { type: 'error' });
+            }
+            return;
+        }
+        if (data.deleted) {
+            deletedToast.hidden = false;
+            deletedToast.textContent = 'Deleted';
+            setTimeout(() => { deletedToast.hidden = true; }, 2500);
+        }
+        await refreshStatus();
+    } catch (err) {
+        if (window.towerToast) {
+            window.towerToast(err.message || 'Could not delete Replika.', { type: 'error' });
+        }
+    }
+}
+
+function bindCardActions() {
+    list.querySelectorAll('.replika-retry').forEach((button) => {
+        button.addEventListener('click', async () => {
+            const card = button.closest('.replika-card');
+            await createReplika(
+                card.dataset.username,
+                card.dataset.type,
+                null,
+                button.dataset.replikaId
+            );
+        });
+    });
+    list.querySelectorAll('.replika-delete').forEach((button) => {
+        button.addEventListener('click', async () => {
+            await deleteReplika(button.dataset.replikaId, button.dataset.username);
+        });
+    });
 }
 
 if (input) {
@@ -247,7 +359,7 @@ if (input) {
         message.textContent = 'Checking availability…';
         availabilityTimer = setTimeout(async () => {
             try {
-                const response = await fetch(`/api/replika/username/${encodeURIComponent(username)}`);
+                const response = await fetch(`/api/replikas/username/${encodeURIComponent(username)}`);
                 const data = await response.json().catch(() => ({}));
                 if (data.available) {
                     message.textContent = 'Available';
@@ -269,10 +381,12 @@ if (input) {
     });
 }
 
-if (retryBtn) {
-    retryBtn.addEventListener('click', async () => {
-        await createReplika(ready.dataset.username, ready.dataset.type, null);
-    });
-}
+bindCardActions();
+schedulePoll(
+    Array.from(list.querySelectorAll('.replika-card')).map((card) => ({
+        id: card.dataset.replikaId,
+        status: card.dataset.status,
+    }))
+);
 </script>
 {% endblock %}

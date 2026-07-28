@@ -338,6 +338,7 @@ provisioning_ecs = _ProvisioningECS()
 provisioner._task_definition(
     provisioning_ecs,
     "tenant-a",
+    "owner-a",
     "alice",
     "organization",
     "tenant-ap",
@@ -354,6 +355,7 @@ assert [container["name"] for container in request["containerDefinitions"]] == [
 runtime = request["containerDefinitions"][0]
 environment = {row["name"]: row["value"] for row in runtime["environment"]}
 assert environment["REPLIKA_TENANT_ID"] == "tenant-a"
+assert environment["REPLIKA_OWNER_ID"] == "owner-a"
 assert environment["REPLIKA_TYPE"] == "organization"
 assert environment["REPLIKA_MANAGED_RUNTIME"] == "true"
 assert environment["APPCONFIG_REQUIRED"] == "false"

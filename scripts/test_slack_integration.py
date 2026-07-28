@@ -16,7 +16,8 @@ sys.path.insert(0, str(ROOT))
 
 os.environ.update(
     {
-        "REPLIKA_TENANT_ID": "account-123",
+        "REPLIKA_TENANT_ID": "replika-1",
+        "REPLIKA_OWNER_ID": "account-123",
         "REPLIKA_TYPE": "organization",
         "SLACK_CLIENT_ID": "client-id",
         "SLACK_CLIENT_SECRET": "client-secret",
@@ -28,6 +29,8 @@ os.environ.update(
         "SLACK_ALLOW_INSECURE_TENANT_URLS": "true",
     }
 )
+REPLIKA_ID = "replika-1"
+OWNER_ID = "account-123"
 
 from flask import Flask  # noqa: E402
 from tower.slack_integration import (  # noqa: E402
@@ -43,10 +46,11 @@ class _Store:
         self.installation = None
         self.outbox = {}
 
-    def save_state(self, nonce, owner_id, replika_type):
+    def save_state(self, nonce, owner_id, replika_id, replika_type):
         self.states[nonce] = {
             "_id": nonce,
             "owner_id": owner_id,
+            "replika_id": replika_id,
             "replika_type": replika_type,
         }
 
@@ -55,6 +59,11 @@ class _Store:
 
     def upsert_installation(self, document):
         self.installation = dict(document)
+
+    def for_replika(self, replika_id):
+        if self.installation and self.installation.get("replika_id") == replika_id:
+            return self.installation
+        return None
 
     def for_owner(self, owner_id):
         if self.installation and self.installation["owner_id"] == owner_id:
@@ -76,8 +85,8 @@ class _Store:
         item["placeholder_ts"] = placeholder_ts
         return True
 
-    def select_channel(self, owner_id, team_id, channel):
-        if not self.for_owner(owner_id) or self.installation["team_id"] != team_id:
+    def select_channel(self, replika_id, team_id, channel):
+        if not self.for_replika(replika_id) or self.installation["team_id"] != team_id:
             return False
         self.installation["selected_channel"] = {
             "id": channel["id"],
@@ -85,17 +94,28 @@ class _Store:
         }
         return True
 
-    def set_admins(self, owner_id, team_id, admin_user_ids):
-        if not self.for_owner(owner_id) or self.installation["team_id"] != team_id:
+    def set_admins(self, replika_id, team_id, admin_user_ids):
+        if not self.for_replika(replika_id) or self.installation["team_id"] != team_id:
             return False
         self.installation["admin_user_ids"] = list(admin_user_ids)
         return True
 
-    def delete_installation(self, owner_id, team_id):
-        if self.for_owner(owner_id) and self.installation["team_id"] == team_id:
+    def delete_installation(self, replika_id, team_id=None):
+        if self.for_replika(replika_id) and (
+            team_id is None or self.installation["team_id"] == team_id
+        ):
             self.installation = None
             return True
         return False
+
+    def delete_outbox_for_replika(self, replika_id):
+        before = len(self.outbox)
+        self.outbox = {
+            key: value
+            for key, value in self.outbox.items()
+            if value.get("replika_id") != replika_id
+        }
+        return before - len(self.outbox)
 
     def enqueue(self, dedupe_key, installation, kind, payload):
         if dedupe_key in self.outbox:
@@ -103,6 +123,7 @@ class _Store:
         self.outbox[dedupe_key] = {
             "_id": dedupe_key,
             "dedupe_key": dedupe_key,
+            "replika_id": installation.get("replika_id"),
             "owner_id": installation["owner_id"],
             "team_id": installation["team_id"],
             "kind": kind,
@@ -115,8 +136,8 @@ class _Vault:
     def __init__(self):
         self.values = {}
 
-    def put(self, owner_id, team_id, token):
-        ref = f"vault://{owner_id}/{team_id}"
+    def put(self, replika_id, team_id, token):
+        ref = f"vault://{replika_id}/{team_id}"
         self.values[ref] = token
         return ref
 
@@ -124,10 +145,10 @@ class _Vault:
         return self.values[token_ref]
 
     def delete(self, token_ref):
-        self.values.pop(token_ref)
+        self.values.pop(token_ref, None)
 
-    def ensure(self, owner_id):
-        ref = f"vault://auth/{owner_id}"
+    def ensure(self, replika_id):
+        ref = f"vault://auth/{replika_id}"
         self.values.setdefault(ref, "tenant-hmac-secret")
         return ref
 
@@ -209,7 +230,7 @@ os.environ["SLACK_TOKEN_KMS_KEY_ID"] = "kms-key-id"
 os.environ["SLACK_TOKEN_SECRET_PREFIX"] = "replika/slack"
 secrets_manager = _SecretsManager()
 token_ref = SecretsManagerTokenVault(secrets_manager).put(
-    "account-123", "T123", "xoxb-secret"
+    REPLIKA_ID, "T123", "xoxb-secret"
 )
 _assert(token_ref.startswith("arn:aws:secretsmanager:"), "vault returns opaque reference")
 _assert(secrets_manager.created["KmsKeyId"] == "kms-key-id", "vault requires KMS key")
@@ -228,11 +249,28 @@ app.config.update(
     SLACK_TOKEN_VAULT=vault,
     SLACK_TENANT_AUTH_VAULT=vault,
     SLACK_API=slack,
+    REPLIKA_TYPE_RESOLVER=lambda replika_id: "organization",
+    REPLIKA_OWNERSHIP_CHECKER=lambda replika_id, owner_id: (
+        {
+            "replika_id": REPLIKA_ID,
+            "owner_id": OWNER_ID,
+            "username": "alice",
+            "replika_type": "organization",
+            "status": "ready",
+        }
+        if replika_id == REPLIKA_ID and owner_id == OWNER_ID
+        else None
+    ),
 )
 register_slack_integration(app)
 client = app.test_client()
 
-install = client.get("/integrations/slack/install")
+# Owner identity comes from session for control-plane routes.
+with client.session_transaction() as session:
+    session["tower_authenticated"] = True
+    session["tower_username"] = OWNER_ID
+
+install = client.get(f"/replika/{REPLIKA_ID}/integrations/slack/install")
 _assert(install.status_code == 302, "install should redirect to Slack")
 query = urllib.parse.parse_qs(urllib.parse.urlparse(install.headers["Location"]).query)
 state = query["state"][0]
@@ -242,6 +280,7 @@ callback = client.get(
 )
 _assert(callback.status_code == 302, "valid OAuth callback")
 _assert(store.installation["token_ref"].startswith("vault://"), "Mongo stores token ref")
+_assert(store.installation["replika_id"] == REPLIKA_ID, "install scoped to Replika")
 _assert("xoxb-" not in str(store.installation), "Mongo must not store plaintext token")
 _assert(not store.states, "OAuth state must be single-use")
 
@@ -251,20 +290,28 @@ replay = client.get(
 )
 _assert("slack=error" in replay.headers["Location"], "OAuth state replay rejected")
 
-channels = client.get("/api/integrations/slack/channels").get_json()["channels"]
+channels = client.get(
+    f"/api/replikas/{REPLIKA_ID}/integrations/slack/channels"
+).get_json()["channels"]
 _assert([row["id"] for row in channels] == ["C1", "G1"], "accessible channels only")
 selected = client.put(
-    "/api/integrations/slack/channel", json={"channel_id": "C1"}
+    f"/api/replikas/{REPLIKA_ID}/integrations/slack/channel",
+    json={"channel_id": "C1"},
 )
 _assert(selected.status_code == 200, "organization selects one channel")
 admins = client.put(
-    "/api/integrations/slack/admins", json={"admin_user_ids": ["UADMIN"]}
+    f"/api/replikas/{REPLIKA_ID}/integrations/slack/admins",
+    json={"admin_user_ids": ["UADMIN"]},
 )
 _assert(admins.status_code == 200, "channel-member admin IDs are persisted")
 _assert(
     store.installation["admin_user_ids"] == ["UINSTALLER", "UADMIN"],
     "OAuth installer remains an admin",
 )
+
+# Second Replika cannot read or mutate the first Replika's Slack install.
+cross = client.get("/api/replikas/replika-other/integrations/slack/status")
+_assert(cross.status_code == 404, "cross-Replika Slack status is denied")
 
 challenge_body = json.dumps(
     {"type": "url_verification", "challenge": "challenge-token"},
@@ -307,7 +354,8 @@ duplicate = client.post(
 )
 _assert(not duplicate.get_json()["accepted"], "event deduplicated")
 event_key = "event:T123:C1:100.0"
-_assert(store.outbox[event_key]["owner_id"] == "account-123", "team routes to owner")
+_assert(store.outbox[event_key]["owner_id"] == OWNER_ID, "team routes to owner")
+_assert(store.outbox[event_key]["replika_id"] == REPLIKA_ID, "outbox carries replika_id")
 
 for event_id, revision_event in (
     (
@@ -449,7 +497,7 @@ oversized_response = client.post(
 _assert(oversized_response.status_code == 413, "oversized Slack payload rejected")
 
 placeholder_payload = {
-    "tenant_id": "account-123",
+    "tenant_id": REPLIKA_ID,
     "team_id": "T123",
     "dedupe_key": "placeholder-1",
     "source_dedupe_key": event_key,
@@ -466,7 +514,7 @@ placeholder = client.post(
     data=placeholder_body,
     content_type="application/json",
     headers=signed_internal_headers(
-        "account-123", placeholder_body, "tenant-hmac-secret"
+        REPLIKA_ID, placeholder_body, "tenant-hmac-secret"
     ),
 )
 _assert(
@@ -476,7 +524,7 @@ _assert(
     "reply-gate callback posts and persists a Slack placeholder",
 )
 delivery_payload = {
-    "tenant_id": "account-123",
+    "tenant_id": REPLIKA_ID,
     "team_id": "T123",
     "dedupe_key": "reply-1",
     "source_dedupe_key": event_key,
@@ -493,7 +541,7 @@ delivery = client.post(
     data=delivery_body,
     content_type="application/json",
     headers=signed_internal_headers(
-        "account-123", delivery_body, "tenant-hmac-secret"
+        REPLIKA_ID, delivery_body, "tenant-hmac-secret"
     ),
 )
 _assert(delivery.status_code == 202, "authenticated outbound accepted")
@@ -514,7 +562,7 @@ delete_response = client.post(
     data=delete_body,
     content_type="application/json",
     headers=signed_internal_headers(
-        "account-123", delete_body, "tenant-hmac-secret"
+        REPLIKA_ID, delete_body, "tenant-hmac-secret"
     ),
 )
 _assert(delete_response.status_code == 202, "placeholder deletion accepted")
@@ -525,22 +573,23 @@ too_long_response = client.post(
     data=too_long_body,
     content_type="application/json",
     headers=signed_internal_headers(
-        "account-123", too_long_body, "tenant-hmac-secret"
+        REPLIKA_ID, too_long_body, "tenant-hmac-secret"
     ),
 )
 _assert(too_long_response.status_code == 400, "oversized outbound text rejected")
 
-disconnected = client.delete("/api/integrations/slack")
+disconnected = client.delete(f"/api/replikas/{REPLIKA_ID}/integrations/slack")
 _assert(disconnected.status_code == 200 and store.installation is None, "disconnect")
 _assert(
     all("auth/" in ref for ref in vault.values),
     "disconnect deletes the Slack token but preserves tenant authentication",
 )
 
-individual_ref = vault.put("account-123", "TDM", "xoxb-individual")
+individual_ref = vault.put(REPLIKA_ID, "TDM", "xoxb-individual")
 store.upsert_installation(
     {
-        "owner_id": "account-123",
+        "owner_id": OWNER_ID,
+        "replika_id": REPLIKA_ID,
         "team_id": "TDM",
         "team_name": "DM Workspace",
         "replika_type": "individual",
@@ -548,7 +597,9 @@ store.upsert_installation(
         "installer_user_id": "UINSTALLER",
     }
 )
-dm_channels = client.get("/api/integrations/slack/channels").get_json()
+dm_channels = client.get(
+    f"/api/replikas/{REPLIKA_ID}/integrations/slack/channels"
+).get_json()
 _assert(dm_channels == {"channels": [], "mode": "dm"}, "individual exposes DM mode")
 dm_payload = {
     "type": "event_callback",
@@ -584,7 +635,8 @@ other_user = client.post(
 )
 _assert(not other_user.get_json()["accepted"], "individual route is installer-only")
 channel_rejected = client.put(
-    "/api/integrations/slack/channel", json={"channel_id": "C1"}
+    f"/api/replikas/{REPLIKA_ID}/integrations/slack/channel",
+    json={"channel_id": "C1"},
 )
 _assert(channel_rejected.status_code == 400, "individual cannot select a channel")
 

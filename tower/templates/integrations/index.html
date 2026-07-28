@@ -7,7 +7,13 @@
 <div class="settings-page-inner">
     <header class="settings-page-head">
         <h1 class="settings-page-title">Integrations</h1>
-        <p class="settings-page-subtitle">Connect your Replika to the services you use</p>
+        <p class="settings-page-subtitle">
+            {% if replika_username %}
+            Connect Slack for {{ replika_username }}
+            {% else %}
+            Connect your Replika to the services you use
+            {% endif %}
+        </p>
     </header>
 
     <section class="settings-section">
@@ -28,7 +34,8 @@
         <p class="settings-empty">{{ configuration_error }}</p>
         {% elif not slack.connected %}
         <div class="settings-actions">
-            <a class="btn" href="/integrations/slack/install">Add to Slack</a>
+            <a class="btn" href="/replika/{{ replika_id }}/integrations/slack/install">Add to Slack</a>
+            <a class="btn btn-secondary" href="/replika">Back to Replikas</a>
         </div>
         {% else %}
         <div class="settings-rows">
@@ -85,12 +92,19 @@
             </div>
             {% endif %}
         </div>
+        <div class="settings-actions">
+            <a class="btn btn-secondary" href="/replika">Back to Replikas</a>
+        </div>
         {% endif %}
     </section>
 </div>
 {% endblock %}
 
 {% block scripts %}
+<script>
+const REPLIKA_ID = {{ (replika_id or '')|tojson }};
+const API_BASE = `/api/replikas/${encodeURIComponent(REPLIKA_ID)}/integrations/slack`;
+</script>
 {% if slack.connected %}
 <script>
 const channelSelect = document.getElementById('slack-channel');
@@ -98,7 +112,7 @@ const channelMessage = document.getElementById('slack-channel-message');
 
 async function loadChannels() {
     if (!channelSelect) return;
-    const response = await fetch('/api/integrations/slack/channels');
+    const response = await fetch(`${API_BASE}/channels`);
     const data = await response.json();
     if (!response.ok) {
         channelMessage.textContent = data.error || 'Could not load channels.';
@@ -117,7 +131,7 @@ if (channelSelect) {
     loadChannels();
     channelSelect.addEventListener('change', async () => {
         if (!channelSelect.value) return;
-        const response = await fetch('/api/integrations/slack/channel', {
+        const response = await fetch(`${API_BASE}/channel`, {
             method: 'PUT',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({channel_id: channelSelect.value}),
@@ -135,7 +149,7 @@ if (saveAdmins) {
         const input = document.getElementById('slack-admins');
         const message = document.getElementById('slack-admin-message');
         const admin_user_ids = input.value.split(',').map(value => value.trim()).filter(Boolean);
-        const response = await fetch('/api/integrations/slack/admins', {
+        const response = await fetch(`${API_BASE}/admins`, {
             method: 'PUT',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({admin_user_ids}),
@@ -156,7 +170,7 @@ document.getElementById('slack-disconnect').addEventListener('click', async () =
         })
         : confirm('Disconnect this Slack workspace?');
     if (!ok) return;
-    const response = await fetch('/api/integrations/slack', {method: 'DELETE'});
+    const response = await fetch(API_BASE, {method: 'DELETE'});
     if (response.ok) {
         window.location.reload();
         return;

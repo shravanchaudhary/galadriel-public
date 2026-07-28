@@ -1,10 +1,34 @@
 # Replika provider ECS runbook
 
-The customer experience is a managed product: customers authenticate, choose
-an available username, and receive `https://<username>.<product-domain>`.
-AWS resource names, regions, task state, and credentials are provider-only.
-The control plane provisions one isolated Fargate service and S3 Files access
-point per Replika. Application code comes only from immutable ECR images.
+The customer experience is a managed product: customers authenticate, create
+one or more Replikas, choose an available username for each, and receive
+`https://<username>.<product-domain>`. AWS resource names, regions, task
+state, and credentials are provider-only. The control plane provisions one
+isolated Fargate service and S3 Files access point per Replika. Application
+code comes only from immutable ECR images.
+
+## Multi-Replika lifecycle
+
+- Each Replika has a stable `replika_id` used for tenant isolation
+  (`REPLIKA_TENANT_ID`) and an `owner_id` for Cognito/account authorization
+  (`REPLIKA_OWNER_ID`). Legacy Replikas keep their existing `_id` / resource
+  names; new Replikas receive random IDs.
+- Customer statuses: `creating` → **Creating**, `ready` → **Created**,
+  `deleting` → **Deleting**, then the record disappears after teardown
+  (**Deleted**).
+- Hard delete is destructive and asynchronous: the control plane marks the
+  Replika `deleting`, purges that Replika's Slack install/outbox/secrets,
+  invokes the provisioner `delete` operation, and only removes the Mongo
+  record (freeing the username) after the signed `deleted` callback.
+- Same-name recreation is blocked while deletion is in progress and becomes
+  available immediately after the final callback.
+- Slack OAuth and routing are scoped per Replika at
+  `/replika/<replika_id>/integrations`. Deleting one Replika must not affect
+  another Replika's Slack workspace.
+- Operator recovery for a stuck `deleting` Replika: inspect provisioner
+  Lambda logs, re-invoke delete with the same `{operation,replika_id,owner_id,username}`
+  payload (idempotent), confirm AWS resources are gone, then complete the
+  control-plane `deleted` callback if needed.
 
 ## Prerequisites
 
@@ -69,9 +93,8 @@ defaults only when a target file is absent. The container root filesystem is
 read-only. Agent writes are restricted to persistent Replika paths; `main.py`
 and `harness/` remain developer-owned.
 
-Local Compose bind-mounts the six repository-backed mutable `/app` directories
-so edits are visible to Git on the host. `/data` remains a named volume.
-To run a local MongoDB palace:
+Local Compose mounts `.galadriel-local` at `/mnt/efs` when `GALADRIEL_ENV=local`,
+keeping repository defaults clean. To run a local MongoDB palace:
 
 ```sh
 docker compose --profile mongo up -d mongo

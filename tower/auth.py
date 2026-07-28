@@ -153,17 +153,28 @@ def authenticate_request(req: Request | None = None) -> AuthResult | None:
 
     if alb_identity_enabled():
         identity = (req.headers.get("x-amzn-oidc-identity") or "").strip()
-        expected_tenant = os.environ.get("REPLIKA_TENANT_ID", "default")
+        # Prefer owner identity when present so multi-Replika tenants can share
+        # one Cognito account while isolating data under REPLIKA_TENANT_ID.
+        expected_owner = (
+            os.environ.get("REPLIKA_OWNER_ID")
+            or os.environ.get("REPLIKA_TENANT_ID")
+            or "default"
+        ).strip()
         if identity and (
-            expected_tenant == "default" or hmac.compare_digest(identity, expected_tenant)
+            expected_owner == "default"
+            or hmac.compare_digest(identity, expected_owner)
         ):
             return AuthResult(method="alb", username=identity)
 
     if session.get(SESSION_AUTH_KEY) is True:
         username = session.get(SESSION_USER_KEY) or auth_username()
-        expected_tenant = os.environ.get("REPLIKA_TENANT_ID", "default")
-        if expected_tenant == "default" or hmac.compare_digest(
-            str(username), expected_tenant
+        expected_owner = (
+            os.environ.get("REPLIKA_OWNER_ID")
+            or os.environ.get("REPLIKA_TENANT_ID")
+            or "default"
+        ).strip()
+        if expected_owner == "default" or hmac.compare_digest(
+            str(username), expected_owner
         ):
             return AuthResult(method="session", username=username)
         return None

@@ -65,7 +65,7 @@ class SlackApi:
 class SlackTokenVault:
     """Token-store abstraction; implementations must never return token material in refs."""
 
-    def put(self, owner_id: str, team_id: str, token: str) -> str:
+    def put(self, replika_id: str, team_id: str, token: str) -> str:
         raise NotImplementedError
 
     def get(self, token_ref: str) -> str:
@@ -88,14 +88,14 @@ class SecretsManagerTokenVault(SlackTokenVault):
             self.client = boto3.client("secretsmanager")
         return self.client
 
-    def put(self, owner_id: str, team_id: str, token: str) -> str:
+    def put(self, replika_id: str, team_id: str, token: str) -> str:
         kms_key_id = os.environ.get("SLACK_TOKEN_KMS_KEY_ID", "").strip()
         prefix = os.environ.get("SLACK_TOKEN_SECRET_PREFIX", "").strip().strip("/")
         if not kms_key_id or not prefix:
             raise RuntimeError(
                 "SLACK_TOKEN_KMS_KEY_ID and SLACK_TOKEN_SECRET_PREFIX are required"
             )
-        digest = hashlib.sha256(f"{owner_id}\0{team_id}".encode()).hexdigest()
+        digest = hashlib.sha256(f"{replika_id}\0{team_id}".encode()).hexdigest()
         name = f"{prefix}/{digest}"
         client = self._client()
         try:
@@ -136,16 +136,16 @@ class TenantAuthVault:
         return self.client
 
     @staticmethod
-    def secret_name(owner_id: str) -> str:
+    def secret_name(replika_id: str) -> str:
         prefix = os.environ.get(
             "SLACK_TENANT_AUTH_SECRET_PREFIX", "replika/slack-auth"
         ).strip("/")
-        digest = hashlib.sha256(owner_id.encode()).hexdigest()
+        digest = hashlib.sha256(replika_id.encode()).hexdigest()
         return f"{prefix}/{digest}"
 
-    def ensure(self, owner_id: str) -> str:
+    def ensure(self, replika_id: str) -> str:
         client = self._client()
-        name = self.secret_name(owner_id)
+        name = self.secret_name(replika_id)
         try:
             result = client.create_secret(
                 Name=name,
@@ -155,12 +155,34 @@ class TenantAuthVault:
                 ),
                 Tags=[
                     {"Key": "Service", "Value": "replika-slack-internal"},
-                    {"Key": "TenantDigest", "Value": hashlib.sha256(owner_id.encode()).hexdigest()},
+                    {
+                        "Key": "TenantDigest",
+                        "Value": hashlib.sha256(replika_id.encode()).hexdigest(),
+                    },
                 ],
             )
             return result["ARN"]
         except client.exceptions.ResourceExistsException:
             return client.describe_secret(SecretId=name)["ARN"]
+
+    def delete(self, replika_id: str) -> None:
+        try:
+            self._client().delete_secret(
+                SecretId=self.secret_name(replika_id),
+                ForceDeleteWithoutRecovery=True,
+            )
+        except Exception as exc:
+            message = str(exc).lower()
+            code = ""
+            if hasattr(exc, "response"):
+                code = str(exc.response.get("Error", {}).get("Code") or "")
+            if (
+                code != "ResourceNotFoundException"
+                and "resourcenotfoundexception" not in type(exc).__name__.lower()
+                and "not found" not in message
+                and "does not exist" not in message
+            ):
+                raise
 
     def get(self, secret_ref: str) -> str:
         value = self._client().get_secret_value(SecretId=secret_ref).get("SecretString")
@@ -169,20 +191,20 @@ class TenantAuthVault:
         return value
 
 
-def signed_internal_headers(owner_id: str, body: bytes, secret: str) -> dict[str, str]:
+def signed_internal_headers(replika_id: str, body: bytes, secret: str) -> dict[str, str]:
     timestamp = str(int(time.time()))
-    base = owner_id.encode() + b":" + timestamp.encode() + b":" + body
+    base = replika_id.encode() + b":" + timestamp.encode() + b":" + body
     signature = hmac.new(secret.encode(), base, hashlib.sha256).hexdigest()
     return {
         "Content-Type": "application/json",
-        "X-Replika-Tenant": owner_id,
+        "X-Replika-Tenant": replika_id,
         "X-Replika-Timestamp": timestamp,
         "X-Replika-Signature": f"v1={signature}",
     }
 
 
 def internal_signature_valid(
-    owner_id: str, body: bytes, secret: str, headers
+    replika_id: str, body: bytes, secret: str, headers
 ) -> bool:
     supplied_tenant = str(headers.get("X-Replika-Tenant") or "")
     timestamp = str(headers.get("X-Replika-Timestamp") or "")
@@ -192,9 +214,9 @@ def internal_signature_valid(
             return False
     except ValueError:
         return False
-    if not hmac.compare_digest(owner_id, supplied_tenant):
+    if not hmac.compare_digest(replika_id, supplied_tenant):
         return False
-    base = owner_id.encode() + b":" + timestamp.encode() + b":" + body
+    base = replika_id.encode() + b":" + timestamp.encode() + b":" + body
     expected = "v1=" + hmac.new(secret.encode(), base, hashlib.sha256).hexdigest()
     return hmac.compare_digest(expected, supplied)
 
@@ -226,8 +248,19 @@ class SlackInstallationStore:
         self.installations = db[INSTALLATIONS]
         self.states = db[OAUTH_STATES]
         self.outbox = db[OUTBOX]
+        self._ensure_indexes()
+        self._migrate_legacy_installations()
+
+    def _ensure_indexes(self) -> None:
+        try:
+            self.installations.drop_index("unique_slack_owner")
+        except Exception:
+            pass
         self.installations.create_index(
-            [("owner_id", ASCENDING)], unique=True, name="unique_slack_owner"
+            [("replika_id", ASCENDING)], unique=True, name="unique_slack_replika"
+        )
+        self.installations.create_index(
+            [("owner_id", ASCENDING)], unique=False, name="slack_owner"
         )
         self.installations.create_index(
             [("team_id", ASCENDING)], unique=True, name="unique_slack_team_route"
@@ -243,12 +276,24 @@ class SlackInstallationStore:
             name="slack_outbox_delivery",
         )
 
-    def save_state(self, nonce: str, owner_id: str, replika_type: str) -> None:
+    def _migrate_legacy_installations(self) -> None:
+        for document in self.installations.find(
+            {"$or": [{"replika_id": {"$exists": False}}, {"replika_id": None}]}
+        ):
+            self.installations.update_one(
+                {"_id": document["_id"]},
+                {"$set": {"replika_id": str(document.get("owner_id") or document["_id"])}},
+            )
+
+    def save_state(
+        self, nonce: str, owner_id: str, replika_id: str, replika_type: str
+    ) -> None:
         now = datetime.now(timezone.utc)
         self.states.insert_one(
             {
                 "_id": nonce,
                 "owner_id": owner_id,
+                "replika_id": replika_id,
                 "replika_type": replika_type,
                 "created_at": now,
                 "expires_at": now + timedelta(seconds=STATE_TTL_SECONDS),
@@ -264,18 +309,27 @@ class SlackInstallationStore:
         now = datetime.now(timezone.utc)
         document = {**document, "updated_at": now}
         self.installations.update_one(
-            {"owner_id": document["owner_id"], "team_id": document["team_id"]},
+            {"replika_id": document["replika_id"]},
             {"$set": document, "$setOnInsert": {"created_at": now}},
             upsert=True,
         )
 
-    def set_auth_ref(self, owner_id: str, auth_ref: str) -> None:
+    def set_auth_ref(self, replika_id: str, auth_ref: str) -> None:
         self.installations.update_one(
-            {"owner_id": owner_id},
-            {"$set": {"internal_auth_ref": auth_ref, "updated_at": datetime.now(timezone.utc)}},
+            {"replika_id": replika_id},
+            {
+                "$set": {
+                    "internal_auth_ref": auth_ref,
+                    "updated_at": datetime.now(timezone.utc),
+                }
+            },
         )
 
+    def for_replika(self, replika_id: str) -> dict[str, Any] | None:
+        return self.installations.find_one({"replika_id": replika_id})
+
     def for_owner(self, owner_id: str) -> dict[str, Any] | None:
+        """Compatibility helper for legacy owner-keyed installs."""
         return self.installations.find_one({"owner_id": owner_id})
 
     def for_team(self, team_id: str) -> dict[str, Any] | None:
@@ -284,10 +338,12 @@ class SlackInstallationStore:
     def outbox_item(self, dedupe_key: str) -> dict[str, Any] | None:
         return self.outbox.find_one({"_id": dedupe_key})
 
-    def select_channel(self, owner_id: str, team_id: str, channel: dict[str, Any]) -> bool:
+    def select_channel(
+        self, replika_id: str, team_id: str, channel: dict[str, Any]
+    ) -> bool:
         result = self.installations.update_one(
             {
-                "owner_id": owner_id,
+                "replika_id": replika_id,
                 "team_id": team_id,
                 "replika_type": "organization",
             },
@@ -304,23 +360,32 @@ class SlackInstallationStore:
         return bool(result.matched_count)
 
     def set_admins(
-        self, owner_id: str, team_id: str, admin_user_ids: list[str]
+        self, replika_id: str, team_id: str, admin_user_ids: list[str]
     ) -> bool:
         result = self.installations.update_one(
-            {"owner_id": owner_id, "team_id": team_id, "replika_type": "organization"},
-            {"$set": {
-                "admin_user_ids": admin_user_ids,
-                "updated_at": datetime.now(timezone.utc),
-            }},
+            {
+                "replika_id": replika_id,
+                "team_id": team_id,
+                "replika_type": "organization",
+            },
+            {
+                "$set": {
+                    "admin_user_ids": admin_user_ids,
+                    "updated_at": datetime.now(timezone.utc),
+                }
+            },
         )
         return bool(result.matched_count)
 
-    def delete_installation(self, owner_id: str, team_id: str) -> bool:
-        return bool(
-            self.installations.delete_one(
-                {"owner_id": owner_id, "team_id": team_id}
-            ).deleted_count
-        )
+    def delete_installation(self, replika_id: str, team_id: str | None = None) -> bool:
+        query: dict[str, Any] = {"replika_id": replika_id}
+        if team_id is not None:
+            query["team_id"] = team_id
+        return bool(self.installations.delete_one(query).deleted_count)
+
+    def delete_outbox_for_replika(self, replika_id: str) -> int:
+        result = self.outbox.delete_many({"replika_id": replika_id})
+        return int(result.deleted_count)
 
     def enqueue(
         self,
@@ -330,12 +395,16 @@ class SlackInstallationStore:
         payload: dict[str, Any],
     ) -> bool:
         now = datetime.now(timezone.utc)
+        replika_id = str(
+            installation.get("replika_id") or installation.get("owner_id") or ""
+        )
         try:
             self.outbox.insert_one(
                 {
                     "_id": dedupe_key,
                     "dedupe_key": dedupe_key,
-                    "owner_id": installation["owner_id"],
+                    "replika_id": replika_id,
+                    "owner_id": installation.get("owner_id"),
                     "team_id": installation["team_id"],
                     "replika_type": installation["replika_type"],
                     "kind": kind,
@@ -505,7 +574,10 @@ class SlackOutboxDispatcher:
         if not item:
             return False
         try:
-            installation = self.installation_resolver(item["owner_id"])
+            replika_id = str(
+                item.get("replika_id") or item.get("owner_id") or ""
+            )
+            installation = self.installation_resolver(replika_id)
             if not installation or installation.get("team_id") != item.get("team_id"):
                 raise RuntimeError("Slack installation no longer exists")
             if item["kind"] == "outbound":
@@ -521,13 +593,15 @@ class SlackOutboxDispatcher:
         return True
 
     def _deliver_tenant(self, installation: dict[str, Any], item: dict[str, Any]) -> None:
-        owner_id = installation["owner_id"]
+        replika_id = str(
+            installation.get("replika_id") or installation.get("owner_id") or ""
+        )
         auth_ref = installation.get("internal_auth_ref")
         if not auth_ref:
-            auth_ref = self.auth_vault.ensure(owner_id)
-            self.store.set_auth_ref(owner_id, auth_ref)
+            auth_ref = self.auth_vault.ensure(replika_id)
+            self.store.set_auth_ref(replika_id, auth_ref)
         payload = {
-            "tenant_id": owner_id,
+            "tenant_id": replika_id,
             "team_id": installation["team_id"],
             "replika_type": installation["replika_type"],
             "installer_user_id": installation.get("installer_user_id"),
@@ -541,10 +615,10 @@ class SlackOutboxDispatcher:
         }
         body = json.dumps(payload, separators=(",", ":")).encode()
         headers = signed_internal_headers(
-            owner_id, body, self.auth_vault.get(auth_ref)
+            replika_id, body, self.auth_vault.get(auth_ref)
         )
         url = validated_tenant_url(
-            self.tenant_url_resolver(owner_id)
+            self.tenant_url_resolver(replika_id)
         ) + "/internal/slack/ingress"
         self.transport.post(url, payload, headers)
 
@@ -622,6 +696,7 @@ def _owner_id() -> str:
     value = (
         getattr(auth_result, "username", None)
         or session.get(SESSION_USER_KEY)
+        or os.environ.get("REPLIKA_OWNER_ID")
         or os.environ.get("REPLIKA_TENANT_ID")
     )
     if not value or value == "default":
@@ -629,16 +704,69 @@ def _owner_id() -> str:
     return str(value)
 
 
-def _replika_type(owner_id: str) -> str:
+def _replika_type(replika_id: str) -> str:
     configured = os.environ.get("REPLIKA_TYPE", "").strip()
     if configured in {"organization", "individual"}:
         return configured
     resolver = current_app.config.get("REPLIKA_TYPE_RESOLVER")
     if resolver:
-        value = resolver(owner_id)
+        value = resolver(replika_id)
         if value in {"organization", "individual"}:
             return value
     raise RuntimeError("Create a typed Replika before installing Slack")
+
+
+def _owned_replika(replika_id: str, owner_id: str) -> dict[str, Any]:
+    checker = current_app.config.get("REPLIKA_OWNERSHIP_CHECKER")
+    if checker is not None:
+        document = checker(replika_id, owner_id)
+    else:
+        from .replika_control_plane import _store as replika_store
+
+        document = replika_store().find_owned(replika_id, owner_id)
+    if not document:
+        raise LookupError("Unknown Replika")
+    if document.get("status") == "deleting":
+        raise RuntimeError("That Replika is being deleted")
+    return document
+
+
+def purge_replika_slack(replika_id: str) -> None:
+    """Revoke Slack tokens and remove all Replika-scoped Slack rows/secrets."""
+    store = _store()
+    installation = store.for_replika(replika_id)
+    if installation:
+        token_ref = installation.get("token_ref")
+        if token_ref:
+            try:
+                token = _vault().get(token_ref)
+                try:
+                    _slack().call("auth.revoke", token=token)
+                except RuntimeError:
+                    log.warning(
+                        "Slack token revoke failed during purge for %s",
+                        replika_id,
+                        exc_info=True,
+                    )
+                _vault().delete(token_ref)
+            except Exception:
+                log.warning(
+                    "Slack token secret cleanup failed for %s",
+                    replika_id,
+                    exc_info=True,
+                )
+        store.delete_installation(replika_id, installation.get("team_id"))
+    else:
+        store.delete_installation(replika_id)
+    store.delete_outbox_for_replika(replika_id)
+    try:
+        _auth_vault().delete(replika_id)
+    except Exception:
+        log.warning(
+            "Slack tenant auth secret cleanup failed for %s",
+            replika_id,
+            exc_info=True,
+        )
 
 
 def _required(name: str) -> str:
@@ -699,6 +827,7 @@ def _installation_view(document: dict[str, Any] | None) -> dict[str, Any]:
         return {"connected": False}
     return {
         "connected": True,
+        "replika_id": document.get("replika_id"),
         "team_id": document["team_id"],
         "team_name": document.get("team_name") or document["team_id"],
         "replika_type": document["replika_type"],
@@ -757,13 +886,13 @@ def _event_is_routable(installation: dict[str, Any], event: dict[str, Any]) -> b
     )
 
 
-def _tenant_url_resolver(owner_id: str) -> str:
+def _tenant_url_resolver(replika_id: str) -> str:
     injected = current_app.config.get("SLACK_TENANT_URL_RESOLVER")
     if injected:
-        return injected(owner_id)
+        return injected(replika_id)
     from .replika_control_plane import _store as replika_store
 
-    replika = replika_store().find_for_owner(owner_id)
+    replika = replika_store().find_by_id(replika_id)
     if not replika or replika.get("status") != "ready" or not replika.get("product_url"):
         raise RuntimeError("Tenant runtime is not ready")
     return str(replika["product_url"])
@@ -784,8 +913,8 @@ def start_slack_dispatcher(app) -> SlackOutboxDispatcher | None:
 
                 control_store = replika_store()
 
-                def tenant_url_resolver(owner_id):
-                    replika = control_store.find_for_owner(owner_id)
+                def tenant_url_resolver(replika_id):
+                    replika = control_store.find_by_id(replika_id)
                     if (
                         not replika
                         or replika.get("status") != "ready"
@@ -796,7 +925,7 @@ def start_slack_dispatcher(app) -> SlackOutboxDispatcher | None:
             store = _store()
             dispatcher = SlackOutboxDispatcher(
                 store,
-                installation_resolver=store.for_owner,
+                installation_resolver=store.for_replika,
                 tenant_url_resolver=tenant_url_resolver,
                 auth_vault=_auth_vault(),
                 token_vault=_vault(),
@@ -812,55 +941,96 @@ def start_slack_dispatcher(app) -> SlackOutboxDispatcher | None:
 def register_slack_integration(app) -> None:
     bp = Blueprint("slack_integration", __name__)
 
-    @bp.get("/integrations")
-    def integrations_page():
+    def _integrations_redirect_for_owner():
+        from .replika_control_plane import _store as replika_store
+
+        documents = replika_store().list_for_owner(_owner_id())
+        if not documents:
+            return redirect("/replika")
+        return redirect(
+            f"/replika/{documents[0].get('replika_id') or documents[0]['_id']}/integrations"
+        )
+
+    def _render_integrations(replika_id: str):
+        owner_id = _owner_id()
         try:
-            owner_id = _owner_id()
-            installation = _store().for_owner(owner_id)
-            replika_type = (
-                installation["replika_type"]
-                if installation
-                else _replika_type(owner_id)
-            )
+            replika = _owned_replika(replika_id, owner_id)
+        except LookupError:
+            return jsonify({"error": "Unknown Replika"}), 404
         except PermissionError:
             return jsonify({"error": "Unauthorized"}), 401
         except RuntimeError as exc:
             return render_template(
                 "integrations/index.html",
                 slack={"connected": False},
+                replika_id=replika_id,
+                replika_username=None,
                 replika_type=None,
                 configuration_error=str(exc),
             )
+        installation = _store().for_replika(replika_id)
+        replika_type = (
+            installation["replika_type"]
+            if installation
+            else replika.get("replika_type")
+        )
         return render_template(
             "integrations/index.html",
             slack=_installation_view(installation),
+            replika_id=replika_id,
+            replika_username=replika.get("username"),
             replika_type=replika_type,
             configuration_error=None,
         )
 
+    @bp.get("/integrations")
+    def integrations_page():
+        try:
+            return _integrations_redirect_for_owner()
+        except PermissionError:
+            return jsonify({"error": "Unauthorized"}), 401
+
+    @bp.get("/replika/<replika_id>/integrations")
+    def replika_integrations_page(replika_id: str):
+        return _render_integrations(replika_id)
+
     @bp.get("/integrations/slack/install")
-    def slack_install():
+    def slack_install_legacy():
+        replika_id = str(request.args.get("replika_id") or "").strip()
+        if not replika_id:
+            return _integrations_redirect_for_owner()
+        return redirect(f"/replika/{replika_id}/integrations/slack/install")
+
+    @bp.get("/replika/<replika_id>/integrations/slack/install")
+    def slack_install(replika_id: str):
         owner_id = _owner_id()
-        replika_type = _replika_type(owner_id)
+        replika = _owned_replika(replika_id, owner_id)
+        if replika.get("status") != "ready":
+            return redirect(f"/replika/{replika_id}/integrations?slack=not-ready")
+        replika_type = str(replika.get("replika_type") or _replika_type(replika_id))
         nonce = secrets.token_urlsafe(32)
-        _store().save_state(nonce, owner_id, replika_type)
+        _store().save_state(nonce, owner_id, replika_id, replika_type)
         params = {
             "client_id": _required("SLACK_CLIENT_ID"),
             "scope": "app_mentions:read,channels:history,channels:read,chat:write,commands,groups:history,groups:read,im:history,im:read,im:write,users:read",
             "redirect_uri": _required("SLACK_OAUTH_REDIRECT_URI"),
             "state": _encode_state(nonce),
         }
-        return redirect("https://slack.com/oauth/v2/authorize?" + urllib.parse.urlencode(params))
+        return redirect(
+            "https://slack.com/oauth/v2/authorize?" + urllib.parse.urlencode(params)
+        )
 
     @bp.get("/integrations/slack/oauth/callback")
     def slack_oauth_callback():
-        if request.args.get("error"):
-            return redirect("/integrations?slack=denied")
+        replika_id = ""
         try:
+            if request.args.get("error"):
+                return redirect("/replika?slack=denied")
             nonce = _decode_state(request.args.get("state", ""))
             state = _store().consume_state(nonce)
             if not state:
                 raise ValueError("Expired or already-used OAuth state")
+            replika_id = str(state.get("replika_id") or state.get("owner_id") or "")
             result = _slack().call(
                 "oauth.v2.access",
                 client_id=_required("SLACK_CLIENT_ID"),
@@ -872,19 +1042,20 @@ def register_slack_integration(app) -> None:
             team_id = str(team.get("id") or "")
             token = str(result.get("access_token") or "")
             installer_user_id = str((result.get("authed_user") or {}).get("id") or "")
-            if not team_id or not token or not installer_user_id:
+            if not team_id or not token or not installer_user_id or not replika_id:
                 raise RuntimeError("Slack OAuth response was incomplete")
             existing = _store().for_team(team_id)
-            if existing and existing["owner_id"] != state["owner_id"]:
+            if existing and existing.get("replika_id") != replika_id:
                 raise RuntimeError("That Slack workspace is linked to another Replika")
-            owner_installation = _store().for_owner(state["owner_id"])
-            if owner_installation and owner_installation["team_id"] != team_id:
+            current = _store().for_replika(replika_id)
+            if current and current["team_id"] != team_id:
                 raise RuntimeError("Disconnect the current Slack workspace first")
-            token_ref = _vault().put(state["owner_id"], team_id, token)
-            auth_ref = _auth_vault().ensure(state["owner_id"])
+            token_ref = _vault().put(replika_id, team_id, token)
+            auth_ref = _auth_vault().ensure(replika_id)
             _store().upsert_installation(
                 {
                     "owner_id": state["owner_id"],
+                    "replika_id": replika_id,
                     "team_id": team_id,
                     "team_name": team.get("name"),
                     "replika_type": state["replika_type"],
@@ -896,21 +1067,55 @@ def register_slack_integration(app) -> None:
                     "scope": result.get("scope"),
                 }
             )
-            return redirect("/integrations?slack=connected")
+            return redirect(f"/replika/{replika_id}/integrations?slack=connected")
         except ValueError:
             current_app.logger.warning("Rejected invalid Slack OAuth state")
-            return redirect("/integrations?slack=error")
+            target = (
+                f"/replika/{replika_id}/integrations?slack=error"
+                if replika_id
+                else "/replika?slack=error"
+            )
+            return redirect(target)
         except Exception:
             current_app.logger.exception("Slack OAuth callback failed")
-            return redirect("/integrations?slack=error")
+            target = (
+                f"/replika/{replika_id}/integrations?slack=error"
+                if replika_id
+                else "/replika?slack=error"
+            )
+            return redirect(target)
 
+    def _require_owned_installation(replika_id: str):
+        owner_id = _owner_id()
+        _owned_replika(replika_id, owner_id)
+        return _store().for_replika(replika_id)
+
+    @bp.get("/api/replikas/<replika_id>/integrations/slack/status")
     @bp.get("/api/integrations/slack/status")
-    def slack_status():
-        return jsonify(_installation_view(_store().for_owner(_owner_id())))
+    def slack_status(replika_id: str | None = None):
+        replika_id = replika_id or str(request.args.get("replika_id") or "").strip()
+        if not replika_id:
+            return jsonify({"error": "replika_id is required"}), 400
+        try:
+            installation = _require_owned_installation(replika_id)
+        except LookupError:
+            return jsonify({"error": "Unknown Replika"}), 404
+        except PermissionError:
+            return jsonify({"error": "Unauthorized"}), 401
+        return jsonify(_installation_view(installation))
 
+    @bp.get("/api/replikas/<replika_id>/integrations/slack/channels")
     @bp.get("/api/integrations/slack/channels")
-    def slack_channels():
-        installation = _store().for_owner(_owner_id())
+    def slack_channels(replika_id: str | None = None):
+        replika_id = replika_id or str(request.args.get("replika_id") or "").strip()
+        if not replika_id:
+            return jsonify({"error": "replika_id is required"}), 400
+        try:
+            installation = _require_owned_installation(replika_id)
+        except LookupError:
+            return jsonify({"error": "Unknown Replika"}), 404
+        except PermissionError:
+            return jsonify({"error": "Unauthorized"}), 401
         if not installation:
             return jsonify({"error": "Slack is not connected"}), 404
         if installation["replika_type"] != "organization":
@@ -935,16 +1140,28 @@ def register_slack_integration(app) -> None:
         ]
         return jsonify({"channels": channels})
 
+    @bp.put("/api/replikas/<replika_id>/integrations/slack/channel")
     @bp.put("/api/integrations/slack/channel")
-    def slack_select_channel():
-        owner_id = _owner_id()
-        installation = _store().for_owner(owner_id)
+    def slack_select_channel(replika_id: str | None = None):
+        replika_id = replika_id or str(
+            (request.get_json(silent=True) or {}).get("replika_id")
+            or request.args.get("replika_id")
+            or ""
+        ).strip()
+        if not replika_id:
+            return jsonify({"error": "replika_id is required"}), 400
+        try:
+            installation = _require_owned_installation(replika_id)
+        except LookupError:
+            return jsonify({"error": "Unknown Replika"}), 404
+        except PermissionError:
+            return jsonify({"error": "Unauthorized"}), 401
         if not installation:
             return jsonify({"error": "Slack is not connected"}), 404
         if installation["replika_type"] != "organization":
             return jsonify({"error": "Individual Replikas use Slack DM mode"}), 400
         channel_id = str((request.get_json(silent=True) or {}).get("channel_id") or "")
-        channels_response = slack_channels()
+        channels_response = slack_channels(replika_id)
         if isinstance(channels_response, tuple):
             return channels_response
         channels = channels_response.get_json()["channels"]
@@ -963,7 +1180,7 @@ def register_slack_integration(app) -> None:
         if installer not in members:
             return jsonify({"error": "The OAuth installer must belong to that channel"}), 400
         if not _store().select_channel(
-            owner_id, installation["team_id"], selected
+            replika_id, installation["team_id"], selected
         ):
             return jsonify({"error": "Slack installation changed"}), 409
         retained_admins = [
@@ -971,15 +1188,26 @@ def register_slack_integration(app) -> None:
             if value in members
         ]
         _store().set_admins(
-            owner_id, installation["team_id"],
+            replika_id, installation["team_id"],
             list(dict.fromkeys([installer, *retained_admins])),
         )
         return jsonify({"selected_channel": {"id": selected["id"], "name": selected["name"]}})
 
+    @bp.put("/api/replikas/<replika_id>/integrations/slack/admins")
     @bp.put("/api/integrations/slack/admins")
-    def slack_set_admins():
-        owner_id = _owner_id()
-        installation = _store().for_owner(owner_id)
+    def slack_set_admins(replika_id: str | None = None):
+        data = request.get_json(silent=True) or {}
+        replika_id = replika_id or str(
+            data.get("replika_id") or request.args.get("replika_id") or ""
+        ).strip()
+        if not replika_id:
+            return jsonify({"error": "replika_id is required"}), 400
+        try:
+            installation = _require_owned_installation(replika_id)
+        except LookupError:
+            return jsonify({"error": "Unknown Replika"}), 404
+        except PermissionError:
+            return jsonify({"error": "Unauthorized"}), 401
         if not installation:
             return jsonify({"error": "Slack is not connected"}), 404
         if installation["replika_type"] != "organization":
@@ -987,7 +1215,7 @@ def register_slack_integration(app) -> None:
         selected = (installation.get("selected_channel") or {}).get("id")
         if not selected:
             return jsonify({"error": "Select the Replika channel first"}), 400
-        raw_ids = (request.get_json(silent=True) or {}).get("admin_user_ids")
+        raw_ids = data.get("admin_user_ids")
         if not isinstance(raw_ids, list) or len(raw_ids) > 25:
             return jsonify({"error": "admin_user_ids must be a list of at most 25 IDs"}), 400
         installer = str(installation.get("installer_user_id") or "")
@@ -1014,14 +1242,26 @@ def register_slack_integration(app) -> None:
                     raise ValueError
         except (RuntimeError, ValueError):
             return jsonify({"error": "Every admin must be an active human workspace member"}), 400
-        if not _store().set_admins(owner_id, installation["team_id"], ids):
+        if not _store().set_admins(replika_id, installation["team_id"], ids):
             return jsonify({"error": "Slack installation changed"}), 409
         return jsonify({"admin_user_ids": ids})
 
+    @bp.delete("/api/replikas/<replika_id>/integrations/slack")
     @bp.delete("/api/integrations/slack")
-    def slack_disconnect():
-        owner_id = _owner_id()
-        installation = _store().for_owner(owner_id)
+    def slack_disconnect(replika_id: str | None = None):
+        replika_id = replika_id or str(
+            (request.get_json(silent=True) or {}).get("replika_id")
+            or request.args.get("replika_id")
+            or ""
+        ).strip()
+        if not replika_id:
+            return jsonify({"error": "replika_id is required"}), 400
+        try:
+            installation = _require_owned_installation(replika_id)
+        except LookupError:
+            return jsonify({"error": "Unknown Replika"}), 404
+        except PermissionError:
+            return jsonify({"error": "Unauthorized"}), 401
         if not installation:
             return jsonify({"disconnected": True})
         token_ref = installation["token_ref"]
@@ -1030,7 +1270,7 @@ def register_slack_integration(app) -> None:
             _slack().call("auth.revoke", token=token)
         except RuntimeError:
             current_app.logger.warning("Slack token revoke failed", exc_info=True)
-        _store().delete_installation(owner_id, installation["team_id"])
+        _store().delete_installation(replika_id, installation["team_id"])
         _vault().delete(token_ref)
         return jsonify({"disconnected": True})
 
@@ -1154,8 +1394,8 @@ def register_slack_integration(app) -> None:
         if len(raw) > MAX_SLACK_REQUEST_BYTES:
             return jsonify({"error": "Payload too large"}), 413
         data = request.get_json(silent=True) or {}
-        owner_id = str(data.get("tenant_id") or "")
-        installation = _store().for_owner(owner_id) if owner_id else None
+        replika_id = str(data.get("tenant_id") or "")
+        installation = _store().for_replika(replika_id) if replika_id else None
         if not installation or not installation.get("internal_auth_ref"):
             return jsonify({"error": "Unauthorized"}), 401
         try:
@@ -1163,7 +1403,7 @@ def register_slack_integration(app) -> None:
         except Exception:
             current_app.logger.exception("Could not resolve Slack tenant auth secret")
             return jsonify({"error": "Authentication unavailable"}), 503
-        if not internal_signature_valid(owner_id, raw, secret, request.headers):
+        if not internal_signature_valid(replika_id, raw, secret, request.headers):
             return jsonify({"error": "Unauthorized"}), 401
         team_id = str(data.get("team_id") or "")
         channel = str(data.get("channel") or "")
@@ -1196,10 +1436,13 @@ def register_slack_integration(app) -> None:
             return jsonify({"error": "Invalid delivery request"}), 400
         source = _store().outbox_item(source_dedupe_key)
         source_event = ((source or {}).get("payload") or {}).get("event") or {}
+        source_replika_id = str(
+            source.get("replika_id") or source.get("owner_id") or ""
+        ) if source else ""
         if (
             not source
             or source.get("kind") != "event"
-            or source.get("owner_id") != owner_id
+            or source_replika_id != replika_id
             or source.get("team_id") != team_id
             or not hmac.compare_digest(str(source_event.get("channel") or ""), channel)
             or source_event.get("thread_ts") != thread_ts

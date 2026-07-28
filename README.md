@@ -570,7 +570,7 @@ of the stable cache block. Richer incident detail goes to MemPalace
 
 ## Slack
 
-The manual Socket Mode fallback follows `REPLIKA_TYPE`: organization Replikas use exactly one shared `SLACK_CHANNEL_ID`; individual Replikas accept only DMs from `SLACK_OWNER_USER_ID`. Managed Replikas use the central OAuth control plane instead.
+The manual Socket Mode fallback follows `REPLIKA_TYPE`: organization Replikas use exactly one shared `SLACK_CHANNEL_ID`; individual Replikas accept only DMs from `SLACK_OWNER_USER_ID`. Managed Replikas use the central OAuth control plane instead, and each Replika owns its own Slack installation under `/replika/<replika_id>/integrations`.
 
 ### How it differs from Discord
 
