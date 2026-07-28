@@ -132,6 +132,55 @@ _assert(
     "other errors are not ignored",
 )
 
+# Retrying deletion after ECS has already made the service inactive is harmless.
+class _InactiveECS:
+    def update_service(self, **_kwargs):
+        raise handler.ClientError(
+            {"Error": {"Code": "ServiceNotActiveException", "Message": "inactive"}},
+            "UpdateService",
+        )
+
+
+with patch.dict("os.environ", {"ECS_CLUSTER": "cluster"}, clear=False):
+    handler._delete_service(_InactiveECS(), "r1")
+
+
+# S3 Files deletion accepts only the access point ID.
+class _AccessPointPaginator:
+    def paginate(self, **kwargs):
+        _assert(kwargs == {"fileSystemId": "fs-1"}, "list filters by file system")
+        return [
+            {
+                "accessPoints": [
+                    {
+                        "accessPointId": "ap-1",
+                        "rootDirectory": {"path": "/tenants/r1"},
+                    }
+                ]
+            }
+        ]
+
+
+class _S3Files:
+    def __init__(self):
+        self.delete_kwargs = None
+
+    def get_paginator(self, name):
+        _assert(name == "list_access_points", "uses access point paginator")
+        return _AccessPointPaginator()
+
+    def delete_access_point(self, **kwargs):
+        self.delete_kwargs = kwargs
+
+
+s3files = _S3Files()
+with patch.dict("os.environ", {"S3FILES_FILE_SYSTEM_ID": "fs-1"}, clear=False):
+    handler._delete_access_point(s3files, "r1")
+_assert(
+    s3files.delete_kwargs == {"accessPointId": "ap-1"},
+    "delete passes only the access point ID",
+)
+
 # Handler dispatches by operation and accepts legacy owner_id-only payloads.
 with patch.object(handler, "_create_replika", return_value={"status": "ready"}) as create, patch.object(
     handler, "_delete_replika", return_value={"status": "deleted"}

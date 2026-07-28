@@ -629,7 +629,12 @@ def _delete_service(ecs, replika_id: str) -> None:
     try:
         ecs.update_service(cluster=cluster, service=name, desiredCount=0)
     except ClientError as exc:
-        if not _ignore_missing(exc, "ServiceNotFoundException", "ClusterNotFoundException"):
+        if not _ignore_missing(
+            exc,
+            "ServiceNotFoundException",
+            "ServiceNotActiveException",
+            "ClusterNotFoundException",
+        ):
             raise
         return
     try:
@@ -779,9 +784,7 @@ def _delete_access_point(s3files, replika_id: str) -> None:
     if not access_point_id:
         return
     try:
-        s3files.delete_access_point(
-            fileSystemId=file_system_id, accessPointId=access_point_id
-        )
+        s3files.delete_access_point(accessPointId=access_point_id)
     except ClientError as exc:
         if not _ignore_missing(exc, "AccessPointNotFound", "ResourceNotFoundException"):
             raise
