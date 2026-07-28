@@ -23,13 +23,20 @@ MAX_IMAGE_BYTES = 5 * 1024 * 1024
 
 def _browser_transcribe_credentials() -> dict:
     """Assume the browser-only Transcribe role and serialize its short-lived credentials."""
-    role_arn = os.environ.get("VOICE_TRANSCRIBE_ROLE_ARN", "").strip()
-    if not role_arn:
-        raise RuntimeError("Voice dictation is not configured")
-
     import boto3
 
-    response = boto3.client("sts").assume_role(
+    sts = boto3.client("sts")
+    role_arn = os.environ.get("VOICE_TRANSCRIBE_ROLE_ARN", "").strip()
+    if not role_arn:
+        role_name = os.environ.get(
+            "VOICE_TRANSCRIBE_ROLE_NAME", "clyra-stag-browser-transcription"
+        ).strip()
+        if not role_name:
+            raise RuntimeError("Voice dictation is not configured")
+        account_id = sts.get_caller_identity()["Account"]
+        role_arn = f"arn:aws:iam::{account_id}:role/{role_name}"
+
+    response = sts.assume_role(
         RoleArn=role_arn,
         RoleSessionName="replika-browser-dictation",
         DurationSeconds=900,

@@ -377,10 +377,37 @@ class VoiceDictationTests(unittest.TestCase):
             return self.model
 
     def test_credentials_require_role_configuration(self):
-        with patch.dict(os.environ, {}, clear=False):
+        with patch.dict(os.environ, {"VOICE_TRANSCRIBE_ROLE_NAME": ""}, clear=False):
             os.environ.pop("VOICE_TRANSCRIBE_ROLE_ARN", None)
             with self.assertRaisesRegex(RuntimeError, "not configured"):
                 _browser_transcribe_credentials()
+
+    def test_credentials_discover_staging_role_for_local_development(self):
+        expires = datetime(2026, 7, 28, 20, 0, tzinfo=timezone.utc)
+        sts = MagicMock()
+        sts.get_caller_identity.return_value = {"Account": "123456789012"}
+        sts.assume_role.return_value = {
+            "Credentials": {
+                "AccessKeyId": "temporary-access",
+                "SecretAccessKey": "temporary-secret",
+                "SessionToken": "temporary-token",
+                "Expiration": expires,
+            }
+        }
+        with patch.dict(os.environ, {}, clear=False), patch(
+            "boto3.client", return_value=sts
+        ):
+            os.environ.pop("VOICE_TRANSCRIBE_ROLE_ARN", None)
+            os.environ.pop("VOICE_TRANSCRIBE_ROLE_NAME", None)
+            _browser_transcribe_credentials()
+        sts.assume_role.assert_called_once_with(
+            RoleArn=(
+                "arn:aws:iam::123456789012:"
+                "role/clyra-stag-browser-transcription"
+            ),
+            RoleSessionName="replika-browser-dictation",
+            DurationSeconds=900,
+        )
 
     def test_credentials_are_short_lived_and_serialized_for_browser(self):
         expires = datetime(2026, 7, 28, 20, 0, tzinfo=timezone.utc)
@@ -428,6 +455,7 @@ class VoiceDictationTests(unittest.TestCase):
         with patch.dict(os.environ, {
             "TOWER_AUTH_REQUIRED": "false",
             "TOWER_SECRET_KEY": "voice-test-secret",
+            "VOICE_TRANSCRIBE_ROLE_NAME": "",
         }, clear=False):
             os.environ.pop("VOICE_TRANSCRIBE_ROLE_ARN", None)
             client = create_tower(self.Agent()).test_client()
