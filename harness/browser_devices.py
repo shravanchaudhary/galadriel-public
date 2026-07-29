@@ -18,16 +18,31 @@ def configured_backend() -> str:
     return value
 
 
-def _implicit_main() -> dict:
+def _implicit_main() -> dict | None:
+    """Env-backed default profile, only when it is actually configured.
+
+    Managed BCE tenants have no BCE_PAIRING_CODE — they must connect via
+    browser_devices / Tower. Local browser-use still gets a CDP default.
+    """
     backend = configured_backend()
-    profile = {"profile_id": "main", "backend": backend, "source": "environment"}
     if backend == "bce":
         code = os.environ.get("BCE_PAIRING_CODE", "").strip()
-        if code:
-            profile["pairing_code"] = code
-    elif backend == "browser-use":
-        profile["cdp_port"] = int(os.environ.get("BROWSER_CDP_PORT", "9222"))
-    return profile
+        if not code:
+            return None
+        return {
+            "profile_id": "main",
+            "backend": "bce",
+            "pairing_code": code,
+            "source": "environment",
+        }
+    if backend == "browser-use":
+        return {
+            "profile_id": "main",
+            "backend": "browser-use",
+            "cdp_port": int(os.environ.get("BROWSER_CDP_PORT", "9222")),
+            "source": "environment",
+        }
+    return None
 
 
 def resolve(profile_id: str | None = None) -> dict | None:
@@ -140,7 +155,9 @@ def list_devices(
 ) -> list[dict]:
     profiles = browser_profiles.list_profiles()
     if not any(profile["profile_id"] == "main" for profile in profiles):
-        profiles.append(_implicit_main())
+        implicit = _implicit_main()
+        if implicit:
+            profiles.append(implicit)
     profiles.sort(key=lambda profile: profile["profile_id"])
     if include_status:
         return [

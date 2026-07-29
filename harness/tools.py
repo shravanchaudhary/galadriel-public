@@ -753,11 +753,12 @@ def _browser_tool_description() -> str:
             "you drive. Use `tab list` / `tab switch` to pick tabs.\n\n"
             "**PAIRING — ask before first use:** Each browser is identified by a "
             "pairing code (`XXXX-XXXX`, e.g. `KJ2D-H96M`) shown in the Chrome "
-            "extension popup (Agent must be ON). Before your first browser call "
-            "for a profile, call `browser_devices` with action=status. If no code "
-            "is registered, STOP and ask the user for their code. Once they "
-            "provide it, persist it with `browser_devices` action=connect — use "
-            "`main` for the default browser — then retry.\n\n"
+            "extension popup (Agent must be ON). Before your first browser call, "
+            "call `browser_devices` with action=list. If the list is empty (or "
+            "status says the profile is not configured), STOP and ask the user "
+            "for their code. Once they provide it, persist it with "
+            "`browser_devices` action=connect — use `main` for the default "
+            "browser — then retry.\n\n"
             "Prerequisites (human setup): MongoDB + BCE server running; extension "
             "Agent ON (Connected).\n\n"
             "Core loop:\n"
@@ -1210,6 +1211,10 @@ def _resolve_bce_pairing_code(profile: str | None) -> tuple[str, str | None]:
     profile = (profile or _DEFAULT_PROFILE).strip() or _DEFAULT_PROFILE
     row = resolve(profile)
     if not row:
+        # Default profile with no Mongo/env config → ask to pair, don't invent
+        # an empty "main" device. Named profiles stay "unknown" until connect.
+        if profile == _DEFAULT_PROFILE:
+            return "", _bce_pairing_required_message(profile)
         return "", (
             f"[error] unknown browser profile {profile!r}. Register it with "
             "browser_devices, then retry."
