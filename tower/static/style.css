@@ -2852,8 +2852,14 @@ body.wfc-resizing * { cursor: inherit !important; }
     display: flex;
     flex-wrap: wrap;
     justify-content: space-between;
+    align-items: flex-start;
     gap: 0.75rem;
     margin-bottom: 0.5rem;
+}
+
+.loops-panel-head > div:first-child {
+    flex: 1 1 12rem;
+    min-width: 0;
 }
 
 .loops-panel-head h2 {
@@ -2862,7 +2868,15 @@ body.wfc-resizing * { cursor: inherit !important; }
 }
 
 .loops-meta { display: flex; flex-wrap: wrap; gap: 0.4rem; }
-.loops-schedule { font-size: 0.85rem; max-width: 280px; text-align: right; color: var(--text-secondary); }
+.loops-schedule {
+    flex: 0 1 20rem;
+    max-width: 20rem;
+    margin-left: auto;
+    font-size: 0.85rem;
+    line-height: 1.4;
+    text-align: right;
+    color: var(--text-secondary);
+}
 .loops-note, .loops-source { font-size: 0.82rem; margin: 0.35rem 0; line-height: 1.45; color: var(--text-secondary); }
 
 .loops-controls {
