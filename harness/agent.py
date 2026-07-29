@@ -512,7 +512,6 @@ class GaladrielAgent:
         reply_target=None,
         overlay_context: str | None = None,
         request_context: dict | None = None,
-        emit=None,
     ) -> dict:
         """Persist a human-facing message and wake the channel consumer."""
         return await self.conversation_queue.enqueue(
@@ -525,7 +524,6 @@ class GaladrielAgent:
             reply_target=reply_target,
             overlay=overlay_context,
             request_context=request_context,
-            emit=emit,
         )
 
     async def await_enqueued(self, item_id: str) -> str:
@@ -1803,11 +1801,10 @@ class GaladrielAgent:
 
         Rebuilds ``conversations['main']`` from durable events after the latest
         checkpoint. Does not palace-mine on park (events already durable).
+        Same-run select is allowed while busy so the UI can reattach to the stream.
         """
         from . import conversation_run_store
 
-        if self.is_channel_busy(MAIN_CHANNEL_ID):
-            raise RuntimeError("Channel is busy")
         run = conversation_run_store.get_run(run_id)
         if run is None or (run.get("channel_id") or MAIN_CHANNEL_ID) != MAIN_CHANNEL_ID:
             raise ValueError("Conversation not found")
@@ -1821,6 +1818,9 @@ class GaladrielAgent:
                 "message_count": len(messages),
                 "title": run.get("title"),
             }
+
+        if self.is_channel_busy(MAIN_CHANNEL_ID):
+            raise RuntimeError("Channel is busy")
 
         current = self.conversations.get(MAIN_CHANNEL_ID) or []
         if current:

@@ -446,12 +446,14 @@
             if (seq !== detailSeq) return;
 
             let historyOverride = null;
+            let attachLive = false;
             if (detail.continuable && select) {
                 try {
                     const selected = await ChatLive.selectRun(detail.id);
                     historyOverride = selected.history || detail.history;
                     if (selected.title) detail.title = selected.title;
                     detail.state = 'active';
+                    attachLive = !!(selected.stream_attachable || selected.busy);
                 } catch (err) {
                     if (String(err.message || '').toLowerCase().includes('busy')) {
                         if (window.towerToast) window.towerToast('Agent is busy — wait for the current turn, then try again.', { type: 'error' }); else alert('Agent is busy — wait for the current turn, then try again.');
@@ -463,6 +465,35 @@
             if (seq !== detailSeq) return;
             renderDetail(detail, historyOverride);
             refreshRail();
+            if (attachLive && detail.continuable && seq === detailSeq) {
+                streaming = true;
+                if (stopBtn) stopBtn.hidden = false;
+                if (sendBtn) sendBtn.disabled = true;
+                if (input) input.disabled = true;
+                await ChatLive.attachStream({
+                    log: historyEl,
+                    onDone: async () => {
+                        if (seq !== detailSeq) return;
+                        streaming = false;
+                        if (stopBtn) stopBtn.hidden = true;
+                        if (sendBtn) sendBtn.disabled = false;
+                        if (input) input.disabled = false;
+                        try {
+                            const hist = await ChatLive.fetchHistory();
+                            if (seq !== detailSeq) return;
+                            ChatLive.hydrate(historyEl, hist.history || []);
+                        } catch (err) {}
+                        await refreshRail();
+                    },
+                    onError: () => {
+                        if (seq !== detailSeq) return;
+                        streaming = false;
+                        if (stopBtn) stopBtn.hidden = true;
+                        if (sendBtn) sendBtn.disabled = false;
+                        if (input) input.disabled = false;
+                    },
+                });
+            }
         } catch (err) {
             if (seq !== detailSeq) return;
             if (window.towerToast) window.towerToast(err.message || 'Could not load chat.', { type: 'error' }); else alert(err.message || 'Could not load chat.');

@@ -146,6 +146,28 @@ window.ChatLive = (function () {
         return userDiv;
     }
 
+    async function consumeSse(res, turn, log) {
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = '';
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buf += decoder.decode(value, { stream: true });
+            let idx;
+            while ((idx = buf.indexOf('\n\n')) !== -1) {
+                const frame = buf.slice(0, idx);
+                buf = buf.slice(idx + 2);
+                if (!frame.startsWith('data:')) continue;
+                const raw = frame.slice(5).trim();
+                if (!raw) continue;
+                const stick = atBottom(log);
+                handleEvent(JSON.parse(raw), turn, log);
+                if (stick) toBottom(log);
+            }
+        }
+    }
+
     async function streamChat({ log, message, images, context, onDone, onError }) {
         appendUser(log, message, images);
         const turn = startAssistant(log);
@@ -176,26 +198,39 @@ window.ChatLive = (function () {
                 else if (onDone) onDone(turn);
                 return turn;
             }
-            const reader = res.body.getReader();
-            const decoder = new TextDecoder();
-            let buf = '';
-            while (true) {
-                const { value, done } = await reader.read();
-                if (done) break;
-                buf += decoder.decode(value, { stream: true });
-                let idx;
-                while ((idx = buf.indexOf('\n\n')) !== -1) {
-                    const frame = buf.slice(0, idx);
-                    buf = buf.slice(idx + 2);
-                    if (!frame.startsWith('data:')) continue;
-                    const raw = frame.slice(5).trim();
-                    if (!raw) continue;
-                    const stick = atBottom(log);
-                    handleEvent(JSON.parse(raw), turn, log);
-                    if (stick) toBottom(log);
-                }
-            }
+            await consumeSse(res, turn, log);
             if (!turn.finished) turn.finished = true;
+            if (onDone) onDone(turn);
+        } catch (err) {
+            appendText(`[Error] ${err.message}`, turn, log);
+            turn.finished = true;
+            if (onError) onError(err.message);
+            else if (onDone) onDone(turn);
+        }
+        return turn;
+    }
+
+    /** Reattach to an in-flight turn after hydrate (no new user message). */
+    async function attachStream({ log, onDone, onError }) {
+        const turn = startAssistant(log);
+        toBottom(log);
+        try {
+            const res = await fetch('/api/chat/stream/attach?channel=main');
+            if (res.status === 404) {
+                turn.div.remove();
+                if (onDone) onDone(null);
+                return null;
+            }
+            if (!res.ok || !res.body) {
+                const err = await res.json().catch(() => ({ error: res.statusText }));
+                turn.div.remove();
+                if (onError) onError(err.error || res.statusText);
+                else if (onDone) onDone(null);
+                return null;
+            }
+            await consumeSse(res, turn, log);
+            if (!turn.finished) turn.finished = true;
+            if (!turn.bodyEl.textContent.trim()) turn.div.remove();
             if (onDone) onDone(turn);
         } catch (err) {
             appendText(`[Error] ${err.message}`, turn, log);
@@ -345,6 +380,7 @@ window.ChatLive = (function () {
         hydrate,
         toBottom,
         streamChat,
+        attachStream,
         stopChat,
         selectRun,
         clearChat,

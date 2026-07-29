@@ -322,14 +322,34 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
         response.headers["Cache-Control"] = "no-store"
         return response
 
+    def _sse_from_events(events: "queue.Queue", *, on_disconnect=None) -> Response:
+        """Drain a thread-safe queue into SSE frames until a None sentinel."""
+
+        def generate():
+            try:
+                while True:
+                    event = events.get()
+                    if event is None:
+                        break
+                    yield f"data: {json.dumps(event)}\n\n"
+            finally:
+                if on_disconnect is not None:
+                    on_disconnect()
+
+        return Response(
+            generate(),
+            mimetype="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
     @app.route("/api/chat/stream", methods=["POST"])
     def api_chat_stream():
         """Server-Sent Events stream of the agent's turn: thoughts, text
         deltas, and tool calls/results as they happen.
 
-        The agent runs on the Discord asyncio loop; its async `emit` callback
-        pushes events onto a thread-safe queue that this (Flask worker thread)
-        generator drains into SSE frames.
+        Subscribes to the channel turn hub so reconnecting clients can attach
+        via /api/chat/stream/attach. The agent loop bridges asyncio hub events
+        onto a thread-safe queue that this Flask worker drains into SSE frames.
         """
         data = request.json or {}
         message = data.get("message", "").strip()
@@ -356,44 +376,121 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
             return jsonify({"error": "Agent event loop not available"}), 503
 
         events: "queue.Queue" = queue.Queue()
+        channel = MAIN_CHANNEL_ID
+        state = {"sub": None, "bridge": None}
 
-        async def emit(event):
-            events.put(event)
+        async def cleanup():
+            bridge = state["bridge"]
+            if bridge is not None and not bridge.done():
+                bridge.cancel()
+                try:
+                    await bridge
+                except asyncio.CancelledError:
+                    pass
+            sub = state["sub"]
+            if sub is not None:
+                agent.conversation_queue.unsubscribe_stream(channel, sub)
+                state["sub"] = None
 
         async def run():
             try:
+                sub = agent.conversation_queue.subscribe_stream(channel)
+                state["sub"] = sub
+
+                async def bridge():
+                    while True:
+                        event = await sub.get()
+                        if event is None:
+                            return
+                        events.put(event)
+
+                state["bridge"] = asyncio.create_task(bridge())
                 item = await agent.enqueue(
                     user_message,
-                    channel_id=MAIN_CHANNEL_ID,
+                    channel_id=channel,
                     source="tower",
                     external_dedupe_key=request_id,
                     display_text=message or "(image attached)",
-                    emit=emit,
                     overlay_context=overlay,
                     request_context=request_context,
                 )
                 final = await agent.await_enqueued(item["id"])
-                events.put({"type": "done", "text": final})
+                bridge_task = state["bridge"]
+                if bridge_task is not None:
+                    try:
+                        await bridge_task
+                        events.put({"type": "done", "text": final})
+                    except asyncio.CancelledError:
+                        pass
+                else:
+                    events.put({"type": "done", "text": final})
             except Exception as e:
                 log.exception("Tower stream error")
                 events.put({"type": "error", "error": str(e)})
+                if channel not in agent.conversation_queue._active_turns:
+                    orphan = agent.conversation_queue._hubs.pop(channel, None)
+                    if orphan is not None:
+                        orphan.close()
             finally:
-                events.put(None)  # sentinel: stream complete
+                await cleanup()
+                events.put(None)
 
         asyncio.run_coroutine_threadsafe(run(), loop)
 
-        def generate():
-            while True:
-                event = events.get()
-                if event is None:
-                    break
-                yield f"data: {json.dumps(event)}\n\n"
+        def on_disconnect():
+            asyncio.run_coroutine_threadsafe(cleanup(), loop)
 
-        return Response(
-            generate(),
-            mimetype="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-        )
+        return _sse_from_events(events, on_disconnect=on_disconnect)
+
+    @app.route("/api/chat/stream/attach", methods=["GET"])
+    def api_chat_stream_attach():
+        """Reattach SSE to an in-flight tower turn without enqueueing a message."""
+        channel = request.args.get("channel", MAIN_CHANNEL_ID)
+        loop = scheduler._loop if scheduler else None
+        if not (loop and loop.is_running()):
+            return jsonify({"error": "Agent event loop not available"}), 503
+
+        events: "queue.Queue" = queue.Queue()
+        state = {"sub": None}
+
+        async def cleanup():
+            sub = state["sub"]
+            if sub is not None:
+                agent.conversation_queue.unsubscribe_stream(channel, sub)
+                state["sub"] = None
+
+        async def subscribe():
+            return agent.conversation_queue.subscribe_stream(channel, create=False)
+
+        try:
+            sub = asyncio.run_coroutine_threadsafe(subscribe(), loop).result(timeout=5)
+        except Exception as e:
+            log.exception("Tower stream attach subscribe failed")
+            return jsonify({"attached": False, "error": str(e)}), 503
+        if sub is None:
+            return jsonify({"attached": False, "error": "No active stream"}), 404
+        state["sub"] = sub
+
+        async def run():
+            try:
+                while True:
+                    event = await sub.get()
+                    if event is None:
+                        break
+                    events.put(event)
+            except Exception as e:
+                log.exception("Tower stream attach error")
+                events.put({"type": "error", "error": str(e)})
+            finally:
+                await cleanup()
+                events.put(None)
+
+        asyncio.run_coroutine_threadsafe(run(), loop)
+
+        def on_disconnect():
+            asyncio.run_coroutine_threadsafe(cleanup(), loop)
+
+        return _sse_from_events(events, on_disconnect=on_disconnect)
 
     @app.route("/api/chat/stop", methods=["POST"])
     def api_chat_stop():
@@ -531,8 +628,6 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
         run_id = (data.get("run_id") or "").strip()
         if not run_id:
             return jsonify({"error": "run_id is required"}), 400
-        if agent.is_channel_busy(MAIN_CHANNEL_ID):
-            return jsonify({"error": "Channel is busy"}), 409
         loop = scheduler._loop if scheduler else None
         if not (loop and loop.is_running()):
             return jsonify({"error": "Agent event loop not available"}), 503
@@ -550,9 +645,21 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
             return jsonify({"error": str(e)}), 500
         from .chats_board import history_for_run
         history, _protocol = history_for_run(run_id)
+        status = agent.conversation_queue.status(MAIN_CHANNEL_ID)
+        async def _stream_attachable():
+            return agent.conversation_queue.has_stream(MAIN_CHANNEL_ID)
+
+        try:
+            stream_attachable = asyncio.run_coroutine_threadsafe(
+                _stream_attachable(), loop,
+            ).result(timeout=2)
+        except Exception:
+            stream_attachable = False
         return jsonify({
             **result,
             "history": history,
+            "busy": bool(status.get("busy")),
+            "stream_attachable": bool(stream_attachable),
         })
 
     @app.route("/api/clear", methods=["POST"])

@@ -507,6 +507,42 @@ def default_store():
     return mongo if mongo is not None else MemoryConversationStore()
 
 
+class TurnStreamHub:
+    """Fan-out live turn events to zero or more asyncio.Queue subscribers."""
+
+    def __init__(self) -> None:
+        self._subscribers: list[asyncio.Queue] = []
+        self.closed = False
+
+    def subscribe(self) -> asyncio.Queue:
+        q: asyncio.Queue = asyncio.Queue()
+        if self.closed:
+            q.put_nowait(None)
+            return q
+        self._subscribers.append(q)
+        return q
+
+    def unsubscribe(self, q: asyncio.Queue) -> None:
+        try:
+            self._subscribers.remove(q)
+        except ValueError:
+            pass
+
+    async def emit(self, event: Any) -> None:
+        if self.closed:
+            return
+        for q in list(self._subscribers):
+            await q.put(event)
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        for q in list(self._subscribers):
+            q.put_nowait(None)
+        self._subscribers.clear()
+
+
 class ConversationQueue:
     """Coordinates durable storage with one asyncio consumer per channel."""
 
@@ -519,8 +555,30 @@ class ConversationQueue:
         self._active_turns: dict[str, asyncio.Task] = {}
         self._active_batches: dict[str, list[str]] = {}
         self._waiters: dict[str, list[asyncio.Future]] = {}
-        self._emitters: dict[str, Callable] = {}
+        self._hubs: dict[str, TurnStreamHub] = {}
         self.store.recover()
+
+    def subscribe_stream(self, channel: str, *, create: bool = True) -> asyncio.Queue | None:
+        """Subscribe to live turn events for ``channel``.
+
+        When ``create`` is False, returns None if no open hub exists (attach path).
+        """
+        hub = self._hubs.get(channel)
+        if hub is None or hub.closed:
+            if not create:
+                return None
+            hub = TurnStreamHub()
+            self._hubs[channel] = hub
+        return hub.subscribe()
+
+    def unsubscribe_stream(self, channel: str, q: asyncio.Queue) -> None:
+        hub = self._hubs.get(channel)
+        if hub is not None:
+            hub.unsubscribe(q)
+
+    def has_stream(self, channel: str) -> bool:
+        hub = self._hubs.get(channel)
+        return hub is not None and not hub.closed
 
     async def enqueue(
         self,
@@ -534,7 +592,6 @@ class ConversationQueue:
         reply_target: Any = None,
         overlay: str | None = None,
         request_context: dict[str, Any] | None = None,
-        emit=None,
     ) -> dict:
         if request_context is None:
             request_context = {
@@ -552,8 +609,6 @@ class ConversationQueue:
             reply_target=reply_target, overlay=overlay,
             request_context=request_context,
         )
-        if emit is not None:
-            self._emitters[item["id"]] = emit
         self._ensure_consumer(channel)
         return item
 
@@ -607,7 +662,13 @@ class ConversationQueue:
                 "trust_reason": "legacy_queue_item",
                 "replika_type": "organization" if newest["source"] == "slack" else None,
             }
-            emit = self._emitters.get(newest["id"]) if newest["source"] == "tower" else None
+            emit = None
+            if newest["source"] == "tower":
+                hub = self._hubs.get(channel)
+                if hub is None or hub.closed:
+                    hub = TurnStreamHub()
+                    self._hubs[channel] = hub
+                emit = hub.emit
             payload = self._merge_payloads(batch)
             overlay = "\n\n".join(dict.fromkeys(
                 item["overlay"] for item in batch if item.get("overlay")
@@ -649,9 +710,11 @@ class ConversationQueue:
                     results=item_results,
                     error=error,
                 )
+                hub = self._hubs.pop(channel, None)
+                if hub is not None:
+                    hub.close()
 
             for item in batch:
-                self._emitters.pop(item["id"], None)
                 waiters = self._waiters.pop(item["id"], [])
                 item_result = item_results[item["id"]]
                 if outcome == "failed":
