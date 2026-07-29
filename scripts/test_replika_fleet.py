@@ -308,6 +308,9 @@ class _ProvisioningECS:
                     {
                         "name": "clyra",
                         "image": "image",
+                        "portMappings": [
+                            {"containerPort": 8080, "hostPort": 8080, "protocol": "tcp"}
+                        ],
                         "environment": [{"name": "APPCONFIG_REQUIRED", "value": "true"}],
                         "secrets": [
                             {"name": "TOWER_SECRET_KEY", "valueFrom": "session"},
@@ -368,10 +371,58 @@ assert runtime["secrets"] == [
     },
 ]
 assert runtime["dependsOn"] == []
+assert runtime["portMappings"] == [
+    {"containerPort": 8080, "hostPort": 8080, "protocol": "tcp"},
+    {"containerPort": 8765, "hostPort": 8765, "protocol": "tcp"},
+]
 assert {"key": "ReplikaPlane", "value": "runtime"} in request["tags"]
 assert (
     request["volumes"][0]["s3filesVolumeConfiguration"]["accessPointArn"]
     == "tenant-ap"
 )
+
+
+class _InvalidServiceECS:
+    def __init__(self):
+        self.updated = False
+
+    def create_service(self, **_kwargs):
+        raise provisioner.ClientError(
+            {
+                "Error": {
+                    "Code": "InvalidParameterException",
+                    "Message": "invalid service definition",
+                }
+            },
+            "CreateService",
+        )
+
+    def update_service(self, **_kwargs):
+        self.updated = True
+
+
+invalid_service_ecs = _InvalidServiceECS()
+os.environ.update(
+    {
+        "ECS_CLUSTER": "cluster",
+        "PRIVATE_SUBNET_IDS": '["subnet-a"]',
+        "TASK_SECURITY_GROUP_ID": "sg-1",
+    }
+)
+try:
+    provisioner._service(
+        invalid_service_ecs,
+        "tenant-a",
+        "task:1",
+        "target-group",
+        "phone-target-group",
+        "v0",
+    )
+except provisioner.ClientError as exc:
+    assert exc.response["Error"]["Code"] == "InvalidParameterException"
+else:
+    raise AssertionError("invalid create-service errors must be preserved")
+assert not invalid_service_ecs.updated, "invalid creates must not become updates"
+
 
 print("Replika isolated runtime checks passed.")

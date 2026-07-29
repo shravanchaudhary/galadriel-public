@@ -33,10 +33,12 @@
                 <div class="settings-row">
                     <div class="settings-row-main">
                         <span class="settings-row-label">{{ replika.username }}</span>
+                        {% if replika.status == 'ready' and replika.url %}
                         <span class="settings-row-hint replika-card-url">{{ replika.url }}</span>
+                        {% endif %}
                         <span class="settings-row-hint replika-card-desc">
                             {% if replika.status == 'ready' %}Ready to open
-                            {% elif replika.status == 'creating' %}Creating your Replika…
+                            {% elif replika.status == 'creating' %}Provisioning your Replika…
                             {% elif replika.status == 'deleting' %}Deleting your Replika…
                             {% else %}{{ replika.message or 'Temporarily unavailable' }}
                             {% endif %}
@@ -160,15 +162,15 @@ let knownIds = new Set(
 );
 
 const STATUS_LABELS = {
-    creating: 'Creating',
-    ready: 'Created',
+    creating: 'Provisioning',
+    ready: 'Provisioned',
     error: 'Unavailable',
     deleting: 'Deleting',
 };
 
 function statusDescription(replika) {
     if (replika.status === 'ready') return 'Ready to open';
-    if (replika.status === 'creating') return 'Creating your Replika…';
+    if (replika.status === 'creating') return 'Provisioning your Replika…';
     if (replika.status === 'deleting') return 'Deleting your Replika…';
     return replika.message || 'Temporarily unavailable';
 }
@@ -190,7 +192,9 @@ function cardHtml(replika) {
             <div class="settings-row">
                 <div class="settings-row-main">
                     <span class="settings-row-label">${replika.username || ''}</span>
-                    <span class="settings-row-hint replika-card-url">${replika.url || ''}</span>
+                    ${replika.status === 'ready' && replika.url
+                        ? `<span class="settings-row-hint replika-card-url">${replika.url}</span>`
+                        : ''}
                     <span class="settings-row-hint replika-card-desc">${statusDescription(replika)} · ${typeLabel}</span>
                 </div>
                 <div class="settings-row-control">
@@ -257,7 +261,7 @@ async function refreshStatus() {
 
 async function createReplika(username, replikaType, statusEl, replikaId) {
     if (statusEl) {
-        statusEl.textContent = 'Creating your Replika…';
+        statusEl.textContent = 'Provisioning your Replika…';
         statusEl.dataset.state = 'pending';
     }
     if (submitBtn) submitBtn.disabled = true;

@@ -540,6 +540,11 @@ def _task_definition(
             for dependency in container.get("dependsOn", [])
             if dependency.get("containerName") != "appconfig"
         ]
+        port_mappings = container.setdefault("portMappings", [])
+        if not any(mapping.get("containerPort") == 8765 for mapping in port_mappings):
+            port_mappings.append(
+                {"containerPort": 8765, "hostPort": 8765, "protocol": "tcp"}
+            )
     request["tags"] = [
         {"key": "ReplikaManaged", "value": "true"},
         {"key": "ReplikaPlane", "value": "runtime"},
@@ -603,10 +608,7 @@ def _service(
     try:
         ecs.create_service(**kwargs)
     except ClientError as exc:
-        if exc.response["Error"]["Code"] not in {
-            "InvalidParameterException",
-            "ServiceAlreadyExistsException",
-        }:
+        if exc.response["Error"]["Code"] != "ServiceAlreadyExistsException":
             raise
         ecs.update_service(
             cluster=kwargs["cluster"],

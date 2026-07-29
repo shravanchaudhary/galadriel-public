@@ -218,7 +218,7 @@ created = client.post(
 body = created.get_json()
 _assert(created.status_code == 202, f"create failed: {body}")
 _assert(body["replika"]["status"] == "ready", "local provisioner should complete")
-_assert(body["replika"]["status_label"] == "Created", "ready label is Created")
+_assert(body["replika"]["status_label"] == "Provisioned", "ready label is Provisioned")
 _assert(body["replika"]["url"] == "https://alice.replika.example", "product URL")
 _assert(body["replika"]["replika_type"] == "organization", "customer type")
 _assert(body["replika"]["id"], "customer view exposes replika id")
@@ -232,7 +232,7 @@ _assert("internal_error" not in str(body), "internal fields must never be expose
 ready_page = client.get("/replika")
 _assert(ready_page.status_code == 200, "ready page should render")
 _assert(b'data-status="ready"' in ready_page.data, "ready status pill is set")
-_assert(b'Created' in ready_page.data, "created label renders")
+_assert(b'Provisioned' in ready_page.data, "provisioned label renders")
 _assert(b'Open' in ready_page.data, "ready state exposes open action")
 _assert(b'Integrations' in ready_page.data, "ready state exposes integrations")
 _assert(b'id="replika-form"' in ready_page.data, "create form remains available")
@@ -248,6 +248,10 @@ second_id = second_body["replika"]["id"]
 _assert(second_id != first_id, "each Replika gets a distinct id")
 listed = client.get("/api/replikas").get_json()
 _assert(len(listed["replikas"]) == 2, "owner can list multiple Replikas")
+store.update_status(second_id, "creating")
+provisioning = client.get(f"/api/replikas/{second_id}").get_json()["replika"]
+_assert(provisioning["status_label"] == "Provisioning", "creating label is Provisioning")
+_assert(provisioning["url"] is None, "URL stays hidden until provisioning completes")
 
 taken = client.post(
     "/api/replikas",

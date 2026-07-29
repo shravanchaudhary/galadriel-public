@@ -41,8 +41,8 @@ RESERVED_USERNAMES = frozenset(
 CUSTOMER_ERROR = "We could not create your Replika yet. Please try again."
 CUSTOMER_DELETE_ERROR = "We could not delete your Replika yet. Please try again."
 STATUS_LABELS = {
-    "creating": "Creating",
-    "ready": "Created",
+    "creating": "Provisioning",
+    "ready": "Provisioned",
     "error": "Unavailable",
     "deleting": "Deleting",
 }
@@ -358,7 +358,7 @@ def _customer_view(document: dict[str, Any]) -> dict[str, Any]:
         "replika_type": document["replika_type"],
         "status": status,
         "status_label": STATUS_LABELS.get(status, status),
-        "url": document["product_url"],
+        "url": document["product_url"] if status == "ready" else None,
         "release": document.get("release_version"),
         "message": message,
     }
