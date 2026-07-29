@@ -8,7 +8,16 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_ROOTS = ("config", "knowledge", "memory", "state", "jobs", "workflows", "sme")
+DEFAULT_ROOTS = (
+    "config",
+    "knowledge",
+    "memory",
+    "state",
+    "jobs",
+    "workflows",
+    "sme",
+    "personal-tools",
+)
 REQUIRED_MARKDOWN = (
     "config/SOUL.md",
     "config/MEMORY.md",
@@ -28,6 +37,7 @@ REQUIRED_MARKDOWN = (
     "jobs/_template.md",
     "workflows/README.md",
     "sme/README.md",
+    "personal-tools/README.md",
 )
 RUNTIME_ONLY_FILES = (
     "config/ambient_state.json",

@@ -770,10 +770,18 @@ def _browser_tool_description() -> str:
     return _BROWSER_USE_TOOL_DESCRIPTION
 
 
+def _developer_tool_names() -> set[str]:
+    return {t["name"] for t in TOOL_DEFINITIONS if isinstance(t.get("name"), str)}
+
+
 def visible_tool_definitions() -> list:
     """Tool defs filtered for the current session mode. In no-palace mode the
     palace tools are not advertised at all, so the agent cannot reach for memory
-    it has been told to forget."""
+    it has been told to forget.
+
+    Personal tools from `personal-tools/` are merged into the same flat list so
+    the LLM sees one tool surface. Developer tool names always win on collision.
+    """
     tools = (
         [t for t in TOOL_DEFINITIONS if t["name"] not in _PALACE_TOOL_NAMES]
         if palace_disabled()
@@ -785,6 +793,11 @@ def visible_tool_definitions() -> list:
 
     if managed_runtime():
         tools = [tool for tool in tools if tool["name"] != "run_shell"]
+    from . import personal_tools
+
+    tools = tools + personal_tools.personal_tool_definitions(
+        reserved_names=_developer_tool_names()
+    )
     if _browser_backend() == "bce":
         patched = []
         for t in tools:
@@ -868,6 +881,18 @@ async def _execute_tool_impl(
     # Stateless mode: refuse palace calls clearly.
     if palace_disabled() and name in _PALACE_TOOL_NAMES:
         return "[stateless session] palace memory is disabled (--no-palace); this tool is unavailable."
+    # Personal tools share this same route; developer names are never delegated.
+    if name not in _developer_tool_names():
+        from . import personal_tools
+
+        personal_result = await personal_tools.execute_personal_tool(
+            name,
+            inputs,
+            working_dir=working_dir,
+            reserved_names=_developer_tool_names(),
+        )
+        if personal_result is not None:
+            return personal_result
     if name == "run_shell":
         from .path_policy import managed_runtime
 

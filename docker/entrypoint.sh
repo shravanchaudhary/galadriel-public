@@ -85,7 +85,7 @@ python3 "$app_root/scripts/migrate_replika_state.py" --root "$storage_root"
 
 # Seed files added by a new image without overwriting state already persisted
 # on persistent storage. `cp -an` is deliberately idempotent across replacements.
-for dir in config knowledge memory state jobs workflows; do
+for dir in config knowledge memory state jobs workflows personal-tools; do
     if [ -d "$defaults_root/$dir" ]; then
         python3 - "$defaults_root/$dir" "$storage_root/$dir" <<'PY'
 import shutil
