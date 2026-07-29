@@ -72,6 +72,7 @@ data "aws_iam_policy_document" "replika_provisioner" {
       "elasticloadbalancing:DeleteRule",
       "elasticloadbalancing:DeleteTargetGroup",
       "elasticloadbalancing:DescribeRules",
+      "elasticloadbalancing:DescribeTargetHealth",
       "elasticloadbalancing:DescribeTargetGroups",
       "elasticloadbalancing:AddTags",
       "elasticloadbalancing:ModifyRule",
