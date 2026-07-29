@@ -51,6 +51,46 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "wait",
+        "description": (
+            "Pause execution. Two modes:\n"
+            "1. Plain sleep — pass `seconds` only.\n"
+            "2. Wait for text — pass `file` + `pattern` (a regex) to poll a file "
+            "until it matches, instead of guessing a sleep duration. Useful for "
+            "a background job started via run_shell (which has its own 120s "
+            "cap), e.g. run_shell(\"nohup mycmd > /tmp/job.log 2>&1 &\") then "
+            "wait(file=\"/tmp/job.log\", pattern=\"Done|Error\"). Returns as soon "
+            "as the pattern appears, or after `timeout` with the file's last "
+            "lines so you can decide whether to keep waiting."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "seconds": {
+                    "type": "number",
+                    "description": "Plain sleep duration in seconds (max 1800). Ignored if `pattern` is set.",
+                },
+                "file": {
+                    "type": "string",
+                    "description": "Path to a file to poll for `pattern` (e.g. a background job's redirected output). Required if `pattern` is set.",
+                },
+                "pattern": {
+                    "type": "string",
+                    "description": "Regex to search for in `file`'s contents. If set, `file` is required.",
+                },
+                "timeout": {
+                    "type": "number",
+                    "description": "Max seconds to wait for `pattern` before giving up (default 300, max 1800). Only used with `pattern`.",
+                },
+                "poll_interval": {
+                    "type": "number",
+                    "description": "Seconds between file checks while waiting for `pattern` (default 3, min 1).",
+                },
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "read_file",
         "description": "Read the contents of a file from the local filesystem.",
         "input_schema": {
@@ -914,6 +954,14 @@ async def _execute_tool_impl(
                 "and knowledge/reference/data.md."
             )
         return await _run_shell(inputs["command"], inputs.get("working_dir", working_dir))
+    elif name == "wait":
+        return await _wait(
+            seconds=inputs.get("seconds"),
+            file=inputs.get("file"),
+            pattern=inputs.get("pattern"),
+            timeout=inputs.get("timeout"),
+            poll_interval=inputs.get("poll_interval"),
+        )
     elif name == "read_file":
         return await _read_file(inputs["path"])
     elif name == "write_file":
@@ -1632,6 +1680,83 @@ async def _run_shell(command: str, working_dir: str = None) -> str:
         return output.strip() or "(no output)"
     except Exception as e:
         return f"[error] {e}"
+
+
+_WAIT_MAX_SECONDS = 1800.0  # 30 min cap, either mode
+_WAIT_TAIL_BYTES = 200_000  # only read the tail of large log files
+
+
+async def _wait(
+    seconds: float = None,
+    file: str = None,
+    pattern: str = None,
+    timeout: float = None,
+    poll_interval: float = None,
+) -> str:
+    """Pause execution. Plain sleep by default; with `file` + `pattern`, polls
+    the file for a regex match instead — e.g. to wait on a background job
+    started via `run_shell` (`nohup cmd > job.log 2>&1 &`) without hitting
+    run_shell's own 120s timeout.
+    """
+    import re
+    import time
+
+    if pattern and not file:
+        return "[error] `pattern` requires `file` — the file whose contents to poll."
+
+    if not pattern:
+        duration = min(max(float(seconds) if seconds is not None else 1.0, 0.0), _WAIT_MAX_SECONDS)
+        await asyncio.sleep(duration)
+        return f"Slept for {duration:g}s."
+
+    try:
+        regex = re.compile(pattern, re.MULTILINE)
+    except re.error as e:
+        return f"[error] invalid regex pattern: {e}"
+
+    from .path_policy import assert_agent_readable
+
+    try:
+        path = assert_agent_readable(file)
+    except Exception as e:
+        return f"[error] {e}"
+
+    wait_timeout = min(max(float(timeout) if timeout is not None else 300.0, 1.0), _WAIT_MAX_SECONDS)
+    interval = max(float(poll_interval) if poll_interval is not None else 3.0, 1.0)
+
+    loop = asyncio.get_running_loop()
+    start = time.monotonic()
+    last_tail = ""
+
+    while True:
+        last_tail = await loop.run_in_executor(None, _tail_file, path)
+        match = regex.search(last_tail)
+        elapsed = time.monotonic() - start
+        if match:
+            snippet = last_tail[max(0, match.start() - 200):match.end() + 200]
+            return f"[matched] pattern found in {file} after {elapsed:.1f}s.\n...{snippet}..."
+        if elapsed >= wait_timeout:
+            tail_lines = "\n".join(last_tail.splitlines()[-30:])
+            return (
+                f"[timeout] pattern not found in {file} after {wait_timeout:g}s.\n"
+                f"Last lines:\n{tail_lines or '(empty)'}"
+            )
+        await asyncio.sleep(min(interval, wait_timeout - elapsed))
+
+
+def _tail_file(path: Path) -> str:
+    """Read up to the last `_WAIT_TAIL_BYTES` bytes of a file. Missing file -> ''."""
+    try:
+        if not path.exists():
+            return ""
+        size = path.stat().st_size
+        with path.open("rb") as f:
+            if size > _WAIT_TAIL_BYTES:
+                f.seek(size - _WAIT_TAIL_BYTES)
+            data = f.read()
+        return data.decode("utf-8", errors="replace")
+    except Exception:
+        return ""
 
 
 async def _read_file(path: str) -> str:

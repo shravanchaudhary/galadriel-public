@@ -300,6 +300,43 @@ Generic login pattern:
 
 ---
 
+## Pausing — the `wait` tool
+
+*A plain sleep, or a poll-for-text loop, so you don't have to fake either one
+with shell tricks. `run_shell` itself has a hard 120s cap — `wait` is how you
+sit through something longer without leaving the tool call.*
+
+Two modes:
+
+1. **Plain sleep** — `wait(seconds=30)`. Capped at 1800s (30 min).
+2. **Wait for text** — `wait(file="<path>", pattern="<regex>", timeout=300)`.
+   Polls the file's contents every `poll_interval` seconds (default 3) until
+   `pattern` matches or `timeout` elapses (default 300s, max 1800s). Returns
+   immediately on a match with the matched snippet; on timeout, returns the
+   file's last lines so you can decide whether to wait again or investigate.
+
+Pairs with a backgrounded shell job — start the job with its output
+redirected to a file, then poll that file instead of guessing a sleep length:
+
+```
+run_shell("nohup mycmd > /tmp/job.log 2>&1 &")
+wait(file="/tmp/job.log", pattern="DONE|ERROR", timeout=600)
+```
+
+`file` goes through the same read-permission check as `read_file` (a missing
+file just means "not written yet" — it's not an error, so you can start
+polling before the job creates its log).
+
+**When to reach for what:**
+
+| Situation | Tool |
+|---|---|
+| Done or failed within a few minutes, checkable from this same call | `wait` |
+| Takes longer than that, or you're about to end the turn | Heartbeat (below) |
+| One-off resume after a restart | One-shot wake (below) |
+
+---
+
 ## Self-scheduled follow-ups (the heartbeat)
 
 For any task that takes more than ~5 minutes and can be checked from outside —

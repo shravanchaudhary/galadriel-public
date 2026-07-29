@@ -461,7 +461,7 @@ main.py                   Entry point — wires all components, starts Discord +
 harness/
   agent.py                Core agent loop: LLM API (Gemini default), tool use, cache management
   memory.py               Stable + dynamic system prompt blocks; daily memory logs
-  tools.py                Tool defs + dispatch: run_shell, read/write_file, browser, web, 7 db_*, 10 palace_*
+  tools.py                Tool defs + dispatch: run_shell, wait, read/write_file, browser, web, 7 db_*, 10 palace_*
   db_ops.py               DB primitives — the agent's only MongoDB path (enforces the workflow spec)
   workflows.py            Workflow spec loader / entity registry (reads workflows/*.json)
   palace.py               MemPalace wrapper: search, archive, wake-up, KG, diary, taxonomy
