@@ -297,10 +297,7 @@ class _ProvisioningECS:
                 "volumes": [
                     {
                         "name": "state",
-                        "s3filesVolumeConfiguration": {
-                            "fileSystemArn": "fs",
-                            "accessPointArn": "base-ap",
-                        },
+                        "host": {},
                     }
                 ],
                 "containerDefinitions": [
@@ -336,6 +333,7 @@ os.environ.update(
         "CONTAINER_NAME": "clyra",
         "PRODUCT_DOMAIN": "replika.example",
         "RUNTIME_SECRET_NAMES": '["BCE_API_KEY", "TOWER_SECRET_KEY"]',
+        "S3FILES_FILE_SYSTEM_ARN": "arn:aws:s3files:test:file-system/fs",
     }
 )
 provisioning_ecs = _ProvisioningECS()
@@ -385,6 +383,13 @@ assert (
     request["volumes"][0]["s3filesVolumeConfiguration"]["accessPointArn"]
     == "tenant-ap"
 )
+assert request["volumes"][0]["s3filesVolumeConfiguration"] == {
+    "fileSystemArn": "arn:aws:s3files:test:file-system/fs",
+    "accessPointArn": "tenant-ap",
+    "rootDirectory": "/",
+    "transitEncryptionPort": 0,
+}
+assert "host" not in request["volumes"][0]
 
 
 class _InvalidServiceECS:

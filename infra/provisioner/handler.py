@@ -490,9 +490,21 @@ def _task_definition(
     request["family"] = f"replika-{_slug(replika_id)}"
     request["taskRoleArn"] = task_role_arn
     request["volumes"] = copy.deepcopy(current.get("volumes", []))
+    state_volume_found = False
     for volume in request["volumes"]:
         if volume["name"] == "state":
-            volume["s3filesVolumeConfiguration"]["accessPointArn"] = access_point_arn
+            state_volume_found = True
+            volume.pop("host", None)
+            volume.pop("dockerVolumeConfiguration", None)
+            volume["configuredAtLaunch"] = False
+            volume["s3filesVolumeConfiguration"] = {
+                "fileSystemArn": _required("S3FILES_FILE_SYSTEM_ARN"),
+                "accessPointArn": access_point_arn,
+                "rootDirectory": "/",
+                "transitEncryptionPort": 0,
+            }
+    if not state_volume_found:
+        raise RuntimeError("Base task definition is missing the state volume")
     request["containerDefinitions"] = [
         container
         for container in request["containerDefinitions"]
