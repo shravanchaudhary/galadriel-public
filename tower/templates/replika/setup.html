@@ -105,16 +105,12 @@
         </div>
 
         <div class="settings-subsection">
-            <div class="settings-section-head">
-                <h2 class="settings-section-title">Username</h2>
-                <p class="settings-section-desc">Lowercase letters, numbers, and hyphens</p>
-            </div>
             <div class="settings-rows">
                 <div class="settings-row">
                     <div class="settings-row-main">
-                        <label class="settings-row-label" for="replika-username">Address</label>
+                        <label class="settings-row-label" for="replika-username">Username</label>
                         <span class="settings-row-hint" id="replika-message" aria-live="polite">
-                            Pick a unique subdomain for your Replika
+                            Lowercase letters, numbers, and hyphens
                         </span>
                     </div>
                     <div class="settings-row-control stacked">
@@ -287,7 +283,7 @@ async function createReplika(username, replikaType, statusEl, replikaId) {
         await refreshStatus();
         if (input) input.value = '';
         if (message) {
-            message.textContent = 'Pick a unique subdomain for your Replika';
+            message.textContent = 'Lowercase letters, numbers, and hyphens';
             message.dataset.state = '';
         }
     } catch (err) {
@@ -357,7 +353,7 @@ if (input) {
         input.value = username;
         message.dataset.state = '';
         if (username.length < 3) {
-            message.textContent = 'Pick a unique subdomain for your Replika';
+            message.textContent = 'Lowercase letters, numbers, and hyphens';
             return;
         }
         message.textContent = 'Checking availability…';

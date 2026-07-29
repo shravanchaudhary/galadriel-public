@@ -1087,6 +1087,8 @@ h3 {
 .btn-danger { background: var(--danger); color: #fff; }
 .btn-danger:hover { background: #b91c1c; }
 
+.btn[hidden] { display: none; }
+
 .nav-links {
     display: flex;
     flex-wrap: wrap;
