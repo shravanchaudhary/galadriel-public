@@ -21,15 +21,16 @@
 {% elif results %}
 <div class="table-wrap" role="region" aria-label="Search results" tabindex="0">
 <table class="wf-table">
-    <thead><tr><th scope="col">Text</th><th scope="col">Wing</th><th scope="col">Room</th><th scope="col">Hall</th><th scope="col">Distance</th><th scope="col"><span class="sr-only">Open</span></th></tr></thead>
+    <thead><tr><th scope="col">Text</th><th scope="col">Wing</th><th scope="col">Room</th><th scope="col">Hall</th><th scope="col">Match</th><th scope="col"><span class="sr-only">Open</span></th></tr></thead>
     <tbody>
         {% for d in results %}
+        {% set match = d.get('distance', d.get('score')) %}
         <tr>
             <td>{{ (d.text or d.content or '') | truncate(160) }}</td>
             <td><code>{{ d.wing }}</code></td>
             <td><code>{{ d.room }}</code></td>
             <td><code>{{ d.hall }}</code></td>
-            <td class="muted">{{ '%.3f'|format(d.distance) if d.distance is not none else '—' }}</td>
+            <td class="muted">{% if match is not none %}{{ '%.3f'|format(match) }}{% else %}—{% endif %}</td>
             <td>{% if d.id %}<a href="/palace/drawer/{{ d.id }}">open →</a>{% endif %}</td>
         </tr>
         {% endfor %}

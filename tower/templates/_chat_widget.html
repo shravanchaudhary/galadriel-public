@@ -67,6 +67,8 @@
     const LAYOUT_KEY = 'wfc-layout';
     const LAYOUT_DEFAULTS = { width: 380, height: 540, expanded: false };
     const MIN_W = 320, MIN_H = 280;
+    /* Below this width, expand is fullscreen (no body padding-right sidebar). */
+    const SIDEBAR_EXPAND_MIN = 861;
     const RENDER_OPTS = ChatLive.RENDER_OPTS;
     VoiceDictation.bind({ input, button: micBtn });
 
@@ -392,21 +394,34 @@
         const max = window.innerHeight - 48;
         return Math.min(max, Math.max(MIN_H, h));
     }
+    function canUseSidebarExpand() {
+        return window.innerWidth >= SIDEBAR_EXPAND_MIN;
+    }
     function applyLayout(layout) {
-        panel.style.width = layout.width + 'px';
         const open = !panel.hasAttribute('hidden');
+        const sidebarMode = layout.expanded && canUseSidebarExpand();
+        if (canUseSidebarExpand()) {
+            panel.style.width = layout.width + 'px';
+        } else {
+            panel.style.width = '';
+        }
         if (layout.expanded) {
             panel.classList.add('expanded');
             panel.style.height = '';
             expandBtn.textContent = '⤡';
-            expandBtn.title = 'Collapse to floating panel';
+            expandBtn.title = sidebarMode ? 'Collapse to floating panel' : 'Exit fullscreen';
         } else {
             panel.classList.remove('expanded');
-            panel.style.height = layout.height + 'px';
+            if (canUseSidebarExpand()) {
+                panel.style.height = layout.height + 'px';
+            } else {
+                panel.style.height = '';
+            }
             expandBtn.textContent = '⤢';
-            expandBtn.title = 'Expand to sidebar';
+            expandBtn.title = canUseSidebarExpand() ? 'Expand to sidebar' : 'Expand fullscreen';
         }
-        if (layout.expanded && open) {
+        expandBtn.hidden = false;
+        if (sidebarMode && open) {
             document.body.classList.add('wfc-sidebar-open');
             document.body.style.setProperty('--wfc-sidebar-w', layout.width + 'px');
         } else {
@@ -417,7 +432,9 @@
     function setExpanded(expanded) {
         const layout = loadLayout();
         layout.expanded = expanded;
-        if (expanded) layout.width = clampWidth(Math.max(layout.width, 420));
+        if (expanded && canUseSidebarExpand()) {
+            layout.width = clampWidth(Math.max(layout.width, 420));
+        }
         saveLayout(layout);
         applyLayout(layout);
     }
@@ -464,9 +481,11 @@
 
     window.addEventListener('resize', () => {
         const layout = loadLayout();
-        layout.width = clampWidth(layout.width);
-        if (!layout.expanded) layout.height = clampHeight(layout.height);
-        saveLayout(layout);
+        if (canUseSidebarExpand()) {
+            layout.width = clampWidth(layout.width);
+            if (!layout.expanded) layout.height = clampHeight(layout.height);
+            saveLayout(layout);
+        }
         applyLayout(layout);
     });
 

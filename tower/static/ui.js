@@ -138,6 +138,9 @@
         });
     }
 
+    /* Keep in sync with @media (max-width: 860px) drawer rules in style.css */
+    const MOBILE_NAV_MAX = 860;
+
     function setNavOpen(open) {
         const sidebar = document.querySelector('.site-sidebar');
         const backdrop = document.getElementById('site-nav-backdrop');
@@ -170,7 +173,7 @@
             if (event.key === 'Escape') setNavOpen(false);
         });
         window.addEventListener('resize', () => {
-            if (window.innerWidth > 640) setNavOpen(false);
+            if (window.innerWidth > MOBILE_NAV_MAX) setNavOpen(false);
         });
     }
 

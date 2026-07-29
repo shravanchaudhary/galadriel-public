@@ -36,6 +36,7 @@ assert b'/static/ui.js' in replika.data
 assert b'replika-form' in replika.data
 assert b'replika-list' in replika.data
 assert b'settings-choice-grid' in replika.data
+assert b'wfc-launcher' not in replika.data
 assert client.get("/api/chat").status_code == 404
 
 ui_js = client.get("/static/ui.js")
@@ -50,5 +51,8 @@ assert b'.table-wrap' in style.data
 assert b'.site-topbar' in style.data
 assert b'.ui-dialog' in style.data
 assert b'@media (max-width: 640px)' in style.data
+assert b'@media (max-width: 860px)' in style.data
+assert b'body.nav-open' in style.data
+assert b'100dvh' in style.data
 
 print("Control-plane app check passed.")
