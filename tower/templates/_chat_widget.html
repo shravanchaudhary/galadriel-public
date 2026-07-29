@@ -71,6 +71,7 @@
     const SIDEBAR_EXPAND_MIN = 861;
     const RENDER_OPTS = ChatLive.RENDER_OPTS;
     VoiceDictation.bind({ input, button: micBtn });
+    ChatLive.bindAutoGrowInputs([input]);
 
     let pageContext = {};
     try {
@@ -553,7 +554,9 @@
         const message = input.value.trim();
         const images = pendingImages.slice();
         if (!message && !images.length) return;
+        VoiceDictation.stopAll();
         input.value = '';
+        ChatLive.growComposerInput(input);
         pendingImages = [];
         renderPreviews();
         wfcSetTurnActive(true);

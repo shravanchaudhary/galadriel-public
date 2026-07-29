@@ -8,6 +8,11 @@ const MIC_ICON = `
     <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
         <path fill="currentColor" d="M12 14a3 3 0 0 0 3-3V5a3 3 0 1 0-6 0v6a3 3 0 0 0 3 3Zm-1-9a1 1 0 1 1 2 0v6a1 1 0 1 1-2 0V5Zm7 6a6 6 0 0 1-5 5.92V20h3v2H8v-2h3v-3.08A6 6 0 0 1 6 11h2a4 4 0 0 0 8 0h2Z"/>
     </svg>`;
+const STOP_ICON = `
+    <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+        <rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor"/>
+    </svg>`;
+const ACTIVE_CONTROLLERS = new Set();
 
 class AudioQueue {
     constructor() {
@@ -80,7 +85,9 @@ class DictationController {
     setState(state, detail = '') {
         this.state = state;
         this.button.dataset.voiceState = state;
-        this.button.setAttribute('aria-pressed', state === 'listening' ? 'true' : 'false');
+        const active = state === 'listening' || state === 'connecting';
+        this.button.setAttribute('aria-pressed', active ? 'true' : 'false');
+        this.button.innerHTML = active || state === 'stopping' ? STOP_ICON : MIC_ICON;
         const labels = {
             idle: 'Start voice dictation',
             connecting: 'Connecting voice dictation…',
@@ -93,10 +100,14 @@ class DictationController {
         this.button.setAttribute('aria-label', labels[state]);
         this.button.disabled = state === 'stopping' || state === 'unsupported';
         const status = this.button.parentElement?.querySelector('.voice-dictation-status');
-        if (status) status.textContent = state === 'error' || state === 'unsupported' ? labels[state] : '';
+        if (status) {
+            status.className = 'voice-dictation-status sr-only';
+            status.textContent = state === 'error' || state === 'unsupported' ? labels[state] : '';
+        }
     }
 
     async toggle() {
+        if (this._stopping) await this._stopping;
         if (this.state === 'listening' || this.state === 'connecting') {
             await this.stop();
         } else if (this.state !== 'stopping') {
@@ -105,6 +116,7 @@ class DictationController {
     }
 
     async start() {
+        if (this._stopping) await this._stopping;
         if (!this.supported()) {
             this.setState('unsupported', window.isSecureContext
                 ? 'Voice dictation is unavailable in this browser'
@@ -146,6 +158,8 @@ class DictationController {
             const credentials = await credentialsResponse.json();
             if (!this.desiredListening) {
                 stream.getTracks().forEach((track) => track.stop());
+                this.input.removeEventListener('input', this.onManualInput);
+                this.setState('idle');
                 return;
             }
 
@@ -153,7 +167,13 @@ class DictationController {
             this.queue = new AudioQueue();
             this.audioContext = new AudioContext({ sampleRate: SAMPLE_RATE });
             await this.audioContext.audioWorklet.addModule('/static/voice_audio_worklet.js');
-            if (!this.desiredListening) return;
+            if (!this.desiredListening) {
+                stream.getTracks().forEach((track) => track.stop());
+                await this.cleanupAudio();
+                this.input.removeEventListener('input', this.onManualInput);
+                this.setState('idle');
+                return;
+            }
             await this.audioContext.resume();
             this.sourceNode = this.audioContext.createMediaStreamSource(stream);
             this.workletNode = new AudioWorkletNode(this.audioContext, 'voice-pcm-processor');
@@ -173,10 +193,18 @@ class DictationController {
             this.consumePromise = this.consume(credentials).catch((error) => {
                 if (this.desiredListening && error?.name !== 'AbortError') this.fail(error);
             });
+            if (!this.desiredListening) {
+                await this.stop();
+                return;
+            }
             this.setState('listening');
         } catch (error) {
             if (this.desiredListening) this.fail(error);
-            else await this.cleanupAudio();
+            else {
+                await this.cleanupAudio();
+                this.input.removeEventListener('input', this.onManualInput);
+                this.setState('idle');
+            }
         }
     }
 
@@ -261,20 +289,31 @@ class DictationController {
     }
 
     async stop() {
+        if (this.state === 'idle' || this.state === 'unsupported') return;
+        if (this._stopping) return this._stopping;
         this.desiredListening = false;
-        if (this.state !== 'error') this.setState('stopping');
+        // Release the mic immediately so the OS/browser indicator turns off.
+        this.stream?.getTracks().forEach((track) => track.stop());
         this.queue?.close();
+        this.abortController?.abort();
+        this.input.removeEventListener('input', this.onManualInput);
+        this.setState('idle');
+        this._stopping = this.finishStop();
+        try {
+            await this._stopping;
+        } finally {
+            this._stopping = null;
+        }
+    }
+
+    async finishStop() {
         if (this.consumePromise) {
             await Promise.race([
                 this.consumePromise,
                 new Promise((resolve) => setTimeout(resolve, 1200)),
             ]);
         }
-        this.abortController?.abort();
         await this.cleanupAudio();
-        this.input.removeEventListener('input', this.onManualInput);
-        this.input.focus();
-        this.setState('idle');
     }
 
     async cleanupAudio() {
@@ -319,7 +358,14 @@ window.VoiceDictation = {
             button.insertAdjacentElement('afterend', status);
         }
         const controller = new DictationController(input, button, { languageCode });
+        ACTIVE_CONTROLLERS.add(controller);
         if (!controller.supported()) controller.setState('unsupported');
         return controller;
+    },
+    /** Stop every bound dictation session (e.g. when a chat request is sent). */
+    stopAll() {
+        return Promise.all(
+            Array.from(ACTIVE_CONTROLLERS).map((controller) => controller.stop()),
+        );
     },
 };

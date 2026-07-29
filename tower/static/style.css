@@ -2369,7 +2369,8 @@ body.wfc-resizing * { cursor: inherit !important; }
 
 .composer-form .wfc-input,
 .wfc-input {
-    flex: 1;
+    display: block;
+    flex: 0 0 auto;
     width: 100%;
     background: transparent;
     border: none;
@@ -2380,8 +2381,11 @@ body.wfc-resizing * { cursor: inherit !important; }
     font-size: 0.92rem;
     line-height: 1.45;
     resize: none;
-    max-height: 160px;
-    min-height: 1.5rem;
+    /* JS (ChatLive.growComposerInput) raises height up to 30% of host, then scrolls. */
+    max-height: 30vh;
+    min-height: calc(1.45em + 0.5rem);
+    overflow-x: hidden;
+    overflow-y: hidden;
     box-shadow: none;
 }
 

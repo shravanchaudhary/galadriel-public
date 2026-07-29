@@ -276,6 +276,41 @@ window.ChatLive = (function () {
         }
     }
 
+    /** Grow a composer textarea upward until ~30% of its chat host height, then scroll. */
+    function growComposerInput(el) {
+        if (!el) return;
+        const host = el.closest('.runs-chat, .wfc-panel') || document.documentElement;
+        const total = host.clientHeight || window.innerHeight || 0;
+        const max = Math.max(72, Math.floor(total * 0.3));
+        // Temporarily clear constraints so scrollHeight reflects full content.
+        el.style.maxHeight = 'none';
+        el.style.height = 'auto';
+        const needed = el.scrollHeight;
+        const next = Math.min(needed, max);
+        el.style.maxHeight = max + 'px';
+        el.style.height = next + 'px';
+        el.style.overflowY = needed > max ? 'auto' : 'hidden';
+    }
+
+    function bindAutoGrowInputs(inputs) {
+        const nodes = (Array.isArray(inputs) ? inputs : [inputs]).filter(Boolean);
+        function growAll() {
+            for (const el of nodes) growComposerInput(el);
+        }
+        for (const el of nodes) {
+            el.addEventListener('input', () => growComposerInput(el));
+            // Catch Shift+Enter before the new line is painted.
+            el.addEventListener('keydown', (event) => {
+                if (event.key === 'Enter' && event.shiftKey) {
+                    requestAnimationFrame(() => growComposerInput(el));
+                }
+            });
+            growComposerInput(el);
+        }
+        window.addEventListener('resize', growAll);
+        return growAll;
+    }
+
     function bindModelSelects(selects) {
         const nodes = (Array.isArray(selects) ? selects : [selects]).filter(Boolean);
         async function changeModel(source) {
@@ -316,6 +351,8 @@ window.ChatLive = (function () {
         fetchHistory,
         loadModelSelects,
         bindModelSelects,
+        growComposerInput,
+        bindAutoGrowInputs,
         appendUser,
         startAssistant,
         handleEvent,

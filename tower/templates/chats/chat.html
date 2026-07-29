@@ -154,6 +154,7 @@
     ChatLive.loadModelSelects(modelSelects);
     VoiceDictation.bind({ input, button: micBtn });
     VoiceDictation.bind({ input: newChatInput, button: newChatMic });
+    ChatLive.bindAutoGrowInputs([input, newChatInput]);
 
     function escapeHtml(value) {
         return String(value == null ? '' : value)
@@ -208,6 +209,7 @@
         if (readonlyNote) readonlyNote.hidden = true;
         if (newChatInput) {
             newChatInput.value = '';
+            ChatLive.growComposerInput(newChatInput);
             newChatInput.focus();
         }
     }
@@ -526,7 +528,9 @@
         const message = input.value.trim();
         const images = pendingImages.slice();
         if (!message && !images.length) return;
+        VoiceDictation.stopAll();
         input.value = '';
+        ChatLive.growComposerInput(input);
         pendingImages = [];
         renderPreviews();
         streaming = true;
@@ -627,7 +631,11 @@
     function submitNewChat() {
         const text = newChatInput ? newChatInput.value : '';
         const images = pendingNewImages.slice();
-        if (newChatInput) newChatInput.value = '';
+        VoiceDictation.stopAll();
+        if (newChatInput) {
+            newChatInput.value = '';
+            ChatLive.growComposerInput(newChatInput);
+        }
         pendingNewImages = [];
         renderNewPreviews();
         startNewChatFromPrompt(text, images);
