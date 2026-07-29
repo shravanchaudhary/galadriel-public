@@ -611,7 +611,12 @@ def _service(
     try:
         ecs.create_service(**kwargs)
     except ClientError as exc:
-        if exc.response["Error"]["Code"] != "ServiceAlreadyExistsException":
+        error = exc.response["Error"]
+        existing_service = error["Code"] == "ServiceAlreadyExistsException" or (
+            error["Code"] == "InvalidParameterException"
+            and error.get("Message") == "Creation of service was not idempotent."
+        )
+        if not existing_service:
             raise
         ecs.update_service(
             cluster=kwargs["cluster"],

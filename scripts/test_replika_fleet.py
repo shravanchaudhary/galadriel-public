@@ -428,4 +428,38 @@ else:
 assert not invalid_service_ecs.updated, "invalid creates must not become updates"
 
 
+class _ExistingServiceECS(_InvalidServiceECS):
+    def __init__(self):
+        super().__init__()
+        self.wait_calls = []
+
+    def create_service(self, **_kwargs):
+        raise provisioner.ClientError(
+            {
+                "Error": {
+                    "Code": "InvalidParameterException",
+                    "Message": "Creation of service was not idempotent.",
+                }
+            },
+            "CreateService",
+        )
+
+    def get_waiter(self, name):
+        assert name == "services_stable"
+        return _Waiter(self.wait_calls)
+
+
+existing_service_ecs = _ExistingServiceECS()
+provisioner._service(
+    existing_service_ecs,
+    "tenant-a",
+    "task:2",
+    "target-group",
+    "phone-target-group",
+    "v1",
+)
+assert existing_service_ecs.updated, "existing services must be updated on retry"
+assert existing_service_ecs.wait_calls, "updated services must become stable"
+
+
 print("Replika isolated runtime checks passed.")
