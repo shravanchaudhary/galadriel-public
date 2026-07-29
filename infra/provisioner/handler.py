@@ -48,6 +48,7 @@ print(json.dumps({"status": "ok", "changed_files": changed}))
 
 REGISTERABLE_TASK_FIELDS = {
     "family",
+    "taskRoleArn",
     "executionRoleArn",
     "networkMode",
     "containerDefinitions",
@@ -909,6 +910,8 @@ def _create_replika(
 
 
 def _reset_replika_config(*, replika_id: str) -> dict:
+    # ECS containerOverrides cannot set entryPoint, so register a short-lived
+    # task definition that runs the overwrite payload instead of the app.
     ecs = boto3.client("ecs")
     cluster = _required("ECS_CLUSTER")
     service_name = f"replika-{_slug(replika_id)}"
@@ -925,41 +928,59 @@ def _reset_replika_config(*, replika_id: str) -> dict:
         "taskDefinition"
     ]
     container_name = _required("CONTAINER_NAME")
-    if not any(
-        container["name"] == container_name
-        for container in task_definition["containerDefinitions"]
-    ):
+    base_container = next(
+        (
+            container
+            for container in task_definition["containerDefinitions"]
+            if container["name"] == container_name
+        ),
+        None,
+    )
+    if not base_container:
         raise RuntimeError(f"Task definition is missing container {container_name}")
 
-    response = ecs.run_task(
-        cluster=cluster,
-        taskDefinition=task_definition_arn,
-        launchType="FARGATE",
-        networkConfiguration=service["networkConfiguration"],
-        overrides={
-            "containerOverrides": [
-                {
-                    "name": container_name,
-                    "entryPoint": ["python3", "-c"],
-                    "command": [RESET_CONFIG_PAYLOAD],
-                }
-            ]
-        },
-        count=1,
-        startedBy="replika-config-reset",
-    )
-    if response.get("failures"):
-        raise RuntimeError(f"reset task failed to start: {response['failures']}")
-    task_arn = response["tasks"][0]["taskArn"]
-    ecs.get_waiter("tasks_stopped").wait(cluster=cluster, tasks=[task_arn])
-    task = ecs.describe_tasks(cluster=cluster, tasks=[task_arn])["tasks"][0]
-    container_result = task["containers"][0]
-    if container_result.get("exitCode") != 0:
-        raise RuntimeError(
-            f"reset task exited {container_result.get('exitCode')}: "
-            f"{container_result.get('reason') or task.get('stoppedReason')}"
+    container = copy.deepcopy(base_container)
+    container["entryPoint"] = ["python", "-c"]
+    container["command"] = [RESET_CONFIG_PAYLOAD]
+    container.pop("healthCheck", None)
+    request = {
+        key: copy.deepcopy(value)
+        for key, value in task_definition.items()
+        if key in REGISTERABLE_TASK_FIELDS
+    }
+    request["family"] = f"replika-config-reset-{_slug(replika_id)}"
+    request["containerDefinitions"] = [container]
+    reset_task_definition = None
+    try:
+        reset_task_definition = ecs.register_task_definition(**request)[
+            "taskDefinition"
+        ]["taskDefinitionArn"]
+        response = ecs.run_task(
+            cluster=cluster,
+            taskDefinition=reset_task_definition,
+            launchType="FARGATE",
+            networkConfiguration=service["networkConfiguration"],
+            count=1,
+            startedBy="replika-config-reset",
         )
-    return {"status": "reset"}
+        if response.get("failures"):
+            raise RuntimeError(f"reset task failed to start: {response['failures']}")
+        task_arn = response["tasks"][0]["taskArn"]
+        ecs.get_waiter("tasks_stopped").wait(cluster=cluster, tasks=[task_arn])
+        task = ecs.describe_tasks(cluster=cluster, tasks=[task_arn])["tasks"][0]
+        container_result = task["containers"][0]
+        if container_result.get("exitCode") != 0:
+            raise RuntimeError(
+                f"reset task exited {container_result.get('exitCode')}: "
+                f"{container_result.get('reason') or task.get('stoppedReason')}"
+            )
+        return {"status": "reset"}
+    finally:
+        if reset_task_definition:
+            try:
+                ecs.deregister_task_definition(taskDefinition=reset_task_definition)
+            except ClientError:
+                pass
 
 
 def _delete_replika(
