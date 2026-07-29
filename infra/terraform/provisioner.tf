@@ -87,8 +87,10 @@ data "aws_iam_policy_document" "replika_provisioner" {
       "ecs:DeregisterTaskDefinition",
       "ecs:DescribeServices",
       "ecs:DescribeTaskDefinition",
+      "ecs:DescribeTasks",
       "ecs:ListTaskDefinitions",
       "ecs:RegisterTaskDefinition",
+      "ecs:RunTask",
       "ecs:TagResource",
       "ecs:UpdateService",
     ]

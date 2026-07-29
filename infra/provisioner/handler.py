@@ -14,6 +14,38 @@ import boto3
 from botocore.exceptions import ClientError
 
 _callback_secret = None
+
+# Overwrites a tenant's persisted config/ files with the image's baked-in
+# defaults (/opt/galadriel-defaults), run via a one-off ECS RunTask against
+# the tenant's own task definition and S3 Files volume. Unlike the entrypoint's
+# first-boot seed (which only fills in files that are missing), this always
+# replaces existing content, and only touches files present in the defaults
+# tree so tenant-only runtime files (config/scheduler_state.json,
+# config/ambient_state.json) are left alone.
+RESET_CONFIG_PAYLOAD = r"""
+import json
+import os
+import shutil
+from pathlib import Path
+
+defaults_root = Path(os.environ.get("GALADRIEL_DEFAULTS_ROOT", "/opt/galadriel-defaults")) / "config"
+target_root = Path(os.environ.get("GALADRIEL_STORAGE_ROOT", "/mnt/efs")) / "config"
+
+changed = []
+for source in sorted(defaults_root.rglob("*")):
+    relative = source.relative_to(defaults_root)
+    target = target_root / relative
+    if source.is_dir():
+        target.mkdir(parents=True, exist_ok=True)
+        continue
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if not target.exists() or target.read_bytes() != source.read_bytes():
+        shutil.copy2(source, target)
+        changed.append(str(relative))
+
+print(json.dumps({"status": "ok", "changed_files": changed}))
+"""
+
 REGISTERABLE_TASK_FIELDS = {
     "family",
     "executionRoleArn",
@@ -876,6 +908,60 @@ def _create_replika(
     return {"status": "ready"}
 
 
+def _reset_replika_config(*, replika_id: str) -> dict:
+    ecs = boto3.client("ecs")
+    cluster = _required("ECS_CLUSTER")
+    service_name = f"replika-{_slug(replika_id)}"
+    services = ecs.describe_services(cluster=cluster, services=[service_name]).get(
+        "services", []
+    )
+    service = next(
+        (item for item in services if item.get("status") == "ACTIVE"), None
+    )
+    if not service:
+        raise RuntimeError(f"Replika runtime service {service_name} was not found")
+    task_definition_arn = service["taskDefinition"]
+    task_definition = ecs.describe_task_definition(taskDefinition=task_definition_arn)[
+        "taskDefinition"
+    ]
+    container_name = _required("CONTAINER_NAME")
+    if not any(
+        container["name"] == container_name
+        for container in task_definition["containerDefinitions"]
+    ):
+        raise RuntimeError(f"Task definition is missing container {container_name}")
+
+    response = ecs.run_task(
+        cluster=cluster,
+        taskDefinition=task_definition_arn,
+        launchType="FARGATE",
+        networkConfiguration=service["networkConfiguration"],
+        overrides={
+            "containerOverrides": [
+                {
+                    "name": container_name,
+                    "entryPoint": ["python3", "-c"],
+                    "command": [RESET_CONFIG_PAYLOAD],
+                }
+            ]
+        },
+        count=1,
+        startedBy="replika-config-reset",
+    )
+    if response.get("failures"):
+        raise RuntimeError(f"reset task failed to start: {response['failures']}")
+    task_arn = response["tasks"][0]["taskArn"]
+    ecs.get_waiter("tasks_stopped").wait(cluster=cluster, tasks=[task_arn])
+    task = ecs.describe_tasks(cluster=cluster, tasks=[task_arn])["tasks"][0]
+    container_result = task["containers"][0]
+    if container_result.get("exitCode") != 0:
+        raise RuntimeError(
+            f"reset task exited {container_result.get('exitCode')}: "
+            f"{container_result.get('reason') or task.get('stoppedReason')}"
+        )
+    return {"status": "reset"}
+
+
 def _delete_replika(
     *,
     replika_id: str,
@@ -912,7 +998,7 @@ def handler(event, _context):
         raise ValueError("replika_id is required")
     if operation == "create" and replika_type not in {"organization", "individual"}:
         raise ValueError("invalid replika_type")
-    if operation not in {"create", "delete"}:
+    if operation not in {"create", "delete", "reset_config"}:
         raise ValueError("invalid operation")
     try:
         if operation == "delete":
@@ -921,6 +1007,11 @@ def handler(event, _context):
                 owner_id=owner_id,
                 username=username,
             )
+        if operation == "reset_config":
+            # Not a lifecycle transition: never report status back to the
+            # control plane, since a failed reset must not mark a healthy,
+            # already-"ready" Replika as errored.
+            return _reset_replika_config(replika_id=replika_id)
         return _create_replika(
             replika_id=replika_id,
             owner_id=owner_id,
@@ -929,7 +1020,6 @@ def handler(event, _context):
             release_version=str(event.get("release_version") or "v0"),
         )
     except Exception as exc:
-        try:
+        if operation in {"create", "delete"}:
             _callback(replika_id, owner_id, "error", str(exc))
-        finally:
-            raise
+        raise

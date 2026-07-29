@@ -62,6 +62,11 @@
                     <button type="button" class="btn btn-small btn-secondary replika-retry"
                             data-replika-id="{{ replika.id }}"
                             {% if replika.status != 'error' %}hidden{% endif %}>Try again</button>
+                    <button type="button" class="btn btn-small btn-secondary replika-reset-config"
+                            data-replika-id="{{ replika.id }}"
+                            data-username="{{ replika.username }}"
+                            title="Reset SOUL, memory, guardrails, recall, and jobs config to the latest defaults"
+                            {% if replika.status != 'ready' %}hidden{% endif %}>Reset Config to Default</button>
                     <button type="button" class="btn btn-small btn-danger replika-delete"
                             data-replika-id="{{ replika.id }}"
                             data-username="{{ replika.username }}"
@@ -211,6 +216,7 @@ function cardHtml(replika) {
                 <a class="btn btn-small" href="${url || '#'}" ${replika.status !== 'ready' ? 'hidden' : ''}>Open</a>
                 <a class="btn btn-small btn-secondary" href="/replika/${id}/integrations" ${replika.status !== 'ready' ? 'hidden' : ''}>Integrations</a>
                 <button type="button" class="btn btn-small btn-secondary replika-retry" data-replika-id="${id}" ${replika.status !== 'error' ? 'hidden' : ''}>Try again</button>
+                <button type="button" class="btn btn-small btn-secondary replika-reset-config" data-replika-id="${id}" data-username="${username}" title="Reset SOUL, memory, guardrails, recall, and jobs config to the latest defaults" ${replika.status !== 'ready' ? 'hidden' : ''}>Reset Config to Default</button>
                 <button type="button" class="btn btn-small btn-danger replika-delete" data-replika-id="${id}" data-username="${username}" ${replika.status === 'deleting' ? 'disabled' : ''}>Delete</button>
                 <p class="replika-progress" aria-live="polite" ${['creating', 'deleting'].includes(replika.status) ? '' : 'hidden'}>${progressCopy}</p>
             </div>
@@ -337,6 +343,39 @@ async function deleteReplika(replikaId, username) {
     }
 }
 
+async function resetReplikaConfig(replikaId, username, button) {
+    const confirmed = window.confirm(
+        `Reset ${username}'s SOUL, memory, guardrails, recall, and jobs config to the latest defaults? `
+        + 'This discards any edits made to those files.'
+    );
+    if (!confirmed) return;
+    const originalText = button.textContent;
+    button.disabled = true;
+    button.textContent = 'Resetting…';
+    try {
+        const response = await fetch(`/api/replikas/${encodeURIComponent(replikaId)}/reset-config`, {
+            method: 'POST',
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            if (window.towerToast) {
+                window.towerToast(data.error || 'Could not reset config.', { type: 'error' });
+            }
+            return;
+        }
+        if (window.towerToast) {
+            window.towerToast('Config reset to the latest defaults.', { type: 'success' });
+        }
+    } catch (err) {
+        if (window.towerToast) {
+            window.towerToast(err.message || 'Could not reset config.', { type: 'error' });
+        }
+    } finally {
+        button.disabled = false;
+        button.textContent = originalText;
+    }
+}
+
 function bindCardActions() {
     list.querySelectorAll('.replika-retry').forEach((button) => {
         button.addEventListener('click', async () => {
@@ -347,6 +386,11 @@ function bindCardActions() {
                 null,
                 button.dataset.replikaId
             );
+        });
+    });
+    list.querySelectorAll('.replika-reset-config').forEach((button) => {
+        button.addEventListener('click', async () => {
+            await resetReplikaConfig(button.dataset.replikaId, button.dataset.username, button);
         });
     });
     list.querySelectorAll('.replika-delete').forEach((button) => {

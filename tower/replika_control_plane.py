@@ -276,6 +276,13 @@ class Provisioner:
     def delete(self, replika: dict[str, Any]) -> None:
         self._invoke(replika, "delete")
 
+    def reset_config(self, replika: dict[str, Any]) -> dict[str, Any]:
+        """Force-overwrite this Replika's persisted config/ files with the
+        latest defaults baked into its currently deployed image. Not a
+        lifecycle transition, so this waits for the result instead of firing
+        an async request like start()/delete()."""
+        return self._invoke_sync(replika, "reset_config")
+
     def _invoke(self, replika: dict[str, Any], operation: str) -> None:
         if not self.function_arn:
             if (
@@ -296,6 +303,31 @@ class Provisioner:
         )
         if response.get("StatusCode") != 202:
             raise RuntimeError("provider provisioner rejected the request")
+
+    def _invoke_sync(self, replika: dict[str, Any], operation: str) -> dict[str, Any]:
+        if not self.function_arn:
+            if (
+                os.environ.get("REPLIKA_PROVISIONING_MODE", "local") == "local"
+                and local_provisioning_allowed()
+            ):
+                return {"status": "skipped"}
+            raise RuntimeError("provider provisioner is not configured")
+        client = self._lambda_client
+        if client is None:
+            import boto3
+
+            client = boto3.client("lambda")
+        response = client.invoke(
+            FunctionName=self.function_arn,
+            InvocationType="RequestResponse",
+            Payload=json.dumps(self._payload(replika, operation)).encode("utf-8"),
+        )
+        payload = json.loads(response["Payload"].read() or b"{}")
+        if response.get("FunctionError"):
+            raise RuntimeError(
+                payload.get("errorMessage") or "provider provisioner reported an error"
+            )
+        return payload
 
 
 _sync_db = None
@@ -587,6 +619,27 @@ def register_replika_control_plane(app) -> None:
             if document:
                 body["replika"] = _customer_view(document)
             return jsonify(body), 503
+
+    @bp.post("/api/replikas/<replika_id>/reset-config")
+    def reset_replika_config(replika_id: str):
+        try:
+            owner_id = _owner_id()
+            document = _store().find_owned(replika_id, owner_id)
+            if not document:
+                return jsonify({"error": "Unknown Replika"}), 404
+            if document["status"] != "ready":
+                return jsonify(
+                    {"error": "That Replika must be ready before resetting its config."}
+                ), 409
+            _provisioner().reset_config(document)
+            return jsonify({"status": "ok"})
+        except PermissionError:
+            return jsonify({"error": "Unauthorized"}), 401
+        except Exception:
+            current_app.logger.exception("Replika config reset failed")
+            return jsonify(
+                {"error": "We could not reset this Replika's config. Please try again."}
+            ), 503
 
     @bp.post("/internal/replika/provisioning")
     def provisioning_callback():
