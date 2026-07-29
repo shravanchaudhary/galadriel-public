@@ -19,6 +19,14 @@
     <div class="app-shell">
         {% include "_nav.html" %}
         <main id="main-content" class="container {% block container_class %}{% endblock %}" tabindex="-1">
+            {% if not control_plane_only %}
+            <a class="provider-key-banner" id="provider-key-banner"
+               href="/config#model-provider" hidden>
+                <span class="provider-key-banner-icon" aria-hidden="true">✦</span>
+                <span><strong>Your agent needs an API key.</strong> Go to Agent → Configuration → Model provider → Set API key.</span>
+                <span class="provider-key-banner-arrow" aria-hidden="true">→</span>
+            </a>
+            {% endif %}
             {% block page_header %}
             <header class="page-header">
                 <h1>{% block heading %}{% endblock %}</h1>

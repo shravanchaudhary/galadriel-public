@@ -41,7 +41,7 @@
             </div>
         </div>
 
-        <div class="settings-row">
+        <div class="settings-row" id="model-provider">
             <div class="settings-row-main">
                 <label class="settings-row-label" for="provider-select">Model provider</label>
                 <span class="settings-row-hint" id="provider-key-status">Checking…</span>
@@ -252,6 +252,7 @@ async function refreshProviderKeys(syncToActiveModel = false) {
     for (const row of data.providers || []) {
         providerKeyState[row.provider] = row;
     }
+    window.updateProviderKeyBanner?.(data.providers || []);
     if (modelResponse?.ok) {
         const modelData = await modelResponse.json();
         const provider = modelData.model?.startsWith('gemini')

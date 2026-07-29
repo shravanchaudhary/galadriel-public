@@ -138,6 +138,25 @@
         });
     }
 
+    function updateProviderKeyBanner(providers) {
+        const banner = document.getElementById('provider-key-banner');
+        if (!banner || !Array.isArray(providers)) return;
+        banner.hidden = providers.some((provider) => provider.configured);
+    }
+
+    async function refreshProviderKeyBanner() {
+        const banner = document.getElementById('provider-key-banner');
+        if (!banner) return;
+        try {
+            const response = await fetch('/api/provider-keys', { cache: 'no-store' });
+            if (!response.ok) return;
+            const data = await response.json();
+            updateProviderKeyBanner(data.providers);
+        } catch (error) {
+            console.debug('Could not check model provider configuration', error);
+        }
+    }
+
     /* Keep in sync with @media (max-width: 860px) drawer rules in style.css */
     const MOBILE_NAV_MAX = 860;
 
@@ -198,17 +217,20 @@
     window.towerToast = towerToast;
     window.towerConfirm = towerConfirm;
     window.renderRelativeTimes = renderRelativeTimes;
+    window.updateProviderKeyBanner = updateProviderKeyBanner;
 
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', () => {
             initNav();
             initConfirmForms();
+            refreshProviderKeyBanner();
             renderRelativeTimes();
             window.setInterval(renderRelativeTimes, 30000);
         });
     } else {
         initNav();
         initConfirmForms();
+        refreshProviderKeyBanner();
         renderRelativeTimes();
         window.setInterval(renderRelativeTimes, 30000);
     }
