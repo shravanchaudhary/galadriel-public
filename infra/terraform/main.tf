@@ -32,6 +32,13 @@ locals {
     "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:replika/slack-*",
   ]
   secret_list = [for name, arn in local.runtime_secrets : { name = name, valueFrom = arn }]
+  runtime_provider_secret_list = [
+    for name, arn in var.replika_runtime_provider_secret_arns : {
+      name      = name
+      valueFrom = arn
+    }
+  ]
+  runtime_secret_list = concat(local.secret_list, local.runtime_provider_secret_list)
   environment_list = [
     for name, value in merge(var.environment, {
       APPCONFIG_APPLICATION            = var.appconfig_application_id
@@ -59,7 +66,7 @@ locals {
     }) : { name = name, value = value }
   ]
   runtime_base_environment_list = [
-    for name, value in merge(var.environment, {
+    for name, value in merge(var.environment, var.replika_runtime_environment, {
       APPCONFIG_APPLICATION      = var.appconfig_application_id
       APPCONFIG_ENVIRONMENT      = var.appconfig_environment_id
       APPCONFIG_CONFIGURATION    = var.appconfig_configuration_id
@@ -421,6 +428,21 @@ resource "aws_iam_role_policy" "execution_secrets" {
   name   = "runtime-secrets"
   role   = aws_iam_role.execution.id
   policy = data.aws_iam_policy_document.execution_secrets.json
+}
+
+data "aws_iam_policy_document" "execution_runtime_provider_secrets" {
+  count = length(var.replika_runtime_provider_secret_arns) > 0 ? 1 : 0
+  statement {
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = values(var.replika_runtime_provider_secret_arns)
+  }
+}
+
+resource "aws_iam_role_policy" "execution_runtime_provider_secrets" {
+  count  = length(var.replika_runtime_provider_secret_arns) > 0 ? 1 : 0
+  name   = "replika-runtime-provider-secrets"
+  role   = aws_iam_role.execution.id
+  policy = data.aws_iam_policy_document.execution_runtime_provider_secrets[0].json
 }
 
 resource "aws_iam_role" "task" {
@@ -969,7 +991,7 @@ resource "aws_ecs_task_definition" "replika_runtime_base" {
         { containerPort = 8765, hostPort = 8765, protocol = "tcp" },
       ]
       environment = local.runtime_base_environment_list
-      secrets     = local.secret_list
+      secrets     = local.runtime_secret_list
       mountPoints = [
         { sourceVolume = "state", containerPath = "/mnt/efs", readOnly = false },
       ]

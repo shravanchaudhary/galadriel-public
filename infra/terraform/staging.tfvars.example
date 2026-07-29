@@ -16,9 +16,32 @@ replika_route53_zone_id = "Z..."
 enable_replika_managed_auth = true
 replika_control_plane_only  = true
 replika_callback_token_secret_arn = "arn:aws:secretsmanager:REGION:ACCOUNT:secret:replika/provisioner-callback"
+replika_runtime_secret_names = [
+  "AGENTSOURCE_API_KEY",
+  "BCE_API_KEY",
+  "FULLENRICH_API_KEY",
+  "HANDINGER_API_KEY",
+  "SERPER_API_KEY",
+  "TOWER_SECRET_KEY",
+  "TRAFILATURA_API_KEY",
+]
+replika_runtime_provider_secret_arns = {
+  AGENTSOURCE_API_KEY = "arn:aws:secretsmanager:ap-south-1:ACCOUNT:secret:replika/runtime/agentsource-api-key"
+  BCE_API_KEY         = "arn:aws:secretsmanager:ap-south-1:ACCOUNT:secret:replika/runtime/bce-api-key"
+  FULLENRICH_API_KEY  = "arn:aws:secretsmanager:ap-south-1:ACCOUNT:secret:replika/runtime/fullenrich-api-key"
+  HANDINGER_API_KEY   = "arn:aws:secretsmanager:ap-south-1:ACCOUNT:secret:replika/runtime/handinger-api-key"
+  SERPER_API_KEY      = "arn:aws:secretsmanager:ap-south-1:ACCOUNT:secret:replika/runtime/serper-api-key"
+  TRAFILATURA_API_KEY = "arn:aws:secretsmanager:ap-south-1:ACCOUNT:secret:replika/runtime/trafilatura-api-key"
+}
+replika_runtime_environment = {
+  BCE_BASE_URL         = "https://bce-stag.clodexa.com/"
+  BCE_TIMEOUT_MS       = "10000"
+  BROWSER_BACKEND      = "bce"
+  TRAFILATURA_ENDPOINT = "https://web-fetch.example.internal"
+}
 
-# Optional existing Secrets Manager ARNs, never secret values. The staging
-# AppConfig profile is the standard runtime configuration source.
+# Existing shared infrastructure Secrets Manager ARNs, never secret values.
+# Tenant-only provider credentials are configured separately above.
 secret_arns = {
   MONGO_URI        = "arn:aws:secretsmanager:ap-south-1:ACCOUNT:secret:replika/mongo-uri"
   REDIS_URL        = "arn:aws:secretsmanager:ap-south-1:ACCOUNT:secret:replika/redis-url"
@@ -35,5 +58,5 @@ environment = {
   GALADRIEL_REFLECTION = "1"
 }
 
-# Secrets (TOWER_AUTH_TOKEN, TOWER_SECRET_KEY, API keys, etc.) belong in the
-# staging AppConfig profile — never in tfvars.
+# Control-plane-only secret values belong in the staging AppConfig profile;
+# tenant provider credentials belong in Secrets Manager. Never put values here.

@@ -128,10 +128,66 @@ variable "replika_control_plane_only" {
   type        = bool
   default     = false
 }
+variable "replika_runtime_provider_secret_arns" {
+  description = "Approved provider-managed secret ARNs injected only into tenant runtimes."
+  type        = map(string)
+  sensitive   = true
+  default     = {}
+  validation {
+    condition = length(setsubtract(toset(keys(var.replika_runtime_provider_secret_arns)), toset([
+      "AGENTSOURCE_API_KEY",
+      "BCE_API_KEY",
+      "FULLENRICH_API_KEY",
+      "HANDINGER_API_KEY",
+      "SERPER_API_KEY",
+      "TRAFILATURA_API_KEY",
+    ]))) == 0
+    error_message = "Runtime provider secrets may include only approved enrichment, browser, search, and web-fetch credentials."
+  }
+}
+variable "replika_runtime_environment" {
+  description = "Approved non-secret settings injected only into tenant runtimes."
+  type        = map(string)
+  default = {
+    BCE_BASE_URL         = "https://bce-stag.clodexa.com/"
+    BCE_TIMEOUT_MS       = "10000"
+    BROWSER_BACKEND      = "bce"
+    TRAFILATURA_ENDPOINT = "https://o73bnbnsxmhfzx6yjncuyvcmwq0jspde.lambda-url.ap-south-1.on.aws"
+  }
+  validation {
+    condition = length(setsubtract(toset(keys(var.replika_runtime_environment)), toset([
+      "BCE_BASE_URL",
+      "BCE_TIMEOUT_MS",
+      "BROWSER_BACKEND",
+      "TRAFILATURA_ENDPOINT",
+    ]))) == 0
+    error_message = "Tenant runtime environment may include only approved non-secret provider settings."
+  }
+}
 variable "replika_runtime_secret_names" {
-  description = "Provider infrastructure secrets exposed to tenant runtimes. Model API keys are intentionally excluded; customers configure BYOM."
+  description = "Provider infrastructure secrets exposed to tenant runtimes. Model and Slack installation credentials are intentionally excluded."
   type        = set(string)
-  default     = ["TOWER_SECRET_KEY"]
+  default = [
+    "AGENTSOURCE_API_KEY",
+    "BCE_API_KEY",
+    "FULLENRICH_API_KEY",
+    "HANDINGER_API_KEY",
+    "SERPER_API_KEY",
+    "TOWER_SECRET_KEY",
+    "TRAFILATURA_API_KEY",
+  ]
+  validation {
+    condition = length(setsubtract(var.replika_runtime_secret_names, toset([
+      "AGENTSOURCE_API_KEY",
+      "BCE_API_KEY",
+      "FULLENRICH_API_KEY",
+      "HANDINGER_API_KEY",
+      "SERPER_API_KEY",
+      "TOWER_SECRET_KEY",
+      "TRAFILATURA_API_KEY",
+    ]))) == 0
+    error_message = "Tenant runtimes may receive only approved provider infrastructure secrets; model and Slack installation credentials are forbidden."
+  }
 }
 variable "host_name" {
   type    = string

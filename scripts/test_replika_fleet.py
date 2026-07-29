@@ -314,6 +314,7 @@ class _ProvisioningECS:
                         "environment": [{"name": "APPCONFIG_REQUIRED", "value": "true"}],
                         "secrets": [
                             {"name": "TOWER_SECRET_KEY", "valueFrom": "session"},
+                            {"name": "BCE_API_KEY", "valueFrom": "bce"},
                             {"name": "GEMINI_API_KEY", "valueFrom": "platform-key"},
                         ],
                         "dependsOn": [
@@ -334,7 +335,7 @@ os.environ.update(
         "BASE_TASK_DEFINITION": "base",
         "CONTAINER_NAME": "clyra",
         "PRODUCT_DOMAIN": "replika.example",
-        "RUNTIME_SECRET_NAMES": '["TOWER_SECRET_KEY"]',
+        "RUNTIME_SECRET_NAMES": '["BCE_API_KEY", "TOWER_SECRET_KEY"]',
     }
 )
 provisioning_ecs = _ProvisioningECS()
@@ -368,6 +369,7 @@ assert environment["APPCONFIG_REQUIRED"] == "false"
 assert environment["MONGO_DB"] == "replika_tenant-a"
 assert runtime["secrets"] == [
     {"name": "TOWER_SECRET_KEY", "valueFrom": "session"},
+    {"name": "BCE_API_KEY", "valueFrom": "bce"},
     {
         "name": "SLACK_TENANT_AUTH_SECRET",
         "valueFrom": "arn:aws:secretsmanager:test:slack-auth",
