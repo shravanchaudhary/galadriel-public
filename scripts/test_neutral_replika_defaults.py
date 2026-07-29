@@ -69,6 +69,13 @@ def main() -> None:
             if root_name in {"memory", "state"} and DATED_STATE.match(path.name):
                 errors.append(f"dated tenant history in defaults: {relative}")
 
+    loop_prompts = ROOT / "harness/loop_prompts.py"
+    match = FORBIDDEN_IDENTITY.search(loop_prompts.read_text(encoding="utf-8"))
+    if match:
+        errors.append(
+            f"tenant-specific token {match.group()!r} in harness/loop_prompts.py"
+        )
+
     expected_jobs = {"README.md", "_template.md"}
     actual_jobs = {path.name for path in (ROOT / "jobs").iterdir() if path.is_file()}
     if actual_jobs != expected_jobs:

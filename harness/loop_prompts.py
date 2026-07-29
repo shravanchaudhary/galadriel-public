@@ -98,7 +98,7 @@ def morning_prompt(today: str) -> str:
     return (
         "[SYSTEM:MORNING_ROUTINE] Good morning! It is a new workday. "
         "Please give a warm morning greeting. Then:\n"
-        "1. Check for any calendar or planning items he may need to respond to today.\n"
+        "1. Check for any calendar or planning items the user may need to respond to today.\n"
         "3. Note anything else relevant from overnight.\n"
         "4. If a `jobs/` board exists, plan today's work: set `state/worker_control.md` "
         "to `paused`, then read `state/steering.md` (fold the reflection's corrections "
@@ -136,7 +136,7 @@ def catchup_prompt(today: str) -> str:
         "done today so far, if anything) to see where the day stands.\n"
         "- Identify anything that was supposed to happen today but hasn't yet — morning "
         "planning never ran, a launched task left mid-flight, a due ritual not yet set "
-        "up on the board — and surface those pending items to Shravan in your reply.\n"
+        "up on the board — and surface those pending items to the user in your reply.\n"
         "- Rituals are 'do today's once': a slot missed earlier today is satisfied by "
         "doing it now, not repeated; projects carry forward until done.\n"
         "Then do today's morning planning:\n\n"
@@ -147,8 +147,8 @@ def reflection_prompt(today: str) -> str:
     return (
         "[SYSTEM:REFLECTION] This is an ambient reflection + retro + worker-audit "
         "tick — think, learn, steer the background worker, and report a short "
-        "status. You WILL end the turn with a brief plain summary to Shravan (see "
-        "PART 3) — that summary is delivered to him, so make it tight and useful "
+        "status. You WILL end the turn with a brief plain summary to the user (see "
+        "PART 3) — that summary is delivered to them, so make it tight and useful "
         "rather than trying to force an empty turn.\n\n"
         "PART 1 — Take stock: What is the current state of the work? What did "
         "you notice recently that you have not yet recorded? An open question "
@@ -202,7 +202,7 @@ def reflection_prompt(today: str) -> str:
         "misbehaving / not doing the job: also PAUSE it — write_file "
         "state/worker_control.md with `paused` as the first line (it finishes its "
         "current unit, then stops).\n"
-        "  - ALWAYS end the turn with the status summary for Shravan — a few "
+        "  - ALWAYS end the turn with the status summary for the user — a few "
         "lines, scalpel-brief. Lead with the headline (ALL GOOD / STEERED / "
         "PAUSED), then a line or two on what the worker has been doing, whether "
         "the cookbooks, guardrails and voice all look respected, and any "
@@ -213,7 +213,7 @@ def reflection_prompt(today: str) -> str:
 
 def goodnight_prompt(today: str) -> str:
     return (
-        "[SYSTEM:GOODNIGHT_ROUTINE] It is 21:00 CET. Wish Shravan a peaceful "
+        "[SYSTEM:GOODNIGHT_ROUTINE] It is 21:00 CET. Wish the user a peaceful "
         "good night, with a brief reflection if the day had anything notable.\n"
         "First, reconcile the day to ONE truth — you are ONE agent and this is "
         f"a fresh channel, so `state/progress/{today}.html` alone is NOT the whole "
