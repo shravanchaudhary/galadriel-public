@@ -56,7 +56,9 @@ with patch.object(handler, "_provider_post", side_effect=fake_post), patch.objec
     handler, "_ensure_rule"
 ), patch.object(handler, "_task_definition", return_value="task:1"), patch.object(
     handler, "_service"
-), patch.dict(
+), patch.object(
+    handler, "_wait_for_targets_healthy"
+) as wait_targets, patch.dict(
     "os.environ",
     {
         "CALLBACK_URL": "https://control/internal/replika/provisioning",
@@ -76,6 +78,10 @@ _assert(result["status"] == "ready", "create returns ready")
 _assert(posts[-1][1]["status"] == "ready", "create callbacks ready")
 _assert(posts[-1][1]["replika_id"] == "r1", "callback includes replika_id")
 _assert(posts[-1][1]["owner_id"] == "owner-1", "callback keeps owner_id")
+_assert(
+    wait_targets.call_args.args[1:] == ("tg", "tg-phone"),
+    "ready callback waits for both target groups",
+)
 
 posts.clear()
 with patch.object(handler, "_provider_post", side_effect=fake_post), patch.object(

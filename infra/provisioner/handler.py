@@ -625,6 +625,15 @@ def _service(
     )
 
 
+def _wait_for_targets_healthy(elbv2, *target_group_arns: str) -> None:
+    waiter = elbv2.get_waiter("target_in_service")
+    for target_group_arn in target_group_arns:
+        waiter.wait(
+            TargetGroupArn=target_group_arn,
+            WaiterConfig={"Delay": 10, "MaxAttempts": 60},
+        )
+
+
 def _delete_service(ecs, replika_id: str) -> None:
     name = f"replika-{_slug(replika_id)}"
     cluster = _required("ECS_CLUSTER")
@@ -843,6 +852,7 @@ def _create_replika(
         phone_target_group_arn,
         release_version,
     )
+    _wait_for_targets_healthy(elbv2, target_group_arn, phone_target_group_arn)
     _callback(replika_id, owner_id, "ready")
     return {"status": "ready"}
 
