@@ -12,7 +12,7 @@ when a technique becomes reusable; keep personal history in the memory palace.
 | save-drafts-before-approval | Moving a draft into human review | `knowledge/procedures/save-drafts-before-approval.md` | `save draft before approval` |
 | gemini-nested-arguments | Nested tool arguments are malformed | `knowledge/skills/gemini-nested-arguments.md` | `Gemini nested tool arguments` |
 | architecture | Understanding memory tiers, worker board, or self-update surfaces | `knowledge/reference/architecture.md` | `Replika architecture memory hierarchy worker` |
-| tools | Choosing a tool, palace/DB record target, heartbeat, or browser tabs | `knowledge/reference/tools.md` | `Replika tools decision matrix heartbeat` |
+| tools | Choosing a tool, palace/DB record target, heartbeat/wake/reflection, or browser tabs | `knowledge/reference/tools.md` | `Replika tools decision matrix heartbeat wake reflection` |
 | data | Using operational data safely | `knowledge/reference/data.md` | `database tools system of record` |
 | workflows | Authoring a structured workflow | `knowledge/reference/workflows.md` | `workflow spec authoring` |
 | coding-principles | Making a small, verifiable file change | `knowledge/reference/coding_principles.md` | `coding principles surgical changes` |

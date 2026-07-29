@@ -369,10 +369,52 @@ context**. Make it complete:
 
 ---
 
+## One-shot wake — resume after a restart
+
+Use this when you need **exactly one** follow-up that must survive a process
+restart (e.g. you restarted the runtime and must continue). It is independent of
+the heartbeat: fires once, then clears. Prefer heartbeat for repeating progress
+checks; prefer wake for "pick me up once after reboot."
+
+Same rule as heartbeat: **use the Tower API**, not a direct write to
+`config/scheduler_state.json`.
+
+```bash
+# Arm (fires once, shortly after the next scheduler loop / next boot)
+curl -s -X POST http://localhost:8080/api/scheduler/wake \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt": "[SYSTEM:WAKE] <self-contained resume instructions — diary + palace + board>"}'
+
+# Disarm
+curl -s -X POST http://localhost:8080/api/scheduler/wake \
+  -H 'Content-Type: application/json' \
+  -d '{"disarm": true}'
+```
+
+Confirm with `curl -s http://localhost:8080/api/scheduler` (`pending_wake`).
+Write the prompt for future-you with zero chat context, same discipline as a
+heartbeat prompt.
+
+---
+
+## Ambient reflection (scheduled, automatic)
+
+Workday slots **11:00 / 14:00 / 17:00 / 20:00 CET** fire a reflection turn
+automatically — you do not arm this per task. Each tick: file durable notes to
+the palace, audit the worker against cookbooks/guardrails, append corrections to
+`state/steering.md`, and can pause the worker if it is misbehaving; ends with a
+brief status line to the user.
+
+Opt out (ops/env, not a tool call): `GALADRIEL_REFLECTION=0`. Morning / worker
+turns read `state/steering.md` — treat reflection corrections as binding.
+
+---
+
 ## Background worker & the job board
 
-The **heartbeat** monitors one task you launched *now*. The **background worker**
-(opt-in, `GALADRIEL_WORKER=1`) runs standing day-to-day work autonomously between
+The **heartbeat** monitors one task you launched *now*. The **one-shot wake**
+resumes you once across a restart. The **background worker** (opt-in,
+`GALADRIEL_WORKER=1`) runs standing day-to-day work autonomously between
 conversations on a second `worker` channel. The full model — two hats, board
 files, shared ledger, rituals vs projects — lives in
 `knowledge/reference/architecture.md` §5; it is not restated here.

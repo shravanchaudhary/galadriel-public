@@ -211,9 +211,11 @@ see it every turn without `read_file`:
 |---|---|
 | Finishes within this turn | just await it — no machinery |
 | Long task you launched **in this chat**, want progress pings | heartbeat-monitor (custom prompt, self-disables) — see `knowledge/reference/tools.md` |
+| Need **one** resume after a process restart | **one-shot wake** (`/api/scheduler/wake`) — see `knowledge/reference/tools.md` |
 | An **external/detached** shell process that finishes out-of-band | it writes a `.done` marker → the **completion watcher** notifies you |
 | Standing / recurring / carry-forward work | the **worker board** (this section) |
 | A **board task** that spawns a long shell process | record it in today's progress file and check it on your next worker tick — do **not** arm a heartbeat; your loop already polls |
+| Between-conversation memory curation + worker audit | **ambient reflection** (automatic workday slots; not something you arm per task) |
 
 ---
 

@@ -9,7 +9,7 @@ is your **first action** — before you draft, write, act, or claim.
 | State or rely on a past fact, decision, date, cost, name, or preference | `palace_search` or `palace_kg_query` (never guess) |
 | Hit a known procedure, failure, or reusable technique | `read_file("knowledge/INDEX.md")` → the matching entry → its `palace_search` only if richer detail is needed |
 | Understand how memory tiers / the worker / board files work | `read_file("knowledge/reference/architecture.md")` |
-| Choose tools, record destinations, heartbeat, or browser tab rules | `read_file("knowledge/reference/tools.md")` |
+| Choose tools, record destinations, heartbeat / one-shot wake / reflection, or browser tab rules | `read_file("knowledge/reference/tools.md")` |
 | Write a custom Python script or touch the DB outside `db_*` | `read_file("knowledge/reference/data.md")` and `knowledge/reference/coding_principles.md` |
 | Create or update a coded tool / reusable capability | `personal-tools/README.md` (and `_template.py`). Never edit `harness/` product tools |
 | Pick up / start a job (worker or curator) | The matching `jobs/<id>.md` cookbook, then `palace_search` for any detail it references |
