@@ -7,7 +7,7 @@
 <div class="settings-page-inner">
     <header class="settings-page-head">
         <h1 class="settings-page-title">My Replikas</h1>
-        <p class="settings-page-subtitle">Create and manage multiple Replikas on this account</p>
+        <p class="settings-page-subtitle">Create and manage Replikas on this account</p>
     </header>
 
     <section class="settings-section" id="replika-list-section">
@@ -21,50 +21,52 @@
                 {% endif %}
             </p>
         </div>
-        <div class="settings-list" id="replika-list" aria-live="polite">
+        <div class="replika-list" id="replika-list" aria-live="polite">
             {% for replika in replikas %}
             <article
-                class="settings-list-item replika-card"
+                class="replika-card"
                 data-replika-id="{{ replika.id }}"
                 data-username="{{ replika.username }}"
                 data-type="{{ replika.replika_type }}"
                 data-status="{{ replika.status }}"
             >
-                <div class="settings-row">
-                    <div class="settings-row-main">
-                        <span class="settings-row-label">{{ replika.username }}</span>
+                <div class="replika-card-top">
+                    <div class="replika-avatar" aria-hidden="true">{{ replika.username[:1]|upper }}</div>
+                    <div class="replika-card-main">
+                        <div class="replika-card-title-row">
+                            <span class="replika-card-name">{{ replika.username }}</span>
+                            <span class="status-pill" data-status="{{ replika.status }}">
+                                {{ replika.status_label }}
+                            </span>
+                        </div>
                         {% if replika.status == 'ready' and replika.url %}
-                        <span class="settings-row-hint replika-card-url">{{ replika.url }}</span>
+                        <a class="replika-card-url" href="{{ replika.url }}">{{ replika.url }}</a>
                         {% endif %}
-                        <span class="settings-row-hint replika-card-desc">
+                        <p class="replika-card-desc">
                             {% if replika.status == 'ready' %}Ready to open
                             {% elif replika.status == 'creating' %}Provisioning your Replika…
                             {% elif replika.status == 'deleting' %}Deleting your Replika…
                             {% else %}{{ replika.message or 'Temporarily unavailable' }}
                             {% endif %}
-                        </span>
-                    </div>
-                    <div class="settings-row-control">
-                        <span class="status-pill" data-status="{{ replika.status }}">
-                            {{ replika.status_label }}
-                        </span>
+                            · {{ 'Organization' if replika.replika_type == 'organization' else 'Individual' }}
+                        </p>
                     </div>
                 </div>
-                <div class="settings-actions replika-card-actions">
-                    <a class="btn"
+                <div class="replika-card-actions">
+                    <a class="btn btn-small"
                        href="{{ replika.url }}"
                        {% if replika.status != 'ready' %}hidden{% endif %}>Open</a>
-                    <a class="btn btn-secondary"
+                    <a class="btn btn-small btn-secondary"
                        href="/replika/{{ replika.id }}/integrations"
                        {% if replika.status != 'ready' %}hidden{% endif %}>Integrations</a>
-                    <button type="button" class="btn btn-secondary replika-retry"
+                    <button type="button" class="btn btn-small btn-secondary replika-retry"
                             data-replika-id="{{ replika.id }}"
                             {% if replika.status != 'error' %}hidden{% endif %}>Try again</button>
-                    <button type="button" class="btn btn-danger replika-delete"
+                    <button type="button" class="btn btn-small btn-danger replika-delete"
                             data-replika-id="{{ replika.id }}"
                             data-username="{{ replika.username }}"
                             {% if replika.status == 'deleting' %}disabled{% endif %}>Delete</button>
-                    <p class="settings-row-hint replika-progress" aria-live="polite"
+                    <p class="replika-progress" aria-live="polite"
                        {% if replika.status not in ['creating', 'deleting'] %}hidden{% endif %}>
                         {% if replika.status == 'deleting' %}
                         Deletion usually finishes within a minute.
@@ -79,7 +81,7 @@
         <p class="settings-empty" id="replika-empty" {% if replikas %}hidden{% endif %}>
             Create your first Replika below.
         </p>
-        <p class="settings-row-hint" id="replika-deleted-toast" hidden>Deleted</p>
+        <p class="replika-deleted-toast" id="replika-deleted-toast" hidden>Deleted</p>
     </section>
 
     <form class="settings-section" id="replika-form">
@@ -87,52 +89,44 @@
             <h2 class="settings-section-title">Create a Replika</h2>
             <p class="settings-section-desc">Type cannot be changed after creation</p>
         </div>
+
         <div class="settings-choice-grid" role="radiogroup" aria-label="Replika type">
             <label class="settings-choice">
                 <input type="radio" name="replika_type" value="individual" checked required>
                 <span class="settings-choice-body">
                     <span class="settings-choice-title">Individual</span>
-                    <span class="settings-choice-hint">Install for yourself and talk in Slack DMs</span>
+                    <span class="settings-choice-hint">For yourself — talk in Slack DMs</span>
                 </span>
             </label>
             <label class="settings-choice">
                 <input type="radio" name="replika_type" value="organization" required>
                 <span class="settings-choice-body">
                     <span class="settings-choice-title">Organization</span>
-                    <span class="settings-choice-hint">Connect one shared Slack channel for your team</span>
+                    <span class="settings-choice-hint">One shared Slack channel for your team</span>
                 </span>
             </label>
         </div>
 
-        <div class="settings-subsection">
-            <div class="settings-rows">
-                <div class="settings-row">
-                    <div class="settings-row-main">
-                        <label class="settings-row-label" for="replika-username">Username</label>
-                        <span class="settings-row-hint" id="replika-message" aria-live="polite">
-                            Lowercase letters, numbers, and hyphens
-                        </span>
-                    </div>
-                    <div class="settings-row-control stacked">
-                        <div class="replika-username-field">
-                            <input
-                                id="replika-username"
-                                class="chat-input"
-                                name="username"
-                                minlength="3"
-                                maxlength="32"
-                                pattern="[a-z0-9](?:[a-z0-9-]{1,30}[a-z0-9])?"
-                                autocomplete="off"
-                                required
-                                placeholder="your-name"
-                                aria-describedby="replika-message"
-                            >
-                            <span class="replika-domain" id="replika-domain">.{{ product_domain }}</span>
-                        </div>
-                    </div>
-                </div>
+        <div class="replika-create-fields">
+            <label class="replika-field-label" for="replika-username">Username</label>
+            <div class="replika-username-field">
+                <input
+                    id="replika-username"
+                    name="username"
+                    minlength="3"
+                    maxlength="32"
+                    pattern="[a-z0-9](?:[a-z0-9-]{1,30}[a-z0-9])?"
+                    autocomplete="off"
+                    required
+                    placeholder="your-name"
+                    aria-describedby="replika-message"
+                >
+                <span class="replika-domain" id="replika-domain">.{{ product_domain }}</span>
             </div>
-            <div class="settings-actions">
+            <p class="replika-field-hint" id="replika-message" aria-live="polite">
+                Lowercase letters, numbers, and hyphens
+            </p>
+            <div class="replika-create-actions">
                 <button type="submit" class="btn" id="replika-submit">Create Replika</button>
             </div>
         </div>
@@ -164,6 +158,15 @@ const STATUS_LABELS = {
     deleting: 'Deleting',
 };
 
+function escapeHtml(value) {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
 function statusDescription(replika) {
     if (replika.status === 'ready') return 'Ready to open';
     if (replika.status === 'creating') return 'Provisioning your Replika…';
@@ -172,37 +175,44 @@ function statusDescription(replika) {
 }
 
 function cardHtml(replika) {
+    const username = escapeHtml(replika.username || '');
     const typeLabel = replika.replika_type === 'organization' ? 'Organization' : 'Individual';
-    const label = STATUS_LABELS[replika.status] || replika.status_label || replika.status;
+    const label = escapeHtml(STATUS_LABELS[replika.status] || replika.status_label || replika.status);
+    const status = escapeHtml(replika.status || '');
+    const id = escapeHtml(replika.id || '');
+    const url = escapeHtml(replika.url || '');
+    const initial = escapeHtml((replika.username || '?').slice(0, 1).toUpperCase());
     const progressCopy = replika.status === 'deleting'
         ? 'Deletion usually finishes within a minute.'
         : 'Provisioning usually finishes within a minute.';
+    const desc = escapeHtml(`${statusDescription(replika)} · ${typeLabel}`);
     return `
         <article
-            class="settings-list-item replika-card"
-            data-replika-id="${replika.id}"
-            data-username="${replika.username || ''}"
-            data-type="${replika.replika_type || ''}"
-            data-status="${replika.status || ''}"
+            class="replika-card"
+            data-replika-id="${id}"
+            data-username="${username}"
+            data-type="${escapeHtml(replika.replika_type || '')}"
+            data-status="${status}"
         >
-            <div class="settings-row">
-                <div class="settings-row-main">
-                    <span class="settings-row-label">${replika.username || ''}</span>
+            <div class="replika-card-top">
+                <div class="replika-avatar" aria-hidden="true">${initial}</div>
+                <div class="replika-card-main">
+                    <div class="replika-card-title-row">
+                        <span class="replika-card-name">${username}</span>
+                        <span class="status-pill" data-status="${status}">${label}</span>
+                    </div>
                     ${replika.status === 'ready' && replika.url
-                        ? `<span class="settings-row-hint replika-card-url">${replika.url}</span>`
+                        ? `<a class="replika-card-url" href="${url}">${url}</a>`
                         : ''}
-                    <span class="settings-row-hint replika-card-desc">${statusDescription(replika)} · ${typeLabel}</span>
-                </div>
-                <div class="settings-row-control">
-                    <span class="status-pill" data-status="${replika.status || ''}">${label}</span>
+                    <p class="replika-card-desc">${desc}</p>
                 </div>
             </div>
-            <div class="settings-actions replika-card-actions">
-                <a class="btn" href="${replika.url || '#'}" ${replika.status !== 'ready' ? 'hidden' : ''}>Open</a>
-                <a class="btn btn-secondary" href="/replika/${replika.id}/integrations" ${replika.status !== 'ready' ? 'hidden' : ''}>Integrations</a>
-                <button type="button" class="btn btn-secondary replika-retry" data-replika-id="${replika.id}" ${replika.status !== 'error' ? 'hidden' : ''}>Try again</button>
-                <button type="button" class="btn btn-danger replika-delete" data-replika-id="${replika.id}" data-username="${replika.username || ''}" ${replika.status === 'deleting' ? 'disabled' : ''}>Delete</button>
-                <p class="settings-row-hint replika-progress" aria-live="polite" ${['creating', 'deleting'].includes(replika.status) ? '' : 'hidden'}>${progressCopy}</p>
+            <div class="replika-card-actions">
+                <a class="btn btn-small" href="${url || '#'}" ${replika.status !== 'ready' ? 'hidden' : ''}>Open</a>
+                <a class="btn btn-small btn-secondary" href="/replika/${id}/integrations" ${replika.status !== 'ready' ? 'hidden' : ''}>Integrations</a>
+                <button type="button" class="btn btn-small btn-secondary replika-retry" data-replika-id="${id}" ${replika.status !== 'error' ? 'hidden' : ''}>Try again</button>
+                <button type="button" class="btn btn-small btn-danger replika-delete" data-replika-id="${id}" data-username="${username}" ${replika.status === 'deleting' ? 'disabled' : ''}>Delete</button>
+                <p class="replika-progress" aria-live="polite" ${['creating', 'deleting'].includes(replika.status) ? '' : 'hidden'}>${progressCopy}</p>
             </div>
         </article>
     `;
