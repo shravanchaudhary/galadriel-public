@@ -387,7 +387,6 @@ assert request["volumes"][0]["s3filesVolumeConfiguration"] == {
     "fileSystemArn": "arn:aws:s3files:test:file-system/fs",
     "accessPointArn": "tenant-ap",
     "rootDirectory": "/",
-    "transitEncryptionPort": 0,
 }
 assert "host" not in request["volumes"][0]
 

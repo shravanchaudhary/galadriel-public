@@ -501,7 +501,6 @@ def _task_definition(
                 "fileSystemArn": _required("S3FILES_FILE_SYSTEM_ARN"),
                 "accessPointArn": access_point_arn,
                 "rootDirectory": "/",
-                "transitEncryptionPort": 0,
             }
     if not state_volume_found:
         raise RuntimeError("Base task definition is missing the state volume")
