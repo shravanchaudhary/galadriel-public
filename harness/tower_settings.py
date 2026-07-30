@@ -14,6 +14,7 @@ AGENT_MODEL_DOC_ID = "agent_model"  # legacy — migrated to main_model on read
 MAIN_MODEL_DOC_ID = "main_model"
 WORKER_MODEL_DOC_ID = "worker_model"
 HEADROOM_DOC_ID = "headroom"
+EXPERIENTIAL_STATE_DOC_ID = "experiential_state"
 WORKER_IDLE_DOC_ID = "worker_idle_interval"
 
 # Idle-poll minutes when the worker has nothing to do (default 10).
@@ -157,6 +158,39 @@ def set_headroom_enabled(enabled: bool) -> None:
         {"_id": _doc_id(HEADROOM_DOC_ID)},
         {
             "_id": _doc_id(HEADROOM_DOC_ID),
+            "tenant_id": _tenant_id(),
+            "enabled": bool(enabled),
+            "updated_at": datetime.now(timezone.utc),
+        },
+        upsert=True,
+    )
+
+
+def get_experiential_enabled() -> bool:
+    """Return whether experiential appraisal influences the agent (default True)."""
+    db = _db()
+    if db is None:
+        return True
+    doc = db[COLLECTION].find_one(
+        {
+            "_id": _doc_id(EXPERIENTIAL_STATE_DOC_ID),
+            "tenant_id": _tenant_id(),
+        }
+    )
+    if not doc or "enabled" not in doc:
+        return True
+    return bool(doc["enabled"])
+
+
+def set_experiential_enabled(enabled: bool) -> None:
+    """Persist the default-on experiential-state toggle."""
+    db = _db()
+    if db is None:
+        raise RuntimeError("MONGO_URI / MONGO_DB not configured")
+    db[COLLECTION].replace_one(
+        {"_id": _doc_id(EXPERIENTIAL_STATE_DOC_ID)},
+        {
+            "_id": _doc_id(EXPERIENTIAL_STATE_DOC_ID),
             "tenant_id": _tenant_id(),
             "enabled": bool(enabled),
             "updated_at": datetime.now(timezone.utc),

@@ -224,6 +224,13 @@ def register_config_browser(app, agent, scheduler=None):
             "config/index.html",
             categories=categories,
             headroom_enabled=getattr(agent, "headroom_enabled", False),
+            experiential_enabled=bool(
+                getattr(
+                    getattr(agent, "experience", None),
+                    "influences_model",
+                    True,
+                )
+            ),
             now_iso=datetime.now(timezone.utc).isoformat(),
             page_context=ui_ctx.config_index(),
         )

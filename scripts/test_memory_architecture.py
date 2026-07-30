@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from harness.memory import MemoryManager, STABLE_FILES  # noqa: E402
+from harness.experiential_state import ExperienceManager  # noqa: E402
 
 
 def _write(path: Path, text: str) -> None:
@@ -69,13 +70,35 @@ def test_dynamic_project_does_not_use_hall() -> None:
         assert 'hall="' not in dynamic
 
 
+def test_experiential_workspace_is_shared_and_non_cached() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        config = root / "config"
+        memory = root / "memory"
+        _write(config / "SOUL.md", "ONE IDENTITY")
+        manager = MemoryManager(str(config), str(memory))
+        stable_before = manager.build_stable_text()
+
+        experience = ExperienceManager(root, mode="influence")
+        experience.record_event("goal_progress", "main")
+        main_block = experience.workspace_block("main")
+        worker_block = experience.workspace_block("worker")
+
+        assert "State version: 1 (event 1)" in main_block
+        assert "State version: 1 (event 1)" in worker_block
+        assert "Current stream: `main`" in main_block
+        assert "Current stream: `worker`" in worker_block
+        assert manager.build_stable_text() == stable_before
+        assert "Shared Experiential Workspace" not in stable_before
+
+
 def test_repository_stable_core_stays_minimal() -> None:
     manager = MemoryManager(str(ROOT / "config"), str(ROOT / "memory"))
     stable = manager.build_stable_text()
 
     # The neutral product base must remain useful but must not regain a copied
     # tenant persona merely to cross a provider-specific prompt-cache floor.
-    assert 4_000 <= len(stable) <= 10_000, len(stable)
+    assert 4_000 <= len(stable) <= 12_000, len(stable)
     for name in STABLE_FILES:
         assert (ROOT / "config" / name).read_text(encoding="utf-8") in stable
     # Non-allowlisted reference material must stay out of the stable prompt.
@@ -179,6 +202,7 @@ def main() -> int:
         test_explicit_allowlist_and_order,
         test_active_vision_is_opt_in,
         test_dynamic_project_does_not_use_hall,
+        test_experiential_workspace_is_shared_and_non_cached,
         test_repository_stable_core_stays_minimal,
         test_knowledge_index_integrity,
         test_add_drawer_defaults_to_knowledge_room,

@@ -26,10 +26,24 @@ import copy
 import os
 import json
 import logging
+import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from .memory import MemoryManager
+from .experiential_state import ExperienceManager
+from .consequence_appraiser import (
+    EpisodeAccumulator,
+    appraise,
+    appraisal_signals,
+)
 from .tools import TOOL_DEFINITIONS, execute_tool
+from .tool_access import (
+    UNTRUSTED_READ_ONLY_TOOLS,
+    is_untrusted_organization_slack,
+    tools_for_request,
+)
+from .tool_outcomes import tool_result_failed
 from .safety import (
     classify_command, format_safety_notice, is_demonstrably_read_only,
     _simple_rm_target,
@@ -62,37 +76,6 @@ LOOP_TICK_CHANNELS = frozenset({
 })
 
 _STOPPED_ASSISTANT_NOTE = "(Stopped — turn cancelled.)"
-
-UNTRUSTED_READ_ONLY_TOOLS = {
-    "read_file", "palace_search", "palace_taxonomy", "palace_kg_query",
-    "palace_kg_timeline", "palace_diary_read", "google_search",
-    "fetch_url_data", "db_get", "db_query", "run_shell", "wait",
-}
-
-
-def is_untrusted_organization_slack(context: dict | None) -> bool:
-    context = context or {}
-    return (
-        context.get("source") == "slack"
-        and context.get("replika_type") == "organization"
-        and not context.get("trusted", False)
-    )
-
-
-def tools_for_request(tools: list[dict], context: dict | None) -> list[dict]:
-    if not is_untrusted_organization_slack(context):
-        return tools
-    filtered = [
-        {key: value for key, value in tool.items() if key != "cache_control"}
-        for tool in tools
-        if tool.get("name") in UNTRUSTED_READ_ONLY_TOOLS
-    ]
-    if filtered:
-        filtered[-1] = {
-            **filtered[-1], "cache_control": {"type": "ephemeral"},
-        }
-    return filtered
-
 
 class TurnCancelled(Exception):
     """Raised when a channel turn is cancelled via request_stop()."""
@@ -358,6 +341,13 @@ class GaladrielAgent:
         self.max_tokens = max_tokens or int(os.environ.get("AGENT_MAX_TOKENS", "8192"))
         self.memory = MemoryManager(config_dir=config_dir, memory_dir=memory_dir)
         self.working_dir = working_dir or os.getcwd()
+        # One experiential state belongs to the agent, not to any transport
+        # stream. Channel IDs tag events/perspectives; they never fork identity.
+        experiential_enabled = tower_settings.get_experiential_enabled()
+        self.experience = ExperienceManager(
+            self.working_dir,
+            mode="influence" if experiential_enabled else "off",
+        )
         self.conversations: dict[str, list] = {}
         restored = conversation_store.load_all(self.working_dir)
         if restored:
@@ -384,6 +374,7 @@ class GaladrielAgent:
         self._channel_locks: dict[str, asyncio.Lock] = {}
         # Per-channel cancel events for in-flight turns (Tower stop button).
         self._turn_cancel: dict[str, asyncio.Event] = {}
+        self._active_experience_episodes: dict[str, EpisodeAccumulator] = {}
         # Set once archive_conversations_on_shutdown() runs, so overlapping
         # shutdown signals (SIGTERM + atexit) archive exactly once.
         self._shutdown_archived = False
@@ -780,6 +771,21 @@ class GaladrielAgent:
             log.warning("Headroom toggle changed but not persisted — MongoDB not configured")
         log.info(f"Headroom compression {'ENABLED' if self.headroom_enabled else 'DISABLED'}")
 
+    def set_experiential_enabled(self, enabled: bool) -> None:
+        """Enable/disable appraisal and causal prompt influence at runtime."""
+        self.experience.set_mode("influence" if enabled else "off")
+        try:
+            tower_settings.set_experiential_enabled(bool(enabled))
+        except RuntimeError:
+            log.warning(
+                "Experiential-state toggle changed but not persisted — "
+                "MongoDB not configured"
+            )
+        log.info(
+            "Experiential state %s",
+            "ENABLED" if enabled else "DISABLED",
+        )
+
     def _log_usage(
         self,
         response,
@@ -918,6 +924,11 @@ class GaladrielAgent:
         log.info(
             f"Compacted channel {channel_id}: {result['messages_before']} msgs → "
             f"snapshot (~{result['tokens_before']} → ~{result['tokens_after']} tok est)"
+        )
+        self._record_experience_event(
+            "compaction",
+            channel_id,
+            details={"messages_before": result["messages_before"]},
         )
         result["compacted"] = True
         return result
@@ -1072,6 +1083,13 @@ class GaladrielAgent:
         """
         system_blocks = self.memory.build_system_blocks()
 
+        experiential_workspace = self.experience.workspace_block(channel_id)
+        if experiential_workspace:
+            system_blocks.append({
+                "type": "text",
+                "text": experiential_workspace,
+            })
+
         # Extra per-channel context (e.g. a Slack team roster) — set via
         # set_channel_context(), re-injected on every turn until changed.
         channel_context = self._channel_context.get(channel_id)
@@ -1110,6 +1128,219 @@ class GaladrielAgent:
                 ),
             })
         return system_blocks
+
+    def _record_experience_event(
+        self,
+        kind: str,
+        channel_id: str,
+        *,
+        signals: dict | None = None,
+        details: dict | None = None,
+        proposed_appraisal: dict | None = None,
+        idempotency_key: str | None = None,
+        basis_sequence: int | None = None,
+    ) -> dict:
+        """Best-effort event bridge; experiential storage never breaks a turn."""
+        try:
+            return self.experience.record_event(
+                kind,
+                channel_id,
+                signals=signals,
+                details=details,
+                proposed_appraisal=proposed_appraisal,
+                idempotency_key=idempotency_key,
+                basis_sequence=basis_sequence,
+            )
+        except Exception as exc:
+            log.warning("Experiential event was not recorded: %s", exc)
+            try:
+                return self.experience.snapshot()
+            except Exception:
+                return {
+                    "version": 0,
+                    "sequence": 0,
+                    "dimensions": {},
+                    "last_event": None,
+                }
+
+    async def _appraise_episode(
+        self,
+        episode: EpisodeAccumulator,
+        phase: str,
+        *,
+        final_output: str = "",
+    ) -> dict | None:
+        """Classify one bounded episode phase; any failure is non-fatal."""
+        if not self.experience.enabled:
+            return None
+        acting_model = self.model_for_channel(episode.channel)
+        basis_snapshot = self.experience.snapshot()
+        evidence = episode.envelope(
+            phase=phase,
+            final_output=final_output,
+            elapsed=int(time.monotonic() - episode.started_at),
+        )
+        evidence["current_state"] = basis_snapshot.get("dimensions") or {}
+        evidence["previous_outcome"] = (
+            (basis_snapshot.get("last_event") or {}).get(
+                "salient_change",
+                "",
+            )
+        )
+        try:
+            classification = await appraise(
+                self._provider_for(acting_model),
+                acting_model=acting_model,
+                envelope=evidence,
+                usage_callback=lambda response, model: (
+                    self._log_appraisal_usage(
+                        response,
+                        model,
+                        episode.channel,
+                        phase,
+                    )
+                ),
+            )
+        except Exception as exc:
+            log.warning(
+                "Experiential %s appraisal unavailable; continuing turn: %s",
+                phase,
+                exc,
+            )
+            return None
+        if classification is None:
+            log.warning(
+                "Experiential %s appraisal returned invalid structure; "
+                "continuing turn",
+                phase,
+            )
+            return None
+        basis = basis_snapshot.get("sequence", 0)
+        self._record_experience_event(
+            "episode_appraisal",
+            episode.channel,
+            signals=appraisal_signals(classification),
+            details={
+                "episode_id": episode.episode_id,
+                "phase": phase,
+                "classification": classification,
+                "tool_summary": {
+                    "attempted": episode.attempted,
+                    "succeeded": episode.succeeded,
+                    "failed": episode.failed,
+                    "repeated_failures": episode.repeated_failures,
+                    "permission_denials": episode.permission_denials,
+                },
+            },
+            idempotency_key=f"{episode.episode_id}:appraisal:{phase}",
+            basis_sequence=basis,
+        )
+        return classification
+
+    @staticmethod
+    def _log_appraisal_usage(
+        response,
+        model: str,
+        channel_id: str,
+        phase: str,
+    ) -> None:
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return
+        values = {
+            "input": int(getattr(usage, "input_tokens", 0) or 0),
+            "cache_read": int(
+                getattr(usage, "cache_read_input_tokens", 0) or 0
+            ),
+            "cache_write": int(
+                getattr(usage, "cache_creation_input_tokens", 0) or 0
+            ),
+            "output": int(getattr(usage, "output_tokens", 0) or 0),
+        }
+        cost_tracker.log_call(
+            channel_id,
+            f"experiential_appraisal_{phase}",
+            model_registry.provider_for_model(model),
+            model,
+            values,
+        )
+
+    def _observe_episode_tool(
+        self,
+        episode: EpisodeAccumulator,
+        tool_name: str,
+        *,
+        failed: bool,
+        reason: str = "",
+    ) -> dict | None:
+        """Aggregate a tool outcome and apply only novel acute failures."""
+        exceptional = episode.observe_tool(
+            tool_name,
+            failed=failed,
+            reason=reason,
+        )
+        if exceptional is None:
+            return None
+        if episode.channel != MAIN_CHANNEL_ID:
+            self._record_experience_event(
+                "turn_started",
+                episode.channel,
+                details={
+                    "episode_id": episode.episode_id,
+                    "deferred": True,
+                },
+                idempotency_key=f"{episode.episode_id}:turn_started",
+            )
+        return self._record_experience_event(
+            "tool_failed",
+            episode.channel,
+            details={
+                "episode_id": episode.episode_id,
+                "tool": tool_name,
+                "reason": reason or "failure",
+                "exception": exceptional,
+            },
+            idempotency_key=(
+                f"{episode.episode_id}:acute:{tool_name}:{exceptional}"
+            ),
+        )
+
+    @staticmethod
+    def _should_appraise_outcome(
+        episode: EpisodeAccumulator,
+        final_output: str,
+    ) -> bool:
+        if episode.channel == MAIN_CHANNEL_ID:
+            return True
+        if episode.channel == WORKER_CHANNEL_ID:
+            return (
+                "<<WORKER_STATUS: worked>>" in final_output
+                or bool(episode.failed or episode.permission_denials)
+            )
+        if episode.channel == AMBIENT_CHANNEL_ID:
+            return bool(
+                episode.attempted
+                or episode.important_events
+                or final_output.strip()
+            )
+        # Heartbeats and other scheduled boilerplate are appraised only when
+        # activity produced objective evidence beyond a routine check-in.
+        return bool(episode.failed or episode.permission_denials)
+
+    async def _audit_experience_snapshot(
+        self,
+        snapshot: dict,
+        *recorders,
+    ) -> None:
+        if not snapshot:
+            return
+        for recorder in recorders:
+            if recorder is None or not hasattr(recorder, "record_experiential_state"):
+                continue
+            try:
+                await recorder.record_experiential_state(snapshot)
+            except Exception as exc:
+                log.warning("Experiential audit metadata was not recorded: %s", exc)
 
     async def respond(
         self,
@@ -1237,6 +1468,15 @@ class GaladrielAgent:
             await self._finalize_owned_tick(owned_tick, state="completed")
             return result
         except TurnCancelled:
+            episode = self._active_experience_episodes.get(channel_id)
+            self._record_experience_event(
+                "turn_cancelled",
+                channel_id,
+                details={"episode_id": episode.episode_id if episode else None},
+                idempotency_key=(
+                    f"{episode.episode_id}:turn_cancelled" if episode else None
+                ),
+            )
             await self._finalize_owned_tick(owned_tick, state="interrupted", error="cancelled")
             return await self._finalize_cancelled_turn(
                 channel_id,
@@ -1246,6 +1486,15 @@ class GaladrielAgent:
                 recorder=run_holder["recorder"],
             )
         except asyncio.CancelledError:
+            episode = self._active_experience_episodes.get(channel_id)
+            self._record_experience_event(
+                "turn_cancelled",
+                channel_id,
+                details={"episode_id": episode.episode_id if episode else None},
+                idempotency_key=(
+                    f"{episode.episode_id}:turn_cancelled" if episode else None
+                ),
+            )
             await self._finalize_owned_tick(owned_tick, state="interrupted", error="cancelled")
             await self._finalize_cancelled_turn(
                 channel_id,
@@ -1256,6 +1505,37 @@ class GaladrielAgent:
             )
             raise
         except Exception as exc:
+            episode = self._active_experience_episodes.get(channel_id)
+            if episode is not None:
+                episode.important_events.append(
+                    f"turn failed with {type(exc).__name__}"
+                )
+                if channel_id != MAIN_CHANNEL_ID:
+                    self._record_experience_event(
+                        "turn_started",
+                        channel_id,
+                        details={
+                            "episode_id": episode.episode_id,
+                            "deferred": True,
+                        },
+                        idempotency_key=f"{episode.episode_id}:turn_started",
+                    )
+                await self._appraise_episode(
+                    episode,
+                    "outcome",
+                    final_output=f"turn failed: {type(exc).__name__}",
+                )
+            self._record_experience_event(
+                "turn_failed",
+                channel_id,
+                details={
+                    "episode_id": episode.episode_id if episode else None,
+                    "error_type": type(exc).__name__,
+                },
+                idempotency_key=(
+                    f"{episode.episode_id}:turn_failed" if episode else None
+                ),
+            )
             await self._finalize_owned_tick(owned_tick, state="error", error=str(exc))
             recorder = run_holder["recorder"]
             if recorder is not None:
@@ -1263,6 +1543,7 @@ class GaladrielAgent:
             raise
         finally:
             self._turn_cancel.pop(channel_id, None)
+            self._active_experience_episodes.pop(channel_id, None)
 
     async def _respond_locked_inner(
         self,
@@ -1295,6 +1576,46 @@ class GaladrielAgent:
                 await run_recorder.begin_turn(client_dedup_key)
                 if run_holder is not None:
                     run_holder["recorder"] = run_recorder
+
+        request_summary = (
+            user_message
+            if isinstance(user_message, str)
+            else "[multimodal user message]"
+        )
+        prior_experience = self.experience.snapshot()
+        episode = EpisodeAccumulator(
+            episode_id=str(uuid.uuid4()),
+            channel=channel_id,
+            request_summary=request_summary,
+            started_at=time.monotonic(),
+            current_state=prior_experience.get("dimensions") or {},
+            previous_outcome=(
+                (prior_experience.get("last_event") or {}).get(
+                    "salient_change",
+                    "",
+                )
+            ),
+        )
+        self._active_experience_episodes[channel_id] = episode
+        # Human input can itself be consequential. Scheduled/worker prompts are
+        # boilerplate and are appraised only once, at a meaningful outcome.
+        if channel_id == MAIN_CHANNEL_ID:
+            await self._appraise_episode(episode, "input")
+
+        if channel_id == MAIN_CHANNEL_ID:
+            experience_snapshot = self._record_experience_event(
+                "turn_started",
+                channel_id,
+                details={"source": run_source or "direct"},
+                idempotency_key=f"{episode.episode_id}:turn_started",
+            )
+        else:
+            # Defer scheduled/worker lifecycle events until the outcome proves
+            # meaningful. Idle ticks leave no experiential history.
+            experience_snapshot = prior_experience
+        await self._audit_experience_snapshot(
+            experience_snapshot, tick_recorder, run_recorder,
+        )
 
         # Auto-compaction: if the last measured input context for this channel
         # crossed the threshold, snapshot+archive the whole conversation. This
@@ -1513,6 +1834,47 @@ class GaladrielAgent:
                 # the literal "(no response)" which got piped verbatim to
                 # Discord and confused the user.
                 final_text = "\n".join(text_parts).strip() if text_parts else ""
+                meaningful_outcome = self._should_appraise_outcome(
+                    episode,
+                    final_text,
+                )
+                if meaningful_outcome and channel_id != MAIN_CHANNEL_ID:
+                    self._record_experience_event(
+                        "turn_started",
+                        channel_id,
+                        details={
+                            "episode_id": episode.episode_id,
+                            "deferred": True,
+                        },
+                        idempotency_key=f"{episode.episode_id}:turn_started",
+                    )
+                if meaningful_outcome:
+                    await self._appraise_episode(
+                        episode,
+                        "outcome",
+                        final_output=final_text,
+                    )
+                    experience_snapshot = self._record_experience_event(
+                        "turn_completed",
+                        channel_id,
+                        details={
+                            "episode_id": episode.episode_id,
+                            "response_chars": len(final_text),
+                            "tools_attempted": episode.attempted,
+                        },
+                        idempotency_key=f"{episode.episode_id}:turn_completed",
+                    )
+                    if channel_id == AMBIENT_CHANNEL_ID:
+                        experience_snapshot = self._record_experience_event(
+                            "reflection", channel_id,
+                            details={"episode_id": episode.episode_id},
+                            idempotency_key=f"{episode.episode_id}:reflection",
+                        )
+                else:
+                    experience_snapshot = self.experience.snapshot()
+                await self._audit_experience_snapshot(
+                    experience_snapshot, tick_recorder, run_recorder,
+                )
                 user_summary = user_message[:100] if isinstance(user_message, str) else "[multimodal message]"
                 self.memory.append_daily_log(
                     f"[chat:{channel_id}] User: {user_summary}..."
@@ -1611,6 +1973,7 @@ class GaladrielAgent:
                 ]
                 if pending_tool_results_holder is not None:
                     pending_tool_results_holder["blocks"] = tool_blocks
+                experience_changed = False
                 # Use the original response.content blocks to extract tool IDs
                 for block in tool_blocks:
                     self._check_cancelled(channel_id)
@@ -1633,6 +1996,18 @@ class GaladrielAgent:
                                 "type": "tool_result", "name": tool_name,
                                 "output": blocked,
                             })
+                        experience_snapshot = self._observe_episode_tool(
+                            episode,
+                            tool_name,
+                            failed=True,
+                            reason="permission",
+                        )
+                        experience_changed = (
+                            experience_changed or bool(experience_snapshot)
+                        )
+                        await self._audit_experience_snapshot(
+                            experience_snapshot, tick_recorder, run_recorder,
+                        )
                         continue
 
                     if emit is not None:
@@ -1667,6 +2042,18 @@ class GaladrielAgent:
                                     "type": "tool_result", "name": tool_name,
                                     "output": blocked,
                                 })
+                            experience_snapshot = self._observe_episode_tool(
+                                episode,
+                                tool_name,
+                                failed=True,
+                                reason="permission",
+                            )
+                            experience_changed = (
+                                experience_changed or bool(experience_snapshot)
+                            )
+                            await self._audit_experience_snapshot(
+                                experience_snapshot, tick_recorder, run_recorder,
+                            )
                             continue
 
                         if tier == "red":
@@ -1691,6 +2078,18 @@ class GaladrielAgent:
                                         "name": tool_name,
                                         "output": blocked,
                                     })
+                                experience_snapshot = self._observe_episode_tool(
+                                    episode,
+                                    tool_name,
+                                    failed=True,
+                                    reason="permission",
+                                )
+                                experience_changed = (
+                                    experience_changed or bool(experience_snapshot)
+                                )
+                                await self._audit_experience_snapshot(
+                                    experience_snapshot, tick_recorder, run_recorder,
+                                )
                                 continue
 
                     is_new_file = (
@@ -1705,6 +2104,26 @@ class GaladrielAgent:
                         tool_name, tool_input,
                         memory_manager=self.memory,
                         working_dir=self.working_dir,
+                        experience_manager=self.experience,
+                        channel_id=channel_id,
+                    )
+                    if tool_name == "experience_report":
+                        # The tool already recorded a non-authoritative
+                        # self_report event. Counting the report itself as task
+                        # success would let introspective prose reward state.
+                        experience_snapshot = self.experience.snapshot()
+                    else:
+                        tool_failed = tool_result_failed(result)
+                        experience_snapshot = self._observe_episode_tool(
+                            episode,
+                            tool_name,
+                            failed=tool_failed,
+                        )
+                        experience_changed = (
+                            experience_changed or bool(experience_snapshot)
+                        )
+                    await self._audit_experience_snapshot(
+                        experience_snapshot, tick_recorder, run_recorder,
                     )
 
                     if (
@@ -1761,6 +2180,14 @@ class GaladrielAgent:
                     await tick_recorder.record_message(messages[-1])
                 if run_recorder is not None:
                     await run_recorder.record_message(messages[-1])
+
+                # Tool outcomes can change the shared experiential state. Make
+                # that change globally available to the very next reasoning
+                # step in this same cascade, rather than waiting for a new turn.
+                if experience_changed and self.experience.influences_model:
+                    system_blocks = self._with_overlay(
+                        self._assemble_system_blocks(channel_id), overlay_context,
+                    )
 
                 # Mid-loop auto-compaction: if the input context measured during
                 # this cascade already crossed the threshold, compact in place so

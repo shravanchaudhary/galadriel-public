@@ -121,9 +121,9 @@ def main():
     # Reports when external/detached shell processes finish (see harness/completion_watcher.py).
     completion_watcher = CompletionWatcher(agent=agent)
 
-    # Create background worker (opt-in via GALADRIEL_WORKER=1). The worker is a
-    # second agent channel that executes day-to-day jobs from the markdown board
-    # while the main channel stays free for the user.
+    # Create background worker (opt-in via GALADRIEL_WORKER=1). It is the worker
+    # stream of this same agent, executing jobs from the markdown board while the
+    # main stream stays free for the user.
     worker = None
     if os.environ.get("GALADRIEL_WORKER", "0") == "1":
         worker = WorkerLoop(agent=agent, working_dir=str(runtime_root))

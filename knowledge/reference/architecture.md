@@ -45,10 +45,11 @@ to rewrite in a managed deployment.
 | DB primitives | `harness/db_ops.py` + `harness/workflows.py` | Only sanctioned DB access — see `knowledge/reference/data.md` |
 | Knowledge index | `knowledge/INDEX.md` | Deterministic procedure/skill/reference lookup — not auto-loaded into L1 |
 | Memory (prompt) | `harness/memory.py` | Builds the stable + dynamic system blocks |
+| Experiential state | `harness/experiential_state.py` | One bounded, replayable state shared by every stream; default-on influence can be toggled in Tower and appraisal failures never block agent work |
 | Memory palace | `harness/palace.py` → MemPalace | Local verbatim semantic memory. **Zero API cost** to read/write |
 | Browser | `browser` tool → browser-use CLI | Headed Chrome; profile + tab discipline matter |
 | Scheduler | `harness/scheduler.py` | Morning/goodnight, heartbeat, one-shot wake, ambient reflection |
-| Background worker | `harness/worker.py` | Second channel (`worker`) on a work-conserving loop; opt-in via `GALADRIEL_WORKER=1`. See §5 |
+| Background worker | `harness/worker.py` | The same agent's `worker` stream on a work-conserving loop; opt-in via `GALADRIEL_WORKER=1`. See §5 |
 | Interfaces | Tower UI (+ optional chat bridges) | Human-facing surfaces |
 
 Entry point is `main.py`.
@@ -66,6 +67,7 @@ the first two tiers automatically; the palace you query on demand.
 |---|---|---|---|---|
 | **L1 — stable block (cached)** | Explicit allowlist: `SOUL.md`, `MEMORY.md`, `GUARDRAILS.md`, `RECALL.md`, `JOBS.md` (+ opt-in active vision) | system prompt, always present | cached | Identity + safety + recall routing + ritual index |
 | **L2 — dynamic block** | Yesterday + today's daily logs, wake-up snapshot, timestamp, active-project banner | system prompt, rebuilt each call | not cached, small | Recent context; what happened today |
+| **Shared experiential workspace** | Bounded interoceptive state + most salient change | agent-owned dynamic block, every stream in `influence` mode | not cached, small | Causal attention, calibration, continuity, and reflection |
 | **L2.5 — file knowledge** | `knowledge/INDEX.md` → procedures / skills / reference | `read_file` on demand | tokens only when loaded | Known procedures and deep reference |
 | **L3 — memory palace** | Verbatim drawers in the `agent` wing | `palace_search` / `palace_kg_*` / `palace_diary_*` | **0 tokens**, local | Richer detail + older history by meaning |
 
@@ -99,7 +101,7 @@ everything into one file.
 
 | You want to change… | Do this | Notes |
 |---|---|---|
-| Your personality / values / voice | **Edit `SOUL.md`** | Keep it short. If a fact is important but not identity, move it to MEMORY.md or the palace |
+| Your personality / values / voice | **Develop `SOUL.md`** | Start from the user's words and integrate only enduring insights, preserving continuity across versions |
 | A durable fact you need every run (a name, a path, a standing constraint) | **Edit `MEMORY.md`** (L1) | Keep it lean — only the essential index. Everything else → palace / knowledge |
 | How you operate (this manual) | **Edit this file** | `knowledge/reference/architecture.md` |
 | A reusable procedure / skill / failure recovery | **Write a `knowledge/` entry + INDEX row** | Compact entry: trigger, one-line rule, short steps, exact palace query. Richer context → palace `room=knowledge` |
@@ -242,6 +244,8 @@ see it every turn without `read_file`:
 | `state/plan/` | Dated daily planning ledger (HTML, one file per day) |
 | `state/steering.md` | Append-only corrections from ambient reflection |
 | `state/worker_control.md` | `active`/`paused` flag for the background worker |
+| `state/experience/` | Shared experiential snapshot + authoritative append-only event stream |
+| `state/sentience_experiments/` | Blinded replay manifests, results, and pre-registered analyses |
 | `sme/<subject>/` | Curated subject-matter knowledge bases |
 | `memory/*.md` | Daily logs — short index pointers, not full history |
 | `personal-tools/` | Agent-owned coded tools (separate from product `harness/` tools) |

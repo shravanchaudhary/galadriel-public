@@ -107,6 +107,7 @@ class WorkerTickRecorder:
         self.tools_count = tools_count
         self._sequence = 0
         self._system_hashes: set[str] = set()
+        self._experiential_versions: set[int] = set()
         self._usage = {"input": 0, "cache_read": 0, "cache_write": 0, "output": 0}
         self._cost_total = 0.0
         self._call_count = 0
@@ -132,6 +133,7 @@ class WorkerTickRecorder:
             "user_prompt": prompt,
             "prompt_hash": _json_hash(prompt),
             "system_prompt_versions": [],
+            "experiential_states": [],
             "event_count": 0,
             "tool_call_count": 0,
             "llm_call_count": 0,
@@ -162,6 +164,31 @@ class WorkerTickRecorder:
                 "system_hash": version_hash,
                 "images_omitted": self._images_omitted,
                 "redaction_count": self._redactions,
+            },
+        })
+
+    async def record_experiential_state(self, snapshot: dict) -> None:
+        """Attach compact shared-state lineage metadata to this loop tick."""
+        version = int(snapshot.get("version", 0) or 0)
+        if version in self._experiential_versions:
+            return
+        self._experiential_versions.add(version)
+        compact = {
+            "recorded_at": _utcnow(),
+            "version": version,
+            "sequence": int(snapshot.get("sequence", 0) or 0),
+            "dimensions": _safe_value(snapshot.get("dimensions") or {}, {
+                "images_omitted": 0, "redactions": 0,
+            }),
+            "last_event": _safe_value(snapshot.get("last_event") or {}, {
+                "images_omitted": 0, "redactions": 0,
+            }),
+        }
+        await self._update_tick({
+            "$push": {"experiential_states": compact},
+            "$set": {
+                "experiential_state_version": version,
+                "experiential_event_sequence": compact["sequence"],
             },
         })
 

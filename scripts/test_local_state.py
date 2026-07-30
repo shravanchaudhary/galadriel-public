@@ -72,6 +72,24 @@ def test_refresh_only_applies_new_developer_changes() -> None:
         assert (cache / "memory/2026-07-28.md").read_text() == "agent history"
 
 
+def test_refresh_preserves_user_owned_soul() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        source = root / "source"
+        cache = root / "cache"
+        _write(source / "config/SOUL.md", "developer default")
+        _write(cache / "config/SOUL.md", "user identity")
+
+        assert refresh_changed_defaults(source, cache) == []
+
+        _write(source / "config/SOUL.md", "new developer default")
+        assert refresh_changed_defaults(source, cache) == []
+        assert (cache / "config/SOUL.md").read_text() == "user identity"
+        assert (
+            cache / ".defaults/config/SOUL.md"
+        ).read_text() == "new developer default"
+
+
 def test_prepare_is_explicit_and_redirects_local_runtime() -> None:
     original_cwd = Path.cwd()
     try:
@@ -112,6 +130,7 @@ def main() -> int:
     tests = (
         test_initial_seed_excludes_runtime_only_state,
         test_refresh_only_applies_new_developer_changes,
+        test_refresh_preserves_user_owned_soul,
         test_prepare_is_explicit_and_redirects_local_runtime,
     )
     for test in tests:

@@ -12,6 +12,7 @@ DEFAULT_DIRS = ("config", "knowledge", "memory", "state", "jobs", "workflows")
 DEFAULT_SNAPSHOT_DIR = ".defaults"
 DATED_STATE = re.compile(r"^\d{4}-\d{2}-\d{2}\.(?:md|html|json)$")
 RUNTIME_CONFIG_FILES = frozenset({"scheduler_state.json", "ambient_state.json"})
+USER_OWNED_FILES = frozenset({Path("config/SOUL.md")})
 
 
 def local_mode() -> bool:
@@ -86,6 +87,10 @@ def refresh_changed_defaults(source_root: Path, state_root: Path) -> list[str]:
             if _is_runtime_only(relative):
                 continue
             snapshot = snapshot_root / relative
+            if relative in USER_OWNED_FILES:
+                snapshot.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, snapshot)
+                continue
             if snapshot.exists() and source.read_bytes() == snapshot.read_bytes():
                 continue
             target = state_root / relative

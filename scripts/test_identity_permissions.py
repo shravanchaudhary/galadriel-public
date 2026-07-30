@@ -8,7 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from harness.agent import tools_for_request  # noqa: E402
+from harness.tool_access import tools_for_request  # noqa: E402
 from harness.safety import (  # noqa: E402
     classify_command,
     is_demonstrably_read_only,

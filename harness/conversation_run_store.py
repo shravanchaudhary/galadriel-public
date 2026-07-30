@@ -306,6 +306,20 @@ class ConversationRunRecorder:
             "recorded_at": _now(), "hash": digest, "blocks": safe,
         })
 
+    async def record_experiential_state(self, snapshot: dict) -> None:
+        """Record the shared experiential lineage as internal audit evidence."""
+        await self._record_event(
+            "experiential_state",
+            None,
+            visibility="internal",
+            meta={
+                "version": int(snapshot.get("version", 0) or 0),
+                "sequence": int(snapshot.get("sequence", 0) or 0),
+                "dimensions": sanitize(snapshot.get("dimensions") or {}),
+                "last_event": sanitize(snapshot.get("last_event") or {}),
+            },
+        )
+
     async def record_call(
         self,
         usage: dict[str, int],

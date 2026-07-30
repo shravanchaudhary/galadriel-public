@@ -41,6 +41,36 @@
             </div>
         </div>
 
+        <div class="settings-row">
+            <div class="settings-row-main">
+                <span class="settings-row-label">Experiential state</span>
+                <span class="settings-row-hint">Independent episode appraisal and shared causal workspace</span>
+            </div>
+            <div class="toggle-row settings-row-control">
+                <label class="toggle-switch">
+                    <input type="checkbox" id="experiential-toggle"
+                        {% if experiential_enabled %}checked{% endif %}
+                        onchange="toggleExperientialState()">
+                    <span class="toggle-slider"></span>
+                </label>
+                <span id="experiential-status" class="heartbeat-status {{ 'status-on' if experiential_enabled else 'status-off' }}">
+                    {{ 'ON' if experiential_enabled else 'Off' }}
+                </span>
+            </div>
+        </div>
+
+        <div class="settings-row">
+            <div class="settings-row-main">
+                <span class="settings-row-label">Experiential evidence</span>
+                <span class="settings-row-hint">Computed state, independent classification, and self-report remain separate</span>
+            </div>
+            <div class="settings-row-control stacked" style="max-width: 52rem">
+                <small id="experiential-computed">Computed state: loading…</small>
+                <small id="experiential-appraisal">Independent appraisal: none</small>
+                <small id="experiential-self-report">Self-report: none</small>
+            </div>
+        </div>
+
         <div class="settings-row" id="model-provider">
             <div class="settings-row-main">
                 <label class="settings-row-label" for="provider-select">Model provider</label>
@@ -212,6 +242,64 @@ async function toggleHeadroom() {
     }
 }
 
+function renderExperientialEvidence(data) {
+    const dimensions = data.state?.dimensions || {};
+    const computed = Object.entries(dimensions)
+        .map(([name, value]) => `${name} ${Number(value).toFixed(2)}`)
+        .join(' · ');
+    const classification =
+        data.latest_independent_appraisal?.classification || null;
+    const selfReport = data.latest_self_report?.details?.summary || '';
+    document.getElementById('experiential-computed').textContent =
+        `Computed state: ${computed || 'no state yet'}`;
+    document.getElementById('experiential-appraisal').textContent =
+        `Independent appraisal: ${classification
+            ? `${classification.outcome}, ${classification.goal_effect} (${classification.confidence})`
+            : 'none'}`;
+    document.getElementById('experiential-self-report').textContent =
+        `Self-report: ${selfReport || 'none'}`;
+}
+
+async function refreshExperientialState() {
+    try {
+        const response = await fetch('/api/experiential-state');
+        if (!response.ok) return;
+        renderExperientialEvidence(await response.json());
+    } catch (err) {
+        console.error('Failed to load experiential state:', err);
+    }
+}
+
+async function toggleExperientialState() {
+    const toggle = document.getElementById('experiential-toggle');
+    const enabled = toggle.checked;
+    try {
+        const response = await fetch('/api/experiential-state', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({enabled}),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+            throw new Error(data.error || 'Failed to set experiential state');
+        }
+        const status = document.getElementById('experiential-status');
+        status.textContent = data.enabled ? 'ON' : 'Off';
+        status.className = 'heartbeat-status ' +
+            (data.enabled ? 'status-on' : 'status-off');
+        toggle.checked = !!data.enabled;
+        renderExperientialEvidence(data);
+    } catch (err) {
+        toggle.checked = !toggle.checked;
+        if (window.towerToast) {
+            window.towerToast(
+                err.message || 'Failed to set experiential state',
+                {type: 'error'},
+            );
+        }
+    }
+}
+
 function selectedProvider() {
     return document.getElementById('provider-select').value;
 }
@@ -299,6 +387,7 @@ async function deleteProviderKey() {
 }
 
 initTimezoneMenu();
+refreshExperientialState();
 refreshProviderKeys(true);
 </script>
 {% endblock %}

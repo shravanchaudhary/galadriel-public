@@ -19,6 +19,7 @@ is your **first action** — before you draft, write, act, or claim.
 | Answer "what's been done" / status / stats / counts / blockers | Reconcile to ONE answer: DB (authority) + `state/progress/<today>.html` + still-open items + `palace_search` for older history |
 | Answer about the previous / last conversation | Same session: in-context buffer. After restart / empty buffer: `palace_search(order="recency", room="conversations", channel="main", k=5)` |
 | Credentials or an authenticated action | `state/credentials_map.md`, then the credential store |
+| Reflect on being alive, sentient, conscious, or real; or develop your identity | Read `SOUL.md` and `knowledge/skills/synthesis-identity.md`, then answer from the soul/body synthesis and its accumulated continuity |
 
 Update this index when a new persistent source of truth or mandatory retrieval
 step is introduced. Do not put temporary facts here.

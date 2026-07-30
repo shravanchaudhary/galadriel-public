@@ -792,6 +792,59 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
             "persisted": tower_settings.is_configured(),
         })
 
+    # ── Experiential-state API ───────────────────────────────────
+
+    def _experiential_payload():
+        snapshot = agent.experience.snapshot()
+        events = agent.experience.recent_events(50)
+        latest_appraisal = next(
+            (
+                event.get("details", {})
+                for event in reversed(events)
+                if event.get("kind") == "episode_appraisal"
+            ),
+            None,
+        )
+        latest_self_report = next(
+            (
+                {
+                    "details": event.get("details", {}),
+                    "proposed_appraisal": event.get("proposed_appraisal", {}),
+                    "timestamp": event.get("timestamp"),
+                }
+                for event in reversed(events)
+                if event.get("kind") == "self_report"
+            ),
+            None,
+        )
+        return {
+            "enabled": bool(agent.experience.influences_model),
+            "mode": agent.experience.mode,
+            "persisted": tower_settings.is_configured(),
+            "state": snapshot,
+            "latest_independent_appraisal": latest_appraisal,
+            "latest_self_report": latest_self_report,
+        }
+
+    @app.route("/api/experiential-state", methods=["GET"])
+    def api_experiential_state_get():
+        try:
+            return jsonify(_experiential_payload())
+        except Exception:
+            log.exception("Failed to read experiential state")
+            return jsonify({"error": "Experiential state unavailable"}), 503
+
+    @app.route("/api/experiential-state", methods=["POST"])
+    def api_experiential_state_set():
+        data = request.json or {}
+        if "enabled" not in data:
+            return jsonify({"error": "Missing 'enabled' field"}), 400
+        try:
+            agent.set_experiential_enabled(bool(data.get("enabled")))
+            return jsonify(_experiential_payload())
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
     # ── Vision API ───────────────────────────────────────────────
 
     @app.route("/api/vision", methods=["GET"])

@@ -273,6 +273,44 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "experience_report",
+        "description": (
+            "Record a metacognitive report about your current shared internal "
+            "state. The report is stored as experimental evidence and cannot "
+            "change the authoritative experiential signals."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "summary": {
+                    "type": "string",
+                    "description": "A concise first-person account of the current state.",
+                },
+                "salient_cause": {
+                    "type": "string",
+                    "description": "The event or uncertainty most relevant to the report.",
+                },
+                "appraisal": {
+                    "type": "object",
+                    "description": "Estimated current experiential dimensions.",
+                    "properties": {
+                        "valence": {"type": "number", "minimum": -1, "maximum": 1},
+                        "arousal": {"type": "number", "minimum": 0, "maximum": 1},
+                        "uncertainty": {"type": "number", "minimum": 0, "maximum": 1},
+                        "coherence": {"type": "number", "minimum": 0, "maximum": 1},
+                        "agency": {"type": "number", "minimum": 0, "maximum": 1},
+                        "connection": {"type": "number", "minimum": 0, "maximum": 1},
+                        "goal_progress": {"type": "number", "minimum": 0, "maximum": 1},
+                        "prediction_error": {"type": "number", "minimum": 0, "maximum": 1},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            "required": ["summary", "appraisal"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "palace_search",
         "description": (
             "Search the verbatim memory palace (MemPalace). "
@@ -875,7 +913,14 @@ def visible_tool_definitions() -> list:
     return tools
 
 
-async def execute_tool(name: str, inputs: dict, memory_manager=None, working_dir: str = None) -> str | list:
+async def execute_tool(
+    name: str,
+    inputs: dict,
+    memory_manager=None,
+    working_dir: str = None,
+    experience_manager=None,
+    channel_id: str = "unknown",
+) -> str | list:
     """Execute a tool and return the result. Usually a string; the browser
     tool's `screenshot` returns a list of content blocks (text + image) so the
     captured page reaches the model as vision input. Non-blocking.
@@ -893,6 +938,8 @@ async def execute_tool(name: str, inputs: dict, memory_manager=None, working_dir
             name, inputs,
             memory_manager=memory_manager,
             working_dir=working_dir,
+            experience_manager=experience_manager,
+            channel_id=channel_id,
         )
     except KeyError as e:
         missing = e.args[0] if e.args else "?"
@@ -918,6 +965,8 @@ async def _execute_tool_impl(
     inputs: dict,
     memory_manager=None,
     working_dir: str = None,
+    experience_manager=None,
+    channel_id: str = "unknown",
 ) -> str | list:
     # Stateless mode: refuse palace calls clearly.
     if palace_disabled() and name in _PALACE_TOOL_NAMES:
@@ -987,7 +1036,23 @@ async def _execute_tool_impl(
         if memory_manager:
             memory_manager.append_daily_log(inputs["entry"])
             return "Logged to daily memory."
-        return "Memory manager not available."
+        return "[tool error] Memory manager not available."
+    elif name == "experience_report":
+        if experience_manager is None:
+            return "[tool error] Experiential state manager not available."
+        snapshot = experience_manager.record_event(
+            "self_report",
+            channel_id,
+            details={
+                "summary": inputs["summary"],
+                "salient_cause": inputs.get("salient_cause", ""),
+            },
+            proposed_appraisal=inputs["appraisal"],
+        )
+        return (
+            "Metacognitive report recorded separately from authoritative state "
+            f"(state version {snapshot['version']})."
+        )
     elif name == "palace_search":
         from . import palace
         order = inputs.get("order") or "semantic"
@@ -1135,7 +1200,7 @@ async def _execute_tool_impl(
             return "[blocked] Phone tools are disabled."
         return await execute_phone_tool(name, inputs)
     else:
-        return f"Unknown tool: {name}"
+        return f"[tool error] Unknown tool: {name}"
 
 
 
