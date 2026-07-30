@@ -970,17 +970,29 @@ h3 {
 }
 
 @media (max-width: 760px) {
+    /* Keep the landing as a fixed-height column so the prompt stays
+       pinned; only the plan/progress grid scrolls. */
     #runs-chat-placeholder.new-chat-landing:not([hidden]) {
-        overflow-y: auto;
+        overflow: hidden;
+        padding-bottom: max(0.75rem, env(safe-area-inset-bottom, 0px));
     }
 
     .actions-board-grid.new-chat-todo {
-        flex: 0 0 auto;
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow-x: hidden;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
         grid-template-columns: 1fr;
     }
 
     .actions-board-grid.new-chat-todo .artifact-panel {
-        min-height: 14rem;
+        min-height: 12rem;
+    }
+
+    .new-chat-prompt {
+        flex-shrink: 0;
+        margin-top: 0;
     }
 
     .dash-overview {
@@ -2681,45 +2693,70 @@ body.wfc-resizing * { cursor: inherit !important; }
 }
 
 @media (max-width: 860px) {
-    /* Chat shell fills the viewport below the sticky topbar */
-    body:has(.runs-shell-page) {
+    /* Chat shell fills the viewport below the topbar.
+       body itself is .app-body — do not nest .app-body under body. */
+    body.app-body:has(.runs-shell-page) {
+        display: flex;
+        flex-direction: column;
         height: 100vh;
         height: 100dvh;
         overflow: hidden;
     }
 
-    body:has(.runs-shell-page) .app-body {
-        display: flex;
-        flex-direction: column;
-        height: 100%;
-        overflow: hidden;
+    body.app-body:has(.runs-shell-page) .site-topbar {
+        flex: 0 0 auto;
     }
 
-    body:has(.runs-shell-page) .app-shell {
+    body.app-body:has(.runs-shell-page) .app-shell {
         flex: 1 1 auto;
         min-height: 0;
+        height: auto;
         overflow: hidden;
+        display: flex;
+        flex-direction: column;
     }
 
-    .container.runs-shell-page {
-        height: 100%;
+    body.app-body:has(.runs-shell-page) .container.runs-shell-page {
+        flex: 1 1 auto;
+        height: auto;
         min-height: 0;
         padding: 0;
+        overflow: hidden;
     }
 
     .runs-shell,
     .runs-shell-main {
-        height: 100%;
+        flex: 1 1 auto;
+        height: auto;
         min-height: 0;
+        overflow: hidden;
     }
 
     .runs-chat {
         --chat-side: 0.85rem;
-        height: 100%;
+        flex: 1 1 auto;
+        height: auto;
         min-height: 0;
     }
 
+    /* Drawer is fixed; keep it from claiming column flex space. */
+    body.app-body:has(.runs-shell-page) .site-sidebar {
+        position: fixed;
+    }
+
+    #runs-chat-loaded:not([hidden]) {
+        min-height: 0;
+        overflow: hidden;
+    }
+
+    .runs-chat-log {
+        flex: 1 1 auto;
+        min-height: 0;
+        overscroll-behavior: contain;
+    }
+
     .runs-chat-composer {
+        flex-shrink: 0;
         padding-bottom: max(0.75rem, env(safe-area-inset-bottom, 0px));
     }
 
