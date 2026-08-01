@@ -220,6 +220,8 @@ def register_config_browser(app, agent, scheduler=None):
             {"key": key, "label": label, "note": note}
             for key, (label, note, _base, _files_fn) in CATEGORIES.items()
         ]
+        from harness import tower_settings as _tower_settings
+
         return render_template(
             "config/index.html",
             categories=categories,
@@ -231,6 +233,7 @@ def register_config_browser(app, agent, scheduler=None):
                     True,
                 )
             ),
+            agent_timezone=_tower_settings.get_agent_timezone(),
             now_iso=datetime.now(timezone.utc).isoformat(),
             page_context=ui_ctx.config_index(),
         )

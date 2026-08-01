@@ -447,6 +447,7 @@
 
             let historyOverride = null;
             let attachLive = false;
+            let streamChannel = detail.stream_channel || 'main';
             if (detail.continuable && select) {
                 try {
                     const selected = await ChatLive.selectRun(detail.id);
@@ -454,6 +455,7 @@
                     if (selected.title) detail.title = selected.title;
                     detail.state = 'active';
                     attachLive = !!(selected.stream_attachable || selected.busy);
+                    streamChannel = 'main';
                 } catch (err) {
                     if (String(err.message || '').toLowerCase().includes('busy')) {
                         if (window.towerToast) window.towerToast('Agent is busy — wait for the current turn, then try again.', { type: 'error' }); else alert('Agent is busy — wait for the current turn, then try again.');
@@ -461,17 +463,21 @@
                     }
                     throw err;
                 }
+            } else if (detail.stream_attachable) {
+                attachLive = true;
+                streamChannel = detail.stream_channel || kind || 'main';
             }
             if (seq !== detailSeq) return;
             renderDetail(detail, historyOverride);
             refreshRail();
-            if (attachLive && detail.continuable && seq === detailSeq) {
+            if (attachLive && seq === detailSeq) {
                 streaming = true;
                 if (stopBtn) stopBtn.hidden = false;
                 if (sendBtn) sendBtn.disabled = true;
                 if (input) input.disabled = true;
                 await ChatLive.attachStream({
                     log: historyEl,
+                    channel: streamChannel,
                     onDone: async () => {
                         if (seq !== detailSeq) return;
                         streaming = false;
@@ -479,9 +485,20 @@
                         if (sendBtn) sendBtn.disabled = false;
                         if (input) input.disabled = false;
                         try {
-                            const hist = await ChatLive.fetchHistory();
-                            if (seq !== detailSeq) return;
-                            ChatLive.hydrate(historyEl, hist.history || []);
+                            if (detail.continuable) {
+                                const hist = await ChatLive.fetchHistory();
+                                if (seq !== detailSeq) return;
+                                ChatLive.hydrate(historyEl, hist.history || []);
+                            } else {
+                                const res2 = await fetch(`/chats/detail?kind=${encodeURIComponent(kind)}&id=${encodeURIComponent(id)}`);
+                                if (seq !== detailSeq) return;
+                                if (res2.ok) {
+                                    const refreshed = await res2.json();
+                                    ChatLive.hydrate(historyEl, refreshed.history || []);
+                                    currentDetail = refreshed;
+                                    renderComposerMeta(refreshed);
+                                }
+                            }
                         } catch (err) {}
                         await refreshRail();
                     },
@@ -644,7 +661,10 @@
     });
     if (stopBtn) stopBtn.addEventListener('click', async () => {
         stopBtn.disabled = true;
-        try { await ChatLive.stopChat(); } catch (err) {}
+        const channel = (currentDetail && currentDetail.stream_channel)
+            || (currentDetail && currentDetail.continuable ? 'main' : kind)
+            || 'main';
+        try { await ChatLive.stopChat(channel); } catch (err) {}
         stopBtn.disabled = false;
     });
     window.__runsNewChat = async function () {

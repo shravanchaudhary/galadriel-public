@@ -580,6 +580,24 @@ class ConversationQueue:
         hub = self._hubs.get(channel)
         return hub is not None and not hub.closed
 
+    def open_stream(self, channel: str):
+        """Ensure an open live-turn hub for ``channel`` and return its emit callback.
+
+        Used by scheduler/loop channels that call ``agent.respond`` directly
+        (not via the tower queue) so Tower can attach SSE mid-turn.
+        """
+        hub = self._hubs.get(channel)
+        if hub is None or hub.closed:
+            hub = TurnStreamHub()
+            self._hubs[channel] = hub
+        return hub.emit
+
+    def close_stream(self, channel: str) -> None:
+        """Close and drop the live-turn hub for ``channel``, if any."""
+        hub = self._hubs.pop(channel, None)
+        if hub is not None:
+            hub.close()
+
     async def enqueue(
         self,
         payload: Any,

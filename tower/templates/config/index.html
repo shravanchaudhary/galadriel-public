@@ -121,9 +121,9 @@
 
 {% block scripts %}
 <script>
-const TZ_STORAGE_KEY = 'tower-display-timezone';
+const BROWSER_TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
 const TZ_OPTIONS = [
-    { value: 'local', label: 'Local (browser)' },
+    { value: BROWSER_TZ, label: `Local (${BROWSER_TZ})` },
     { value: 'UTC', label: 'UTC' },
     { value: 'Europe/Stockholm', label: 'CET / Europe/Stockholm' },
     { value: 'America/New_York', label: 'America/New_York' },
@@ -134,10 +134,7 @@ const TZ_OPTIONS = [
 ];
 
 let providerKeyState = {};
-
-function getStoredTimezone() {
-    return localStorage.getItem(TZ_STORAGE_KEY) || 'local';
-}
+let agentTimezone = {{ agent_timezone|tojson }};
 
 function formatServerTime(date, tz) {
     if (Number.isNaN(date.getTime())) return '—';
@@ -149,8 +146,8 @@ function formatServerTime(date, tz) {
         hour: 'numeric',
         minute: '2-digit',
         second: '2-digit',
+        timeZone: tz || 'UTC',
     };
-    if (tz && tz !== 'local') opts.timeZone = tz;
     try {
         return new Intl.DateTimeFormat(undefined, opts).format(date);
     } catch (e) {
@@ -171,12 +168,22 @@ function refreshServerTime() {
     const approx = new Date(
         serverClockAnchor.base + (Date.now() - serverClockAnchor.loadedAt)
     );
-    const tz = getStoredTimezone();
-    el.textContent = formatServerTime(approx, tz);
+    el.textContent = formatServerTime(approx, agentTimezone);
     el.title = approx.toISOString();
-    label.textContent = tz === 'local'
-        ? (Intl.DateTimeFormat().resolvedOptions().timeZone || 'Local')
-        : tz;
+    label.textContent = agentTimezone;
+}
+
+async function saveAgentTimezone(tz) {
+    const res = await fetch('/api/timezone', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ timezone: tz }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Failed to save timezone');
+    agentTimezone = data.timezone || tz;
+    refreshServerTime();
+    return data;
 }
 
 function initTimezoneMenu() {
@@ -185,13 +192,21 @@ function initTimezoneMenu() {
     const menu = document.getElementById('tz-menu');
     if (!select || !btn || !menu) return;
 
-    const current = getStoredTimezone();
+    // Ensure the saved zone appears even if it's outside the short list.
+    const options = TZ_OPTIONS.slice();
+    if (agentTimezone && !options.some((o) => o.value === agentTimezone)) {
+        options.unshift({ value: agentTimezone, label: agentTimezone });
+    }
+    // Deduplicate Local vs explicit same IANA name.
+    const seen = new Set();
     select.innerHTML = '';
-    for (const opt of TZ_OPTIONS) {
+    for (const opt of options) {
+        if (seen.has(opt.value)) continue;
+        seen.add(opt.value);
         const el = document.createElement('option');
         el.value = opt.value;
         el.textContent = opt.label;
-        if (opt.value === current) el.selected = true;
+        if (opt.value === agentTimezone) el.selected = true;
         select.appendChild(el);
     }
 
@@ -201,11 +216,20 @@ function initTimezoneMenu() {
         menu.hidden = !open;
         btn.setAttribute('aria-expanded', open ? 'true' : 'false');
     });
-    select.addEventListener('change', () => {
-        localStorage.setItem(TZ_STORAGE_KEY, select.value);
-        refreshServerTime();
-        menu.hidden = true;
-        btn.setAttribute('aria-expanded', 'false');
+    select.addEventListener('change', async () => {
+        const previous = agentTimezone;
+        try {
+            await saveAgentTimezone(select.value);
+            menu.hidden = true;
+            btn.setAttribute('aria-expanded', 'false');
+            if (window.towerToast) {
+                window.towerToast(`Agent timezone set to ${agentTimezone}`, { type: 'success' });
+            }
+        } catch (err) {
+            select.value = previous;
+            if (window.towerToast) window.towerToast(err.message || 'Failed to save timezone', { type: 'error' });
+            else alert(err.message || 'Failed to save timezone');
+        }
     });
     document.addEventListener('click', (e) => {
         if (!menu.hidden && !menu.contains(e.target) && e.target !== btn) {

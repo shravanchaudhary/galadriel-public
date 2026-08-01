@@ -27,6 +27,7 @@ are loaded on demand. See CACHING.md for the full breakdown.
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 # Files that are ALWAYS in the stable block, in this exact order. Adding a
 # config markdown file does not make it prompt context; this tuple is the only
@@ -158,12 +159,29 @@ class MemoryManager:
             if note:
                 parts.append(f"# Daily Log ({filename})\n\n{note}")
 
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        tail = f"Current date/time: {now}"
+        now, tz_name = self._agent_now()
+        tail = (
+            f"Current date/time: {now.strftime('%Y-%m-%d %H:%M:%S %Z')} "
+            f"({tz_name}, weekday {now.strftime('%A')})"
+        )
 
         if parts:
             return "\n\n---\n\n".join(parts) + "\n\n---\n\n" + tail
         return tail
+
+    def _agent_now(self) -> tuple[datetime, str]:
+        """Now in the user-configured agent timezone (Configuration → Agent time)."""
+        try:
+            from . import tower_settings
+            tz_name = tower_settings.get_agent_timezone()
+        except Exception:
+            tz_name = "Europe/Stockholm"
+        try:
+            tz = ZoneInfo(tz_name)
+        except Exception:
+            tz_name = "UTC"
+            tz = ZoneInfo("UTC")
+        return datetime.now(tz), tz_name
 
     # ── Public API for agent.py ─────────────────────────────────
 

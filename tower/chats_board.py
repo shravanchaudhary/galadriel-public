@@ -387,9 +387,14 @@ def _load_detail(item_or_id: dict | str, *, prefer: str | None = None) -> dict |
     return _load_tick_detail(selected_id) or _load_main_detail(selected_id)
 
 
-def _detail_payload(detail: dict) -> dict:
+def _detail_payload(detail: dict, *, stream_attachable: bool = False) -> dict:
     """JSON body for GET /chats/detail — transcript + meta, no page_context."""
     record = detail.get("record") or {}
+    storage_channel = (
+        record.get("channel_id")
+        if detail.get("store") == "tick"
+        else "main"
+    ) or "worker"
     return {
         "store": detail.get("store"),
         "channel": detail.get("channel"),
@@ -408,6 +413,8 @@ def _detail_payload(detail: dict) -> dict:
         "user_label": detail.get("user_label"),
         "assistant_label": detail.get("assistant_label"),
         "continuable": bool(detail.get("continuable")),
+        "stream_channel": storage_channel if detail.get("store") == "tick" else "main",
+        "stream_attachable": bool(stream_attachable),
     }
 
 
@@ -500,7 +507,7 @@ def _collect_items(kind: str, *, page: int = 1) -> tuple[list[dict], bool, bool,
     return page_items[:PAGE_SIZE], has_more, db_configured, active
 
 
-def register_chats_board(app):
+def register_chats_board(app, agent=None):
     bp = Blueprint("chats_board", __name__)
 
     @app.context_processor
@@ -592,7 +599,20 @@ def register_chats_board(app):
         detail = _load_detail(selected_id, prefer=prefer)
         if detail is None:
             abort(404)
-        return jsonify(_detail_payload(detail))
+        stream_attachable = False
+        if (
+            agent is not None
+            and detail.get("store") == "tick"
+            and (detail.get("state") or "") == "running"
+        ):
+            storage_channel = (detail.get("record") or {}).get("channel_id") or "worker"
+            try:
+                stream_attachable = bool(
+                    agent.conversation_queue.has_stream(storage_channel)
+                )
+            except Exception:
+                stream_attachable = False
+        return jsonify(_detail_payload(detail, stream_attachable=stream_attachable))
 
     @bp.route("/chats")
     def chats_index():

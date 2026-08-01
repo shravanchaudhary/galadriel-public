@@ -792,6 +792,37 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
             "persisted": tower_settings.is_configured(),
         })
 
+    @app.route("/api/timezone", methods=["GET"])
+    def api_timezone_get():
+        return jsonify({
+            "timezone": tower_settings.get_agent_timezone(),
+            "persisted": tower_settings.is_configured(),
+        })
+
+    @app.route("/api/timezone", methods=["POST"])
+    def api_timezone_set():
+        data = request.json or {}
+        tz_name = (data.get("timezone") or "").strip()
+        if not tz_name:
+            return jsonify({"error": "Missing 'timezone' field"}), 400
+        # "local" means the browser's IANA zone — client must resolve it first.
+        if tz_name == "local":
+            return jsonify({
+                "error": "Pass the browser IANA timezone (e.g. Asia/Kolkata), not 'local'",
+            }), 400
+        try:
+            saved = tower_settings.set_agent_timezone(tz_name)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except RuntimeError as e:
+            return jsonify({"error": str(e)}), 503
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+        return jsonify({
+            "timezone": saved,
+            "persisted": True,
+        })
+
     # ── Experiential-state API ───────────────────────────────────
 
     def _experiential_payload():
@@ -956,6 +987,21 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
             return jsonify({"error": str(e)}), 400
         return jsonify(scheduler.get_status())
 
+    @app.route("/api/scheduler/morning", methods=["POST"])
+    def api_scheduler_morning():
+        """Manually run (or re-run) today's morning planning routine now."""
+        if not scheduler:
+            return jsonify({"error": "Scheduler not available"}), 503
+        try:
+            result = scheduler.trigger_morning()
+        except RuntimeError as e:
+            return jsonify({"error": str(e)}), 503
+        status = scheduler.get_status()
+        status.update(result)
+        if not result.get("started"):
+            return jsonify(status), 409
+        return jsonify(status)
+
     @app.route("/api/runtime/restart", methods=["POST"])
     def api_runtime_restart():
         """Arm a durable wake and request a provider-controlled process restart."""
@@ -1026,7 +1072,7 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
     from .worker_ticks_board import register_worker_ticks_board
     register_worker_ticks_board(app)
     from .chats_board import register_chats_board
-    register_chats_board(app)
+    register_chats_board(app, agent=agent)
 
     # "Brain" — live agent configuration browser (config/jobs/state/sme).
     from .config_browser import register_config_browser

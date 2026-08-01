@@ -114,6 +114,8 @@ class Scheduler:
         self._goodnight_task: asyncio.Task | None = None
         self._reflection_task: asyncio.Task | None = None
         self._catchup_task: asyncio.Task | None = None
+        # Concurrent-guard for Tower/API manual morning re-runs
+        self._manual_morning_future = None
 
         # Track last fire times to avoid double-fires
         self._last_morning: str | None = None
@@ -216,6 +218,10 @@ class Scheduler:
             "reflection_times": "11:00/14:00/17:00/20:00 CET (workdays — palace + worker audit + status)",
             "server_time_cet": now_cet.strftime("%Y-%m-%d %H:%M:%S %Z"),
             "is_workday": now_cet.weekday() < 5,
+            "morning_manual_running": bool(
+                self._manual_morning_future is not None
+                and not self._manual_morning_future.done()
+            ),
         }
 
     def set_routine_time(self, routine: str, hhmm: str) -> None:
@@ -236,6 +242,68 @@ class Scheduler:
             f"Routine time updated: morning={_format_hhmm(self.morning_time)}, "
             f"goodnight={_format_hhmm(self.goodnight_time)}"
         )
+
+    def trigger_morning(self) -> dict:
+        """Run the morning planning routine now (manual, any day, re-runnable).
+
+        Schedules the same ``_morning_routine`` the cron uses onto the captured
+        event loop. Ignores workday/weekend gates and the once-per-day cron
+        tracker so Tower can re-plan today on demand. Waits briefly for the
+        durable morning tick id so the UI can open the live chat stream.
+        """
+        import time
+        from . import worker_tick_store
+
+        if not self._loop or not self._loop.is_running():
+            raise RuntimeError("Scheduler loop is not running")
+        if (
+            self._manual_morning_future is not None
+            and not self._manual_morning_future.done()
+        ):
+            tick_id = getattr(self, "_manual_morning_tick_id", None)
+            return {
+                "started": False,
+                "reason": "already_running",
+                "tick_id": tick_id,
+            }
+
+        self._manual_morning_tick_id = None
+        prior_ids = {
+            row.get("tick_id")
+            for row in worker_tick_store.recent_ticks(5, channel_id="morning")
+            if row.get("tick_id")
+        }
+
+        async def _run():
+            # Mark today's cron slot consumed so a still-pending grace window
+            # cannot double-fire while this manual run is in flight. Manual
+            # re-triggers remain allowed via this same entry point.
+            today = datetime.now(CET).strftime("%Y-%m-%d")
+            self._mark_fired("_last_morning", today)
+            log.info("Morning routine starting (manual trigger)...")
+            await self._morning_routine()
+
+        self._manual_morning_future = asyncio.run_coroutine_threadsafe(
+            _run(), self._loop
+        )
+
+        tick_id = None
+        deadline = time.time() + 8.0
+        while time.time() < deadline:
+            for row in worker_tick_store.recent_ticks(5, channel_id="morning"):
+                candidate = row.get("tick_id")
+                if (
+                    candidate
+                    and candidate not in prior_ids
+                    and row.get("state") == "running"
+                ):
+                    tick_id = candidate
+                    self._manual_morning_tick_id = tick_id
+                    break
+            if tick_id or self._manual_morning_future.done():
+                break
+            time.sleep(0.12)
+        return {"started": True, "tick_id": tick_id}
 
     def set_heartbeat(self, enabled: bool, interval: int | None = None,
                       prompt: str | None = None):
@@ -762,8 +830,12 @@ class Scheduler:
         wake loop uses this return to decide whether to clear or keep
         pending_wake armed for retry.
         """
+        cq = self.agent.conversation_queue
+        emit = cq.open_stream(channel_id)
         try:
-            response = await self.agent.respond(prompt, channel_id=channel_id)
+            response = await self.agent.respond(
+                prompt, channel_id=channel_id, emit=emit,
+            )
             if not response.strip():
                 log.info(f"Scheduler [{channel_id}] silent tick — nothing to report, skipping send")
                 return True
@@ -776,6 +848,8 @@ class Scheduler:
         except Exception as e:
             log.exception(f"Scheduler [{channel_id}] error: {e}")
             return False
+        finally:
+            cq.close_stream(channel_id)
 
     async def _send_agent_silent(self, prompt: str, channel_id: str) -> str:
         """Run a prompt for its side effects (palace filing) only.
@@ -785,13 +859,19 @@ class Scheduler:
         needed. Used by ambient reflection: the agent's bookkeeping persists,
         but nothing is spoken.
         """
+        cq = self.agent.conversation_queue
+        emit = cq.open_stream(channel_id)
         try:
-            resp = await self.agent.respond(prompt, channel_id=channel_id)
+            resp = await self.agent.respond(
+                prompt, channel_id=channel_id, emit=emit,
+            )
             log.info(f"Scheduler [{channel_id}] silent routine complete (not sent to Discord)")
             return resp or ""
         except Exception as e:
             log.exception(f"Scheduler [{channel_id}] silent error: {e}")
             return ""
+        finally:
+            cq.close_stream(channel_id)
 
     async def _send_to_discord(self, message: str):
         """Send a message to the authorized user via DM (or configured channel).

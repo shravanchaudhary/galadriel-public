@@ -211,11 +211,20 @@ window.ChatLive = (function () {
     }
 
     /** Reattach to an in-flight turn after hydrate (no new user message). */
-    async function attachStream({ log, onDone, onError }) {
+    async function attachStream({ log, channel = 'main', onDone, onError }) {
         const turn = startAssistant(log);
         toBottom(log);
+        const streamChannel = channel || 'main';
         try {
-            const res = await fetch('/api/chat/stream/attach?channel=main');
+            let res = null;
+            // Brief retry — scheduler opens the hub just as the tick starts.
+            for (let attempt = 0; attempt < 12; attempt++) {
+                res = await fetch(
+                    `/api/chat/stream/attach?channel=${encodeURIComponent(streamChannel)}`,
+                );
+                if (res.status !== 404) break;
+                await new Promise((r) => setTimeout(r, 250));
+            }
             if (res.status === 404) {
                 turn.div.remove();
                 if (onDone) onDone(null);
@@ -241,11 +250,12 @@ window.ChatLive = (function () {
         return turn;
     }
 
-    async function stopChat() {
+    async function stopChat(channel = 'main') {
+        const streamChannel = channel || 'main';
         const res = await fetch('/api/chat/stop', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ channel: 'main' }),
+            body: JSON.stringify({ channel: streamChannel }),
         });
         return res.json().catch(() => ({}));
     }

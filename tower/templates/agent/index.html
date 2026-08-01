@@ -107,6 +107,16 @@
         <div class="settings-actions"><a href="/chats?kind=worker" class="btn btn-small btn-secondary">View recorded chats</a></div>
         {% endif %}
 
+        {% if item.manual_trigger %}
+        <div class="settings-actions">
+            <button type="button" class="btn btn-small" id="run-morning-btn"
+                    onclick="triggerMorningPlan()"
+                    {% if item.manual_trigger_running %}disabled{% endif %}>
+                {{ 'Running…' if item.manual_trigger_running else item.manual_trigger_label }}
+            </button>
+        </div>
+        {% endif %}
+
         {% if item.editable and item.editable_kind == 'heartbeat' %}
         <details class="settings-prompt" open>
             <summary>Prompt · {{ item.source }}</summary>
@@ -261,6 +271,36 @@ async function changeLoopModel(select) {
         console.error('Failed to set loop model:', err);
         if (previous) select.value = previous;
         if (window.towerToast) window.towerToast(err.message || 'Failed to set model', { type: 'error' }); else alert(err.message || 'Failed to set model');
+    }
+}
+
+async function triggerMorningPlan() {
+    const btn = document.getElementById('run-morning-btn');
+    if (btn) {
+        btn.disabled = true;
+        btn.textContent = 'Running…';
+    }
+    try {
+        const res = await fetch('/api/scheduler/morning', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({}),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || data.reason || 'Failed to start morning plan');
+        if (data.tick_id) {
+            window.location.href = `/chats?kind=morning&id=${encodeURIComponent(data.tick_id)}`;
+        } else {
+            window.location.href = '/chats?kind=morning';
+        }
+        return;
+    } catch (err) {
+        console.error('Failed to trigger morning plan:', err);
+        if (btn) {
+            btn.disabled = false;
+            btn.textContent = 'Run morning plan now';
+        }
+        if (window.towerToast) window.towerToast(err.message || 'Failed to start morning plan', { type: 'error' }); else alert(err.message || 'Failed to start morning plan');
     }
 }
 

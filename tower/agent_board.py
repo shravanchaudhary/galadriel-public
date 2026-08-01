@@ -107,7 +107,11 @@ def _build_agent_items(scheduler, agent, today: str, worker=None) -> list[dict]:
             "name": "Morning routine",
             "channel": "morning",
             "schedule": sched.get("morning_time", f"{morning_hhmm} CET (workdays)"),
-            "status": "workday" if sched.get("is_workday") else "weekend skip",
+            "status": (
+                "running"
+                if sched.get("morning_manual_running")
+                else ("workday" if sched.get("is_workday") else "weekend skip")
+            ),
             "source": "harness/loop_prompts.py → morning_prompt()",
             "editable": False,
             "prompt": morning_prompt(today),
@@ -115,6 +119,9 @@ def _build_agent_items(scheduler, agent, today: str, worker=None) -> list[dict]:
             "time_editable": True,
             "time_hhmm": morning_hhmm,
             "time_label": "Daily time (CET, workdays)",
+            "manual_trigger": True,
+            "manual_trigger_label": "Run morning plan now",
+            "manual_trigger_running": bool(sched.get("morning_manual_running")),
         },
         {
             "id": "catchup",

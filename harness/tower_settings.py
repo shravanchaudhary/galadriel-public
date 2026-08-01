@@ -6,6 +6,7 @@ one sync pymongo client for reads/writes from Flask routes and agent startup.
 
 import os
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo, available_timezones
 
 from pymongo import MongoClient
 
@@ -16,6 +17,10 @@ WORKER_MODEL_DOC_ID = "worker_model"
 HEADROOM_DOC_ID = "headroom"
 EXPERIENTIAL_STATE_DOC_ID = "experiential_state"
 WORKER_IDLE_DOC_ID = "worker_idle_interval"
+TIMEZONE_DOC_ID = "agent_timezone"
+# Matches scheduler defaults until the user sets Agent time in Configuration.
+DEFAULT_AGENT_TIMEZONE = "Europe/Stockholm"
+_AVAILABLE_TIMEZONES = available_timezones()
 
 # Idle-poll minutes when the worker has nothing to do (default 10).
 VALID_WORKER_IDLE_MINUTES: tuple[int, ...] = (5, 10, 15, 20, 30, 60)
@@ -230,3 +235,49 @@ def set_worker_idle_minutes(minutes: int) -> None:
         },
         upsert=True,
     )
+
+
+def _valid_timezone(name: str | None) -> str | None:
+    if not name or not isinstance(name, str):
+        return None
+    tz = name.strip()
+    if tz in _AVAILABLE_TIMEZONES:
+        return tz
+    # ZoneInfo accepts some aliases even when missing from available_timezones().
+    try:
+        ZoneInfo(tz)
+        return tz
+    except Exception:
+        return None
+
+
+def get_agent_timezone() -> str:
+    """Return the persisted agent display/operating timezone (IANA name)."""
+    db = _db()
+    if db is None:
+        return DEFAULT_AGENT_TIMEZONE
+    doc = db[COLLECTION].find_one(
+        {"_id": _doc_id(TIMEZONE_DOC_ID), "tenant_id": _tenant_id()}
+    )
+    return _valid_timezone((doc or {}).get("timezone")) or DEFAULT_AGENT_TIMEZONE
+
+
+def set_agent_timezone(tz_name: str) -> str:
+    """Persist the agent timezone. Returns the normalized IANA name."""
+    tz = _valid_timezone(tz_name)
+    if tz is None:
+        raise ValueError(f"Unsupported timezone: {tz_name}")
+    db = _db()
+    if db is None:
+        raise RuntimeError("MONGO_URI / MONGO_DB not configured")
+    db[COLLECTION].replace_one(
+        {"_id": _doc_id(TIMEZONE_DOC_ID)},
+        {
+            "_id": _doc_id(TIMEZONE_DOC_ID),
+            "tenant_id": _tenant_id(),
+            "timezone": tz,
+            "updated_at": datetime.now(timezone.utc),
+        },
+        upsert=True,
+    )
+    return tz
