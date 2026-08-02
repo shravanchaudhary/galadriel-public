@@ -4,11 +4,77 @@ import os
 import re
 from pathlib import Path
 
+from semantic_router import Route
+from semantic_router.routers import SemanticRouter
+
 from .db_ops import get_db
 
 log = logging.getLogger("galadriel.recall")
 
 RECALLS_COLLECTION = "recalls"
+
+_ENCODER = None
+_ROUTER_CACHE = None
+_CACHED_RECALL_IDS = set()
+
+def get_encoder():
+    """Lazily load and cache the encoder model based on environment config."""
+    global _ENCODER
+    if _ENCODER is not None:
+        return _ENCODER
+    
+    encoder_type = os.environ.get("RECALL_ENCODER", "fastembed").lower()
+    
+    if encoder_type == "gemini":
+        try:
+            from semantic_router.encoders import GoogleEncoder
+            _ENCODER = GoogleEncoder(name="models/text-embedding-004")
+            log.info("Initialized Gemini encoder for semantic router")
+        except Exception as e:
+            log.warning(f"Failed to load GoogleEncoder, falling back to fastembed: {e}")
+            encoder_type = "fastembed"
+            
+    if encoder_type == "fastembed":
+        from semantic_router.encoders import FastEmbedEncoder
+        # Use a fast local model, doesn't block the app
+        _ENCODER = FastEmbedEncoder(name="BAAI/bge-small-en-v1.5")
+        log.info("Initialized FastEmbedEncoder for semantic router")
+        
+    return _ENCODER
+
+def get_semantic_router(recalls: list[dict]) -> SemanticRouter:
+    """Get or build the SemanticRouter for the current set of recalls."""
+    global _ROUTER_CACHE, _CACHED_RECALL_IDS
+    
+    current_ids = {r.get("recall_id") for r in recalls if r.get("recall_id")}
+    
+    if _ROUTER_CACHE is not None and current_ids == _CACHED_RECALL_IDS:
+        return _ROUTER_CACHE
+        
+    routes = []
+    for recall in recalls:
+        recall_id = recall.get("recall_id")
+        if not recall_id:
+            continue
+            
+        utterances = []
+        for tag in recall.get("regex_tags", []):
+            # Clean up the legacy regex tags into natural language utterances
+            clean = tag.replace("\\b", "").replace("(", "").replace(")", "").replace("\\s*", " ").replace(".*", " ")
+            clean = clean.replace("?", "").replace("\\", "")
+            utterances.extend([u.strip() for u in clean.split("|") if u.strip()])
+            
+        if utterances:
+            routes.append(Route(name=recall_id, utterances=utterances))
+            
+    if not routes:
+        return None
+        
+    encoder = get_encoder()
+    _ROUTER_CACHE = SemanticRouter(encoder=encoder, routes=routes, auto_sync="local")
+    _CACHED_RECALL_IDS = current_ids
+    return _ROUTER_CACHE
+
 
 def _load_system_recalls() -> list[dict]:
     """Load system defaults from config/system_recalls.json."""
@@ -42,27 +108,41 @@ async def fetch_all_recalls() -> list[dict]:
     return recalls
 
 def scan_text_for_recalls(text: str, recalls: list[dict]) -> list[dict]:
-    """Scan text against all recalls and return matched recall objects."""
-    if not text:
+    """Scan text against all recalls and return matched recall objects using semantic router."""
+    if not text or not recalls:
         return []
     
+    router = get_semantic_router(recalls)
+    if not router:
+        return []
+        
+    recall_map = {r.get("recall_id"): r for r in recalls if r.get("recall_id")}
     matches = []
-    # Case insensitive matching
-    lower_text = text.lower()
+    seen = set()
     
-    for recall in recalls:
-        for tag in recall.get("regex_tags", []):
-            try:
-                # Compile regex with ignorecase
-                pattern = re.compile(tag, re.IGNORECASE)
-                if pattern.search(lower_text):
-                    matches.append(recall)
-                    break # Only add once per recall
-            except re.error as e:
-                log.error(f"Invalid regex tag '{tag}' in recall {recall.get('recall_id')}: {e}")
+    # Split text into manageable chunks (e.g. paragraphs/lines) for semantic matching
+    chunks = [c.strip() for c in text.split("\n") if c.strip()]
+    
+    for chunk in chunks:
+        # Semantic router checks if the chunk falls within a threshold tolerance of any route
+        # Using limit=None to get all routes that match above threshold for this chunk
+        decisions = router(chunk, limit=None)
+        
+        # If router returns a single object instead of a list (fallback), wrap it
+        if decisions and not isinstance(decisions, list):
+            decisions = [decisions]
+            
+        if not decisions:
+            continue
+            
+        for decision in decisions:
+            if decision and decision.name and decision.name not in seen:
+                seen.add(decision.name)
+                if decision.name in recall_map:
+                    matches.append(recall_map[decision.name])
                 
     if matches:
-        log.debug(f"Recall scan matched {len(matches)} rule(s) for text: {text[:200]}...")
+        log.debug(f"Semantic scan matched {len(matches)} rule(s) for text: {text[:200]}...")
                 
     return matches
 
