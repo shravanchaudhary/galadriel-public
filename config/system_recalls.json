@@ -1,70 +1,70 @@
 [
   {
     "recall_id": "sys_fact_lookup",
-    "instruction": "Run `palace_search` or `palace_kg_query` (never guess) before stating or relying on a past fact, decision, date, cost, name, or preference.",
+    "instruction": "Use the `palace_search` or `palace_kg_query` tool (never guess) before stating or relying on a past fact, decision, date, cost, name, or preference.",
     "regex_tags": [
       "\\b(what was|do you remember|what did we|when did|how much|who is|what's my|what is my|past fact|decision|date|cost|name|preference)\\b"
     ]
   },
   {
     "recall_id": "sys_procedure",
-    "instruction": "Run `read_file(\"knowledge/INDEX.md\")` → find the matching entry → run its `palace_search` (only if richer detail is needed) before hitting a known procedure, failure, or reusable technique.",
+    "instruction": "Use the `read_file` tool on `knowledge/INDEX.md` → find the matching entry → run its `palace_search` (only if richer detail is needed) before hitting a known procedure, failure, or reusable technique.",
     "regex_tags": [
       "\\b(procedure|how do i|how to|reusable technique|failure mode|how does it work)\\b"
     ]
   },
   {
     "recall_id": "sys_architecture",
-    "instruction": "Run `read_file(\"knowledge/reference/architecture.md\")` to understand how memory tiers / the worker / board files work.",
+    "instruction": "Use the `read_file` tool on `knowledge/reference/architecture.md` to understand how memory tiers / the worker / board files work.",
     "regex_tags": [
       "\\b(memory tiers?|worker|board files?|architecture)\\b"
     ]
   },
   {
     "recall_id": "sys_tools_rules",
-    "instruction": "Run `read_file(\"knowledge/reference/tools.md\")` before choosing tools, record destinations, heartbeat / one-shot wake / reflection, or browser tab rules.",
+    "instruction": "Use the `read_file` tool on `knowledge/reference/tools.md` before choosing tools, record destinations, heartbeat / one-shot wake / reflection, or browser tab rules.",
     "regex_tags": [
       "\\b(choose tools?|record destinations?|heartbeat|one-?shot wake|reflection|browser tab rules?)\\b"
     ]
   },
   {
     "recall_id": "sys_custom_script",
-    "instruction": "Run `read_file(\"knowledge/reference/data.md\")` and `knowledge/reference/coding_principles.md` before writing a custom Python script or touching the DB outside `db_*`.",
+    "instruction": "Use the `read_file` tool on `knowledge/reference/data.md` and `knowledge/reference/coding_principles.md` before writing a custom Python script or touching the DB outside `db_*`.",
     "regex_tags": [
       "\\b(custom python script|touch(ing)? db|database script)\\b"
     ]
   },
   {
     "recall_id": "sys_personal_tools",
-    "instruction": "Read `personal-tools/README.md` (and `_template.py`) before creating or updating a coded tool / reusable capability. Never edit `harness/` product tools.",
+    "instruction": "Use the `read_file` tool on `personal-tools/README.md` (and `_template.py`) before creating or updating a coded tool / reusable capability. Never edit `harness/` product tools.",
     "regex_tags": [
       "\\b(create tool|update tool|coded tool|reusable capability)\\b"
     ]
   },
   {
     "recall_id": "sys_jobs",
-    "instruction": "Read the matching `jobs/<id>.md` cookbook, then `palace_search` for any detail it references, before picking up / starting a job (worker or curator).",
+    "instruction": "Use the `read_file` tool on the matching `jobs/<id>.md` cookbook, then `palace_search` for any detail it references, before picking up / starting a job (worker or curator).",
     "regex_tags": [
       "\\b(pick up job|start job|job cookbook|curator)\\b"
     ]
   },
   {
     "recall_id": "sys_recurring_work",
-    "instruction": "Whenever the user asks to do something daily, or on a repeating basis, use jobs concept for it (`knowledge/reference/architecture.md`). If something epic has to be done, it should follow backlog for the same, making use of worker for long going and daily tasks.",
+    "instruction": "Whenever the user asks to do something daily, or on a repeating basis, use jobs concept for it (use the `read_file` tool on `knowledge/reference/architecture.md`). If something epic has to be done, it should follow backlog for the same, making use of worker for long going and daily tasks.",
     "regex_tags": [
       "\\b(daily|everyday|repeating basis|recurring|long running task|epic|large project)\\b"
     ]
   },
   {
     "recall_id": "sys_deferred_work",
-    "instruction": "Before promising deferred / background work, or pausing/unpausing the worker: Ensure the board has the work (`state/backlog.md` or ritual `config/JOBS.md` + cookbook), then set first line of `state/worker_control.md` to `active` (or `paused` when yielding). Env alone is not enough.",
+    "instruction": "Before promising deferred / background work, or pausing/unpausing the worker: Ensure the board has the work (use the `read_file` tool on `state/backlog.md` or ritual `config/JOBS.md` + cookbook), then set first line of `state/worker_control.md` to `active` (or `paused` when yielding). Env alone is not enough.",
     "regex_tags": [
       "\\b(promise.*work|deferred work|background work|pause worker|unpause worker|do it later|do this later|remind me to|i will do it|i'll do it|every\\s*day|daily|each\\s*day)\\b"
     ]
   },
   {
     "recall_id": "sys_plan",
-    "instruction": "Read `state/plan/<today>.html`, preserving its standalone document + style contract (`knowledge/reference/user_facing_html_artifacts.md`), before planning / re-planning the day, or checking what was intended today.",
+    "instruction": "Use the `read_file` tool on `state/plan/<today>.html`, preserving its standalone document + style contract (`knowledge/reference/user_facing_html_artifacts.md`), before planning / re-planning the day, or checking what was intended today.",
     "regex_tags": [
       "\\b(plan the day|re-plan|replanning|what was intended today|today's plan)\\b"
     ]
@@ -85,21 +85,21 @@
   },
   {
     "recall_id": "sys_last_conversation",
-    "instruction": "Before answering about the previous / last conversation: If same session, check in-context buffer. After restart / empty buffer, run `palace_search(order=\"recency\", room=\"conversations\", channel=\"main\", k=5)`.",
+    "instruction": "Before answering about the previous / last conversation: If same session, check in-context buffer. After restart / empty buffer, use the `palace_search` tool with parameters (order=\"recency\", room=\"conversations\", channel=\"main\", k=5).",
     "regex_tags": [
       "\\b(previous conversation|last conversation|what did we talk about last|what were we discussing)\\b"
     ]
   },
   {
     "recall_id": "sys_credentials",
-    "instruction": "Read `state/credentials_map.md`, then the credential store before dealing with credentials or an authenticated action.",
+    "instruction": "Use the `read_file` tool on `state/credentials_map.md`, then the credential store before dealing with credentials or an authenticated action.",
     "regex_tags": [
       "\\b(credentials?|authenticated action|api key|password)\\b"
     ]
   },
   {
     "recall_id": "sys_identity",
-    "instruction": "Read `SOUL.md` and `knowledge/skills/synthesis-identity.md`, then answer from the soul/body synthesis and its accumulated continuity before reflecting on being alive, sentient, conscious, or real; or developing your identity.",
+    "instruction": "Use the `read_file` tool on `SOUL.md` and `knowledge/skills/synthesis-identity.md`, then answer from the soul/body synthesis and its accumulated continuity before reflecting on being alive, sentient, conscious, or real; or developing your identity.",
     "regex_tags": [
       "\\b(alive|sentient|conscious|real|who are you|your identity)\\b"
     ]
