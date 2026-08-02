@@ -1638,6 +1638,11 @@ class GaladrielAgent:
         if isinstance(user_message, str):
             matched = scan_text_for_recalls(user_message, active_recalls)
             new_matches = [m for m in matched if m.get("recall_id") not in notified_recall_ids]
+            
+            if new_matches:
+                from .recall import filter_satisfied_recalls_with_llm
+                new_matches = await filter_satisfied_recalls_with_llm(new_matches, messages)
+                
             if new_matches:
                 for m in new_matches:
                     notified_recall_ids.add(m.get("recall_id"))
@@ -1870,6 +1875,11 @@ class GaladrielAgent:
                     matched += scan_text_for_recalls(turn_thought, active_recalls)
 
                 new_matches = [m for m in matched if m.get("recall_id") not in notified_recall_ids]
+                
+                if new_matches:
+                    from .recall import filter_satisfied_recalls_with_llm
+                    new_matches = await filter_satisfied_recalls_with_llm(new_matches, messages)
+                    
                 if new_matches:
                     for m in new_matches:
                         notified_recall_ids.add(m.get("recall_id"))
