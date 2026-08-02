@@ -70,6 +70,9 @@ def _load_module(path: Path) -> ModuleType | None:
     except Exception as exc:
         log.warning("failed to load personal tool module %s: %s", path, exc)
         return None
+    except SystemExit as exc:
+        log.warning("personal tool module %s attempted to exit (SystemExit): %s", path, exc)
+        return None
     return module
 
 

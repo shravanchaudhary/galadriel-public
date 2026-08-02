@@ -972,6 +972,12 @@ async def execute_tool(
             f"[tool error] {name} failed: {type(e).__name__}: {e}. "
             "Fix the arguments (or try another approach) and call again."
         )
+    except SystemExit as e:
+        log.warning(f"tool {name} attempted to exit (SystemExit): {e}", exc_info=True)
+        return (
+            f"[tool error] {name} failed: process attempted to exit via SystemExit: {e}. "
+            "The execution was aborted to protect the runtime."
+        )
 
 
 async def _execute_tool_impl(
