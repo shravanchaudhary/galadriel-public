@@ -833,7 +833,6 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
         if loop:
             return asyncio.run_coroutine_threadsafe(coro, loop).result()
         else:
-            import asyncio
             new_loop = asyncio.new_event_loop()
             try:
                 return new_loop.run_until_complete(coro)
