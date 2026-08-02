@@ -36,7 +36,6 @@ STABLE_FILES = (
     "SOUL.md",
     "MEMORY.md",
     "GUARDRAILS.md",
-    "RECALL.md",
     "JOBS.md",
 )
 VISIONS_DIR = "visions"

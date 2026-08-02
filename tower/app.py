@@ -823,6 +823,97 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
             "persisted": True,
         })
 
+    def _run_async(coro):
+        loop = None
+        if scheduler and hasattr(scheduler, "_loop") and scheduler._loop.is_running():
+            loop = scheduler._loop
+        elif worker and hasattr(worker, "_loop") and worker._loop.is_running():
+            loop = worker._loop
+
+        if loop:
+            return asyncio.run_coroutine_threadsafe(coro, loop).result()
+        else:
+            import asyncio
+            new_loop = asyncio.new_event_loop()
+            try:
+                return new_loop.run_until_complete(coro)
+            finally:
+                new_loop.close()
+
+    @app.route("/api/recalls", methods=["GET"])
+    def api_get_recalls():
+        from harness.recall import fetch_all_recalls
+        try:
+            recalls = _run_async(fetch_all_recalls())
+            return jsonify({"status": "ok", "recalls": recalls})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/recalls", methods=["POST"])
+    def api_create_recall():
+        data = request.json or {}
+        instruction = data.get("instruction", "").strip()
+        tags = data.get("regex_tags", [])
+        if not instruction:
+            return jsonify({"error": "Instruction is required"}), 400
+        
+        from harness.tools import _set_recall
+        try:
+            result = _run_async(_set_recall(instruction))
+            if "[error]" in result:
+                return jsonify({"error": result}), 500
+            return jsonify({"status": "ok", "message": result})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/recalls/<recall_id>/toggle", methods=["POST"])
+    def api_toggle_recall(recall_id):
+        from harness.db_ops import get_db
+        from bson import ObjectId
+        
+        async def _toggle():
+            db = get_db()
+            if not db:
+                return jsonify({"error": "No database"}), 500
+            try:
+                coll = db["recalls"]
+                doc = await coll.find_one({"_id": ObjectId(recall_id)})
+                if not doc:
+                    return jsonify({"error": "Recall not found"}), 404
+                new_state = not doc.get("enabled", True)
+                await coll.update_one({"_id": ObjectId(recall_id)}, {"$set": {"enabled": new_state}})
+                return jsonify({"status": "ok", "enabled": new_state})
+            except Exception as e:
+                return jsonify({"error": str(e)}), 500
+
+        try:
+            return _run_async(_toggle())
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/recalls/<recall_id>", methods=["DELETE"])
+    def api_delete_recall(recall_id):
+        from harness.db_ops import get_db
+        from bson import ObjectId
+        
+        async def _delete():
+            db = get_db()
+            if not db:
+                return jsonify({"error": "No database"}), 500
+            try:
+                coll = db["recalls"]
+                res = await coll.delete_one({"_id": ObjectId(recall_id)})
+                if res.deleted_count == 0:
+                    return jsonify({"error": "Recall not found"}), 404
+                return jsonify({"status": "ok"})
+            except Exception as e:
+                return jsonify({"error": str(e)}), 500
+                
+        try:
+            return _run_async(_delete())
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
     # ── Experiential-state API ───────────────────────────────────
 
     def _experiential_payload():

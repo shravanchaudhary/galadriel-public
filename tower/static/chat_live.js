@@ -162,7 +162,7 @@ window.ChatLive = (function () {
                 const raw = frame.slice(5).trim();
                 if (!raw) continue;
                 const stick = atBottom(log);
-                handleEvent(JSON.parse(raw), turn, log);
+                turn = handleEvent(JSON.parse(raw), turn, log);
                 if (stick) toBottom(log);
             }
         }

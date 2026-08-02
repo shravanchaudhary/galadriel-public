@@ -17,21 +17,34 @@ Connection comes from the environment, inherited from the harness:
 """
 
 import os
+import asyncio
+import weakref
 
 from pymongo import AsyncMongoClient
 
-_client: AsyncMongoClient | None = None
+_clients = weakref.WeakKeyDictionary()
 
 
 def get_client() -> AsyncMongoClient:
     """Return a process-cached async client. Bound to the running loop on first await."""
-    global _client
-    if _client is None:
-        uri = os.environ.get("MONGO_URI")
-        if not uri:
-            raise RuntimeError("MONGO_URI not set in environment")
-        _client = AsyncMongoClient(uri)
-    return _client
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop is not None and loop in _clients:
+        return _clients[loop]
+
+    uri = os.environ.get("MONGO_URI")
+    if not uri:
+        raise RuntimeError("MONGO_URI not set in environment")
+        
+    client = AsyncMongoClient(uri)
+    
+    if loop is not None:
+        _clients[loop] = client
+        
+    return client
 
 
 def get_db(name: str | None = None):

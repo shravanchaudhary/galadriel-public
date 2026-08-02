@@ -51,6 +51,20 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "set_recall",
+        "description": "Create or update a reactive recall instruction. Use this when you are asked to remember a rule or recurring job (e.g. 'whenever I ask for something daily, create a recurring job'). The system will automatically generate trigger phrases (regexes) and either merge with an existing recall or create a new one.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "instruction": {
+                    "type": "string",
+                    "description": "The exact instruction or behavior you should remember and perform when triggered.",
+                },
+            },
+            "required": ["instruction"],
+        },
+    },
+    {
         "name": "wait",
         "description": (
             "Pause execution. Two modes:\n"
@@ -1014,6 +1028,8 @@ async def _execute_tool_impl(
         )
     elif name == "read_file":
         return await _read_file(inputs["path"])
+    elif name == "set_recall":
+        return await _set_recall(inputs["instruction"])
     elif name == "write_file":
         return await _write_file(inputs["path"], inputs["content"])
     elif name == "browser":
@@ -1828,6 +1844,133 @@ def _tail_file(path: Path) -> str:
     except Exception:
         return ""
 
+
+async def _set_recall(instruction: str) -> str:
+    """Implement reactive recall registration via compaction LLM."""
+    from .db_ops import get_db
+    from .model_registry import get_provider
+    from .recall import fetch_all_recalls
+    import json
+    
+    provider = get_provider("compaction")
+    
+    prompt = f"""
+You are a regex generator. Given an instruction, extract 3 to 5 broad trigger phrases that a user might say when they want this instruction to be executed.
+Return a JSON array of strings, where each string is a Python regex (case-insensitive will be applied later).
+
+Rules:
+- Keep the regexes simple, e.g. "\\\\b(phrase one|phrase two)\\\\b"
+- Do not use complex lookaheads/lookbehinds unless necessary.
+- Return ONLY valid JSON, no markdown blocks.
+
+Instruction:
+"{instruction}"
+"""
+    try:
+        resp = await provider.create_message(
+            model=provider.model_for("compaction"),
+            max_tokens=300,
+            system=[{"type": "text", "text": "You are a regex generator that outputs only JSON arrays."}],
+            tools=[],
+            messages=[{"role": "user", "content": prompt}]
+        )
+        clean_resp = resp.content[0]["text"].strip() if isinstance(resp.content, list) else resp.content.strip()
+        if clean_resp.startswith("```json"):
+            clean_resp = clean_resp[7:-3].strip()
+        elif clean_resp.startswith("```"):
+            clean_resp = clean_resp[3:-3].strip()
+            
+        generated_tags = json.loads(clean_resp)
+        if not isinstance(generated_tags, list):
+            generated_tags = [str(x) for x in generated_tags]
+    except Exception as e:
+        log.error(f"set_recall regex generation failed: {e}")
+        return f"[error] Failed to generate tags for recall: {e}"
+
+    all_recalls = await fetch_all_recalls()
+    
+    compare_prompt = f"""
+We are adding a new reactive recall instruction.
+New Instruction: {instruction}
+Generated Tags: {json.dumps(generated_tags)}
+
+Here are the existing active recalls:
+{json.dumps(all_recalls, indent=2)}
+
+Decide if the new instruction should be merged into an EXISTING_RECALL or if a NEW_RECALL should be created.
+- If it's a duplicate or close variation of an existing recall, merge it.
+- If it's distinct, create a new one.
+- If merging into a "system" recall, we MUST create a NEW_RECALL instead because system recalls are read-only.
+
+Return ONLY valid JSON matching this schema:
+For existing: {{"decision": "EXISTING_RECALL", "recall_id": "id", "regexes_to_add": ["regex1"]}}
+For new: {{"decision": "NEW_RECALL", "instruction": "the instruction", "regex_tags": ["regex1", "regex2"]}}
+"""
+    
+    try:
+        resp = await provider.create_message(
+            model=provider.model_for("compaction"),
+            max_tokens=500,
+            system=[{"type": "text", "text": "You output only JSON objects."}],
+            tools=[],
+            messages=[{"role": "user", "content": compare_prompt}]
+        )
+        clean_resp = resp.content[0]["text"].strip() if isinstance(resp.content, list) else resp.content.strip()
+        if clean_resp.startswith("```json"):
+            clean_resp = clean_resp[7:-3].strip()
+        elif clean_resp.startswith("```"):
+            clean_resp = clean_resp[3:-3].strip()
+            
+        decision = json.loads(clean_resp)
+    except Exception as e:
+        log.error(f"set_recall decision failed: {e}")
+        return f"[error] Failed to decide recall merging: {e}"
+
+    db = get_db()
+    if not db:
+        return "[error] No DB connection available."
+        
+    from datetime import datetime, timezone
+    coll = db["recalls"]
+    now = datetime.now(timezone.utc)
+    
+    if decision.get("decision") == "EXISTING_RECALL":
+        r_id = decision.get("recall_id")
+        to_add = decision.get("regexes_to_add", [])
+        if not to_add:
+            return f"No update needed. Instruction matched existing recall '{r_id}'."
+            
+        try:
+            from bson import ObjectId
+            updated = await coll.find_one_and_update(
+                {"_id": ObjectId(r_id)},
+                {
+                    "$addToSet": {"regex_tags": {"$each": to_add}},
+                    "$set": {"updated_at": now}
+                },
+                return_document=True
+            )
+            if updated:
+                return f"Merged successfully. Updated recall '{r_id}' with new tags."
+            else:
+                return f"[error] Existing recall '{r_id}' not found in user DB."
+        except Exception as e:
+            return f"[error] Failed to update existing recall: {e}"
+            
+    else:
+        doc = {
+            "instruction": decision.get("instruction", instruction),
+            "regex_tags": decision.get("regex_tags", generated_tags),
+            "enabled": True,
+            "created_by": "agent",
+            "created_at": now,
+            "updated_at": now
+        }
+        try:
+            result = await coll.insert_one(doc)
+            return f"Created new recall with ID '{result.inserted_id}' and {len(doc['regex_tags'])} trigger tags."
+        except Exception as e:
+            return f"[error] Failed to insert new recall: {e}"
 
 async def _read_file(path: str) -> str:
     """Read a file's contents without blocking the event loop."""

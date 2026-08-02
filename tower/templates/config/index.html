@@ -117,6 +117,29 @@
         {% endfor %}
     </div>
 </section>
+
+<section class="settings-section">
+    <div class="settings-section-head">
+        <h2 class="settings-section-title">Reactive Recalls</h2>
+        <p class="settings-section-desc">View and manage automated system and user nudges</p>
+    </div>
+    <div class="settings-rows" style="margin-bottom: 1rem; border: 1px solid var(--border-subtle); border-radius: 6px; padding: 1rem;">
+        <h3 style="margin-top: 0; margin-bottom: 0.5rem; font-size: 0.9rem; color: var(--text-main);">Create New Recall</h3>
+        <p class="settings-row-hint" style="margin-bottom: 0.75rem;">Enter an instruction and the system will auto-generate regex triggers to intercept the agent.</p>
+        <div class="settings-inline-form" style="display: flex; gap: 0.5rem;">
+            <input type="text" id="new-recall-instruction" placeholder="e.g. 'Whenever I ask for daily updates, create a recurring job'" style="flex: 1;" autocomplete="off">
+            <button type="button" class="btn btn-small" id="create-recall-btn" onclick="createRecall()">Create</button>
+        </div>
+        <div id="create-recall-status" class="settings-row-hint" style="margin-top: 0.5rem; display: none;"></div>
+    </div>
+    <div class="settings-list" id="recalls-list">
+        <div class="settings-list-item">
+            <span class="settings-list-content">
+                <span class="settings-list-title muted">Loading recalls...</span>
+            </span>
+        </div>
+    </div>
+</section>
 {% endblock %}
 
 {% block scripts %}
@@ -410,8 +433,126 @@ async function deleteProviderKey() {
     await refreshProviderKeys();
 }
 
+async function createRecall() {
+    const input = document.getElementById('new-recall-instruction');
+    const btn = document.getElementById('create-recall-btn');
+    const status = document.getElementById('create-recall-status');
+    const instruction = input.value.trim();
+    
+    if (!instruction) {
+        if (window.towerToast) window.towerToast('Please enter an instruction', { type: 'error' });
+        return;
+    }
+    
+    btn.disabled = true;
+    btn.textContent = 'Generating...';
+    status.style.display = 'block';
+    status.style.color = 'inherit';
+    status.textContent = 'Using LLM to generate regex triggers and merge logic...';
+    
+    try {
+        const response = await fetch('/api/recalls', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ instruction })
+        });
+        const data = await response.json();
+        
+        if (!response.ok) {
+            throw new Error(data.error || 'Failed to create recall');
+        }
+        
+        input.value = '';
+        status.style.color = 'var(--text-ok)';
+        status.textContent = data.message || 'Recall created successfully!';
+        
+        // Reload list
+        await loadRecalls();
+        
+        // Hide success message after 4s
+        setTimeout(() => {
+            if (status.textContent.includes('successfully') || status.textContent.includes('Created') || status.textContent.includes('Merged')) {
+                status.style.display = 'none';
+            }
+        }, 4000);
+        
+    } catch (err) {
+        console.error(err);
+        status.style.color = 'red';
+        status.textContent = err.message;
+        if (window.towerToast) window.towerToast(err.message, { type: 'error' });
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Create';
+    }
+}
+
+async function loadRecalls() {
+    try {
+        const response = await fetch('/api/recalls');
+        if (!response.ok) throw new Error('Failed to load recalls');
+        const data = await response.json();
+        const list = document.getElementById('recalls-list');
+        list.innerHTML = '';
+        if (!data.recalls || data.recalls.length === 0) {
+            list.innerHTML = '<div class="settings-list-item"><span class="settings-list-content"><span class="settings-list-title muted">No recalls active.</span></span></div>';
+            return;
+        }
+        for (const recall of data.recalls) {
+            const item = document.createElement('div');
+            item.className = 'settings-list-item';
+            
+            const content = document.createElement('span');
+            content.className = 'settings-list-content';
+            
+            const title = document.createElement('span');
+            title.className = 'settings-list-title';
+            title.textContent = recall.instruction;
+            
+            const note = document.createElement('span');
+            note.className = 'settings-list-note';
+            note.textContent = `Regexes: ${(recall.regex_tags || []).join(', ')} | Source: ${recall.source}`;
+            
+            content.appendChild(title);
+            content.appendChild(note);
+            item.appendChild(content);
+            
+            if (recall.source === 'user') {
+                const actions = document.createElement('div');
+                actions.className = 'settings-row-control';
+                
+                const toggle = document.createElement('button');
+                toggle.className = 'btn btn-small';
+                toggle.textContent = recall.enabled === false ? 'Enable' : 'Disable';
+                toggle.onclick = async () => {
+                    await fetch(`/api/recalls/${recall.recall_id}/toggle`, {method: 'POST'});
+                    loadRecalls();
+                };
+                
+                const del = document.createElement('button');
+                del.className = 'btn btn-small btn-secondary';
+                del.textContent = 'Delete';
+                del.onclick = async () => {
+                    await fetch(`/api/recalls/${recall.recall_id}`, {method: 'DELETE'});
+                    loadRecalls();
+                };
+                
+                actions.appendChild(toggle);
+                actions.appendChild(del);
+                item.appendChild(actions);
+            }
+            
+            list.appendChild(item);
+        }
+    } catch (e) {
+        console.error(e);
+        document.getElementById('recalls-list').innerHTML = '<div class="settings-list-item"><span class="settings-list-content"><span class="settings-list-title muted" style="color:red">Error loading recalls.</span></span></div>';
+    }
+}
+
 initTimezoneMenu();
 refreshExperientialState();
 refreshProviderKeys(true);
+loadRecalls();
 </script>
 {% endblock %}

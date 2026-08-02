@@ -111,7 +111,9 @@ def _direct_history(events: list[dict]) -> list[dict]:
         role = event.get("role")
         text = _content_text(event.get("content"))
         if role == "user":
-            history.append({"role": "user", "text": ui_ctx.display_user_text(text)})
+            disp = ui_ctx.display_user_text(text)
+            if disp:
+                history.append({"role": "user", "text": disp})
         elif role == "assistant":
             blocks: list[dict] = []
             thought = (event.get("thought") or "").strip()
@@ -120,7 +122,10 @@ def _direct_history(events: list[dict]) -> list[dict]:
             if text:
                 blocks.append({"type": "text", "text": text})
             if blocks:
-                history.append({"role": "assistant", "blocks": blocks})
+                if history and history[-1]["role"] == "assistant":
+                    history[-1]["blocks"].extend(blocks)
+                else:
+                    history.append({"role": "assistant", "blocks": blocks})
     return history
 
 

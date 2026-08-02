@@ -43,11 +43,15 @@ def format_overlay_system_block(context: dict | str | None) -> str | None:
 def display_user_text(stored: str) -> str:
     """Strip Tower overlay wrapper from stored user messages for UI display."""
     if _OVERLAY_MARKER in stored:
-        return stored.split(_OVERLAY_MARKER, 1)[1].strip()
-    if stored.startswith(_OVERLAY_PREFIX):
-        return "(Tower overlay message)"
-    if stored.startswith("[Tower]: "):
-        return stored[len("[Tower]: "):]
+        stored = stored.split(_OVERLAY_MARKER, 1)[1].strip()
+    elif stored.startswith(_OVERLAY_PREFIX):
+        stored = "(Tower overlay message)"
+    elif stored.startswith("[Tower]: "):
+        stored = stored[len("[Tower]: "):]
+        
+    if "⚡ **Automated Nudge:**" in stored:
+        idx = stored.find("⚡ **Automated Nudge:**")
+        return stored[:idx].strip()
     return stored
 
 
@@ -183,11 +187,16 @@ def serialize_chat_history(messages: list) -> list[dict]:
         role = msg.get("role")
         content = msg.get("content")
         if role == "user" and isinstance(content, str):
-            history.append({"role": "user", "text": display_user_text(content)})
+            disp = display_user_text(content)
+            if disp:
+                history.append({"role": "user", "text": disp})
             i += 1
             blocks, i = _serialize_assistant_turn(messages, i)
             if blocks:
-                history.append({"role": "assistant", "blocks": blocks})
+                if not disp and history and history[-1]["role"] == "assistant":
+                    history[-1]["blocks"].extend(blocks)
+                else:
+                    history.append({"role": "assistant", "blocks": blocks})
         elif role == "user" and isinstance(content, list) and not _is_tool_results(content):
             # Multimodal user message (text + image blocks from Discord/Slack/Tower).
             texts = [_block_text(b) for b in content if _block_type(b) == "text"]
@@ -196,11 +205,16 @@ def serialize_chat_history(messages: list) -> list[dict]:
             if n_images:
                 marker = f"[{n_images} image(s) attached]"
                 text = f"{text}\n{marker}" if text else marker
-            history.append({"role": "user", "text": text})
+            
+            if text:
+                history.append({"role": "user", "text": text})
             i += 1
             blocks, i = _serialize_assistant_turn(messages, i)
             if blocks:
-                history.append({"role": "assistant", "blocks": blocks})
+                if not text and history and history[-1]["role"] == "assistant":
+                    history[-1]["blocks"].extend(blocks)
+                else:
+                    history.append({"role": "assistant", "blocks": blocks})
         else:
             i += 1
     return history

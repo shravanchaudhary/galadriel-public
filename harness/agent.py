@@ -1631,13 +1631,47 @@ class GaladrielAgent:
         # user_message is appended untouched, so the daily log records the real
         # message exactly once — compaction never double-logs. Context size is
         # managed solely by compaction (no routine message-count trim).
-        messages.append({"role": "user", "content": user_message})
-        if tick_recorder is not None:
-            await tick_recorder.record_message(messages[-1])
-        if run_recorder is not None:
-            await run_recorder.record_message(
-                messages[-1], visibility="user", kind="direct_user",
-            )
+        from .recall import fetch_all_recalls, scan_text_for_recalls, generate_nudge
+        active_recalls = await fetch_all_recalls()
+        notified_recall_ids = set()
+
+        if isinstance(user_message, str):
+            matched = scan_text_for_recalls(user_message, active_recalls)
+            new_matches = [m for m in matched if m.get("recall_id") not in notified_recall_ids]
+            if new_matches:
+                for m in new_matches:
+                    notified_recall_ids.add(m.get("recall_id"))
+                nudge_text = generate_nudge(new_matches)
+                log.info(f"User message triggered recall match: {nudge_text!r}")
+                log.debug(f"Intercepted User Message:\n{user_message}")
+                
+                # If modifying user_message, record original for the UI, then append the nudge for the LLM.
+                # Actually, the easiest is to just append the nudge as a separate message AFTER the user message.
+                
+                combined_content = f"{user_message}\n\n{nudge_text}"
+                messages.append({"role": "user", "content": combined_content})
+                
+                if tick_recorder is not None:
+                    await tick_recorder.record_message(messages[-1])
+                if run_recorder is not None:
+                    await run_recorder.record_message(
+                        messages[-1], visibility="user", kind="direct_user",
+                    )
+                
+                user_message_recorded = True
+            else:
+                user_message_recorded = False
+        else:
+            user_message_recorded = False
+
+        if not user_message_recorded:
+            messages.append({"role": "user", "content": user_message})
+            if tick_recorder is not None:
+                await tick_recorder.record_message(messages[-1])
+            if run_recorder is not None:
+                await run_recorder.record_message(
+                    messages[-1], visibility="user", kind="direct_user",
+                )
 
         # System blocks: stable + dynamic + snapshot + advisory. Rebuilt after
         # any mid-loop / max_tokens compaction so it never goes stale.
@@ -1747,12 +1781,12 @@ class GaladrielAgent:
                     messages=messages_for_api,
                 ):
                     self._check_cancelled(channel_id)
-                    if kind == "message":
-                        response = payload
-                    elif kind == "thought":
+                    if kind == "thought":
                         turn_thought += payload
                         await emit({"type": kind, "text": payload})
-                    else:  # "text"
+                    elif kind == "message":
+                        response = payload
+                    else:
                         await emit({"type": kind, "text": payload})
             else:
                 response = await provider.create_message(
@@ -1810,6 +1844,7 @@ class GaladrielAgent:
 
             # Now serialize for storage
             assistant_content = _serialize_content(response.content)
+
             assistant_msg: dict = {"role": "assistant", "content": assistant_content}
             if turn_thought.strip():
                 assistant_msg["_thought"] = turn_thought.strip()
@@ -1820,6 +1855,45 @@ class GaladrielAgent:
                 await run_recorder.record_message(assistant_msg)
             log.info(f"Response stop_reason: {response.stop_reason}")
             self._check_cancelled(channel_id)
+
+            # Recalls are bypassed when stop_reason == "tool_use" or "max_tokens"
+            if response.stop_reason == "end_turn":
+                text_parts = [
+                    block["text"]
+                    for block in (assistant_content if isinstance(assistant_content, list) else [])
+                    if isinstance(block, dict) and block.get("type") == "text"
+                ]
+                final_text = "\n".join(text_parts).strip() if text_parts else ""
+
+                matched = scan_text_for_recalls(final_text, active_recalls)
+                if turn_thought:
+                    matched += scan_text_for_recalls(turn_thought, active_recalls)
+
+                new_matches = [m for m in matched if m.get("recall_id") not in notified_recall_ids]
+                if new_matches:
+                    for m in new_matches:
+                        notified_recall_ids.add(m.get("recall_id"))
+                    nudge_text = generate_nudge(new_matches)
+                    log.info(f"Recall triggered after output: {nudge_text!r}")
+                    
+                    nudge_prompt = (
+                        f"{nudge_text}\n\n"
+                        f"(System: This is a proactive nudge based on your previous response. "
+                        f"It can be ignored if it's not applicable. You do not need to redraw "
+                        f"or apologize for the previous output. If you missed something essential "
+                        f"and important, just acknowledge it and continue/fix it using tools. "
+                        f"If no further action is needed, do not output any text.)"
+                    )
+                    
+                    messages.append({"role": "user", "content": nudge_prompt})
+                    if tick_recorder is not None:
+                        await tick_recorder.record_message(messages[-1])
+                    if run_recorder is not None:
+                        await run_recorder.record_message(
+                            messages[-1], visibility="system", kind="direct_user"
+                        )
+                    # Removed emit to hide the nudge on the UI
+                    continue
 
             if response.stop_reason == "end_turn":
                 max_tokens_retries = 0  # Reset counter on success
@@ -1834,6 +1908,7 @@ class GaladrielAgent:
                 # the literal "(no response)" which got piped verbatim to
                 # Discord and confused the user.
                 final_text = "\n".join(text_parts).strip() if text_parts else ""
+
                 meaningful_outcome = self._should_appraise_outcome(
                     episode,
                     final_text,
