@@ -41,7 +41,7 @@ LABEL org.opencontainers.image.title="Replika" \
 # is used only by the ECS task's short-lived network init sidecar, never by the
 # unprivileged application container.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        adb ca-certificates curl libgomp1 iptables \
+        adb ca-certificates curl bubblewrap libgomp1 iptables \
     && curl --fail --silent --show-error \
         --output /etc/ssl/certs/rds-global-bundle.pem \
         https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem \

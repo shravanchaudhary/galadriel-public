@@ -1007,10 +1007,6 @@ async def _execute_tool_impl(
         if personal_result is not None:
             return personal_result
     if name == "run_shell":
-        from .path_policy import managed_runtime
-
-        if managed_runtime():
-            return "[blocked] Shell access is disabled in managed Replika runtimes."
         from .safety import is_db_freestyle, is_git_command
         if is_git_command(inputs["command"]):
             return (
@@ -1751,12 +1747,64 @@ def _generate_totp(secret_key: str) -> str:
 async def _run_shell(command: str, working_dir: str = None) -> str:
     """Execute a shell command asynchronously with a timeout."""
     cwd = working_dir or os.getcwd()
+    
+    from .path_policy import managed_runtime
+    
+    if managed_runtime():
+        import os
+        from .path_policy import storage_root
+        
+        ro_binds = []
+        for p in ["/usr", "/bin", "/lib", "/lib64", "/etc", "/opt", cwd]:
+            if os.path.exists(p):
+                ro_binds.extend(["--ro-bind", p, p])
+        
+        # explicitly hide .env to prevent secret exfiltration
+        env_file = os.path.join(cwd, ".env")
+        if os.path.exists(env_file):
+            ro_binds.extend(["--ro-bind", "/dev/null", env_file])
+        
+        storage = str(storage_root())
+        rw_binds = ["--bind", storage, storage]
+        
+        bwrap_cmd = [
+            "bwrap",
+            "--unshare-pid",
+            "--unshare-ipc",
+            "--unshare-uts",
+            "--unshare-user",
+            "--unshare-cgroup-try",
+            "--share-net",
+            "--new-session",
+            "--die-with-parent",
+            "--proc", "/proc",
+            "--dev", "/dev",
+            "--tmpfs", "/tmp",
+        ] + ro_binds + rw_binds + [
+            "--chdir", cwd,
+            "bash", "-c", command
+        ]
+        
+        import shlex
+        exec_command = " ".join(shlex.quote(arg) for arg in bwrap_cmd)
+        env = {
+            "PATH": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+            "HOME": cwd,
+            "TERM": "xterm-256color",
+            "LANG": "C.UTF-8",
+            "LC_ALL": "C.UTF-8",
+        }
+    else:
+        exec_command = command
+        env = None
+
     try:
         proc = await asyncio.create_subprocess_shell(
-            command,
+            exec_command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
+            env=env
         )
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)

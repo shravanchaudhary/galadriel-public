@@ -35,7 +35,6 @@ def managed_runtime() -> bool:
 def storage_root() -> Path:
     return Path(os.environ.get("GALADRIEL_STORAGE_ROOT", "/mnt/efs")).expanduser().resolve()
 
-
 def writable_roots() -> tuple[Path, ...]:
     configured = os.environ.get("GALADRIEL_AGENT_WRITABLE_DIRS")
     if configured:
