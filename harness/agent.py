@@ -1891,7 +1891,7 @@ class GaladrielAgent:
                         f"(System: This is a proactive nudge based on your previous response. "
                         f"It can be ignored if it's not applicable. You do not need to redraw "
                         f"or apologize for the previous output. If you missed something essential "
-                        f"and important, just acknowledge it and continue/fix it by calling the appropriate tool natively (do NOT just print the tool call as text). "
+                        f"and important, just acknowledge it and take action (if a tool call is needed, call it natively; do NOT just print the tool call as text). "
                         f"If no further action is needed, do not output any text.)"
                     )
                     
