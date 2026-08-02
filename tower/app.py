@@ -865,6 +865,32 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
+    @app.route("/api/recalls/test", methods=["POST"])
+    def api_test_recalls():
+        data = request.json or {}
+        text = data.get("text", "")
+        model = data.get("model", "fastembed")
+        
+        from harness.recall import fetch_all_recalls, scan_text_for_recalls
+        
+        async def _test():
+            recalls = await fetch_all_recalls()
+            matches = scan_text_for_recalls(text, recalls, force_encoder_type=model)
+            # Remove mongo objects or make serializable
+            res = []
+            for m in matches:
+                m_copy = dict(m)
+                if "_id" in m_copy:
+                    m_copy["_id"] = str(m_copy["_id"])
+                res.append(m_copy)
+            return res
+            
+        try:
+            matches = _run_async(_test())
+            return jsonify({"status": "ok", "matches": matches})
+        except Exception as e:
+            return jsonify({"status": "error", "error": str(e)}), 500
+
     @app.route("/api/recalls/<recall_id>/toggle", methods=["POST"])
     def api_toggle_recall(recall_id):
         from harness.db_ops import get_db

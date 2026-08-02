@@ -140,6 +140,30 @@
         </div>
     </div>
 </section>
+
+<section class="settings-section" style="margin-top: 2rem;">
+    <h2 class="settings-section-title">Test Semantic Recalls</h2>
+    <p class="settings-section-desc">Test how the semantic router matches your text against active recalls</p>
+    
+    <div class="settings-row" style="flex-direction: column; align-items: flex-start; gap: 0.5rem; margin-bottom: 1rem;">
+        <label for="recall-test-model">Encoder Model</label>
+        <select id="recall-test-model" style="padding: 0.25rem;">
+            <option value="fastembed">FastEmbed (Local - BAAI/bge-small-en-v1.5)</option>
+            <option value="gemini">Gemini (text-embedding-004)</option>
+        </select>
+    </div>
+
+    <div class="settings-row" style="flex-direction: column; align-items: flex-start; gap: 0.5rem;">
+        <label for="recall-test-text">Input Text to Test</label>
+        <textarea id="recall-test-text" rows="4" style="width: 100%; padding: 0.5rem; background: var(--bg-primary); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 4px;" placeholder="Type a sentence or paragraph to see which recalls it triggers..."></textarea>
+        <button type="button" class="btn" id="test-recall-btn" onclick="testRecalls()">Run Test</button>
+    </div>
+    
+    <div id="recall-test-results" style="margin-top: 1rem; padding: 1rem; background: var(--bg-hover); border-radius: 4px; display: none;">
+        <h3 style="margin-top: 0; font-size: 0.9rem; margin-bottom: 0.5rem;">Matched Recalls:</h3>
+        <div id="recall-test-matches"></div>
+    </div>
+</section>
 {% endblock %}
 
 {% block scripts %}
@@ -547,6 +571,67 @@ async function loadRecalls() {
     } catch (e) {
         console.error(e);
         document.getElementById('recalls-list').innerHTML = '<div class="settings-list-item"><span class="settings-list-content"><span class="settings-list-title muted" style="color:red">Error loading recalls.</span></span></div>';
+    }
+}
+
+async function testRecalls() {
+    const text = document.getElementById('recall-test-text').value.trim();
+    const model = document.getElementById('recall-test-model').value;
+    const btn = document.getElementById('test-recall-btn');
+    const resultsDiv = document.getElementById('recall-test-results');
+    const matchesDiv = document.getElementById('recall-test-matches');
+    
+    if (!text) return;
+    
+    btn.disabled = true;
+    btn.textContent = 'Testing...';
+    resultsDiv.style.display = 'block';
+    matchesDiv.innerHTML = '<span class="muted">Running semantic scan... (this may take a moment if loading the model)</span>';
+    
+    try {
+        const response = await fetch('/api/recalls/test', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ text, model })
+        });
+        
+        const data = await response.json();
+        
+        if (!response.ok) {
+            throw new Error(data.error || 'Test failed');
+        }
+        
+        matchesDiv.innerHTML = '';
+        
+        if (!data.matches || data.matches.length === 0) {
+            matchesDiv.innerHTML = '<span class="muted">No recalls matched this text.</span>';
+        } else {
+            data.matches.forEach(m => {
+                const item = document.createElement('div');
+                item.style.marginBottom = '0.5rem';
+                item.style.padding = '0.5rem';
+                item.style.background = 'var(--bg-primary)';
+                item.style.borderLeft = '3px solid var(--accent-color)';
+                
+                const title = document.createElement('strong');
+                title.textContent = m.recall_id;
+                title.style.display = 'block';
+                
+                const instr = document.createElement('span');
+                instr.textContent = m.instruction;
+                instr.style.fontSize = '0.85em';
+                
+                item.appendChild(title);
+                item.appendChild(instr);
+                matchesDiv.appendChild(item);
+            });
+        }
+    } catch (e) {
+        console.error(e);
+        matchesDiv.innerHTML = `<span style="color: var(--text-error)">Error: ${e.message}</span>`;
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Run Test';
     }
 }
 

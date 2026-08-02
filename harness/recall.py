@@ -14,21 +14,29 @@ log = logging.getLogger("galadriel.recall")
 RECALLS_COLLECTION = "recalls"
 
 _ENCODER = None
+_ENCODER_TYPE = None
 _ROUTER_CACHE = None
 _CACHED_RECALL_IDS = set()
 
-def get_encoder():
+def get_encoder(force_type=None):
     """Lazily load and cache the encoder model based on environment config."""
-    global _ENCODER
-    if _ENCODER is not None:
-        return _ENCODER
+    global _ENCODER, _ENCODER_TYPE, _ROUTER_CACHE, _CACHED_RECALL_IDS
     
-    encoder_type = os.environ.get("RECALL_ENCODER", "fastembed").lower()
+    encoder_type = (force_type or os.environ.get("RECALL_ENCODER", "fastembed")).lower()
+    
+    if _ENCODER is not None and _ENCODER_TYPE == encoder_type:
+        return _ENCODER
+        
+    # If encoder type changed, clear the router cache
+    if _ENCODER is not None:
+        _ROUTER_CACHE = None
+        _CACHED_RECALL_IDS = set()
     
     if encoder_type == "gemini":
         try:
             from semantic_router.encoders import GoogleEncoder
             _ENCODER = GoogleEncoder(name="models/text-embedding-004")
+            _ENCODER_TYPE = "gemini"
             log.info("Initialized Gemini encoder for semantic router")
         except Exception as e:
             log.warning(f"Failed to load GoogleEncoder, falling back to fastembed: {e}")
@@ -38,15 +46,19 @@ def get_encoder():
         from semantic_router.encoders import FastEmbedEncoder
         # Use a fast local model, doesn't block the app
         _ENCODER = FastEmbedEncoder(name="BAAI/bge-small-en-v1.5")
+        _ENCODER_TYPE = "fastembed"
         log.info("Initialized FastEmbedEncoder for semantic router")
         
     return _ENCODER
 
-def get_semantic_router(recalls: list[dict]) -> SemanticRouter:
+def get_semantic_router(recalls: list[dict], force_encoder_type=None) -> SemanticRouter:
     """Get or build the SemanticRouter for the current set of recalls."""
     global _ROUTER_CACHE, _CACHED_RECALL_IDS
     
     current_ids = {r.get("recall_id") for r in recalls if r.get("recall_id")}
+    
+    # We call get_encoder first, which will clear _ROUTER_CACHE if the encoder type changed
+    encoder = get_encoder(force_encoder_type)
     
     if _ROUTER_CACHE is not None and current_ids == _CACHED_RECALL_IDS:
         return _ROUTER_CACHE
@@ -70,7 +82,6 @@ def get_semantic_router(recalls: list[dict]) -> SemanticRouter:
     if not routes:
         return None
         
-    encoder = get_encoder()
     _ROUTER_CACHE = SemanticRouter(encoder=encoder, routes=routes, auto_sync="local")
     _CACHED_RECALL_IDS = current_ids
     return _ROUTER_CACHE
@@ -107,12 +118,12 @@ async def fetch_all_recalls() -> list[dict]:
             log.error(f"Failed to fetch user recalls from DB: {e}")
     return recalls
 
-def scan_text_for_recalls(text: str, recalls: list[dict]) -> list[dict]:
+def scan_text_for_recalls(text: str, recalls: list[dict], force_encoder_type=None) -> list[dict]:
     """Scan text against all recalls and return matched recall objects using semantic router."""
     if not text or not recalls:
         return []
     
-    router = get_semantic_router(recalls)
+    router = get_semantic_router(recalls, force_encoder_type)
     if not router:
         return []
         
