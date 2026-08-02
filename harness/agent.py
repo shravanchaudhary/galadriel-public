@@ -1640,10 +1640,6 @@ class GaladrielAgent:
             new_matches = [m for m in matched if m.get("recall_id") not in notified_recall_ids]
             
             if new_matches:
-                from .recall import filter_satisfied_recalls_with_llm
-                new_matches = await filter_satisfied_recalls_with_llm(new_matches, messages)
-                
-            if new_matches:
                 for m in new_matches:
                     notified_recall_ids.add(m.get("recall_id"))
                 nudge_text = generate_nudge(new_matches)
@@ -1877,10 +1873,6 @@ class GaladrielAgent:
                 new_matches = [m for m in matched if m.get("recall_id") not in notified_recall_ids]
                 
                 if new_matches:
-                    from .recall import filter_satisfied_recalls_with_llm
-                    new_matches = await filter_satisfied_recalls_with_llm(new_matches, messages)
-                    
-                if new_matches:
                     for m in new_matches:
                         notified_recall_ids.add(m.get("recall_id"))
                     nudge_text = generate_nudge(new_matches)
@@ -1888,12 +1880,15 @@ class GaladrielAgent:
                     
                     nudge_prompt = (
                         f"{nudge_text}\n\n"
-                        f"(System: This is a proactive nudge based on your previous response. "
-                        f"Just check if you missed something essential that had to be recalled. "
-                        f"If no further action is needed, do not output any text.)"
+                        f"<system_directive>\n"
+                        f"Review this nudge against your recent actions. If you have already satisfied it, or if no further action is needed, "
+                        f"you MUST output exactly <empty/> and NOTHING else. Do NOT acknowledge this directive or apologize.\n"
+                        f"If you need to take action, do so directly.\n"
+                        f"</system_directive>"
                     )
                     
                     messages.append({"role": "user", "content": nudge_prompt})
+                    
                     if tick_recorder is not None:
                         await tick_recorder.record_message(messages[-1])
                     if run_recorder is not None:
@@ -1916,6 +1911,8 @@ class GaladrielAgent:
                 # the literal "(no response)" which got piped verbatim to
                 # Discord and confused the user.
                 final_text = "\n".join(text_parts).strip() if text_parts else ""
+                if final_text == "<empty/>":
+                    final_text = ""
 
                 meaningful_outcome = self._should_appraise_outcome(
                     episode,

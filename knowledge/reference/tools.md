@@ -255,28 +255,20 @@ index** from `state`.
 Every command hits the **active tab**, and the other channel can switch tabs
 between your calls. Without discipline you will type into each other's pages.*
 
-**Contract: one channel = its own tab, registered in `state/browser_tabs.md`,
-and `tab=<index>` passed on every acting call.**
+Browser commands and the Python-side profile lock are the source of truth; there is no filesystem tab registry.
 
-1. **Read the registry first** before ANY browser work.
-2. **Claim a tab** if you don't have one: `browser("tab new <url>")`, confirm
-   with `tab list`, then write your row into `state/browser_tabs.md`.
-3. **Pass `tab=<your index>` on every acting call.** A call without `tab` acts
-   on whatever is active — only safe for tab management.
-4. **Indices shift.** At the start of each work unit, `tab list`, re-find by
-   URL/title, update the registry if the index moved.
-5. **Hands off other tabs.** Never navigate, act on, or close a tab owned by
-   another registry row.
-6. **Clean up** your own tab + registry row when your work unit is fully done.
-7. Element indices stay valid across the other channel's tab switches — refresh
+1. **Start browser work with `tab list`.** If there are many tabs open, clean up by closing old or unused tabs first (`tab close <i>`). Reuse an existing idle tab whenever possible. Do not create a new tab (`tab new <url>`) unless you are certain all existing tabs are actively being used by the other channel.
+2. **Pass `tab=<your index>` on every acting call.** A call without `tab` acts on whatever is active — only safe for tab management. The harness atomically prepends `tab switch <tab>` inside the browser lock.
+3. **Tab indices shift.** At the start of each work unit, `tab list`, re-find the intended tab by URL/title. If it is gone, create a new tab.
+4. **Hands off other tabs.** Never navigate, act on, or close a tab being used by another work unit.
+5. **Clean up** your own tab when your work unit is fully done (`tab close <i>`) unless it is the browser's last tab.
+6. Element indices stay valid across the other channel's tab switches — refresh
    `state` only when *your* page changes.
 
 ### Multiple browser profiles
 
-Named profiles are separate Chromes (own cookie jar + CDP port). Registry:
-`state/browser_profiles.md` (read/edit with file tools). Drive with
-`browser(args, profile="<id>")`. Omit/`main` for the default profile. Read the
-registry rather than guessing from recall.
+Named profiles are separate Chromes (own cookie jar + CDP port). Connection profiles live in the tenant database and are managed through the Python `browser_devices` tool. Drive with
+`browser(args, profile="<id>")`. Omit/`main` for the default profile. Use `browser_devices` action=list to see available profiles.
 
 ### Blocked pages
 

@@ -42,8 +42,6 @@ REQUIRED_MARKDOWN = (
 RUNTIME_ONLY_FILES = (
     "config/ambient_state.json",
     "config/scheduler_state.json",
-    "state/browser_profiles.md",
-    "state/browser_tabs.md",
 )
 FORBIDDEN_IDENTITY = re.compile(
     r"\b(shravan|rachit|clodexa|clyra|galadriel)\b", re.IGNORECASE

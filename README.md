@@ -383,9 +383,7 @@ overwritten by the sync.
 
 Browser state is not file-backed. Connection profiles live in the tenant
 database and are managed through the Python `browser_devices` tool. Tab
-selection and concurrency are handled by browser commands plus the Python-side
-profile lock; do not create `state/browser_profiles.md` or
-`state/browser_tabs.md`.
+selection and concurrency are handled by browser commands plus the Python-side profile lock.
 
 Development workflow:
 

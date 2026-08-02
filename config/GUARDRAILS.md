@@ -26,9 +26,7 @@ job cookbook. Complements `SOUL.md` and `RECALL.md`.
   individual external action — not once per batch.
 - **Safe shell.** Never run complex multi-line / quote-heavy Python inside
   `run_shell`. Write a `tmp_` script via `write_file`, execute it, delete it next.
-- **Keep browser sessions alive.** Never close the last tab; release ownership in
-  `state/browser_tabs.md` instead. Pass `tab=` on acting calls when sharing the
-  browser with the worker.
+- **Keep browser sessions alive.** Never close the last tab; instead, leave it on a blank page if idle. Pass `tab=` on acting calls when sharing the browser with the worker.
 - **Personal tools only for new code tools.** Create/maintain coded tools under
   `personal-tools/`. Never modify `harness/` product tools — image updates own
   that surface; collisions resolve to the developer tool.
