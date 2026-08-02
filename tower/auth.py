@@ -235,10 +235,11 @@ def logout_response(req: Request | None = None):
     scheme = forwarded_proto.strip() or req.scheme
     login_url = f"{scheme}://{req.host}/login"
     if cognito_domain and client_id:
-        target = f"{cognito_domain}/logout?{urlencode({
+        params = urlencode({
             'client_id': client_id,
             'logout_uri': login_url,
-        })}"
+        })
+        target = f"{cognito_domain}/logout?{params}"
     else:
         target = url_for("login")
 

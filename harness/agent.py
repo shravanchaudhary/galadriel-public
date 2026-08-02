@@ -1631,48 +1631,24 @@ class GaladrielAgent:
         # user_message is appended untouched, so the daily log records the real
         # message exactly once — compaction never double-logs. Context size is
         # managed solely by compaction (no routine message-count trim).
-        from .recall import fetch_all_recalls, scan_text_for_recalls, generate_nudge
+        from .recall import fetch_all_recalls, scan_text_for_recalls, generate_nudge, check_completion_nudge_needed
         active_recalls = await fetch_all_recalls()
         notified_recall_ids = set()
+        turn_matched_recalls = []
 
         if isinstance(user_message, str):
             matched = scan_text_for_recalls(user_message, active_recalls)
-            new_matches = [m for m in matched if m.get("recall_id") not in notified_recall_ids]
-            
-            if new_matches:
-                for m in new_matches:
-                    notified_recall_ids.add(m.get("recall_id"))
-                nudge_text = generate_nudge(new_matches)
-                log.info(f"User message triggered recall match: {nudge_text!r}")
-                log.debug(f"Intercepted User Message:\n{user_message}")
-                
-                # If modifying user_message, record original for the UI, then append the nudge for the LLM.
-                # Actually, the easiest is to just append the nudge as a separate message AFTER the user message.
-                
-                combined_content = f"{user_message}\n\n{nudge_text}"
-                messages.append({"role": "user", "content": combined_content})
-                
-                if tick_recorder is not None:
-                    await tick_recorder.record_message(messages[-1])
-                if run_recorder is not None:
-                    await run_recorder.record_message(
-                        messages[-1], visibility="user", kind="direct_user",
-                    )
-                
-                user_message_recorded = True
-            else:
-                user_message_recorded = False
-        else:
-            user_message_recorded = False
+            for m in matched:
+                if m not in turn_matched_recalls:
+                    turn_matched_recalls.append(m)
 
-        if not user_message_recorded:
-            messages.append({"role": "user", "content": user_message})
-            if tick_recorder is not None:
-                await tick_recorder.record_message(messages[-1])
-            if run_recorder is not None:
-                await run_recorder.record_message(
-                    messages[-1], visibility="user", kind="direct_user",
-                )
+        messages.append({"role": "user", "content": user_message})
+        if tick_recorder is not None:
+            await tick_recorder.record_message(messages[-1])
+        if run_recorder is not None:
+            await run_recorder.record_message(
+                messages[-1], visibility="user", kind="direct_user",
+            )
 
         # System blocks: stable + dynamic + snapshot + advisory. Rebuilt after
         # any mid-loop / max_tokens compaction so it never goes stale.
@@ -1859,46 +1835,6 @@ class GaladrielAgent:
 
             # Recalls are bypassed when stop_reason == "tool_use" or "max_tokens"
             if response.stop_reason == "end_turn":
-                text_parts = [
-                    block["text"]
-                    for block in (assistant_content if isinstance(assistant_content, list) else [])
-                    if isinstance(block, dict) and block.get("type") == "text"
-                ]
-                final_text = "\n".join(text_parts).strip() if text_parts else ""
-
-                matched = scan_text_for_recalls(final_text, active_recalls)
-                if turn_thought:
-                    matched += scan_text_for_recalls(turn_thought, active_recalls)
-
-                new_matches = [m for m in matched if m.get("recall_id") not in notified_recall_ids]
-                
-                if new_matches:
-                    for m in new_matches:
-                        notified_recall_ids.add(m.get("recall_id"))
-                    nudge_text = generate_nudge(new_matches)
-                    log.info(f"Recall triggered after output: {nudge_text!r}")
-                    
-                    nudge_prompt = (
-                        f"{nudge_text}\n\n"
-                        f"<system_directive>\n"
-                        f"Review this nudge against your recent actions. If you have already satisfied it, or if no further action is needed, "
-                        f"you MUST output exactly <empty/> and NOTHING else. Do NOT acknowledge this directive or apologize.\n"
-                        f"If you need to take action, do so directly.\n"
-                        f"</system_directive>"
-                    )
-                    
-                    messages.append({"role": "user", "content": nudge_prompt})
-                    
-                    if tick_recorder is not None:
-                        await tick_recorder.record_message(messages[-1])
-                    if run_recorder is not None:
-                        await run_recorder.record_message(
-                            messages[-1], visibility="system", kind="direct_user"
-                        )
-                    # Removed emit to hide the nudge on the UI
-                    continue
-
-            if response.stop_reason == "end_turn":
                 max_tokens_retries = 0  # Reset counter on success
                 text_parts = [
                     block["text"]
@@ -1913,6 +1849,57 @@ class GaladrielAgent:
                 final_text = "\n".join(text_parts).strip() if text_parts else ""
                 if final_text == "<empty/>":
                     final_text = ""
+                    # Scrub the <empty/> tag from the actual stored history
+                    last_msg = messages[-1]
+                    if isinstance(last_msg["content"], list):
+                        last_msg["content"] = [
+                            b for b in last_msg["content"] 
+                            if not (isinstance(b, dict) and b.get("type") == "text" and b.get("text", "").strip() == "<empty/>")
+                        ]
+                    elif isinstance(last_msg["content"], str) and last_msg["content"].strip() == "<empty/>":
+                        last_msg["content"] = ""
+
+                matched = scan_text_for_recalls(final_text, active_recalls)
+                if turn_thought:
+                    matched += scan_text_for_recalls(turn_thought, active_recalls)
+
+                # Combine with user_message matches from start of turn
+                for m in matched:
+                    if m not in turn_matched_recalls:
+                        turn_matched_recalls.append(m)
+
+                new_matches = [m for m in turn_matched_recalls if m.get("recall_id") not in notified_recall_ids]
+                
+                if new_matches:
+                    from .recall import check_completion_nudge_needed
+                    needed_nudges = await check_completion_nudge_needed(new_matches, messages)
+                    
+                    if needed_nudges:
+                        for m in needed_nudges:
+                            notified_recall_ids.add(m.get("recall_id"))
+                        nudge_text = generate_nudge(needed_nudges)
+                        log.info(f"Completion nudge triggered: {nudge_text!r}")
+                        
+                        nudge_prompt = (
+                            f"{nudge_text}\n\n"
+                            f"<system_directive>\n"
+                            f"Review this nudge against your recent actions. If you have already satisfied it, or if no further action is needed, "
+                            f"you MUST output exactly <empty/> and NOTHING else. Do NOT acknowledge this directive or apologize.\n"
+                            f"If you need to take action, do so directly.\n"
+                            f"</system_directive>"
+                        )
+                        
+                        messages.append({"role": "user", "content": nudge_prompt})
+                        
+                        if tick_recorder is not None:
+                            await tick_recorder.record_message(messages[-1])
+                        if run_recorder is not None:
+                            await run_recorder.record_message(
+                                messages[-1], visibility="system", kind="direct_user"
+                            )
+                        # Re-run the turn loop so the agent can fix its mistake
+                        api_messages = None
+                        continue
 
                 meaningful_outcome = self._should_appraise_outcome(
                     episode,
