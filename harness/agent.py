@@ -1668,6 +1668,8 @@ class GaladrielAgent:
 
         max_tokens_retries = 0  # Track consecutive max_tokens hits
         turn_thought = ""  # Accumulated thought deltas for the current API response
+        is_nudge_turn = False # Tracks if the current API call is purely resolving a system nudge
+
         # Turn-local API message list. When Headroom is ON we accumulate the
         # *compressed* bytes already sent so the provider prefix stays
         # byte-identical across the tool cascade. Stored history (`messages`)
@@ -1748,7 +1750,11 @@ class GaladrielAgent:
             if run_recorder is not None:
                 await run_recorder.record_system_blocks(system_blocks)
             call_started_at = datetime.now(timezone.utc)
-            if emit is not None:
+            is_silent_turn = getattr(self, "_silent_turn", False)
+            self._silent_turn_active = is_silent_turn
+            self._silent_turn = False
+
+            if emit is not None and not is_silent_turn:
                 response = None
                 async for kind, payload in provider.stream_message(
                     model=channel_model,
@@ -1756,6 +1762,7 @@ class GaladrielAgent:
                     system=system_blocks,
                     tools=turn_tools,
                     messages=messages_for_api,
+                    thinking=True,
                 ):
                     self._check_cancelled(channel_id)
                     if kind == "thought":
@@ -1772,7 +1779,15 @@ class GaladrielAgent:
                     system=system_blocks,
                     tools=turn_tools,
                     messages=messages_for_api,
+                    thinking=not is_silent_turn,
                 )
+                
+                # Extract turn_thought if available on the response blocks
+                if response and hasattr(response, "content"):
+                    for block in response.content:
+                        if getattr(block, "type", None) == "thought":
+                            turn_thought += getattr(block, "text", "")
+
             call_duration_ms = int(
                 (datetime.now(timezone.utc) - call_started_at).total_seconds() * 1000
             )
@@ -1821,15 +1836,33 @@ class GaladrielAgent:
 
             # Now serialize for storage
             assistant_content = _serialize_content(response.content)
-
             assistant_msg: dict = {"role": "assistant", "content": assistant_content}
             if turn_thought.strip():
                 assistant_msg["_thought"] = turn_thought.strip()
-            messages.append(assistant_msg)
-            if tick_recorder is not None:
-                await tick_recorder.record_message(assistant_msg)
-            if run_recorder is not None:
-                await run_recorder.record_message(assistant_msg)
+
+            is_empty_nudge_ack = False
+            if getattr(self, "_silent_turn_active", False) and response.stop_reason == "end_turn":
+                text_parts = [
+                    block.get("text", "")
+                    for block in (assistant_content if isinstance(assistant_content, list) else [])
+                    if isinstance(block, dict) and block.get("type") == "text"
+                ]
+                text = "\n".join(text_parts).strip()
+                if not text or "<empty/>" in text:
+                    is_empty_nudge_ack = True
+
+            if is_empty_nudge_ack:
+                log.info("Agent output <empty/> (or similar) during nudge. Scrubbing from history.")
+                if messages and messages[-1].get("role") == "user" and "<system_directive>" in str(messages[-1].get("content", "")):
+                    messages.pop()
+            else:
+                messages.append(assistant_msg)
+                if tick_recorder is not None:
+                    await tick_recorder.record_message(assistant_msg)
+                if run_recorder is not None:
+                    await run_recorder.record_message(assistant_msg)
+            
+            self._silent_turn_active = False
             log.info(f"Response stop_reason: {response.stop_reason}")
             self._check_cancelled(channel_id)
 
@@ -1850,14 +1883,16 @@ class GaladrielAgent:
                 if final_text == "<empty/>":
                     final_text = ""
                     # Scrub the <empty/> tag from the actual stored history
-                    last_msg = messages[-1]
-                    if isinstance(last_msg["content"], list):
-                        last_msg["content"] = [
-                            b for b in last_msg["content"] 
-                            if not (isinstance(b, dict) and b.get("type") == "text" and b.get("text", "").strip() == "<empty/>")
-                        ]
-                    elif isinstance(last_msg["content"], str) and last_msg["content"].strip() == "<empty/>":
-                        last_msg["content"] = ""
+                    # We might not need this anymore since we pop it above, but kept just in case
+                    if messages and messages[-1].get("role") == "assistant":
+                        last_msg = messages[-1]
+                        if isinstance(last_msg.get("content"), list):
+                            last_msg["content"] = [
+                                b for b in last_msg["content"] 
+                                if not (isinstance(b, dict) and b.get("type") == "text" and b.get("text", "").strip() == "<empty/>")
+                            ]
+                        elif isinstance(last_msg.get("content"), str) and last_msg["content"].strip() == "<empty/>":
+                            last_msg["content"] = ""
 
                 matched = scan_text_for_recalls(final_text, active_recalls)
                 if turn_thought:
@@ -1899,6 +1934,7 @@ class GaladrielAgent:
                             )
                         # Re-run the turn loop so the agent can fix its mistake
                         api_messages = None
+                        self._silent_turn = True
                         continue
 
                 meaningful_outcome = self._should_appraise_outcome(
