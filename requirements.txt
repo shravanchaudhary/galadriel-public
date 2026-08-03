@@ -32,7 +32,6 @@ Pillow>=10.0.0
 # Local prompt/context compression. The default pipeline is CPU/text-only;
 # ML extras pull multi-gigabyte CUDA/PyTorch wheels that Fargate cannot use.
 headroom-ai>=0.30.0
-litellm<1.60.0
-semantic-router==0.1.7
+semantic-router>=0.1.16
 fastembed>=0.8.0
 google-generativeai>=0.5.1
