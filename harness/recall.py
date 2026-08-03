@@ -148,10 +148,13 @@ def scan_text_for_recalls(text: str, recalls: list[dict], force_encoder_type=Non
             continue
             
         for decision in decisions:
-            if decision and decision.name and decision.name != "None" and decision.name not in seen:
-                seen.add(decision.name)
-                if decision.name in recall_map:
-                    matches.append(recall_map[decision.name])
+            if decision and decision.name and decision.name != "None":
+                score = getattr(decision, "similarity_score", "N/A")
+                log.info(f"[Semantic Match] route='{decision.name}' score={score} chunk='{chunk[:100]}'")
+                if decision.name not in seen:
+                    seen.add(decision.name)
+                    if decision.name in recall_map:
+                        matches.append(recall_map[decision.name])
                 
     if matches:
         log.debug(f"Semantic scan matched {len(matches)} rule(s) for text: {text[:200]}...")

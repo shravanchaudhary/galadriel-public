@@ -1904,15 +1904,33 @@ class GaladrielAgent:
                     if m not in turn_matched_recalls:
                         turn_matched_recalls.append(m)
 
-                new_matches = [m for m in turn_matched_recalls if m.get("recall_id") not in notified_recall_ids and m.get("recall_id") not in checked_recall_ids]
+                new_matches = []
+                already_notified = []
+                already_checked = []
+                
+                for m in turn_matched_recalls:
+                    rid = m.get("recall_id")
+                    if rid in notified_recall_ids:
+                        already_notified.append(rid)
+                    elif rid in checked_recall_ids:
+                        already_checked.append(rid)
+                    else:
+                        new_matches.append(m)
+                        
+                if already_notified:
+                    log.info(f"[Recall Check] Ignored previously notified nudges: {already_notified}")
+                if already_checked:
+                    log.info(f"[Recall Check] Ignored previously checked (LLM rejected) nudges: {already_checked}")
                 
                 if new_matches:
+                    log.info(f"[Recall Check] Evaluating new matches via LLM: {[m.get('recall_id') for m in new_matches]}")
                     for m in new_matches:
                         checked_recall_ids.add(m.get("recall_id"))
                     from .recall import check_completion_nudge_needed
                     needed_nudges = await check_completion_nudge_needed(new_matches, messages)
                     
                     if needed_nudges:
+                        log.info(f"[Recall Check] LLM confirmed nudge needed for: {[m.get('recall_id') for m in needed_nudges]}")
                         for m in needed_nudges:
                             notified_recall_ids.add(m.get("recall_id"))
                         nudge_text = generate_nudge(needed_nudges)
@@ -1939,6 +1957,8 @@ class GaladrielAgent:
                         api_messages = None
                         self._silent_turn = True
                         continue
+                    else:
+                        log.info(f"[Recall Check] LLM determined no nudges needed for current turn matches.")
 
                 meaningful_outcome = self._should_appraise_outcome(
                     episode,
