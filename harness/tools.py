@@ -1751,42 +1751,9 @@ async def _run_shell(command: str, working_dir: str = None) -> str:
     from .path_policy import managed_runtime
     
     if managed_runtime():
-        import os
-        from .path_policy import storage_root
-        
-        ro_binds = []
-        for p in ["/usr", "/bin", "/lib", "/lib64", "/etc", "/opt", cwd]:
-            if os.path.exists(p):
-                ro_binds.extend(["--ro-bind", p, p])
-        
-        # explicitly hide .env to prevent secret exfiltration
-        env_file = os.path.join(cwd, ".env")
-        if os.path.exists(env_file):
-            ro_binds.extend(["--ro-bind", "/dev/null", env_file])
-        
-        storage = str(storage_root())
-        rw_binds = ["--bind", storage, storage]
-        
-        bwrap_cmd = [
-            "bwrap",
-            "--unshare-pid",
-            "--unshare-ipc",
-            "--unshare-uts",
-            "--unshare-user",
-            "--unshare-cgroup-try",
-            "--share-net",
-            "--new-session",
-            "--die-with-parent",
-            "--proc", "/proc",
-            "--dev", "/dev",
-            "--tmpfs", "/tmp",
-        ] + ro_binds + rw_binds + [
-            "--chdir", cwd,
-            "bash", "-c", command
-        ]
-        
-        import shlex
-        exec_command = " ".join(shlex.quote(arg) for arg in bwrap_cmd)
+        exec_command = command
+        # Scrub the environment variables to avoid leaking secrets directly to the shell session.
+        # Fargate microVM isolation provides the primary security boundary.
         env = {
             "PATH": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
             "HOME": cwd,
