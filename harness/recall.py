@@ -46,7 +46,7 @@ def get_encoder(force_type=None):
         from semantic_router.encoders import FastEmbedEncoder
         # Use a fast local model, doesn't block the app
         _ENCODER = FastEmbedEncoder(name="BAAI/bge-small-en-v1.5")
-        _ENCODER.score_threshold = 0.65  # Higher threshold to avoid false positives
+        _ENCODER.score_threshold = 0.70  # Higher threshold to avoid false positives
         _ENCODER_TYPE = "fastembed"
         log.info("Initialized FastEmbedEncoder for semantic router")
         
