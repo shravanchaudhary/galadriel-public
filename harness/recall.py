@@ -46,6 +46,7 @@ def get_encoder(force_type=None):
         from semantic_router.encoders import FastEmbedEncoder
         # Use a fast local model, doesn't block the app
         _ENCODER = FastEmbedEncoder(name="BAAI/bge-small-en-v1.5")
+        _ENCODER.score_threshold = 0.65  # Higher threshold to avoid false positives
         _ENCODER_TYPE = "fastembed"
         log.info("Initialized FastEmbedEncoder for semantic router")
         
@@ -136,8 +137,8 @@ def scan_text_for_recalls(text: str, recalls: list[dict], force_encoder_type=Non
     
     for chunk in chunks:
         # Semantic router checks if the chunk falls within a threshold tolerance of any route
-        # Using limit=None to get all routes that match above threshold for this chunk
-        decisions = router(chunk, limit=None)
+        # Using limit=5 to get the most relevant routes that match above threshold
+        decisions = router(chunk, limit=5)
         
         # If router returns a single object instead of a list (fallback), wrap it
         if decisions and not isinstance(decisions, list):
@@ -147,7 +148,7 @@ def scan_text_for_recalls(text: str, recalls: list[dict], force_encoder_type=Non
             continue
             
         for decision in decisions:
-            if decision and decision.name and decision.name not in seen:
+            if decision and decision.name and decision.name != "None" and decision.name not in seen:
                 seen.add(decision.name)
                 if decision.name in recall_map:
                     matches.append(recall_map[decision.name])

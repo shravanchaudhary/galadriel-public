@@ -1634,6 +1634,7 @@ class GaladrielAgent:
         from .recall import fetch_all_recalls, scan_text_for_recalls, generate_nudge, check_completion_nudge_needed
         active_recalls = await fetch_all_recalls()
         notified_recall_ids = set()
+        checked_recall_ids = set()
         turn_matched_recalls = []
 
         if isinstance(user_message, str):
@@ -1903,9 +1904,11 @@ class GaladrielAgent:
                     if m not in turn_matched_recalls:
                         turn_matched_recalls.append(m)
 
-                new_matches = [m for m in turn_matched_recalls if m.get("recall_id") not in notified_recall_ids]
+                new_matches = [m for m in turn_matched_recalls if m.get("recall_id") not in notified_recall_ids and m.get("recall_id") not in checked_recall_ids]
                 
                 if new_matches:
+                    for m in new_matches:
+                        checked_recall_ids.add(m.get("recall_id"))
                     from .recall import check_completion_nudge_needed
                     needed_nudges = await check_completion_nudge_needed(new_matches, messages)
                     
