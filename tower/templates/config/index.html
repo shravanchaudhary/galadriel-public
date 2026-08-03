@@ -153,6 +153,11 @@
         </select>
     </div>
 
+    <div class="settings-row" style="flex-direction: column; align-items: flex-start; gap: 0.5rem; margin-bottom: 1rem;">
+        <label for="recall-test-threshold">Score Threshold (0.0 to 1.0)</label>
+        <input type="number" id="recall-test-threshold" step="0.01" min="0" max="1" value="0.70" style="padding: 0.25rem; width: 100px;">
+    </div>
+
     <div class="settings-row" style="flex-direction: column; align-items: flex-start; gap: 0.5rem;">
         <label for="recall-test-text">Input Text to Test</label>
         <textarea id="recall-test-text" rows="4" style="width: 100%; padding: 0.5rem; background: var(--bg-primary); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 4px;" placeholder="Type a sentence or paragraph to see which recalls it triggers..."></textarea>
@@ -577,6 +582,9 @@ async function loadRecalls() {
 async function testRecalls() {
     const text = document.getElementById('recall-test-text').value.trim();
     const model = document.getElementById('recall-test-model').value;
+    const thresholdStr = document.getElementById('recall-test-threshold').value;
+    const threshold = thresholdStr ? parseFloat(thresholdStr) : 0.70;
+    
     const btn = document.getElementById('test-recall-btn');
     const resultsDiv = document.getElementById('recall-test-results');
     const matchesDiv = document.getElementById('recall-test-matches');
@@ -592,7 +600,7 @@ async function testRecalls() {
         const response = await fetch('/api/recalls/test', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ text, model })
+            body: JSON.stringify({ text, model, threshold })
         });
         
         const data = await response.json();
@@ -615,6 +623,11 @@ async function testRecalls() {
                 
                 const title = document.createElement('strong');
                 title.textContent = m.recall_id;
+                
+                if (m.similarity_score !== undefined && m.similarity_score !== null) {
+                    title.textContent += ` (Score: ${Number(m.similarity_score).toFixed(3)})`;
+                }
+                
                 title.style.display = 'block';
                 
                 const instr = document.createElement('span');

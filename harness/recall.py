@@ -18,13 +18,15 @@ _ENCODER_TYPE = None
 _ROUTER_CACHE = None
 _CACHED_RECALL_IDS = set()
 
-def get_encoder(force_type=None):
+def get_encoder(force_type=None, force_threshold=None):
     """Lazily load and cache the encoder model based on environment config."""
     global _ENCODER, _ENCODER_TYPE, _ROUTER_CACHE, _CACHED_RECALL_IDS
     
     encoder_type = (force_type or os.environ.get("RECALL_ENCODER", "fastembed")).lower()
     
     if _ENCODER is not None and _ENCODER_TYPE == encoder_type:
+        if force_threshold is not None and _ENCODER.score_threshold != force_threshold:
+            _ENCODER.score_threshold = force_threshold
         return _ENCODER
         
     # If encoder type changed, clear the router cache
@@ -37,6 +39,8 @@ def get_encoder(force_type=None):
             from semantic_router.encoders import GoogleEncoder
             _ENCODER = GoogleEncoder(name="models/text-embedding-004")
             _ENCODER_TYPE = "gemini"
+            if force_threshold is not None:
+                _ENCODER.score_threshold = force_threshold
             log.info("Initialized Gemini encoder for semantic router")
         except Exception as e:
             log.warning(f"Failed to load GoogleEncoder, falling back to fastembed: {e}")
@@ -46,20 +50,20 @@ def get_encoder(force_type=None):
         from semantic_router.encoders import FastEmbedEncoder
         # Use a fast local model, doesn't block the app
         _ENCODER = FastEmbedEncoder(name="BAAI/bge-small-en-v1.5")
-        _ENCODER.score_threshold = 0.70  # Higher threshold to avoid false positives
+        _ENCODER.score_threshold = force_threshold if force_threshold is not None else 0.70
         _ENCODER_TYPE = "fastembed"
         log.info("Initialized FastEmbedEncoder for semantic router")
         
     return _ENCODER
 
-def get_semantic_router(recalls: list[dict], force_encoder_type=None) -> SemanticRouter:
+def get_semantic_router(recalls: list[dict], force_encoder_type=None, force_threshold=None) -> SemanticRouter:
     """Get or build the SemanticRouter for the current set of recalls."""
     global _ROUTER_CACHE, _CACHED_RECALL_IDS
     
     current_ids = {r.get("recall_id") for r in recalls if r.get("recall_id")}
     
     # We call get_encoder first, which will clear _ROUTER_CACHE if the encoder type changed
-    encoder = get_encoder(force_encoder_type)
+    encoder = get_encoder(force_encoder_type, force_threshold)
     
     if _ROUTER_CACHE is not None and current_ids == _CACHED_RECALL_IDS:
         return _ROUTER_CACHE
@@ -119,12 +123,12 @@ async def fetch_all_recalls() -> list[dict]:
             log.error(f"Failed to fetch user recalls from DB: {e}")
     return recalls
 
-def scan_text_for_recalls(text: str, recalls: list[dict], force_encoder_type=None) -> list[dict]:
+def scan_text_for_recalls(text: str, recalls: list[dict], force_encoder_type=None, force_threshold=None) -> list[dict]:
     """Scan text against all recalls and return matched recall objects using semantic router."""
     if not text or not recalls:
         return []
     
-    router = get_semantic_router(recalls, force_encoder_type)
+    router = get_semantic_router(recalls, force_encoder_type, force_threshold)
     if not router:
         return []
         
@@ -154,7 +158,10 @@ def scan_text_for_recalls(text: str, recalls: list[dict], force_encoder_type=Non
                 if decision.name not in seen:
                     seen.add(decision.name)
                     if decision.name in recall_map:
-                        matches.append(recall_map[decision.name])
+                        match_obj = dict(recall_map[decision.name])
+                        if score != "N/A":
+                            match_obj["similarity_score"] = float(score) if hasattr(score, 'item') else float(score)
+                        matches.append(match_obj)
                 
     if matches:
         log.debug(f"Semantic scan matched {len(matches)} rule(s) for text: {text[:200]}...")

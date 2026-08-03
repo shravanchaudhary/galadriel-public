@@ -870,12 +870,18 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
         data = request.json or {}
         text = data.get("text", "")
         model = data.get("model", "fastembed")
-        
+        threshold = data.get("threshold")
+        try:
+            if threshold is not None:
+                threshold = float(threshold)
+        except (ValueError, TypeError):
+            threshold = None
+            
         from harness.recall import fetch_all_recalls, scan_text_for_recalls
         
         async def _test():
             recalls = await fetch_all_recalls()
-            matches = scan_text_for_recalls(text, recalls, force_encoder_type=model)
+            matches = scan_text_for_recalls(text, recalls, force_encoder_type=model, force_threshold=threshold)
             # Remove mongo objects or make serializable
             res = []
             for m in matches:
