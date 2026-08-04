@@ -9,6 +9,7 @@ import os
 import re
 import secrets
 import urllib.request
+import copy
 
 import boto3
 from botocore.exceptions import ClientError
@@ -983,6 +984,64 @@ def _reset_replika_config(*, replika_id: str) -> dict:
                 pass
 
 
+def _stop_replika(*, replika_id: str, owner_id: str) -> dict:
+    ecs = boto3.client("ecs")
+    cluster = _required("ECS_CLUSTER")
+    service_name = f"replika-{_slug(replika_id)}"
+    try:
+        ecs.update_service(cluster=cluster, service=service_name, desiredCount=0)
+        _callback(replika_id, owner_id, "stopped")
+        return {"status": "stopped"}
+    except ClientError as exc:
+        raise RuntimeError(f"Could not stop Replika: {exc}")
+
+def _start_replika(*, replika_id: str, owner_id: str) -> dict:
+    ecs = boto3.client("ecs")
+    cluster = _required("ECS_CLUSTER")
+    service_name = f"replika-{_slug(replika_id)}"
+    try:
+        ecs.update_service(cluster=cluster, service=service_name, desiredCount=1)
+        _callback(replika_id, owner_id, "ready")
+        return {"status": "started"}
+    except ClientError as exc:
+        raise RuntimeError(f"Could not start Replika: {exc}")
+
+def _set_paused_env_in_task_def(ecs, replika_id: str, paused: bool) -> str:
+    family_prefix = f"replika-{_slug(replika_id)}"
+    response = ecs.describe_task_definition(taskDefinition=family_prefix)
+    task_def = response["taskDefinition"]
+    request = {
+        key: copy.deepcopy(value)
+        for key, value in task_def.items()
+        if key in REGISTERABLE_TASK_FIELDS
+    }
+    for container in request.get("containerDefinitions", []):
+        if container["name"] == _required("CONTAINER_NAME"):
+            env = container.get("environment", [])
+            env = [v for v in env if v["name"] != "REPLIKA_PAUSED"]
+            env.append({"name": "REPLIKA_PAUSED", "value": "1" if paused else "0"})
+            container["environment"] = sorted(env, key=lambda x: x["name"])
+    
+    return ecs.register_task_definition(**request)["taskDefinition"]["taskDefinitionArn"]
+
+def _pause_replika(*, replika_id: str, owner_id: str) -> dict:
+    ecs = boto3.client("ecs")
+    cluster = _required("ECS_CLUSTER")
+    service_name = f"replika-{_slug(replika_id)}"
+    new_arn = _set_paused_env_in_task_def(ecs, replika_id, True)
+    ecs.update_service(cluster=cluster, service=service_name, taskDefinition=new_arn, forceNewDeployment=True)
+    _callback(replika_id, owner_id, "paused")
+    return {"status": "paused"}
+
+def _resume_replika(*, replika_id: str, owner_id: str) -> dict:
+    ecs = boto3.client("ecs")
+    cluster = _required("ECS_CLUSTER")
+    service_name = f"replika-{_slug(replika_id)}"
+    new_arn = _set_paused_env_in_task_def(ecs, replika_id, False)
+    ecs.update_service(cluster=cluster, service=service_name, taskDefinition=new_arn, forceNewDeployment=True)
+    _callback(replika_id, owner_id, "ready")
+    return {"status": "resumed"}
+
 def _delete_replika(
     *,
     replika_id: str,
@@ -1019,7 +1078,7 @@ def handler(event, _context):
         raise ValueError("replika_id is required")
     if operation == "create" and replika_type not in {"organization", "individual"}:
         raise ValueError("invalid replika_type")
-    if operation not in {"create", "delete", "reset_config"}:
+    if operation not in {"create", "delete", "reset_config", "stop", "start", "pause", "resume"}:
         raise ValueError("invalid operation")
     try:
         if operation == "delete":
@@ -1033,6 +1092,14 @@ def handler(event, _context):
             # control plane, since a failed reset must not mark a healthy,
             # already-"ready" Replika as errored.
             return _reset_replika_config(replika_id=replika_id)
+        if operation == "stop":
+            return _stop_replika(replika_id=replika_id, owner_id=owner_id)
+        if operation == "start":
+            return _start_replika(replika_id=replika_id, owner_id=owner_id)
+        if operation == "pause":
+            return _pause_replika(replika_id=replika_id, owner_id=owner_id)
+        if operation == "resume":
+            return _resume_replika(replika_id=replika_id, owner_id=owner_id)
         return _create_replika(
             replika_id=replika_id,
             owner_id=owner_id,

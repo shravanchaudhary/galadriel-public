@@ -131,6 +131,36 @@ class _Provisioner:
     def delete(self, replika):
         self.deletes.append(replika["replika_id"])
 
+    def stop(self, replika):
+        pass
+
+    def start_replika(self, replika):
+        pass
+
+    def pause(self, replika):
+        pass
+
+    def resume(self, replika):
+        pass
+
+    def reset_config(self, replika):
+        return {"status": "ok"}
+
+    def stop(self, replika):
+        pass
+
+    def start_replika(self, replika):
+        pass
+
+    def pause(self, replika):
+        pass
+
+    def resume(self, replika):
+        pass
+
+    def reset_config(self, replika):
+        return {"status": "ok"}
+
 
 def _assert(condition, message):
     if not condition:
