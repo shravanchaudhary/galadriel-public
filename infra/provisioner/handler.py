@@ -995,23 +995,41 @@ def _stop_replika(*, replika_id: str, owner_id: str) -> dict:
     except ClientError as exc:
         raise RuntimeError(f"Could not stop Replika: {exc}")
 
-def _start_replika(*, replika_id: str, owner_id: str) -> dict:
+def _start_replika(*, replika_id: str, owner_id: str, username: str) -> dict:
     ecs = boto3.client("ecs")
+    elbv2 = boto3.client("elbv2")
     cluster = _required("ECS_CLUSTER")
     service_name = f"replika-{_slug(replika_id)}"
     try:
         ecs.update_service(cluster=cluster, service=service_name, desiredCount=1)
+        ecs.get_waiter("services_stable").wait(
+            cluster=cluster,
+            services=[service_name],
+            WaiterConfig={"Delay": 15, "MaxAttempts": 50},
+        )
+        target_group_arn = _target_group(elbv2, username)
+        phone_target_group_arn = _target_group(elbv2, username, phone_bridge=True)
+        _wait_for_targets_healthy(elbv2, target_group_arn, phone_target_group_arn)
         _callback(replika_id, owner_id, "ready")
         return {"status": "started"}
     except ClientError as exc:
         raise RuntimeError(f"Could not start Replika: {exc}")
 
-def _restart_replika(*, replika_id: str, owner_id: str) -> dict:
+def _restart_replika(*, replika_id: str, owner_id: str, username: str) -> dict:
     ecs = boto3.client("ecs")
+    elbv2 = boto3.client("elbv2")
     cluster = _required("ECS_CLUSTER")
     service_name = f"replika-{_slug(replika_id)}"
     try:
         ecs.update_service(cluster=cluster, service=service_name, forceNewDeployment=True)
+        ecs.get_waiter("services_stable").wait(
+            cluster=cluster,
+            services=[service_name],
+            WaiterConfig={"Delay": 15, "MaxAttempts": 50},
+        )
+        target_group_arn = _target_group(elbv2, username)
+        phone_target_group_arn = _target_group(elbv2, username, phone_bridge=True)
+        _wait_for_targets_healthy(elbv2, target_group_arn, phone_target_group_arn)
         _callback(replika_id, owner_id, "ready")
         return {"status": "restarted"}
     except ClientError as exc:
@@ -1070,9 +1088,9 @@ def handler(event, _context):
         if operation == "stop":
             return _stop_replika(replika_id=replika_id, owner_id=owner_id)
         if operation == "start":
-            return _start_replika(replika_id=replika_id, owner_id=owner_id)
+            return _start_replika(replika_id=replika_id, owner_id=owner_id, username=username)
         if operation == "restart":
-            return _restart_replika(replika_id=replika_id, owner_id=owner_id)
+            return _restart_replika(replika_id=replika_id, owner_id=owner_id, username=username)
         return _create_replika(
             replika_id=replika_id,
             owner_id=owner_id,
