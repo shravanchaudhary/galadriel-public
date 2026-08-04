@@ -32,3 +32,8 @@ state/conversation_buffers/*
 !state/conversation_buffers/README.md
 state/screenshots/
 state/phone_bridge_auth.json
+
+# Local untracked artifacts (see .cursor/rules/untracked-artifacts.mdc)
+sessionmanager-bundle/
+sessionmanager-bundle.zip
+test_db.py
