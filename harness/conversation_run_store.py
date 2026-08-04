@@ -726,5 +726,5 @@ def recovery_state(channel_id: str = "main") -> tuple[dict | None, list[dict], d
     run = active_run(channel_id)
     if run is None:
         return None, [], None
-    tail, checkpoint = protocol_tail_for_run(run["run_id"])
+    tail, checkpoint = buffer_messages_for_run(run["run_id"])
     return run, tail, checkpoint

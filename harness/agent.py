@@ -413,11 +413,7 @@ class GaladrielAgent:
         self._compaction_summary: dict[str, str] = {}  # channel_id -> latest snapshot (folds cumulatively)
         if self._pending_run_recovery is not None:
             run, tail, checkpoint = self._pending_run_recovery
-            self.conversations[MAIN_CHANNEL_ID] = [
-                {"role": event["role"], "content": event.get("content")}
-                for event in tail
-                if event.get("role") and event.get("content") is not None
-            ]
+            self.conversations[MAIN_CHANNEL_ID] = list(tail)
             if checkpoint and checkpoint.get("summary"):
                 self._compaction_summary[MAIN_CHANNEL_ID] = checkpoint["summary"]
             log.info(
