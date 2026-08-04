@@ -20,7 +20,7 @@
         <form method="post" action="/config/create" class="settings-inline-form settings-actions">
         <input type="hidden" name="cat" value="{{ cat }}">
         <input type="hidden" name="path" value="{{ subpath }}">
-        <input type="text" name="filename" placeholder="new_file.md" class="chat-input" style="max-width:180px;" required>
+        <input type="text" name="filename" placeholder="{{ 'new_tool.py' if cat == 'tools' else 'new_file.md' }}" class="chat-input" style="max-width:180px;" required>
         <button type="submit" class="btn btn-small">Create file</button>
         </form>
     </div>

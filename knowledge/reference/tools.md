@@ -16,11 +16,11 @@ product updates never overwrite agent-authored tools.
 | **Personal / agent tools** | `personal-tools/*.py` on tenant storage | **Yes** — create, maintain, update here |
 
 - Contract for a personal module: `TOOL_DEFINITIONS` list + `async def execute_tool(name, inputs)`.
-- Copy `personal-tools/_template.py` to a new `*.py` (no leading `_`).
+- Create a new `*.py` file (no leading `_`) in your `personal-tools` directory.
 - On name collision with a developer tool, the **developer tool wins**.
 - Prefer existing `db_*` / file / palace / browser tools before inventing a new one.
 
-Details: `personal-tools/README.md` and `knowledge/reference/architecture.md` §3.
+Details: `knowledge/reference/architecture.md` §3.
 
 ---
 

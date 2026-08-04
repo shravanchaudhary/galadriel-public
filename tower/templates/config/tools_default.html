@@ -1,0 +1,38 @@
+{% extends "config/base.html" %}
+{% block title %}Default Provider Tools{% endblock %}
+{% block heading %}Default Provider Tools{% endblock %}
+{% block subtitle %}Built-in immutable tools provided by the harness{% endblock %}
+
+{% block cfg_content %}
+<nav class="settings-crumb" aria-label="Breadcrumb">
+    <a href="/config">Configuration</a>
+    <span class="settings-crumb-separator">/</span>
+    <span class="muted">Default Provider Tools</span>
+</nav>
+
+<section class="settings-section">
+    <div class="settings-section-head">
+        <h2 class="settings-section-title">Built-in Tools</h2>
+        <p class="settings-section-desc">These tools are read-only and maintained by the platform.</p>
+    </div>
+
+    {% if tools %}
+    <div class="settings-list">
+        {% for tool in tools %}
+        <details class="settings-prompt">
+            <summary style="padding: 0.75rem 1rem;">
+                <span class="settings-list-title" style="font-weight: 500; font-size: 1rem;">{{ tool.name }}</span>
+            </summary>
+            <div style="padding: 1rem; border-top: 1px solid var(--border-subtle); background: var(--bg-primary);">
+                <p style="margin-top: 0; margin-bottom: 1rem;">{{ tool.description }}</p>
+                <h4 style="margin: 0 0 0.5rem 0; font-size: 0.85rem; color: var(--text-secondary);">Schema:</h4>
+                <pre class="loops-prompt" style="margin: 0; font-size: 0.8rem; background: var(--bg-hover);">{{ tool.input_schema | tojson(indent=2) }}</pre>
+            </div>
+        </details>
+        {% endfor %}
+    </div>
+    {% else %}
+    <p class="settings-empty">No tools found.</p>
+    {% endif %}
+</section>
+{% endblock %}

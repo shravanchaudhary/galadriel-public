@@ -16,13 +16,11 @@ DEFAULT_ROOTS = (
     "jobs",
     "workflows",
     "sme",
-    "personal-tools",
 )
 REQUIRED_MARKDOWN = (
     "config/SOUL.md",
     "config/MEMORY.md",
     "config/GUARDRAILS.md",
-    "config/RECALL.md",
     "config/JOBS.md",
     "memory/README.md",
     "state/steering.md",
@@ -37,7 +35,6 @@ REQUIRED_MARKDOWN = (
     "jobs/_template.md",
     "workflows/README.md",
     "sme/README.md",
-    "personal-tools/README.md",
 )
 RUNTIME_ONLY_FILES = (
     "config/ambient_state.json",
