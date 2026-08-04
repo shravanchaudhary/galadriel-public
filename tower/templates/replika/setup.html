@@ -72,6 +72,11 @@
                             data-username="{{ replika.username }}"
                             title="Start runtime"
                             {% if replika.status != 'stopped' %}hidden{% endif %}>Start</button>
+                    <button type="button" class="btn btn-small btn-secondary replika-restart"
+                            data-replika-id="{{ replika.id }}"
+                            data-username="{{ replika.username }}"
+                            title="Restart runtime"
+                            {% if replika.status != 'ready' %}hidden{% endif %}>Restart</button>
                     <button type="button" class="btn btn-small btn-secondary replika-reset-config"
                             data-replika-id="{{ replika.id }}"
                             data-username="{{ replika.username }}"
@@ -82,10 +87,10 @@
                             data-username="{{ replika.username }}"
                             {% if replika.status == 'deleting' %}disabled{% endif %}>Delete</button>
                     <p class="replika-progress" aria-live="polite"
-                       {% if replika.status not in ['creating', 'deleting', 'stopping', 'starting'] %}hidden{% endif %}>
+                       {% if replika.status not in ['creating', 'deleting', 'stopping', 'starting', 'restarting'] %}hidden{% endif %}>
                         {% if replika.status == 'deleting' %}
                         Deletion usually finishes within a minute.
-                        {% elif replika.status == 'stopping' or replika.status == 'starting' %}
+                        {% elif replika.status in ['stopping', 'starting', 'restarting'] %}
                         This usually finishes within a minute.
                         {% else %}
                         Provisioning usually finishes within a minute.
@@ -184,6 +189,7 @@ const STATUS_LABELS = {
     paused: 'Paused',
     pausing: 'Pausing',
     starting: 'Starting',
+    restarting: 'Restarting',
     resuming: 'Resuming',
 };
 
@@ -204,6 +210,7 @@ function statusDescription(replika) {
     if (replika.status === 'deleting') return 'Deleting your Replika…';
     if (replika.status === 'stopping') return 'Stopping your Replika…';
     if (replika.status === 'starting') return 'Starting your Replika…';
+    if (replika.status === 'restarting') return 'Restarting your Replika…';
     if (replika.status === 'pausing') return 'Pausing your Replika…';
     if (replika.status === 'resuming') return 'Resuming your Replika…';
     return replika.message || 'Temporarily unavailable';
@@ -219,7 +226,7 @@ function cardHtml(replika) {
     const initial = escapeHtml((replika.username || '?').slice(0, 1).toUpperCase());
     const progressCopy = replika.status === 'deleting'
         ? 'Deletion usually finishes within a minute.'
-        : (['stopping', 'starting', 'pausing', 'resuming'].includes(replika.status)
+        : (['stopping', 'starting', 'restarting', 'pausing', 'resuming'].includes(replika.status)
             ? 'This usually finishes within a minute.'
             : 'Provisioning usually finishes within a minute.');
     const desc = escapeHtml(`${statusDescription(replika)} · ${typeLabel}`);
@@ -250,9 +257,10 @@ function cardHtml(replika) {
                 <button type="button" class="btn btn-small btn-secondary replika-retry" data-replika-id="${id}" ${replika.status !== 'error' ? 'hidden' : ''}>Try again</button>
                 <button type="button" class="btn btn-small btn-secondary replika-stop" data-replika-id="${id}" data-username="${username}" title="Stop runtime to save costs" ${replika.status !== 'ready' ? 'hidden' : ''}>Stop</button>
                 <button type="button" class="btn btn-small btn-secondary replika-start" data-replika-id="${id}" data-username="${username}" title="Start runtime" ${replika.status !== 'stopped' ? 'hidden' : ''}>Start</button>
+                <button type="button" class="btn btn-small btn-secondary replika-restart" data-replika-id="${id}" data-username="${username}" title="Restart runtime" ${replika.status !== 'ready' ? 'hidden' : ''}>Restart</button>
                 <button type="button" class="btn btn-small btn-secondary replika-reset-config" data-replika-id="${id}" data-username="${username}" title="Reset SOUL, memory, guardrails, recall, and jobs config to the latest defaults" ${replika.status !== 'ready' ? 'hidden' : ''}>Reset Config to Default</button>
                 <button type="button" class="btn btn-small btn-danger replika-delete" data-replika-id="${id}" data-username="${username}" ${replika.status === 'deleting' ? 'disabled' : ''}>Delete</button>
-                <p class="replika-progress" aria-live="polite" ${['creating', 'deleting', 'stopping', 'starting'].includes(replika.status) ? '' : 'hidden'}>${progressCopy}</p>
+                <p class="replika-progress" aria-live="polite" ${['creating', 'deleting', 'stopping', 'starting', 'restarting'].includes(replika.status) ? '' : 'hidden'}>${progressCopy}</p>
                 ${replika.status === 'ready' && replika.url ? `
                 <p class="replika-help-text" style="font-size: 0.85em; color: var(--text-muted); margin-top: 8px;">
                     To stop the runtime and save costs, click <strong>Stop</strong>.<br>
@@ -286,7 +294,7 @@ function renderList(replikas) {
 function schedulePoll(replikas) {
     clearTimeout(pollTimer);
     const transitioning = (replikas || []).some(
-        (item) => ['creating', 'deleting', 'stopping', 'starting'].includes(item.status)
+        (item) => ['creating', 'deleting', 'stopping', 'starting', 'restarting'].includes(item.status)
     );
     if (transitioning) {
         pollTimer = setTimeout(refreshStatus, 2000);
@@ -476,6 +484,11 @@ function bindCardActions() {
     list.querySelectorAll('.replika-start').forEach((button) => {
         button.addEventListener('click', async () => {
             await actionReplika('start', button.dataset.replikaId, button.dataset.username, button, null);
+        });
+    });
+    list.querySelectorAll('.replika-restart').forEach((button) => {
+        button.addEventListener('click', async () => {
+            await actionReplika('restart', button.dataset.replikaId, button.dataset.username, button, `Restart ${button.dataset.username}? This will restart the runtime.`);
         });
     });
 }

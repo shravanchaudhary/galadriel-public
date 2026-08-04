@@ -48,6 +48,7 @@ STATUS_LABELS = {
     "stopped": "Stopped",
     "stopping": "Stopping",
     "starting": "Starting",
+    "restarting": "Restarting",
 }
 
 
@@ -285,6 +286,9 @@ class Provisioner:
     def start_replika(self, replika: dict[str, Any]) -> None:
         self._invoke(replika, "start")
 
+    def restart(self, replika: dict[str, Any]) -> None:
+        self._invoke(replika, "restart")
+
     def reset_config(self, replika: dict[str, Any]) -> dict[str, Any]:
         """Force-overwrite this Replika's persisted config/ files with the
         latest defaults baked into its currently deployed image. Not a
@@ -397,6 +401,8 @@ def _customer_view(document: dict[str, Any]) -> dict[str, Any]:
         message = "Stopping your Replika…"
     elif status == "starting":
         message = "Starting your Replika…"
+    elif status == "restarting":
+        message = "Restarting your Replika…"
     return {
         "id": replika_id_of(document),
         "username": document["username"],
@@ -685,6 +691,22 @@ def register_replika_control_plane(app) -> None:
         except Exception:
             current_app.logger.exception("Replika start failed")
             return jsonify({"error": "We could not start this Replika. Please try again."}), 503
+
+    @bp.post("/api/replikas/<replika_id>/restart")
+    def restart_replika(replika_id: str):
+        try:
+            owner_id = _owner_id()
+            document = _store().find_owned(replika_id, owner_id)
+            if not document:
+                return jsonify({"error": "Unknown Replika"}), 404
+            _provisioner().restart(document)
+            _store().update_status(replika_id, "restarting")
+            return jsonify({"status": "restarting"})
+        except PermissionError:
+            return jsonify({"error": "Unauthorized"}), 401
+        except Exception:
+            current_app.logger.exception("Replika restart failed")
+            return jsonify({"error": "We could not restart this Replika. Please try again."}), 503
 
     @bp.post("/internal/replika/provisioning")
     def provisioning_callback():

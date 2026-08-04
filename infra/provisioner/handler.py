@@ -1006,6 +1006,17 @@ def _start_replika(*, replika_id: str, owner_id: str) -> dict:
     except ClientError as exc:
         raise RuntimeError(f"Could not start Replika: {exc}")
 
+def _restart_replika(*, replika_id: str, owner_id: str) -> dict:
+    ecs = boto3.client("ecs")
+    cluster = _required("ECS_CLUSTER")
+    service_name = f"replika-{_slug(replika_id)}"
+    try:
+        ecs.update_service(cluster=cluster, service=service_name, forceNewDeployment=True)
+        _callback(replika_id, owner_id, "ready")
+        return {"status": "restarted"}
+    except ClientError as exc:
+        raise RuntimeError(f"Could not restart Replika: {exc}")
+
 def _delete_replika(
     *,
     replika_id: str,
@@ -1042,7 +1053,7 @@ def handler(event, _context):
         raise ValueError("replika_id is required")
     if operation == "create" and replika_type not in {"organization", "individual"}:
         raise ValueError("invalid replika_type")
-    if operation not in {"create", "delete", "reset_config", "stop", "start"}:
+    if operation not in {"create", "delete", "reset_config", "stop", "start", "restart"}:
         raise ValueError("invalid operation")
     try:
         if operation == "delete":
@@ -1060,6 +1071,8 @@ def handler(event, _context):
             return _stop_replika(replika_id=replika_id, owner_id=owner_id)
         if operation == "start":
             return _start_replika(replika_id=replika_id, owner_id=owner_id)
+        if operation == "restart":
+            return _restart_replika(replika_id=replika_id, owner_id=owner_id)
         return _create_replika(
             replika_id=replika_id,
             owner_id=owner_id,
