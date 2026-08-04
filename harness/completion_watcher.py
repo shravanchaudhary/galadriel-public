@@ -43,6 +43,20 @@ class CompletionWatcher:
     def set_bot(self, bot):
         self.bot = bot
 
+    def _paused(self) -> bool:
+        """True if state/watcher_control.md explicitly says paused."""
+        control_path = getattr(self.agent, "runtime_root", Path(".")) / "state" / "watcher_control.md"
+        try:
+            content = control_path.read_text(encoding="utf-8")
+        except Exception:
+            return False
+        for line in content.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            return line.lower() == "paused"
+        return False
+
     def start(self):
         """Start the watcher loop. Call from an async context."""
         MARKER_DIR.mkdir(parents=True, exist_ok=True)
@@ -54,6 +68,8 @@ class CompletionWatcher:
         try:
             while True:
                 await asyncio.sleep(POLL_INTERVAL)
+                if self._paused():
+                    continue
                 await self._check_markers()
         except asyncio.CancelledError:
             log.info("Completion watcher cancelled.")

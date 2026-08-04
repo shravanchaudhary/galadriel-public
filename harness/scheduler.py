@@ -553,6 +553,9 @@ class Scheduler:
                 await asyncio.sleep(self.heartbeat_interval * 60)
                 if not self.heartbeat_enabled:
                     break
+                if self._paused():
+                    log.info("Scheduler paused: skipping heartbeat tick.")
+                    continue
 
                 prompt = self.heartbeat_prompt or DEFAULT_HEARTBEAT_PROMPT
                 log.info(f"Heartbeat firing... (prompt: {'custom' if self.heartbeat_prompt else 'default'})")
@@ -575,6 +578,20 @@ class Scheduler:
             log.exception(f"Heartbeat loop error: {e}")
 
     # ── Cron Loop ────────────────────────────────────────────────
+
+    def _paused(self) -> bool:
+        """True if state/scheduler_control.md explicitly says paused."""
+        control_path = self.agent.runtime_root / "state" / "scheduler_control.md"
+        try:
+            content = control_path.read_text(encoding="utf-8")
+        except Exception:
+            return False
+        for line in content.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            return line.lower() == "paused"
+        return False
 
     def _mark_fired(self, tracker: str, today_str: str) -> None:
         """Set a daily fire-tracker and persist it, so a restart knows the
@@ -612,10 +629,13 @@ class Scheduler:
                         diff = (now - target_dt).total_seconds()
                         if diff < 300:  # 5 min grace
                             if not (workday_only and now.weekday() >= 5):
-                                log.info(f"Cron [{name}]: FIRING (within grace period)")
-                                self._mark_fired(tracker, today_str)
-                                await callback()
-                                continue
+                                if self._paused():
+                                    log.info(f"Cron [{name}]: skipped because scheduler is paused")
+                                else:
+                                    log.info(f"Cron [{name}]: FIRING (within grace period)")
+                                    self._mark_fired(tracker, today_str)
+                                    await callback()
+                                    continue
                         self._mark_fired(tracker, today_str)
 
                     # Sleep until next check (every 30s for precision)
@@ -700,8 +720,11 @@ class Scheduler:
                     if now >= target_dt and (now - target_dt).total_seconds() < 600:
                         self._fired_reflections.add(key)
                         self._save_state()  # persist so a restart won't re-fire this slot
-                        log.info(f"Reflection [{key}]: firing")
-                        await self._reflection_routine()
+                        if self._paused():
+                            log.info(f"Reflection [{key}]: skipped because scheduler is paused")
+                        else:
+                            log.info(f"Reflection [{key}]: firing")
+                            await self._reflection_routine()
 
                 # Trim the fired-set so it doesn't grow unbounded.
                 if len(self._fired_reflections) > 32:

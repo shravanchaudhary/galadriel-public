@@ -128,12 +128,6 @@ def main():
     if os.environ.get("GALADRIEL_WORKER", "0") == "1":
         worker = WorkerLoop(agent=agent, working_dir=str(runtime_root))
 
-    if os.environ.get("REPLIKA_PAUSED", "0") == "1":
-        log.info("Replika is paused: disabling worker, scheduler, and completion watcher.")
-        scheduler = None
-        completion_watcher = None
-        worker = None
-
     # Attach scheduler to agent so it can be accessed for REST commands
     agent.scheduler = scheduler
 

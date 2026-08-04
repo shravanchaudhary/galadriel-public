@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from flask import Blueprint, abort, redirect, render_template, request, url_for
+from flask import Blueprint, abort, redirect, render_template, request, url_for, jsonify
 
 from harness.memory import STABLE_FILES
 from harness.loop_prompts import (
@@ -36,6 +36,7 @@ from harness.loop_prompts import (
     morning_prompt,
     reflection_prompt,
 )
+from harness.personal_tools import personal_tools_root
 
 from . import ui_context as ui_ctx
 
@@ -81,6 +82,11 @@ def _knowledge_files() -> list[Path]:
     return sorted(KNOWLEDGE_DIR.rglob("*.md")) if KNOWLEDGE_DIR.is_dir() else []
 
 
+def _personal_tools_files() -> list[Path]:
+    p = personal_tools_root()
+    return sorted(p.glob("*.py")) if p.is_dir() else []
+
+
 def _all_editable() -> dict[str, Path]:
     """relpath (posix string) -> Path for every file this UI may view/edit.
     Recomputed per request; a path is only ever opened if it appears here."""
@@ -90,6 +96,7 @@ def _all_editable() -> dict[str, Path]:
         + _knowledge_files()
         + _state_files()
         + _sme_files()
+        + _personal_tools_files()
     )
     return {p.as_posix(): p for p in files}
 
@@ -107,6 +114,7 @@ CATEGORIES = {
     "knowledge": ("Knowledge", "indexed procedures and reference, read on demand", KNOWLEDGE_DIR, _knowledge_files),
     "state": ("Board / State", "read on demand", STATE_DIR, _state_files),
     "sme": ("SME Knowledge", "mined into the palace, not in the prompt", SME_DIR, _sme_files),
+    "tools": ("Personal Tools", "reusable tools created by the agent", personal_tools_root(), _personal_tools_files),
 }
 
 
@@ -132,9 +140,9 @@ def _dir_contents(base: Path, subpath: str, files: list[Path]) -> dict:
 
 
 def _safe_filename(name: str) -> bool:
-    """True if `name` is a single-segment *.md filename (no path components)."""
+    """True if `name` is a single-segment *.md or *.py filename (no path components)."""
     name = (name or "").strip()
-    return bool(name) and name.endswith(".md") and "/" not in name and "\\" not in name and ".." not in name
+    return bool(name) and (name.endswith(".md") or name.endswith(".py")) and "/" not in name and "\\" not in name and ".." not in name
 
 
 def _resolve_create_path(cat: str, subpath: str, filename: str) -> Path | None:
@@ -218,9 +226,31 @@ def register_config_browser(app, agent, scheduler=None):
     def config_index():
         categories = [
             {"key": key, "label": label, "note": note}
-            for key, (label, note, _base, _files_fn) in CATEGORIES.items()
+            for key, (label, note, _base, _files_fn) in CATEGORIES.items() if key != "tools"
         ]
         from harness import tower_settings as _tower_settings
+
+        state_dir = Path("state")
+        worker_control = state_dir / "worker_control.md"
+        scheduler_control = state_dir / "scheduler_control.md"
+        watcher_control = state_dir / "watcher_control.md"
+        
+        def is_active(path):
+            if not path.exists():
+                return True if path.name != "worker_control.md" else False
+            
+            try:
+                for line in path.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        return line.lower() == "active"
+            except Exception:
+                pass
+            return False if path.name == "worker_control.md" else True
+
+        worker_active = is_active(worker_control)
+        scheduler_active = is_active(scheduler_control)
+        watcher_active = is_active(watcher_control)
 
         return render_template(
             "config/index.html",
@@ -235,6 +265,9 @@ def register_config_browser(app, agent, scheduler=None):
             ),
             agent_timezone=_tower_settings.get_agent_timezone(),
             now_iso=datetime.now(timezone.utc).isoformat(),
+            worker_active=worker_active,
+            scheduler_active=scheduler_active,
+            watcher_active=watcher_active,
             page_context=ui_ctx.config_index(),
         )
 
@@ -306,9 +339,79 @@ def register_config_browser(app, agent, scheduler=None):
         target.parent.mkdir(parents=True, exist_ok=True)
         if target.exists():
             abort(409)
-        target.write_text(f"# {target.stem}\n\n", encoding="utf-8")
+            
+        if cat == "tools" and target.suffix == ".py":
+            template = '''TOOL_DEFINITIONS = [
+    {
+        "name": "new_tool",
+        "description": "Description of the tool.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "arg1": {"type": "string", "description": "An argument."},
+            },
+            "required": ["arg1"],
+        },
+    },
+]
+
+async def execute_tool(name: str, inputs: dict, working_dir: str = None) -> str:
+    if name == "new_tool":
+        return f"Executed new_tool with arg1={inputs.get('arg1')}"
+    return f"[error] unknown personal tool: {name}"
+'''
+            target.write_text(template, encoding="utf-8")
+        else:
+            target.write_text(f"# {target.stem}\n\n", encoding="utf-8")
+            
         relpath = target.as_posix()
         return redirect(url_for("config_browser.config_file", f=relpath))
+
+    @bp.route("/config/tools/default")
+    def config_tools_default():
+        from harness.tools import visible_tool_definitions, _developer_tool_names
+        dev_names = _developer_tool_names()
+        tools = [t for t in visible_tool_definitions() if t["name"] in dev_names]
+        return render_template(
+            "config/tools_default.html",
+            tools=tools,
+            page_context=ui_ctx.config_browse("tools", "default", []),
+        )
+
+    @bp.route("/config/semantic-recalls")
+    def config_semantic_recalls():
+        return render_template(
+            "config/semantic_recalls.html",
+            page_context=ui_ctx.config_browse("state", "semantic-recalls", []),
+        )
+
+    @bp.route("/config/activity/toggle", methods=["POST"])
+    def config_activity_toggle():
+        data = request.get_json(silent=True) or {}
+        if not data:
+            data = request.form
+            
+        target = data.get("target")
+        state = data.get("state")
+        
+        if state not in ("active", "paused"):
+            abort(400)
+            
+        targets = []
+        if target == "all":
+            targets = ["worker", "scheduler", "watcher"]
+        elif target in ("worker", "scheduler", "watcher"):
+            targets = [target]
+        else:
+            abort(400)
+            
+        state_dir = Path("state")
+        state_dir.mkdir(parents=True, exist_ok=True)
+        for t in targets:
+            path = state_dir / f"{t}_control.md"
+            path.write_text(f"{state}\n", encoding="utf-8")
+            
+        return jsonify({"success": True, "state": state, "targets": targets})
 
     @bp.route("/config/preview")
     def config_preview():

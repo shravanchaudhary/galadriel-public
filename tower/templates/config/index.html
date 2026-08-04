@@ -118,55 +118,115 @@
     </div>
 </section>
 
-<section class="settings-section">
+<section class="settings-section" style="margin-top: 2rem;">
     <div class="settings-section-head">
-        <h2 class="settings-section-title">Reactive Recalls</h2>
-        <p class="settings-section-desc">View and manage automated system and user nudges</p>
+        <h2 class="settings-section-title">Background Activity</h2>
+        <p class="settings-section-desc">Pause or resume independent agent tasks</p>
     </div>
-    <div class="settings-rows" style="margin-bottom: 1rem; border: 1px solid var(--border-subtle); border-radius: 6px; padding: 1rem;">
-        <h3 style="margin-top: 0; margin-bottom: 0.5rem; font-size: 0.9rem; color: var(--text-main);">Create New Recall</h3>
-        <p class="settings-row-hint" style="margin-bottom: 0.75rem;">Enter an instruction and the system will auto-generate regex triggers to intercept the agent.</p>
-        <div class="settings-inline-form" style="display: flex; gap: 0.5rem;">
-            <input type="text" id="new-recall-instruction" placeholder="e.g. 'Whenever I ask for daily updates, create a recurring job'" style="flex: 1;" autocomplete="off">
-            <button type="button" class="btn btn-small" id="create-recall-btn" onclick="createRecall()">Create</button>
+    <div class="settings-rows">
+        <div class="settings-row">
+            <div class="settings-row-main">
+                <span class="settings-row-label">Pause agent: all toggle off</span>
+                <span class="settings-row-hint">Master switch to instantly disable all background activity.</span>
+            </div>
+            <div class="settings-row-control">
+                <button type="button" class="btn btn-small" id="pause-all-btn" onclick="toggleActivity('all', 'paused')">Pause All</button>
+                <button type="button" class="btn btn-small btn-secondary" id="resume-all-btn" onclick="toggleActivity('all', 'active')">Resume All</button>
+            </div>
         </div>
-        <div id="create-recall-status" class="settings-row-hint" style="margin-top: 0.5rem; display: none;"></div>
-    </div>
-    <div class="settings-list" id="recalls-list">
-        <div class="settings-list-item">
-            <span class="settings-list-content">
-                <span class="settings-list-title muted">Loading recalls...</span>
-            </span>
+
+        <div class="settings-row">
+            <div class="settings-row-main">
+                <span class="settings-row-label">Worker on/off</span>
+                <span class="settings-row-hint">Independent loop reading jobs/ and state/</span>
+            </div>
+            <div class="toggle-row settings-row-control">
+                <label class="toggle-switch">
+                    <input type="checkbox" id="worker-toggle"
+                        {% if worker_active %}checked{% endif %}
+                        onchange="toggleActivity('worker', this.checked ? 'active' : 'paused')">
+                    <span class="toggle-slider"></span>
+                </label>
+                <span id="worker-status" class="heartbeat-status {{ 'status-on' if worker_active else 'status-off' }}">
+                    {{ 'ACTIVE' if worker_active else 'Paused' }}
+                </span>
+            </div>
+        </div>
+
+        <div class="settings-row">
+            <div class="settings-row-main">
+                <span class="settings-row-label">Scheduler for routines on/off</span>
+                <span class="settings-row-hint">Morning planning, evening wrap-up, and ambient reflections</span>
+            </div>
+            <div class="toggle-row settings-row-control">
+                <label class="toggle-switch">
+                    <input type="checkbox" id="scheduler-toggle"
+                        {% if scheduler_active %}checked{% endif %}
+                        onchange="toggleActivity('scheduler', this.checked ? 'active' : 'paused')">
+                    <span class="toggle-slider"></span>
+                </label>
+                <span id="scheduler-status" class="heartbeat-status {{ 'status-on' if scheduler_active else 'status-off' }}">
+                    {{ 'ACTIVE' if scheduler_active else 'Paused' }}
+                </span>
+            </div>
+        </div>
+
+        <div class="settings-row">
+            <div class="settings-row-main">
+                <span class="settings-row-label">Job watcher on/off</span>
+                <span class="settings-row-hint">Monitor long-running background shell commands</span>
+            </div>
+            <div class="toggle-row settings-row-control">
+                <label class="toggle-switch">
+                    <input type="checkbox" id="watcher-toggle"
+                        {% if watcher_active %}checked{% endif %}
+                        onchange="toggleActivity('watcher', this.checked ? 'active' : 'paused')">
+                    <span class="toggle-slider"></span>
+                </label>
+                <span id="watcher-status" class="heartbeat-status {{ 'status-on' if watcher_active else 'status-off' }}">
+                    {{ 'ACTIVE' if watcher_active else 'Paused' }}
+                </span>
+            </div>
         </div>
     </div>
 </section>
 
 <section class="settings-section" style="margin-top: 2rem;">
-    <h2 class="settings-section-title">Test Semantic Recalls</h2>
-    <p class="settings-section-desc">Test how the semantic router matches your text against active recalls</p>
-    
-    <div class="settings-row" style="flex-direction: column; align-items: flex-start; gap: 0.5rem; margin-bottom: 1rem;">
-        <label for="recall-test-model">Encoder Model</label>
-        <select id="recall-test-model" style="padding: 0.25rem;">
-            <option value="fastembed">FastEmbed (Local - BAAI/bge-small-en-v1.5)</option>
-            <option value="gemini">Gemini (text-embedding-004)</option>
-        </select>
+    <div class="settings-section-head">
+        <h2 class="settings-section-title">Agent tools</h2>
+        <p class="settings-section-desc">Default provider tools and agent-created tools</p>
     </div>
+    <div class="settings-list">
+        <a class="settings-list-item" href="/config/tools/default">
+            <span class="settings-list-content">
+                <span class="settings-list-title">Default</span>
+                <span class="settings-list-note">Built-in immutable tools provided by the harness</span>
+            </span>
+            <span class="settings-list-arrow">›</span>
+        </a>
+        <a class="settings-list-item" href="/config/browse?cat=tools">
+            <span class="settings-list-content">
+                <span class="settings-list-title">Agent-created</span>
+                <span class="settings-list-note">Reusable tools created by the agent in personal-tools</span>
+            </span>
+            <span class="settings-list-arrow">›</span>
+        </a>
+    </div>
+</section>
 
-    <div class="settings-row" style="flex-direction: column; align-items: flex-start; gap: 0.5rem; margin-bottom: 1rem;">
-        <label for="recall-test-threshold">Score Threshold (0.0 to 1.0)</label>
-        <input type="number" id="recall-test-threshold" step="0.01" min="0" max="1" value="0.70" style="padding: 0.25rem; width: 100px;">
+<section class="settings-section" style="margin-top: 2rem;">
+    <div class="settings-section-head">
+        <h2 class="settings-section-title">Semantic Recalls</h2>
+        <p class="settings-section-desc">View, manage, and test automated system and user nudges</p>
     </div>
-
-    <div class="settings-row" style="flex-direction: column; align-items: flex-start; gap: 0.5rem;">
-        <label for="recall-test-text">Input Text to Test</label>
-        <textarea id="recall-test-text" rows="4" style="width: 100%; padding: 0.5rem; background: var(--bg-primary); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 4px;" placeholder="Type a sentence or paragraph to see which recalls it triggers..."></textarea>
-        <button type="button" class="btn" id="test-recall-btn" onclick="testRecalls()">Run Test</button>
-    </div>
-    
-    <div id="recall-test-results" style="margin-top: 1rem; padding: 1rem; background: var(--bg-hover); border-radius: 4px; display: none;">
-        <h3 style="margin-top: 0; font-size: 0.9rem; margin-bottom: 0.5rem;">Matched Recalls:</h3>
-        <div id="recall-test-matches"></div>
+    <div class="settings-list">
+        <a class="settings-list-item" href="/config/semantic-recalls">
+            <span class="settings-list-content">
+                <span class="settings-list-title">Semantic Recalls</span>
+                <span class="settings-list-note">Create new recalls and run semantic tests against active recalls</span>
+            </span>
+            <span class="settings-list-arrow">›</span>
+        </a>
     </div>
 </section>
 {% endblock %}
@@ -579,78 +639,46 @@ async function loadRecalls() {
     }
 }
 
-async function testRecalls() {
-    const text = document.getElementById('recall-test-text').value.trim();
-    const model = document.getElementById('recall-test-model').value;
-    const thresholdStr = document.getElementById('recall-test-threshold').value;
-    const threshold = thresholdStr ? parseFloat(thresholdStr) : 0.70;
-    
-    const btn = document.getElementById('test-recall-btn');
-    const resultsDiv = document.getElementById('recall-test-results');
-    const matchesDiv = document.getElementById('recall-test-matches');
-    
-    if (!text) return;
-    
-    btn.disabled = true;
-    btn.textContent = 'Testing...';
-    resultsDiv.style.display = 'block';
-    matchesDiv.innerHTML = '<span class="muted">Running semantic scan... (this may take a moment if loading the model)</span>';
-    
-    try {
-        const response = await fetch('/api/recalls/test', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ text, model, threshold })
-        });
-        
-        const data = await response.json();
-        
-        if (!response.ok) {
-            throw new Error(data.error || 'Test failed');
-        }
-        
-        matchesDiv.innerHTML = '';
-        
-        if (!data.matches || data.matches.length === 0) {
-            matchesDiv.innerHTML = '<span class="muted">No recalls matched this text.</span>';
-        } else {
-            data.matches.forEach(m => {
-                const item = document.createElement('div');
-                item.style.marginBottom = '0.5rem';
-                item.style.padding = '0.5rem';
-                item.style.background = 'var(--bg-primary)';
-                item.style.borderLeft = '3px solid var(--accent-color)';
-                
-                const title = document.createElement('strong');
-                title.textContent = m.recall_id;
-                
-                if (m.similarity_score !== undefined && m.similarity_score !== null) {
-                    title.textContent += ` (Score: ${Number(m.similarity_score).toFixed(3)})`;
-                }
-                
-                title.style.display = 'block';
-                
-                const instr = document.createElement('span');
-                instr.textContent = m.instruction;
-                instr.style.fontSize = '0.85em';
-                
-                item.appendChild(title);
-                item.appendChild(instr);
-                matchesDiv.appendChild(item);
-            });
-        }
-    } catch (e) {
-        console.error(e);
-        matchesDiv.innerHTML = `<span style="color: var(--text-error)">Error: ${e.message}</span>`;
-    } finally {
-        btn.disabled = false;
-        btn.textContent = 'Run Test';
-    }
-}
 
 initTimezoneMenu();
 refreshExperientialState();
 refreshProviderKeys(true);
-loadRecalls();
+</script>
+<script>
+async function toggleActivity(target, state) {
+    try {
+        const response = await fetch('/config/activity/toggle', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ target, state })
+        });
+        const data = await response.json();
+        
+        if (data.success) {
+            for (const t of data.targets) {
+                const checkbox = document.getElementById(`${t}-toggle`);
+                const statusSpan = document.getElementById(`${t}-status`);
+                if (checkbox) checkbox.checked = (state === 'active');
+                if (statusSpan) {
+                    statusSpan.textContent = state === 'active' ? 'ACTIVE' : 'Paused';
+                    statusSpan.className = `heartbeat-status ${state === 'active' ? 'status-on' : 'status-off'}`;
+                }
+            }
+            if (window.towerToast) {
+                window.towerToast(`Successfully ${state === 'active' ? 'resumed' : 'paused'} ${target}`, { type: 'success' });
+            }
+        } else {
+            console.error('Failed to toggle activity', data);
+            if (window.towerToast) {
+                window.towerToast('Failed to change activity state', { type: 'error' });
+            }
+        }
+    } catch (e) {
+        console.error(e);
+        if (window.towerToast) {
+            window.towerToast('Error changing activity state', { type: 'error' });
+        }
+    }
+}
 </script>
 {% endblock %}

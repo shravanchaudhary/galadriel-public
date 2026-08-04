@@ -62,21 +62,11 @@
                     <button type="button" class="btn btn-small btn-secondary replika-retry"
                             data-replika-id="{{ replika.id }}"
                             {% if replika.status != 'error' %}hidden{% endif %}>Try again</button>
-                    <button type="button" class="btn btn-small btn-secondary replika-pause"
-                            data-replika-id="{{ replika.id }}"
-                            data-username="{{ replika.username }}"
-                            title="Pause background tasks"
-                            {% if replika.status != 'ready' %}hidden{% endif %}>Pause</button>
-                    <button type="button" class="btn btn-small btn-secondary replika-resume"
-                            data-replika-id="{{ replika.id }}"
-                            data-username="{{ replika.username }}"
-                            title="Resume background tasks"
-                            {% if replika.status != 'paused' %}hidden{% endif %}>Resume</button>
                     <button type="button" class="btn btn-small btn-secondary replika-stop"
                             data-replika-id="{{ replika.id }}"
                             data-username="{{ replika.username }}"
                             title="Stop runtime to save costs"
-                            {% if replika.status not in ['ready', 'paused'] %}hidden{% endif %}>Stop</button>
+                            {% if replika.status != 'ready' %}hidden{% endif %}>Stop</button>
                     <button type="button" class="btn btn-small btn-secondary replika-start"
                             data-replika-id="{{ replika.id }}"
                             data-username="{{ replika.username }}"
@@ -86,21 +76,27 @@
                             data-replika-id="{{ replika.id }}"
                             data-username="{{ replika.username }}"
                             title="Reset SOUL, memory, guardrails, recall, and jobs config to the latest defaults"
-                            {% if replika.status not in ['ready', 'paused'] %}hidden{% endif %}>Reset Config to Default</button>
+                            {% if replika.status != 'ready' %}hidden{% endif %}>Reset Config to Default</button>
                     <button type="button" class="btn btn-small btn-danger replika-delete"
                             data-replika-id="{{ replika.id }}"
                             data-username="{{ replika.username }}"
                             {% if replika.status == 'deleting' %}disabled{% endif %}>Delete</button>
                     <p class="replika-progress" aria-live="polite"
-                       {% if replika.status not in ['creating', 'deleting', 'stopping', 'starting', 'pausing', 'resuming'] %}hidden{% endif %}>
+                       {% if replika.status not in ['creating', 'deleting', 'stopping', 'starting'] %}hidden{% endif %}>
                         {% if replika.status == 'deleting' %}
                         Deletion usually finishes within a minute.
-                        {% elif replika.status == 'stopping' or replika.status == 'starting' or replika.status == 'pausing' or replika.status == 'resuming' %}
+                        {% elif replika.status == 'stopping' or replika.status == 'starting' %}
                         This usually finishes within a minute.
                         {% else %}
                         Provisioning usually finishes within a minute.
                         {% endif %}
                     </p>
+                    {% if replika.status == 'ready' %}
+                    <p class="replika-help-text" style="font-size: 0.85em; color: var(--text-muted); margin-top: 8px;">
+                        To stop the runtime and save costs, click <strong>Stop</strong>.<br>
+                        To pause the agent's background tasks, click <a href="{{ replika.url }}/config">here</a>.
+                    </p>
+                    {% endif %}
                 </div>
             </article>
             {% endfor %}
@@ -249,16 +245,20 @@ function cardHtml(replika) {
                 </div>
             </div>
             <div class="replika-card-actions">
-                <a class="btn btn-small" href="${url || '#'}" ${!['ready', 'paused'].includes(replika.status) ? 'hidden' : ''}>Open</a>
-                <a class="btn btn-small btn-secondary" href="/replika/${id}/integrations" ${!['ready', 'paused'].includes(replika.status) ? 'hidden' : ''}>Integrations</a>
+                <a class="btn btn-small" href="${url || '#'}" ${replika.status !== 'ready' ? 'hidden' : ''}>Open</a>
+                <a class="btn btn-small btn-secondary" href="/replika/${id}/integrations" ${replika.status !== 'ready' ? 'hidden' : ''}>Integrations</a>
                 <button type="button" class="btn btn-small btn-secondary replika-retry" data-replika-id="${id}" ${replika.status !== 'error' ? 'hidden' : ''}>Try again</button>
-                <button type="button" class="btn btn-small btn-secondary replika-pause" data-replika-id="${id}" data-username="${username}" title="Pause background tasks" ${replika.status !== 'ready' ? 'hidden' : ''}>Pause</button>
-                <button type="button" class="btn btn-small btn-secondary replika-resume" data-replika-id="${id}" data-username="${username}" title="Resume background tasks" ${replika.status !== 'paused' ? 'hidden' : ''}>Resume</button>
-                <button type="button" class="btn btn-small btn-secondary replika-stop" data-replika-id="${id}" data-username="${username}" title="Stop runtime to save costs" ${!['ready', 'paused'].includes(replika.status) ? 'hidden' : ''}>Stop</button>
+                <button type="button" class="btn btn-small btn-secondary replika-stop" data-replika-id="${id}" data-username="${username}" title="Stop runtime to save costs" ${replika.status !== 'ready' ? 'hidden' : ''}>Stop</button>
                 <button type="button" class="btn btn-small btn-secondary replika-start" data-replika-id="${id}" data-username="${username}" title="Start runtime" ${replika.status !== 'stopped' ? 'hidden' : ''}>Start</button>
-                <button type="button" class="btn btn-small btn-secondary replika-reset-config" data-replika-id="${id}" data-username="${username}" title="Reset SOUL, memory, guardrails, recall, and jobs config to the latest defaults" ${!['ready', 'paused'].includes(replika.status) ? 'hidden' : ''}>Reset Config to Default</button>
+                <button type="button" class="btn btn-small btn-secondary replika-reset-config" data-replika-id="${id}" data-username="${username}" title="Reset SOUL, memory, guardrails, recall, and jobs config to the latest defaults" ${replika.status !== 'ready' ? 'hidden' : ''}>Reset Config to Default</button>
                 <button type="button" class="btn btn-small btn-danger replika-delete" data-replika-id="${id}" data-username="${username}" ${replika.status === 'deleting' ? 'disabled' : ''}>Delete</button>
-                <p class="replika-progress" aria-live="polite" ${['creating', 'deleting', 'stopping', 'starting', 'pausing', 'resuming'].includes(replika.status) ? '' : 'hidden'}>${progressCopy}</p>
+                <p class="replika-progress" aria-live="polite" ${['creating', 'deleting', 'stopping', 'starting'].includes(replika.status) ? '' : 'hidden'}>${progressCopy}</p>
+                ${replika.status === 'ready' && replika.url ? `
+                <p class="replika-help-text" style="font-size: 0.85em; color: var(--text-muted); margin-top: 8px;">
+                    To stop the runtime and save costs, click <strong>Stop</strong>.<br>
+                    To pause the agent's background tasks, click <a href="${url}/config">here</a>.
+                </p>
+                ` : ''}
             </div>
         </article>
     `;
@@ -286,7 +286,7 @@ function renderList(replikas) {
 function schedulePoll(replikas) {
     clearTimeout(pollTimer);
     const transitioning = (replikas || []).some(
-        (item) => ['creating', 'deleting', 'stopping', 'starting', 'pausing', 'resuming'].includes(item.status)
+        (item) => ['creating', 'deleting', 'stopping', 'starting'].includes(item.status)
     );
     if (transitioning) {
         pollTimer = setTimeout(refreshStatus, 2000);
@@ -476,16 +476,6 @@ function bindCardActions() {
     list.querySelectorAll('.replika-start').forEach((button) => {
         button.addEventListener('click', async () => {
             await actionReplika('start', button.dataset.replikaId, button.dataset.username, button, null);
-        });
-    });
-    list.querySelectorAll('.replika-pause').forEach((button) => {
-        button.addEventListener('click', async () => {
-            await actionReplika('pause', button.dataset.replikaId, button.dataset.username, button, `Pause ${button.dataset.username}? The background worker and schedules will be paused. Only chat will remain active.`);
-        });
-    });
-    list.querySelectorAll('.replika-resume').forEach((button) => {
-        button.addEventListener('click', async () => {
-            await actionReplika('resume', button.dataset.replikaId, button.dataset.username, button, null);
         });
     });
 }

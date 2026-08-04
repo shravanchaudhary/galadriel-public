@@ -19,7 +19,7 @@ from .auth import SESSION_USER_KEY
 COLLECTION = "replikas"
 USERNAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{1,30}[a-z0-9])?$")
 REPLIKA_TYPES = frozenset({"organization", "individual"})
-CALLBACK_STATUSES = frozenset({"ready", "error", "deleted", "stopped", "paused"})
+CALLBACK_STATUSES = frozenset({"ready", "error", "deleted", "stopped"})
 RESERVED_USERNAMES = frozenset(
     {
         "admin",
@@ -47,10 +47,7 @@ STATUS_LABELS = {
     "deleting": "Deleting",
     "stopped": "Stopped",
     "stopping": "Stopping",
-    "paused": "Paused",
-    "pausing": "Pausing",
     "starting": "Starting",
-    "resuming": "Resuming",
 }
 
 
@@ -235,7 +232,7 @@ class ReplikaStore:
             {
                 "$or": [{"_id": replika_id}, {"replika_id": replika_id}],
                 "owner_id": owner_id,
-                "status": {"$in": ["ready", "error", "creating", "deleting", "stopped", "paused"]},
+                "status": {"$in": ["ready", "error", "creating", "deleting", "stopped"]},
             },
             {
                 "$set": {
@@ -287,12 +284,6 @@ class Provisioner:
 
     def start_replika(self, replika: dict[str, Any]) -> None:
         self._invoke(replika, "start")
-
-    def pause(self, replika: dict[str, Any]) -> None:
-        self._invoke(replika, "pause")
-
-    def resume(self, replika: dict[str, Any]) -> None:
-        self._invoke(replika, "resume")
 
     def reset_config(self, replika: dict[str, Any]) -> dict[str, Any]:
         """Force-overwrite this Replika's persisted config/ files with the
@@ -406,17 +397,13 @@ def _customer_view(document: dict[str, Any]) -> dict[str, Any]:
         message = "Stopping your Replika…"
     elif status == "starting":
         message = "Starting your Replika…"
-    elif status == "pausing":
-        message = "Pausing your Replika…"
-    elif status == "resuming":
-        message = "Resuming your Replika…"
     return {
         "id": replika_id_of(document),
         "username": document["username"],
         "replika_type": document["replika_type"],
         "status": status,
         "status_label": STATUS_LABELS.get(status, status),
-        "url": document["product_url"] if status in ("ready", "paused") else None,
+        "url": document["product_url"] if status == "ready" else None,
         "release": document.get("release_version"),
         "message": message,
     }
@@ -698,38 +685,6 @@ def register_replika_control_plane(app) -> None:
         except Exception:
             current_app.logger.exception("Replika start failed")
             return jsonify({"error": "We could not start this Replika. Please try again."}), 503
-
-    @bp.post("/api/replikas/<replika_id>/pause")
-    def pause_replika(replika_id: str):
-        try:
-            owner_id = _owner_id()
-            document = _store().find_owned(replika_id, owner_id)
-            if not document:
-                return jsonify({"error": "Unknown Replika"}), 404
-            _provisioner().pause(document)
-            _store().update_status(replika_id, "pausing")
-            return jsonify({"status": "pausing"})
-        except PermissionError:
-            return jsonify({"error": "Unauthorized"}), 401
-        except Exception:
-            current_app.logger.exception("Replika pause failed")
-            return jsonify({"error": "We could not pause this Replika. Please try again."}), 503
-
-    @bp.post("/api/replikas/<replika_id>/resume")
-    def resume_replika(replika_id: str):
-        try:
-            owner_id = _owner_id()
-            document = _store().find_owned(replika_id, owner_id)
-            if not document:
-                return jsonify({"error": "Unknown Replika"}), 404
-            _provisioner().resume(document)
-            _store().update_status(replika_id, "resuming")
-            return jsonify({"status": "resuming"})
-        except PermissionError:
-            return jsonify({"error": "Unauthorized"}), 401
-        except Exception:
-            current_app.logger.exception("Replika resume failed")
-            return jsonify({"error": "We could not resume this Replika. Please try again."}), 503
 
     @bp.post("/internal/replika/provisioning")
     def provisioning_callback():
