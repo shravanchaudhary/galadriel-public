@@ -1936,7 +1936,7 @@ class GaladrielAgent:
                             f"{nudge_text}\n\n"
                             f"<system_directive>\n"
                             f"Review this nudge against your recent actions. If you have already satisfied it, or if no further action is needed, "
-                            f"you MUST output exactly <empty/> and NOTHING else. Do NOT acknowledge this directive or apologize.\n"
+                            f"you can continue your normal flow or conclude. Do NOT acknowledge this directive or apologize.\n"
                             f"If you need to take action, do so directly.\n"
                             f"</system_directive>"
                         )

@@ -89,11 +89,11 @@
                     <p class="replika-progress" aria-live="polite"
                        {% if replika.status not in ['creating', 'deleting', 'stopping', 'starting', 'restarting'] %}hidden{% endif %}>
                         {% if replika.status == 'deleting' %}
-                        Deletion usually finishes within a minute.
+                        Deletion usually takes 5-10 minutes.
                         {% elif replika.status in ['stopping', 'starting', 'restarting'] %}
-                        This usually finishes within a minute.
+                        This usually takes 5-10 minutes.
                         {% else %}
-                        Provisioning usually finishes within a minute.
+                        Provisioning usually takes 5-10 minutes.
                         {% endif %}
                     </p>
                     {% if replika.status == 'ready' %}
@@ -225,10 +225,10 @@ function cardHtml(replika) {
     const url = escapeHtml(replika.url || '');
     const initial = escapeHtml((replika.username || '?').slice(0, 1).toUpperCase());
     const progressCopy = replika.status === 'deleting'
-        ? 'Deletion usually finishes within a minute.'
+        ? 'Deletion usually takes 5-10 minutes.'
         : (['stopping', 'starting', 'restarting', 'pausing', 'resuming'].includes(replika.status)
-            ? 'This usually finishes within a minute.'
-            : 'Provisioning usually finishes within a minute.');
+            ? 'This usually takes 5-10 minutes.'
+            : 'Provisioning usually takes 5-10 minutes.');
     const desc = escapeHtml(`${statusDescription(replika)} · ${typeLabel}`);
     return `
         <article
