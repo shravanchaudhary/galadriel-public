@@ -1,0 +1,269 @@
+{% extends "config/base.html" %}
+{% block title %}Semantic Recalls{% endblock %}
+{% block heading %}Semantic Recalls{% endblock %}
+{% block subtitle %}Manage semantic recalls and run tests{% endblock %}
+
+{% block cfg_content %}
+<nav class="settings-crumb" aria-label="Breadcrumb">
+    <a href="/config">Configuration</a>
+    <span class="settings-crumb-separator">/</span>
+    <span class="muted">Semantic Recalls</span>
+</nav>
+
+<section class="settings-section">
+    <div class="settings-section-head">
+        <h2 class="settings-section-title">Semantic Recalls</h2>
+        <p class="settings-section-desc">View and manage automated system and user nudges</p>
+    </div>
+    
+    <div class="settings-rows" style="margin-bottom: 1rem; border: 1px solid var(--border-subtle); border-radius: 6px; padding: 1rem;">
+        <h3 style="margin-top: 0; margin-bottom: 0.5rem; font-size: 0.9rem; color: var(--text-main);">Create New Recall</h3>
+        <p class="settings-row-hint" style="margin-bottom: 0.75rem;">Enter an instruction and the system will auto-generate regex triggers to intercept the agent.</p>
+        <div class="settings-inline-form" style="display: flex; gap: 0.5rem;">
+            <input type="text" id="new-recall-instruction" placeholder="e.g. 'Whenever I ask for daily updates, create a recurring job'" style="flex: 1;" autocomplete="off">
+            <button type="button" class="btn btn-small" id="create-recall-btn" onclick="createRecall()">Create</button>
+        </div>
+        <div id="create-recall-status" class="settings-row-hint" style="margin-top: 0.5rem; display: none;"></div>
+    </div>
+    <div class="settings-list" id="recalls-list">
+        <div class="settings-list-item">
+            <span class="settings-list-content">
+                <span class="settings-list-title muted">Loading recalls...</span>
+            </span>
+        </div>
+    </div>
+</section>
+
+<section class="settings-section" style="margin-top: 2rem;">
+    <div class="settings-section-head">
+        <h2 class="settings-section-title">Test Semantic Recalls</h2>
+        <p class="settings-section-desc">Test how the semantic router matches your text against active recalls</p>
+    </div>
+    
+    <div class="settings-row" style="flex-direction: column; align-items: flex-start; gap: 0.5rem; margin-bottom: 1rem;">
+        <label for="recall-test-model">Encoder Model</label>
+        <select id="recall-test-model" style="padding: 0.25rem;">
+            <option value="fastembed">FastEmbed (Local - BAAI/bge-small-en-v1.5)</option>
+            <option value="gemini">Gemini (text-embedding-004)</option>
+        </select>
+    </div>
+
+    <div class="settings-row" style="flex-direction: column; align-items: flex-start; gap: 0.5rem; margin-bottom: 1rem;">
+        <label for="recall-test-threshold">Score Threshold (0.0 to 1.0) — Applies to real-time matches and tests</label>
+        <div style="display: flex; gap: 0.5rem; align-items: center;">
+            <input type="number" id="recall-test-threshold" step="0.01" min="0" max="1" value="0.70" style="padding: 0.25rem; width: 100px;">
+            <span id="threshold-save-status" style="font-size: 0.8rem; color: var(--success); display: none;">Saved!</span>
+        </div>
+    </div>
+
+    <div class="settings-row" style="flex-direction: column; align-items: flex-start; gap: 0.5rem;">
+        <label for="recall-test-text">Input Text to Test</label>
+        <textarea id="recall-test-text" rows="4" style="width: 100%; padding: 0.5rem; background: var(--bg-primary); color: var(--text-primary); border: 1px solid var(--border-color); border-radius: 4px;" placeholder="Type a sentence or paragraph to see which recalls it triggers..."></textarea>
+        <button type="button" class="btn" id="test-recall-btn" onclick="testRecalls()">Run Test</button>
+    </div>
+    
+    <div id="recall-test-results" style="margin-top: 1rem; padding: 1rem; background: var(--bg-hover); border-radius: 4px; display: none;">
+        <h3 style="margin-top: 0; font-size: 0.9rem; margin-bottom: 0.5rem;">Matched Recalls:</h3>
+        <div id="recall-test-matches"></div>
+    </div>
+</section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function loadRecalls() {
+    const list = document.getElementById('recalls-list');
+    try {
+        const response = await fetch('/api/recalls');
+        const data = await response.json();
+        
+        if (data.threshold !== undefined) {
+            document.getElementById('recall-test-threshold').value = data.threshold.toFixed(2);
+        }
+        
+        list.innerHTML = '';
+        if (data.recalls.length === 0) {
+            list.innerHTML = '<div class="settings-list-item"><span class="settings-list-content"><span class="settings-list-title muted">No recalls active.</span></span></div>';
+            return;
+        }
+        
+        for (const recall of data.recalls) {
+            const item = document.createElement('div');
+            item.className = 'settings-list-item';
+            item.style.alignItems = 'flex-start';
+            item.style.padding = '0.75rem 1rem';
+            
+            const content = document.createElement('div');
+            content.className = 'settings-list-content';
+            content.style.flex = '1';
+            
+            const instruction = document.createElement('div');
+            instruction.className = 'settings-list-title';
+            instruction.style.marginBottom = '0.25rem';
+            instruction.textContent = recall.instruction;
+            content.appendChild(instruction);
+            
+            if (recall.triggers && recall.triggers.length > 0) {
+                const triggers = document.createElement('div');
+                triggers.className = 'settings-list-note';
+                triggers.style.fontFamily = 'monospace';
+                triggers.style.fontSize = '0.8rem';
+                triggers.style.marginTop = '0.25rem';
+                triggers.textContent = recall.triggers.join(', ');
+                content.appendChild(triggers);
+            }
+            
+            item.appendChild(content);
+            
+            if (recall.recall_id) {
+                const actions = document.createElement('div');
+                actions.className = 'settings-row-control';
+                actions.style.marginLeft = '1rem';
+                
+                const toggle = document.createElement('button');
+                toggle.className = `btn btn-small ${recall.enabled === false ? 'btn-secondary' : ''}`;
+                toggle.textContent = recall.enabled === false ? 'Enable' : 'Disable';
+                toggle.onclick = async () => {
+                    await fetch(`/api/recalls/${recall.recall_id}`, {
+                        method: 'PATCH',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({enabled: recall.enabled === false})
+                    });
+                    loadRecalls();
+                };
+                
+                const del = document.createElement('button');
+                del.className = 'btn btn-small btn-secondary';
+                del.textContent = 'Delete';
+                del.onclick = async () => {
+                    await fetch(`/api/recalls/${recall.recall_id}`, {method: 'DELETE'});
+                    loadRecalls();
+                };
+                
+                actions.appendChild(toggle);
+                actions.appendChild(del);
+                item.appendChild(actions);
+            }
+            
+            list.appendChild(item);
+        }
+    } catch (e) {
+        console.error(e);
+        document.getElementById('recalls-list').innerHTML = '<div class="settings-list-item"><span class="settings-list-content"><span class="settings-list-title muted" style="color:red">Error loading recalls.</span></span></div>';
+    }
+}
+
+async function createRecall() {
+    const input = document.getElementById('new-recall-instruction');
+    const btn = document.getElementById('create-recall-btn');
+    const status = document.getElementById('create-recall-status');
+    const instruction = input.value.trim();
+    
+    if (!instruction) return;
+    
+    btn.disabled = true;
+    btn.textContent = 'Wait...';
+    status.style.display = 'block';
+    status.textContent = 'Generating trigger phrases (this takes a moment)...';
+    status.style.color = 'var(--text-main)';
+    
+    try {
+        const response = await fetch('/api/recalls/generate', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ instruction })
+        });
+        
+        if (!response.ok) {
+            const data = await response.json();
+            throw new Error(data.error || 'Failed to create recall');
+        }
+        
+        input.value = '';
+        status.textContent = 'Recall created successfully.';
+        status.style.color = 'var(--success)';
+        setTimeout(() => { status.style.display = 'none'; }, 3000);
+        
+        loadRecalls();
+    } catch (e) {
+        status.textContent = `Error: ${e.message}`;
+        status.style.color = 'var(--danger)';
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Create';
+    }
+}
+
+async function testRecalls() {
+    const text = document.getElementById('recall-test-text').value.trim();
+    const model = document.getElementById('recall-test-model').value;
+    const thresholdStr = document.getElementById('recall-test-threshold').value;
+    const threshold = thresholdStr ? parseFloat(thresholdStr) : 0.70;
+    
+    const btn = document.getElementById('test-recall-btn');
+    const resultsDiv = document.getElementById('recall-test-results');
+    const matchesDiv = document.getElementById('recall-test-matches');
+    
+    if (!text) return;
+    
+    btn.disabled = true;
+    btn.textContent = 'Testing...';
+    resultsDiv.style.display = 'block';
+    matchesDiv.innerHTML = '<span class="muted">Running semantic scan... (this may take a moment if loading the model)</span>';
+    
+    try {
+        const response = await fetch('/api/recalls/test', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ text, model, threshold })
+        });
+        
+        const data = await response.json();
+        
+        if (!response.ok) {
+            throw new Error(data.error || 'Test failed');
+        }
+        
+        if (!data.matches || data.matches.length === 0) {
+            matchesDiv.innerHTML = '<span class="muted">No recalls triggered.</span>';
+        } else {
+            matchesDiv.innerHTML = data.matches.map(m => `
+                <div style="margin-bottom: 0.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border-color);">
+                    <div style="font-weight: 500;">Score: <span style="color: ${m.similarity_score >= threshold ? 'var(--success)' : 'var(--warning)'};">${(m.similarity_score || 0).toFixed(3)}</span></div>
+                    <div style="font-size: 0.9rem;">${m.instruction}</div>
+                    <div style="font-family: monospace; font-size: 0.8rem; color: var(--text-muted);">${m.recall_id}</div>
+                </div>
+            `).join('');
+        }
+    } catch (e) {
+        matchesDiv.innerHTML = `<span style="color: var(--danger)">Error: ${e.message}</span>`;
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Run Test';
+    }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    loadRecalls();
+    
+    document.getElementById('recall-test-threshold').addEventListener('change', async (e) => {
+        const val = parseFloat(e.target.value);
+        if (isNaN(val)) return;
+        try {
+            const res = await fetch('/api/recalls/threshold', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({threshold: val})
+            });
+            if (res.ok) {
+                const status = document.getElementById('threshold-save-status');
+                status.style.display = 'inline';
+                setTimeout(() => status.style.display = 'none', 2000);
+            }
+        } catch (err) {
+            console.error('Failed to save threshold', err);
+        }
+    });
+});
+</script>
+{% endblock %}

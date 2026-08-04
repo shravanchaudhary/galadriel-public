@@ -24,8 +24,15 @@ def get_encoder(force_type=None, force_threshold=None):
     
     encoder_type = (force_type or os.environ.get("RECALL_ENCODER", "fastembed")).lower()
     
+    if force_threshold is None:
+        try:
+            from .tower_settings import get_semantic_threshold
+            force_threshold = get_semantic_threshold(0.70)
+        except Exception:
+            force_threshold = 0.70
+            
     if _ENCODER is not None and _ENCODER_TYPE == encoder_type:
-        if force_threshold is not None and _ENCODER.score_threshold != force_threshold:
+        if _ENCODER.score_threshold != force_threshold:
             _ENCODER.score_threshold = force_threshold
         return _ENCODER
         
@@ -155,12 +162,20 @@ def scan_text_for_recalls(text: str, recalls: list[dict], force_encoder_type=Non
             if decision and decision.name and decision.name != "None":
                 score = getattr(decision, "similarity_score", "N/A")
                 log.info(f"[Semantic Match] route='{decision.name}' score={score} chunk='{chunk[:100]}'")
+                
+                float_score = None
+                if score != "N/A":
+                    float_score = float(score) if hasattr(score, 'item') else float(score)
+                    threshold = force_threshold if force_threshold is not None else router.encoder.score_threshold
+                    if float_score < threshold:
+                        continue
+                
                 if decision.name not in seen:
                     seen.add(decision.name)
                     if decision.name in recall_map:
                         match_obj = dict(recall_map[decision.name])
-                        if score != "N/A":
-                            match_obj["similarity_score"] = float(score) if hasattr(score, 'item') else float(score)
+                        if float_score is not None:
+                            match_obj["similarity_score"] = float_score
                         matches.append(match_obj)
                 
     if matches:

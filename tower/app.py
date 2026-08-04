@@ -842,9 +842,24 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
     @app.route("/api/recalls", methods=["GET"])
     def api_get_recalls():
         from harness.recall import fetch_all_recalls
+        from harness.tower_settings import get_semantic_threshold
         try:
             recalls = _run_async(fetch_all_recalls())
-            return jsonify({"status": "ok", "recalls": recalls})
+            threshold = get_semantic_threshold(0.70)
+            return jsonify({"status": "ok", "recalls": recalls, "threshold": threshold})
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/recalls/threshold", methods=["POST"])
+    def api_set_threshold():
+        data = request.json or {}
+        val = data.get("threshold")
+        if val is None:
+            return jsonify({"error": "threshold is required"}), 400
+        from harness.tower_settings import set_semantic_threshold
+        try:
+            saved = set_semantic_threshold(float(val))
+            return jsonify({"status": "ok", "threshold": saved})
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
