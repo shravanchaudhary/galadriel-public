@@ -39,7 +39,7 @@
                                 {{ replika.status_label }}
                             </span>
                         </div>
-                        {% if replika.status == 'ready' and replika.url %}
+                        {% if replika.status in ['ready', 'paused'] and replika.url %}
                         <a class="replika-card-url" href="{{ replika.url }}">{{ replika.url }}</a>
                         {% endif %}
                         <p class="replika-card-desc">

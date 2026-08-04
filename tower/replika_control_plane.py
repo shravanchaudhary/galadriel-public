@@ -416,7 +416,7 @@ def _customer_view(document: dict[str, Any]) -> dict[str, Any]:
         "replika_type": document["replika_type"],
         "status": status,
         "status_label": STATUS_LABELS.get(status, status),
-        "url": document["product_url"] if status == "ready" else None,
+        "url": document["product_url"] if status in ("ready", "paused") else None,
         "release": document.get("release_version"),
         "message": message,
     }
