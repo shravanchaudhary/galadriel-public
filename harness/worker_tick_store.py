@@ -210,8 +210,13 @@ class WorkerTickRecorder:
             "role": safe.get("role", "unknown") if isinstance(safe, dict) else "unknown",
             "content": content,
         }
-        if isinstance(safe, dict) and safe.get("_thought"):
-            event["thought"] = safe["_thought"]
+        if isinstance(safe, dict):
+            if safe.get("_thought"):
+                event["thought"] = safe["_thought"]
+            if safe.get("kind"):
+                event["kind"] = safe["kind"]
+            if safe.get("is_nudge"):
+                event["is_nudge"] = safe["is_nudge"]
         self._sequence += 1
         await self._insert_event(event)
         await self._update_tick({"$set": {

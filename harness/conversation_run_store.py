@@ -545,7 +545,7 @@ def protocol_tail_for_run(run_id: str) -> tuple[list[dict], dict | None]:
     checkpoint_id = run.get("latest_checkpoint_id")
     if checkpoint_id:
         checkpoint = db[CHECKPOINTS].find_one({"checkpoint_id": checkpoint_id})
-    query: dict[str, Any] = {"run_id": run_id, "kind": "protocol_message"}
+    query: dict[str, Any] = {"run_id": run_id, "kind": {"$in": ["protocol_message", "nudge"]}}
     boundary = run.get("latest_checkpoint_sequence")
     if boundary is not None:
         query["sequence"] = {"$gt": boundary}
@@ -556,7 +556,7 @@ def protocol_tail_for_run(run_id: str) -> tuple[list[dict], dict | None]:
 def buffer_messages_for_run(run_id: str) -> tuple[list[dict], dict | None]:
     """Rebuild the live agent message buffer from a run's durable events.
 
-    Includes ``direct_user`` and ``protocol_message`` events after the latest
+    Includes ``direct_user``, ``protocol_message``, and ``nudge`` events after the latest
     checkpoint (user turns are stored as direct_user, not protocol_message).
     """
     db = _sync_db()
@@ -571,7 +571,7 @@ def buffer_messages_for_run(run_id: str) -> tuple[list[dict], dict | None]:
         checkpoint = db[CHECKPOINTS].find_one({"checkpoint_id": checkpoint_id})
     query: dict[str, Any] = {
         "run_id": run_id,
-        "kind": {"$in": ["direct_user", "protocol_message"]},
+        "kind": {"$in": ["direct_user", "protocol_message", "nudge"]},
     }
     boundary = run.get("latest_checkpoint_sequence")
     if boundary is not None:
@@ -586,6 +586,9 @@ def buffer_messages_for_run(run_id: str) -> tuple[list[dict], dict | None]:
         }
         if event.get("thought"):
             message["_thought"] = event["thought"]
+        if event.get("kind") == "nudge" or event.get("is_nudge"):
+            message["kind"] = "nudge"
+            message["is_nudge"] = True
         messages.append(message)
     return messages, checkpoint
 

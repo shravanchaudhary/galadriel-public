@@ -64,17 +64,21 @@ def _as_messages(events: list[dict]) -> list[dict]:
     User turns are stored as ``direct_user`` (not ``protocol_message``); assistant
     / tool traffic is ``protocol_message`` and may carry ``thought``. Both are
     required — protocol-only drops users, so serialize_chat_history skips every
-    assistant turn (and its thoughts).
+    assistant turn (and its thoughts). Nudge messages (stored with kind="nudge")
+    are also preserved so suggestions appear in the transcript history.
     """
     messages = []
     for event in events:
-        if event.get("kind") not in ("protocol_message", "direct_user"):
+        if event.get("kind") not in ("protocol_message", "direct_user", "nudge"):
             continue
         if event.get("role") is None or event.get("content") is None:
             continue
         message = {"role": event.get("role"), "content": event.get("content")}
         if event.get("thought"):
             message["_thought"] = event["thought"]
+        if event.get("kind") == "nudge" or event.get("is_nudge"):
+            message["kind"] = "nudge"
+            message["is_nudge"] = True
         messages.append(message)
     return messages
 
@@ -85,6 +89,9 @@ def _events_to_messages(events: list[dict]) -> list[dict]:
         message = {"role": event.get("role", "unknown"), "content": event.get("content")}
         if event.get("thought"):
             message["_thought"] = event["thought"]
+        if event.get("kind") == "nudge" or event.get("is_nudge"):
+            message["kind"] = "nudge"
+            message["is_nudge"] = True
         messages.append(message)
     return messages
 
