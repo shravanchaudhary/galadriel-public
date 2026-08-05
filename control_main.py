@@ -10,7 +10,7 @@ from tower.control_app import create_control_app
 
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=os.environ.get("LOG_LEVEL", "INFO").upper(),
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     datefmt="%H:%M:%S",
 )

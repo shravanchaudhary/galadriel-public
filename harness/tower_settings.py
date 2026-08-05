@@ -263,7 +263,7 @@ def get_agent_timezone() -> str:
     return _valid_timezone((doc or {}).get("timezone")) or DEFAULT_AGENT_TIMEZONE
 
 
-def get_semantic_threshold(default: float = 0.70) -> float:
+def get_semantic_threshold(default: float = 0.80) -> float:
     """Return the persisted semantic score threshold, or default if unset / Mongo unavailable."""
     db = _db()
     if db is None:

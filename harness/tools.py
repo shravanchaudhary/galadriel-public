@@ -752,6 +752,49 @@ TOOL_DEFINITIONS = [
             "required": ["name", "period"],
         },
     },
+    {
+        "name": "get_recent_nudges",
+        "description": "Fetch recently triggered semantic nudges (recalls) to evaluate if they were helpful or false positives.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "hours_ago": {
+                    "type": "integer",
+                    "description": "How many hours of history to fetch (default 24)."
+                }
+            }
+        }
+    },
+    {
+        "name": "add_recall_example",
+        "description": "Add a positive or negative example to a specific recall to tune its semantic matching.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "recall_id": {
+                    "type": "string",
+                    "description": "The ID of the recall rule."
+                },
+                "example_text": {
+                    "type": "string",
+                    "description": "The exact text snippet that triggered the recall, or a representative phrase."
+                },
+                "is_positive": {
+                    "type": "boolean",
+                    "description": "True if this text SHOULD trigger the recall (helpful), False if it should NOT (false positive)."
+                }
+            },
+            "required": ["recall_id", "example_text", "is_positive"]
+        }
+    },
+    {
+        "name": "reconcile_recall_thresholds",
+        "description": "Recalculates the semantic matching threshold for recalls based on their positive and negative examples.",
+        "input_schema": {
+            "type": "object",
+            "properties": {}
+        }
+    },
 ]
 
 # Explorium lead-sourcing tools live in their own module (engine + cache stay
@@ -983,6 +1026,149 @@ async def execute_tool(
         )
 
 
+async def _get_recent_nudges(hours_ago: int = 24) -> str:
+    from .db_ops import get_db
+    db = get_db()
+    if db is None:
+        return "[error] No DB connection available."
+    from datetime import datetime, timedelta, timezone
+    since = datetime.now(timezone.utc) - timedelta(hours=hours_ago)
+    try:
+        nudges = await db["nudge_logs"].find({"timestamp": {"$gte": since}}).sort("timestamp", -1).to_list(length=50)
+        if not nudges:
+            return f"No nudges recorded in the last {hours_ago} hours."
+            
+        res = []
+        for n in nudges:
+            n_id = str(n.get("_id", ""))
+            r_id = n.get("recall_id", "")
+            text = n.get("text_scanned", "")
+            score = n.get("score", 0.0)
+            channel = n.get("channel_id", "")
+            res.append(f"[{n.get('timestamp')}] channel={channel} recall={r_id} score={score:.3f}\nText: {text}")
+        return "\n\n".join(res)
+    except Exception as e:
+        return f"Error fetching nudges: {e}"
+
+async def _add_recall_example(recall_id: str, example_text: str, is_positive: bool) -> str:
+    from .db_ops import get_db
+    from bson.objectid import ObjectId
+    db = get_db()
+    if db is None:
+        return "[error] No DB connection available."
+    text = example_text.strip()
+    
+    try:
+        coll = db["recalls"]
+        query = {"_id": ObjectId(recall_id)} if len(recall_id) == 24 else {"recall_id": recall_id}
+        # Look in user database first
+        recall = await coll.find_one(query)
+        field = "positive_examples" if is_positive else "negative_examples"
+        
+        if recall:
+            await coll.update_one(query, {"$addToSet": {field: text}})
+            from harness.recall import fetch_all_recalls, get_semantic_router
+            all_recalls = await fetch_all_recalls()
+            get_semantic_router(all_recalls, force_reload=True)
+            return f"Successfully added {'positive' if is_positive else 'negative'} example to user recall {recall_id}."
+        
+        # If not in DB, try updating system defaults
+        import json
+        from pathlib import Path
+        config_path = Path("config/system_recalls.json")
+        if config_path.exists():
+            with open(config_path, "r", encoding="utf-8") as f:
+                sys_recalls = json.load(f)
+            
+            updated = False
+            for r in sys_recalls:
+                if r.get("recall_id") == recall_id:
+                    if field not in r:
+                        r[field] = []
+                    if text not in r[field]:
+                        r[field].append(text)
+                        updated = True
+                    break
+            
+            if updated:
+                with open(config_path, "w", encoding="utf-8") as f:
+                    json.dump(sys_recalls, f, indent=4)
+                
+                from harness.recall import fetch_all_recalls, get_semantic_router
+                all_recalls = await fetch_all_recalls()
+                get_semantic_router(all_recalls, force_reload=True)
+                return f"Successfully added {'positive' if is_positive else 'negative'} example to system recall {recall_id}."
+            
+        return f"Error: Recall {recall_id} not found in DB or system config."
+    except Exception as e:
+        return f"Error updating recall: {e}"
+
+async def _reconcile_recall_thresholds() -> str:
+    from .db_ops import get_db
+    db = get_db()
+    if db is None:
+        return "[error] No DB connection available."
+    try:
+        coll = db["recalls"]
+        recalls = await coll.find({}).to_list(length=None)
+        updates = 0
+        for r in recalls:
+            pos = r.get("positive_examples", [])
+            neg = r.get("negative_examples", [])
+            if not pos and not neg:
+                continue
+                
+            # A simple heuristic: if we have negative examples, we might need a higher threshold.
+            current_threshold = r.get("threshold", 0.80)
+            if neg:
+                new_threshold = min(0.95, current_threshold + 0.05 * len(neg))
+            else:
+                new_threshold = current_threshold
+                
+            if new_threshold != current_threshold or "threshold" not in r:
+                await coll.update_one({"_id": r["_id"]}, {"$set": {"threshold": new_threshold}})
+                updates += 1
+            
+        # Now update system recalls
+        import json
+        from pathlib import Path
+        config_path = Path("config/system_recalls.json")
+        if config_path.exists():
+            with open(config_path, "r", encoding="utf-8") as f:
+                sys_recalls = json.load(f)
+            
+            sys_updated = False
+            for r in sys_recalls:
+                pos = r.get("positive_examples", [])
+                neg = r.get("negative_examples", [])
+                if not pos and not neg:
+                    continue
+                    
+                current_threshold = r.get("threshold", 0.80)
+                if neg:
+                    new_threshold = min(0.95, current_threshold + 0.05 * len(neg))
+                else:
+                    new_threshold = current_threshold
+                    
+                if new_threshold != current_threshold or "threshold" not in r:
+                    r["threshold"] = new_threshold
+                    sys_updated = True
+                    updates += 1
+            
+            if sys_updated:
+                with open(config_path, "w", encoding="utf-8") as f:
+                    json.dump(sys_recalls, f, indent=4)
+                    
+        # Refresh the router cache
+        if updates > 0:
+            from harness.recall import fetch_all_recalls, get_semantic_router
+            all_recalls = await fetch_all_recalls()
+            get_semantic_router(all_recalls, force_reload=True)
+            
+        return f"Reconciled thresholds for {updates} recall(s) (both system and user)."
+    except Exception as e:
+        return f"Error reconciling thresholds: {e}"
+
 async def _execute_tool_impl(
     name: str,
     inputs: dict,
@@ -1212,6 +1398,16 @@ async def _execute_tool_impl(
             incr=inputs.get("incr", 0),
             cap=inputs.get("cap"),
         )
+    elif name == "get_recent_nudges":
+        return await _get_recent_nudges(hours_ago=inputs.get("hours_ago", 24))
+    elif name == "add_recall_example":
+        return await _add_recall_example(
+            recall_id=inputs.get("recall_id"),
+            example_text=inputs.get("example_text"),
+            is_positive=inputs.get("is_positive")
+        )
+    elif name == "reconcile_recall_thresholds":
+        return await _reconcile_recall_thresholds()
     elif name in EXPLORIUM_TOOL_NAMES:
         return await execute_explorium_tool(name, inputs)
     elif name in CONTACT_TOOL_NAMES:
@@ -1879,12 +2075,12 @@ async def _set_recall(instruction: str) -> str:
     provider = get_provider("compaction")
     
     prompt = f"""
-You are a regex generator. Given an instruction, extract 3 to 5 broad trigger phrases that a user might say when they want this instruction to be executed.
-Return a JSON array of strings, where each string is a Python regex (case-insensitive will be applied later).
+You are an example generator for a semantic router. Given an instruction, extract 3 to 5 natural language sentences that a user might say when they want this instruction to be executed.
+Return a JSON array of strings, where each string is a realistic positive example.
 
 Rules:
-- Keep the regexes simple, e.g. "\\\\b(phrase one|phrase two)\\\\b"
-- Do not use complex lookaheads/lookbehinds unless necessary.
+- Keep the examples natural, e.g. "I need help with my taxes"
+- Do not use regex syntax.
 - Return ONLY valid JSON, no markdown blocks.
 
 Instruction:
@@ -1894,7 +2090,7 @@ Instruction:
         resp = await provider.create_message(
             model=provider.model_for("compaction"),
             max_tokens=300,
-            system=[{"type": "text", "text": "You are a regex generator that outputs only JSON arrays."}],
+            system=[{"type": "text", "text": "You are an example generator that outputs only JSON arrays."}],
             tools=[],
             messages=[{"role": "user", "content": prompt}]
         )
@@ -1916,7 +2112,7 @@ Instruction:
     compare_prompt = f"""
 We are adding a new reactive recall instruction.
 New Instruction: {instruction}
-Generated Tags: {json.dumps(generated_tags)}
+Generated Examples: {json.dumps(generated_tags)}
 
 Here are the existing active recalls:
 {json.dumps(all_recalls, indent=2)}
@@ -1927,8 +2123,8 @@ Decide if the new instruction should be merged into an EXISTING_RECALL or if a N
 - If merging into a "system" recall, we MUST create a NEW_RECALL instead because system recalls are read-only.
 
 Return ONLY valid JSON matching this schema:
-For existing: {{"decision": "EXISTING_RECALL", "recall_id": "id", "regexes_to_add": ["regex1"]}}
-For new: {{"decision": "NEW_RECALL", "instruction": "the instruction", "regex_tags": ["regex1", "regex2"]}}
+For existing: {{"decision": "EXISTING_RECALL", "recall_id": "id", "positive_examples_to_add": ["example1"]}}
+For new: {{"decision": "NEW_RECALL", "instruction": "the instruction", "positive_examples": ["example1", "example2"]}}
 """
     
     try:
@@ -1960,7 +2156,7 @@ For new: {{"decision": "NEW_RECALL", "instruction": "the instruction", "regex_ta
     
     if decision.get("decision") == "EXISTING_RECALL":
         r_id = decision.get("recall_id")
-        to_add = decision.get("regexes_to_add", [])
+        to_add = decision.get("positive_examples_to_add", [])
         if not to_add:
             return f"No update needed. Instruction matched existing recall '{r_id}'."
             
@@ -1969,13 +2165,15 @@ For new: {{"decision": "NEW_RECALL", "instruction": "the instruction", "regex_ta
             updated = await coll.find_one_and_update(
                 {"_id": ObjectId(r_id)},
                 {
-                    "$addToSet": {"regex_tags": {"$each": to_add}},
+                    "$addToSet": {"positive_examples": {"$each": to_add}},
                     "$set": {"updated_at": now}
                 },
                 return_document=True
             )
             if updated:
-                return f"Merged successfully. Updated recall '{r_id}' with new tags."
+                from harness.recall import get_semantic_router
+                get_semantic_router(await fetch_all_recalls(), force_reload=True)
+                return f"Merged successfully. Updated recall '{r_id}' with new examples."
             else:
                 return f"[error] Existing recall '{r_id}' not found in user DB."
         except Exception as e:
@@ -1984,7 +2182,8 @@ For new: {{"decision": "NEW_RECALL", "instruction": "the instruction", "regex_ta
     else:
         doc = {
             "instruction": decision.get("instruction", instruction),
-            "regex_tags": decision.get("regex_tags", generated_tags),
+            "positive_examples": decision.get("positive_examples", generated_tags),
+            "negative_examples": [],
             "enabled": True,
             "created_by": "agent",
             "created_at": now,
@@ -1992,7 +2191,9 @@ For new: {{"decision": "NEW_RECALL", "instruction": "the instruction", "regex_ta
         }
         try:
             result = await coll.insert_one(doc)
-            return f"Created new recall with ID '{result.inserted_id}' and {len(doc['regex_tags'])} trigger tags."
+            from harness.recall import get_semantic_router
+            get_semantic_router(await fetch_all_recalls(), force_reload=True)
+            return f"Created new recall with ID '{result.inserted_id}' and {len(doc['positive_examples'])} examples."
         except Exception as e:
             return f"[error] Failed to insert new recall: {e}"
 

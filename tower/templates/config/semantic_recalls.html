@@ -18,7 +18,7 @@
     
     <div class="settings-rows" style="margin-bottom: 1rem; border: 1px solid var(--border-subtle); border-radius: 6px; padding: 1rem;">
         <h3 style="margin-top: 0; margin-bottom: 0.5rem; font-size: 0.9rem; color: var(--text-main);">Create New Recall</h3>
-        <p class="settings-row-hint" style="margin-bottom: 0.75rem;">Enter an instruction and the system will auto-generate regex triggers to intercept the agent.</p>
+        <p class="settings-row-hint" style="margin-bottom: 0.75rem;">Enter an instruction and the system will auto-generate semantic examples to intercept the agent.</p>
         <div class="settings-inline-form" style="display: flex; gap: 0.5rem;">
             <input type="text" id="new-recall-instruction" placeholder="e.g. 'Whenever I ask for daily updates, create a recurring job'" style="flex: 1;" autocomplete="off">
             <button type="button" class="btn btn-small" id="create-recall-btn" onclick="createRecall()">Create</button>
@@ -100,18 +100,163 @@ async function loadRecalls() {
             const instruction = document.createElement('div');
             instruction.className = 'settings-list-title';
             instruction.style.marginBottom = '0.25rem';
-            instruction.textContent = recall.instruction;
+            
+            const badgeHtml = recall.threshold !== undefined && recall.threshold !== null 
+                ? `<span style="font-size: 0.7rem; background: var(--bg-hover); padding: 0.1rem 0.4rem; border-radius: 4px; border: 1px solid var(--border-color); margin-left: 0.5rem; color: var(--text-muted); font-weight: normal; vertical-align: middle;">Threshold: ${recall.threshold.toFixed(2)}</span>`
+                : `<span style="font-size: 0.7rem; background: var(--bg-hover); padding: 0.1rem 0.4rem; border-radius: 4px; border: 1px dashed var(--border-color); margin-left: 0.5rem; color: var(--text-muted); font-weight: normal; vertical-align: middle;">Threshold: Global</span>`;
+                
+            instruction.innerHTML = `<span>${recall.instruction}</span>${badgeHtml}`;
             content.appendChild(instruction);
             
-            if (recall.triggers && recall.triggers.length > 0) {
-                const triggers = document.createElement('div');
-                triggers.className = 'settings-list-note';
-                triggers.style.fontFamily = 'monospace';
-                triggers.style.fontSize = '0.8rem';
-                triggers.style.marginTop = '0.25rem';
-                triggers.textContent = recall.triggers.join(', ');
-                content.appendChild(triggers);
+            const examplesDiv = document.createElement('div');
+            examplesDiv.className = 'settings-list-note';
+            examplesDiv.style.marginTop = '0.5rem';
+            examplesDiv.style.fontSize = '0.8rem';
+            
+            let posHtml = '';
+            if (recall.positive_examples && recall.positive_examples.length > 0) {
+                posHtml = `<div style="margin-bottom: 0.25rem; line-height: 1.4;"><span style="color: var(--success); font-weight: 600;">+</span> <span class="muted">${recall.positive_examples.join('<span style="opacity: 0.4; margin: 0 4px;">•</span>')}</span></div>`;
             }
+            let negHtml = '';
+            if (recall.negative_examples && recall.negative_examples.length > 0) {
+                negHtml = `<div style="line-height: 1.4;"><span style="color: var(--danger); font-weight: 600;">-</span> <span class="muted">${recall.negative_examples.join('<span style="opacity: 0.4; margin: 0 4px;">•</span>')}</span></div>`;
+            }
+            
+            examplesDiv.innerHTML = posHtml + negHtml;
+            content.appendChild(examplesDiv);
+            
+            const editForm = document.createElement('div');
+            editForm.style.display = 'none';
+            editForm.style.marginTop = '0.75rem';
+            editForm.style.padding = '0.75rem';
+            editForm.style.background = 'var(--bg-hover)';
+            editForm.style.borderRadius = '6px';
+            editForm.style.border = '1px solid var(--border-subtle)';
+            
+            function buildEditor(title, color, items) {
+                const container = document.createElement('div');
+                container.style.flex = '1';
+                container.style.minWidth = '250px';
+                
+                const label = document.createElement('label');
+                label.style.fontSize = '0.75rem';
+                label.style.color = color;
+                label.style.fontWeight = '600';
+                label.style.textTransform = 'uppercase';
+                label.textContent = title;
+                container.appendChild(label);
+                
+                const list = document.createElement('div');
+                list.style.display = 'flex';
+                list.style.flexDirection = 'column';
+                list.style.gap = '0.35rem';
+                list.style.marginTop = '0.5rem';
+                
+                const addBtn = document.createElement('button');
+                addBtn.className = 'btn btn-small btn-secondary';
+                addBtn.textContent = '+ Add empty row';
+                addBtn.style.alignSelf = 'flex-start';
+                addBtn.style.marginTop = '0.25rem';
+                
+                function addRow(val) {
+                    const row = document.createElement('div');
+                    row.style.display = 'flex';
+                    row.style.gap = '0.25rem';
+                    
+                    const input = document.createElement('input');
+                    input.type = 'text';
+                    input.value = val;
+                    input.placeholder = 'Type an example...';
+                    input.style.flex = '1';
+                    input.style.padding = '0.35rem 0.5rem';
+                    input.style.fontSize = '0.8rem';
+                    input.style.background = 'var(--bg-primary)';
+                    input.style.color = 'var(--text-main)';
+                    input.style.border = '1px solid var(--border-color)';
+                    input.style.borderRadius = '4px';
+                    
+                    const del = document.createElement('button');
+                    del.className = 'btn btn-small btn-secondary';
+                    del.innerHTML = '&times;';
+                    del.style.padding = '0 0.5rem';
+                    del.onclick = () => row.remove();
+                    
+                    row.appendChild(input);
+                    row.appendChild(del);
+                    list.insertBefore(row, addBtn);
+                }
+                
+                addBtn.onclick = () => addRow('');
+                list.appendChild(addBtn);
+                
+                items.forEach(ex => addRow(ex));
+                addRow(''); // Start with one empty row at the bottom
+                
+                container.appendChild(list);
+                return {
+                    el: container,
+                    getValues: () => Array.from(list.querySelectorAll('input')).map(i => i.value.trim()).filter(Boolean)
+                };
+            }
+            
+            const cols = document.createElement('div');
+            cols.style.display = 'flex';
+            cols.style.gap = '1.5rem';
+            cols.style.flexWrap = 'wrap';
+            
+            const posEditor = buildEditor('Positive Examples', 'var(--success)', recall.positive_examples || []);
+            const negEditor = buildEditor('Negative Examples', 'var(--danger)', recall.negative_examples || []);
+            
+            cols.appendChild(posEditor.el);
+            cols.appendChild(negEditor.el);
+            editForm.appendChild(cols);
+            
+            const actionsDiv = document.createElement('div');
+            actionsDiv.style.marginTop = '1rem';
+            actionsDiv.style.display = 'flex';
+            actionsDiv.style.gap = '0.5rem';
+            actionsDiv.style.alignItems = 'center';
+            
+            const threshContainer = document.createElement('div');
+            threshContainer.style.flex = '1';
+            threshContainer.innerHTML = `
+                <label style="font-size: 0.75rem; color: var(--text-muted); margin-right: 0.5rem;">Specific Threshold (optional):</label>
+                <input type="number" class="thresh-input" step="0.01" min="0" max="1" placeholder="e.g. 0.85" value="${recall.threshold !== undefined && recall.threshold !== null ? recall.threshold : ''}" style="width: 80px; padding: 0.25rem 0.5rem; font-size: 0.8rem; background: var(--bg-primary); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px;">
+                <span class="muted" style="font-size: 0.7rem; margin-left: 0.5rem;">Leave empty to use global default.</span>
+            `;
+            actionsDiv.appendChild(threshContainer);
+            
+            const cancelBtn = document.createElement('button');
+            cancelBtn.className = 'btn btn-small btn-secondary';
+            cancelBtn.textContent = 'Cancel';
+            cancelBtn.onclick = () => {
+                editForm.style.display = 'none';
+                examplesDiv.style.display = 'block';
+            };
+            
+            const saveBtn = document.createElement('button');
+            saveBtn.className = 'btn btn-small';
+            saveBtn.textContent = 'Save Changes';
+            saveBtn.onclick = async () => {
+                saveBtn.disabled = true;
+                saveBtn.textContent = 'Saving...';
+                await fetch(`/api/recalls/${recall.recall_id}/examples`, {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        positive_examples: posEditor.getValues(),
+                        negative_examples: negEditor.getValues(),
+                        threshold: editForm.querySelector('.thresh-input').value
+                    })
+                });
+                loadRecalls();
+            };
+            
+            actionsDiv.appendChild(cancelBtn);
+            actionsDiv.appendChild(saveBtn);
+            editForm.appendChild(actionsDiv);
+            
+            content.appendChild(editForm);
             
             item.appendChild(content);
             
@@ -120,6 +265,17 @@ async function loadRecalls() {
                 actions.className = 'settings-row-control';
                 actions.style.marginLeft = '1rem';
                 
+                const editBtn = document.createElement('button');
+                editBtn.className = 'btn btn-small btn-secondary';
+                editBtn.textContent = 'Edit Examples';
+                editBtn.style.marginRight = '0.25rem';
+                editBtn.onclick = () => {
+                    const isEditing = editForm.style.display === 'block';
+                    editForm.style.display = isEditing ? 'none' : 'block';
+                    examplesDiv.style.display = isEditing ? 'block' : 'none';
+                };
+                actions.appendChild(editBtn);
+
                 const toggle = document.createElement('button');
                 toggle.className = `btn btn-small ${recall.enabled === false ? 'btn-secondary' : ''}`;
                 toggle.textContent = recall.enabled === false ? 'Enable' : 'Disable';
@@ -164,7 +320,7 @@ async function createRecall() {
     btn.disabled = true;
     btn.textContent = 'Wait...';
     status.style.display = 'block';
-    status.textContent = 'Generating trigger phrases (this takes a moment)...';
+    status.textContent = 'Generating semantic examples (this takes a moment)...';
     status.style.color = 'var(--text-main)';
     
     try {

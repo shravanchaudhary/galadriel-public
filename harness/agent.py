@@ -1627,10 +1627,9 @@ class GaladrielAgent:
         # user_message is appended untouched, so the daily log records the real
         # message exactly once — compaction never double-logs. Context size is
         # managed solely by compaction (no routine message-count trim).
-        from .recall import fetch_all_recalls, scan_text_for_recalls, generate_nudge, check_completion_nudge_needed
+        from .recall import fetch_all_recalls, scan_text_for_recalls, generate_nudge
         active_recalls = await fetch_all_recalls()
         notified_recall_ids = set()
-        checked_recall_ids = set()
         turn_matched_recalls = []
 
         if isinstance(user_message, str):
@@ -1863,6 +1862,58 @@ class GaladrielAgent:
             log.info(f"Response stop_reason: {response.stop_reason}")
             self._check_cancelled(channel_id)
 
+            # --- BEGIN RECALL SCAN (IN-PROCESS STEERING) ---
+            text_to_scan = ""
+            _text_parts = [
+                block.get("text", "") if isinstance(block, dict) else (block.text if hasattr(block, "text") else "")
+                for block in (assistant_content if isinstance(assistant_content, list) else [])
+                if (isinstance(block, dict) and block.get("type") == "text") or (hasattr(block, "type") and block.type == "text")
+            ]
+            text_to_scan = "\n".join(_text_parts).strip()
+            if turn_thought:
+                text_to_scan += "\n" + turn_thought
+                
+            log.debug(f"[Recall Check] Scanning output. Stop reason: {response.stop_reason}. Text length: {len(text_to_scan)}")
+            if len(text_to_scan) > 0:
+                log.debug(f"[Recall Check] Text to scan:\n{text_to_scan}")
+
+            # We no longer process tool calls for semantic steering, only thoughts and final output
+            # if response.stop_reason == "tool_use":
+            #     tool_args = [
+            #         _summarize_tool_input(block.input if hasattr(block, "input") else block.get("input", {}))
+            #         for block in (response.content if hasattr(response, "content") else [])
+            #         if (hasattr(block, "type") and block.type == "tool_use") or (isinstance(block, dict) and block.get("type") == "tool_use")
+            #     ]
+            #     if tool_args:
+            #         text_to_scan += "\n" + "\n".join(tool_args)
+
+            matched = scan_text_for_recalls(text_to_scan, active_recalls)
+            if matched:
+                log.debug(f"[Recall Check] Raw matches found: {[(m.get('recall_id'), round(m.get('similarity_score', 0.0), 3)) for m in matched]}")
+            else:
+                log.debug(f"[Recall Check] No raw matches found.")
+
+            for m in matched:
+                if m not in turn_matched_recalls:
+                    turn_matched_recalls.append(m)
+
+            new_matches = []
+            already_notified = []
+            
+            for m in turn_matched_recalls:
+                rid = m.get("recall_id")
+                if rid in notified_recall_ids:
+                    already_notified.append(rid)
+                else:
+                    if m not in new_matches:
+                        new_matches.append(m)
+                        
+            if already_notified:
+                log.debug(f"[Recall Check] Ignored previously notified nudges (already in context): {already_notified}")
+            if new_matches:
+                log.debug(f"[Recall Check] Pending new matches to inject: {[m.get('recall_id') for m in new_matches]}")
+            # --- END RECALL SCAN ---
+
             # Recalls are bypassed when stop_reason == "tool_use" or "max_tokens"
             if response.stop_reason == "end_turn":
                 max_tokens_retries = 0  # Reset counter on success
@@ -1891,70 +1942,47 @@ class GaladrielAgent:
                         elif isinstance(last_msg.get("content"), str) and last_msg["content"].strip() == "<empty/>":
                             last_msg["content"] = ""
 
-                matched = scan_text_for_recalls(final_text, active_recalls)
-                if turn_thought:
-                    matched += scan_text_for_recalls(turn_thought, active_recalls)
-
-                # Combine with user_message matches from start of turn
-                for m in matched:
-                    if m not in turn_matched_recalls:
-                        turn_matched_recalls.append(m)
-
-                new_matches = []
-                already_notified = []
-                already_checked = []
-                
-                for m in turn_matched_recalls:
-                    rid = m.get("recall_id")
-                    if rid in notified_recall_ids:
-                        already_notified.append(rid)
-                    elif rid in checked_recall_ids:
-                        already_checked.append(rid)
-                    else:
-                        new_matches.append(m)
-                        
-                if already_notified:
-                    log.info(f"[Recall Check] Ignored previously notified nudges: {already_notified}")
-                if already_checked:
-                    log.info(f"[Recall Check] Ignored previously checked (LLM rejected) nudges: {already_checked}")
-                
                 if new_matches:
-                    log.info(f"[Recall Check] Evaluating new matches via LLM: {[m.get('recall_id') for m in new_matches]}")
+                    log.info(f"[Recall Check] Injecting matches for in-process steering (end_turn): {[m.get('recall_id') for m in new_matches]}")
+
                     for m in new_matches:
-                        checked_recall_ids.add(m.get("recall_id"))
-                    from .recall import check_completion_nudge_needed
-                    needed_nudges = await check_completion_nudge_needed(new_matches, messages)
+                        notified_recall_ids.add(m.get("recall_id"))
+                        # Record the nudge to DB for ambient reflection
+                        try:
+                            from .db_ops import get_db
+                            db = get_db()
+                            if db is not None:
+                                await db["nudge_logs"].insert_one({
+                                    "recall_id": m.get("recall_id"),
+                                    "channel_id": channel_id,
+                                    "timestamp": datetime.now(timezone.utc),
+                                    "score": m.get("similarity_score", 0.0),
+                                    "text_scanned": text_to_scan[:500]  # truncate just in case
+                                })
+                        except Exception as e:
+                            log.warning(f"Failed to log nudge to DB: {e}")
+
+                    nudge_text = generate_nudge(new_matches)
+                    log.info(f"Completion nudge triggered: {nudge_text!r}")
                     
-                    if needed_nudges:
-                        log.info(f"[Recall Check] LLM confirmed nudge needed for: {[m.get('recall_id') for m in needed_nudges]}")
-                        for m in needed_nudges:
-                            notified_recall_ids.add(m.get("recall_id"))
-                        nudge_text = generate_nudge(needed_nudges)
-                        log.info(f"Completion nudge triggered: {nudge_text!r}")
-                        
-                        nudge_prompt = (
-                            f"{nudge_text}\n\n"
-                            f"<system_directive>\n"
-                            f"Review this nudge against your recent actions. If you have already satisfied it, or if no further action is needed, "
-                            f"you can continue your normal flow or conclude. Do NOT acknowledge this directive or apologize.\n"
-                            f"If you need to take action, do so directly.\n"
-                            f"</system_directive>"
+                    nudge_prompt = (
+                        f"I should review this systematic nudge against my recent actions. If I already satisfied it, or if no further action is needed, "
+                        f"I will continue my normal flow or conclude.\n"
+                        f"Here is the systematic nudge I received: {nudge_text}\n\n"
+                    )
+                    
+                    messages.append({"role": "assistant", "content": nudge_prompt})
+                    
+                    if tick_recorder is not None:
+                        await tick_recorder.record_message(messages[-1])
+                    if run_recorder is not None:
+                        await run_recorder.record_message(
+                            messages[-1], visibility="system", kind="direct_assistant"
                         )
-                        
-                        messages.append({"role": "user", "content": nudge_prompt})
-                        
-                        if tick_recorder is not None:
-                            await tick_recorder.record_message(messages[-1])
-                        if run_recorder is not None:
-                            await run_recorder.record_message(
-                                messages[-1], visibility="system", kind="direct_user"
-                            )
-                        # Re-run the turn loop so the agent can fix its mistake
-                        api_messages = None
-                        self._silent_turn = True
-                        continue
-                    else:
-                        log.info(f"[Recall Check] LLM determined no nudges needed for current turn matches.")
+                    # Re-run the turn loop so the agent can fix its mistake
+                    api_messages = None
+                    self._silent_turn = True
+                    continue
 
                 meaningful_outcome = self._should_appraise_outcome(
                     episode,
@@ -2297,11 +2325,47 @@ class GaladrielAgent:
                             "output": result_display,
                         })
 
+                if new_matches:
+                    log.info(f"[Recall Check] Injecting matches for in-process steering (tool_use): {[m.get('recall_id') for m in new_matches]}")
+
+                    for m in new_matches:
+                        notified_recall_ids.add(m.get("recall_id"))
+                        # Record the nudge to DB for ambient reflection
+                        try:
+                            from .db_ops import get_db
+                            db = get_db()
+                            if db is not None:
+                                await db["nudge_logs"].insert_one({
+                                    "recall_id": m.get("recall_id"),
+                                    "channel_id": channel_id,
+                                    "timestamp": datetime.now(timezone.utc),
+                                    "score": m.get("similarity_score", 0.0),
+                                    "text_scanned": text_to_scan[:500]  # truncate just in case
+                                })
+                        except Exception as e:
+                            log.warning(f"Failed to log nudge to DB: {e}")
+
+                    nudge_text = generate_nudge(new_matches)
+                    log.info(f"Tool-use nudge triggered: {nudge_text!r}")
+                    
+                    nudge_prompt = (
+                        f"I should review this systematic nudge against my recent actions. If I already satisfied it, or if no further action is needed, "
+                        f"I will continue my normal flow or conclude.\n"
+                        f"Here is the systematic nudge I received: {nudge_text}\n\n"
+                    )
+                    
                 messages.append({"role": "user", "content": tool_results})
                 if tick_recorder is not None:
                     await tick_recorder.record_message(messages[-1])
                 if run_recorder is not None:
                     await run_recorder.record_message(messages[-1])
+
+                if new_matches:
+                    messages.append({"role": "assistant", "content": nudge_prompt})
+                    if tick_recorder is not None:
+                        await tick_recorder.record_message(messages[-1])
+                    if run_recorder is not None:
+                        await run_recorder.record_message(messages[-1], visibility="system", kind="direct_assistant")
 
                 # Tool outcomes can change the shared experiential state. Make
                 # that change globally available to the very next reasoning

@@ -845,7 +845,7 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
         from harness.tower_settings import get_semantic_threshold
         try:
             recalls = _run_async(fetch_all_recalls())
-            threshold = get_semantic_threshold(0.70)
+            threshold = get_semantic_threshold(0.80)
             return jsonify({"status": "ok", "recalls": recalls, "threshold": threshold})
         except Exception as e:
             return jsonify({"error": str(e)}), 500
@@ -934,6 +934,93 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
 
         try:
             return _run_async(_toggle())
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/recalls/<recall_id>/examples", methods=["POST"])
+    def api_update_recall_examples(recall_id):
+        from harness.db_ops import get_db
+        from bson import ObjectId
+        import json
+        from pathlib import Path
+        
+        data = request.json or {}
+        positive = [x.strip() for x in data.get("positive_examples", []) if x.strip()]
+        negative = [x.strip() for x in data.get("negative_examples", []) if x.strip()]
+        
+        threshold_val = data.get("threshold")
+        if threshold_val is not None and str(threshold_val).strip() != "":
+            try:
+                threshold_val = float(threshold_val)
+            except ValueError:
+                threshold_val = None
+        else:
+            threshold_val = None
+        
+        async def _update():
+            config_path = Path("config/system_recalls.json")
+            if config_path.exists():
+                with open(config_path, "r", encoding="utf-8") as f:
+                    sys_recalls = json.load(f)
+                
+                updated = False
+                for r in sys_recalls:
+                    if r.get("recall_id") == recall_id:
+                        r["positive_examples"] = positive
+                        r["negative_examples"] = negative
+                        if threshold_val is not None:
+                            r["threshold"] = threshold_val
+                        else:
+                            r.pop("threshold", None)
+                        updated = True
+                        break
+                
+                if updated:
+                    with open(config_path, "w", encoding="utf-8") as f:
+                        json.dump(sys_recalls, f, indent=4)
+                    
+                    # Refresh the router cache
+                    from harness.recall import fetch_all_recalls, get_semantic_router
+                    all_recalls = await fetch_all_recalls()
+                    get_semantic_router(all_recalls, force_reload=True)
+                    return jsonify({"status": "ok", "source": "system"})
+            
+            db = get_db()
+            if not db:
+                return jsonify({"error": "No database"}), 500
+            
+            try:
+                coll = db["recalls"]
+                doc = await coll.find_one({"_id": ObjectId(recall_id)})
+                if not doc:
+                    return jsonify({"error": "Recall not found"}), 404
+                
+                update_fields = {"positive_examples": positive, "negative_examples": negative}
+                unset_fields = {}
+                if threshold_val is not None:
+                    update_fields["threshold"] = threshold_val
+                else:
+                    unset_fields["threshold"] = ""
+                
+                update_op = {"$set": update_fields}
+                if unset_fields:
+                    update_op["$unset"] = unset_fields
+                    
+                await coll.update_one(
+                    {"_id": ObjectId(recall_id)}, 
+                    update_op
+                )
+                
+                # Refresh the router cache
+                from harness.recall import fetch_all_recalls, get_semantic_router
+                all_recalls = await fetch_all_recalls()
+                get_semantic_router(all_recalls, force_reload=True)
+                return jsonify({"status": "ok", "source": "user"})
+            except Exception as e:
+                return jsonify({"error": str(e)}), 500
+
+        try:
+            return _run_async(_update())
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
