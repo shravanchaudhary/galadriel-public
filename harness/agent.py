@@ -1673,7 +1673,7 @@ class GaladrielAgent:
             nudge_text = generate_nudge(turn_matched_recalls)
             log.info(f"User-message nudge triggered: {nudge_text!r}")
             nudge_prompt = (
-                f"I may check these suggestions for better answering. If irrelevant, I will ignore."
+                f"I may check these suggestions for better answering. If irrelevant, I will ignore.\n"
                 f"{nudge_text}\n\n"
                 f"If I already satisfied them, I may continue my normal flow.\n"
             )
