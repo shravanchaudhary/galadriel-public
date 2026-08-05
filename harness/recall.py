@@ -63,6 +63,23 @@ def get_encoder(force_type=None, force_threshold=None):
         
     return _ENCODER
 
+async def async_get_semantic_threshold(default: float = 0.80) -> float:
+    """Fetch the global semantic threshold using the async Motor DB client."""
+    from .db_ops import get_db
+    import os
+    db = get_db()
+    if db is None:
+        return default
+    try:
+        tenant_id = os.environ.get("REPLIKA_TENANT_ID", "default").strip() or "default"
+        doc_id = f"{tenant_id}:semantic_threshold"
+        doc = await db["tower_settings"].find_one({"_id": doc_id})
+        if doc and "threshold" in doc:
+            return float(doc["threshold"])
+    except Exception:
+        pass
+    return default
+
 def get_semantic_router(recalls: list[dict], force_encoder_type=None, force_threshold=None, force_reload=False) -> SemanticRouter:
     """Get or build the SemanticRouter for the current set of recalls."""
     global _ROUTER_CACHE, _CACHED_RECALL_IDS
@@ -191,7 +208,7 @@ def generate_nudge(matched_recalls: list[dict]) -> str:
     if not matched_recalls:
         return ""
     
-    nudge_lines = ["⚡ **Automated Nudge:**"]
+    nudge_lines = []
     for recall in matched_recalls:
         nudge_lines.append(f"- {recall.get('instruction')}")
     

@@ -1067,9 +1067,10 @@ async def _add_recall_example(recall_id: str, example_text: str, is_positive: bo
         
         if recall:
             await coll.update_one(query, {"$addToSet": {field: text}})
-            from harness.recall import fetch_all_recalls, get_semantic_router
+            from harness.recall import fetch_all_recalls, get_semantic_router, async_get_semantic_threshold
             all_recalls = await fetch_all_recalls()
-            get_semantic_router(all_recalls, force_reload=True)
+            global_threshold = await async_get_semantic_threshold(0.80)
+            get_semantic_router(all_recalls, force_threshold=global_threshold, force_reload=True)
             return f"Successfully added {'positive' if is_positive else 'negative'} example to user recall {recall_id}."
         
         # If not in DB, try updating system defaults
@@ -1094,9 +1095,10 @@ async def _add_recall_example(recall_id: str, example_text: str, is_positive: bo
                 with open(config_path, "w", encoding="utf-8") as f:
                     json.dump(sys_recalls, f, indent=4)
                 
-                from harness.recall import fetch_all_recalls, get_semantic_router
+                from harness.recall import fetch_all_recalls, get_semantic_router, async_get_semantic_threshold
                 all_recalls = await fetch_all_recalls()
-                get_semantic_router(all_recalls, force_reload=True)
+                global_threshold = await async_get_semantic_threshold(0.80)
+                get_semantic_router(all_recalls, force_threshold=global_threshold, force_reload=True)
                 return f"Successfully added {'positive' if is_positive else 'negative'} example to system recall {recall_id}."
             
         return f"Error: Recall {recall_id} not found in DB or system config."
@@ -1161,9 +1163,10 @@ async def _reconcile_recall_thresholds() -> str:
                     
         # Refresh the router cache
         if updates > 0:
-            from harness.recall import fetch_all_recalls, get_semantic_router
+            from harness.recall import fetch_all_recalls, get_semantic_router, async_get_semantic_threshold
             all_recalls = await fetch_all_recalls()
-            get_semantic_router(all_recalls, force_reload=True)
+            global_threshold = await async_get_semantic_threshold(0.80)
+            get_semantic_router(all_recalls, force_threshold=global_threshold, force_reload=True)
             
         return f"Reconciled thresholds for {updates} recall(s) (both system and user)."
     except Exception as e:
@@ -2171,8 +2174,9 @@ For new: {{"decision": "NEW_RECALL", "instruction": "the instruction", "positive
                 return_document=True
             )
             if updated:
-                from harness.recall import get_semantic_router
-                get_semantic_router(await fetch_all_recalls(), force_reload=True)
+                from harness.recall import get_semantic_router, async_get_semantic_threshold
+                global_threshold = await async_get_semantic_threshold(0.80)
+                get_semantic_router(await fetch_all_recalls(), force_threshold=global_threshold, force_reload=True)
                 return f"Merged successfully. Updated recall '{r_id}' with new examples."
             else:
                 return f"[error] Existing recall '{r_id}' not found in user DB."
@@ -2191,8 +2195,9 @@ For new: {{"decision": "NEW_RECALL", "instruction": "the instruction", "positive
         }
         try:
             result = await coll.insert_one(doc)
-            from harness.recall import get_semantic_router
-            get_semantic_router(await fetch_all_recalls(), force_reload=True)
+            from harness.recall import get_semantic_router, async_get_semantic_threshold
+            global_threshold = await async_get_semantic_threshold(0.80)
+            get_semantic_router(await fetch_all_recalls(), force_threshold=global_threshold, force_reload=True)
             return f"Created new recall with ID '{result.inserted_id}' and {len(doc['positive_examples'])} examples."
         except Exception as e:
             return f"[error] Failed to insert new recall: {e}"

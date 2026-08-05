@@ -1627,13 +1627,14 @@ class GaladrielAgent:
         # user_message is appended untouched, so the daily log records the real
         # message exactly once — compaction never double-logs. Context size is
         # managed solely by compaction (no routine message-count trim).
-        from .recall import fetch_all_recalls, scan_text_for_recalls, generate_nudge
+        from .recall import fetch_all_recalls, scan_text_for_recalls, generate_nudge, async_get_semantic_threshold
         active_recalls = await fetch_all_recalls()
+        global_threshold = await async_get_semantic_threshold(0.80)
         notified_recall_ids = set()
         turn_matched_recalls = []
 
         if isinstance(user_message, str):
-            matched = scan_text_for_recalls(user_message, active_recalls)
+            matched = scan_text_for_recalls(user_message, active_recalls, force_threshold=global_threshold)
             for m in matched:
                 if m not in turn_matched_recalls:
                     turn_matched_recalls.append(m)
@@ -1877,25 +1878,25 @@ class GaladrielAgent:
             if len(text_to_scan) > 0:
                 log.debug(f"[Recall Check] Text to scan:\n{text_to_scan}")
 
-            # We no longer process tool calls for semantic steering, only thoughts and final output
-            # if response.stop_reason == "tool_use":
-            #     tool_args = [
-            #         _summarize_tool_input(block.input if hasattr(block, "input") else block.get("input", {}))
-            #         for block in (response.content if hasattr(response, "content") else [])
-            #         if (hasattr(block, "type") and block.type == "tool_use") or (isinstance(block, dict) and block.get("type") == "tool_use")
-            #     ]
-            #     if tool_args:
-            #         text_to_scan += "\n" + "\n".join(tool_args)
+                # We no longer process tool calls for semantic steering, only thoughts and final output
+                # if response.stop_reason == "tool_use":
+                #     tool_args = [
+                #         _summarize_tool_input(block.input if hasattr(block, "input") else block.get("input", {}))
+                #         for block in (response.content if hasattr(response, "content") else [])
+                #         if (hasattr(block, "type") and block.type == "tool_use") or (isinstance(block, dict) and block.get("type") == "tool_use")
+                #     ]
+                #     if tool_args:
+                #         text_to_scan += "\n" + "\n".join(tool_args)
 
-            matched = scan_text_for_recalls(text_to_scan, active_recalls)
-            if matched:
-                log.debug(f"[Recall Check] Raw matches found: {[(m.get('recall_id'), round(m.get('similarity_score', 0.0), 3)) for m in matched]}")
-            else:
-                log.debug(f"[Recall Check] No raw matches found.")
+                matched = scan_text_for_recalls(text_to_scan, active_recalls, force_threshold=global_threshold)
+                if matched:
+                    log.debug(f"[Recall Check] Raw matches found: {[(m.get('recall_id'), round(m.get('similarity_score', 0.0), 3)) for m in matched]}")
+                else:
+                    log.debug(f"[Recall Check] No raw matches found.")
 
-            for m in matched:
-                if m not in turn_matched_recalls:
-                    turn_matched_recalls.append(m)
+                for m in matched:
+                    if m not in turn_matched_recalls:
+                        turn_matched_recalls.append(m)
 
             new_matches = []
             already_notified = []
@@ -1915,6 +1916,7 @@ class GaladrielAgent:
             # --- END RECALL SCAN ---
 
             # Recalls are bypassed when stop_reason == "tool_use" or "max_tokens"
+            recall_after_end_turn = False
             if response.stop_reason == "end_turn":
                 max_tokens_retries = 0  # Reset counter on success
                 text_parts = [
@@ -1942,7 +1944,7 @@ class GaladrielAgent:
                         elif isinstance(last_msg.get("content"), str) and last_msg["content"].strip() == "<empty/>":
                             last_msg["content"] = ""
 
-                if new_matches:
+                if new_matches and recall_after_end_turn:
                     log.info(f"[Recall Check] Injecting matches for in-process steering (end_turn): {[m.get('recall_id') for m in new_matches]}")
 
                     for m in new_matches:
@@ -1966,9 +1968,9 @@ class GaladrielAgent:
                     log.info(f"Completion nudge triggered: {nudge_text!r}")
                     
                     nudge_prompt = (
-                        f"I should review this systematic nudge against my recent actions. If I already satisfied it, or if no further action is needed, "
-                        f"I will continue my normal flow or conclude.\n"
-                        f"Here is the systematic nudge I received: {nudge_text}\n\n"
+                        f"Okay, I'm done but I may have missed something. I'll quickly verify."
+                        f"{nudge_text}\n\n"
+                        f"I may check if any of it is sensible I should proceed further, else I will conclude. I will make sure I do not repeat what I already said.\n"
                     )
                     
                     messages.append({"role": "assistant", "content": nudge_prompt})
@@ -2349,9 +2351,9 @@ class GaladrielAgent:
                     log.info(f"Tool-use nudge triggered: {nudge_text!r}")
                     
                     nudge_prompt = (
-                        f"I should review this systematic nudge against my recent actions. If I already satisfied it, or if no further action is needed, "
-                        f"I will continue my normal flow or conclude.\n"
-                        f"Here is the systematic nudge I received: {nudge_text}\n\n"
+                        f"I may check these suggestions for better answering. If irrelevant, I will ignore."
+                        f"{nudge_text}\n\n"
+                        f"If I already satisfied them, I may continue my normal flow.\n"
                     )
                     
                 messages.append({"role": "user", "content": tool_results})

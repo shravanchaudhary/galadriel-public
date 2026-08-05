@@ -169,30 +169,8 @@ def prepare_messages_for_api(
     *,
     keep_last_screenshots: int = KEEP_LAST_SCREENSHOTS,
 ) -> tuple[list[dict], ScreenshotPruneStats]:
-    """Deep-copy + prune old screenshots + merge consecutive roles for an API-bound message list."""
-    out, stats = prune_old_screenshots(messages, keep_last=keep_last_screenshots)
-    
-    # Merge consecutive messages of the same role to satisfy strict provider requirements
-    merged = []
-    for msg in out:
-        if not merged:
-            merged.append(msg)
-            continue
-            
-        last_msg = merged[-1]
-        if last_msg.get("role") == msg.get("role") and last_msg.get("role") in ("user", "assistant"):
-            new_last = copy.deepcopy(last_msg)
-            
-            c1 = new_last["content"] if isinstance(new_last["content"], list) else [{"type": "text", "text": new_last.get("content", "")}]
-            c2 = msg["content"] if isinstance(msg["content"], list) else [{"type": "text", "text": msg.get("content", "")}]
-            
-            # Combine content blocks
-            new_last["content"] = c1 + c2
-            merged[-1] = new_last
-        else:
-            merged.append(msg)
-            
-    return merged, stats
+    """Deep-copy + prune old screenshots for an API-bound message list."""
+    return prune_old_screenshots(messages, keep_last=keep_last_screenshots)
 
 
 def _compress_sync(

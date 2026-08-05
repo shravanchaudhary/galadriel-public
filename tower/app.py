@@ -981,8 +981,9 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
                     
                     # Refresh the router cache
                     from harness.recall import fetch_all_recalls, get_semantic_router
+                    from harness.tower_settings import get_semantic_threshold
                     all_recalls = await fetch_all_recalls()
-                    get_semantic_router(all_recalls, force_reload=True)
+                    get_semantic_router(all_recalls, force_threshold=get_semantic_threshold(0.80), force_reload=True)
                     return jsonify({"status": "ok", "source": "system"})
             
             db = get_db()
@@ -1013,8 +1014,9 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
                 
                 # Refresh the router cache
                 from harness.recall import fetch_all_recalls, get_semantic_router
+                from harness.tower_settings import get_semantic_threshold
                 all_recalls = await fetch_all_recalls()
-                get_semantic_router(all_recalls, force_reload=True)
+                get_semantic_router(all_recalls, force_threshold=get_semantic_threshold(0.80), force_reload=True)
                 return jsonify({"status": "ok", "source": "user"})
             except Exception as e:
                 return jsonify({"error": str(e)}), 500
