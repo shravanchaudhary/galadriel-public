@@ -40,24 +40,37 @@ window.ChatLive = (function () {
     }
 
     function clearTyping(turn) {
+        if (!turn) return;
         const t = turn.bodyEl && turn.bodyEl.querySelector('.typing');
         if (t) t.remove();
     }
 
+    function ensureTyping(turn) {
+        if (!turn || turn.finished) return;
+        let t = turn.bodyEl && turn.bodyEl.querySelector('.typing');
+        if (!t) {
+            t = document.createElement('span');
+            t.className = 'typing';
+            t.innerHTML = '<i></i><i></i><i></i>';
+            turn.bodyEl.appendChild(t);
+        } else {
+            turn.bodyEl.appendChild(t);
+        }
+    }
+
     function appendText(delta, turn, log) {
         if (!turn) turn = startAssistant(log);
-        clearTyping(turn);
         if (!turn.textEl) {
             turn.textEl = document.createElement('div');
             turn.textEl.className = 'msg-text markdown-body';
             turn.bodyEl.appendChild(turn.textEl);
         }
         ChatRender.appendMarkdown(turn.textEl, delta);
+        ensureTyping(turn);
         return turn;
     }
 
     function appendThought(delta, turn) {
-        clearTyping(turn);
         if (!turn.thoughtEl) {
             const d = document.createElement('details');
             d.className = 'thought';
@@ -68,10 +81,10 @@ window.ChatLive = (function () {
             turn.bodyEl.appendChild(d);
         }
         turn.thoughtEl.textContent += delta;
+        ensureTyping(turn);
     }
 
     function addToolCall(name, inp, turn) {
-        clearTyping(turn);
         turn.textEl = null;
         turn.thoughtEl = null;
         const card = document.createElement('details');
@@ -84,15 +97,18 @@ window.ChatLive = (function () {
             + '<pre class="tool-output"></pre>';
         turn.bodyEl.appendChild(card);
         turn.toolCard = card;
+        ensureTyping(turn);
     }
 
     function addToolResult(output, turn) {
-        if (!turn.toolCard) return;
-        turn.toolCard.classList.remove('running');
-        turn.toolCard.classList.add('done');
-        turn.toolCard.querySelector('.tool-output').textContent = output || '';
-        turn.toolCard = null;
-        turn.textEl = null;
+        if (turn.toolCard) {
+            turn.toolCard.classList.remove('running');
+            turn.toolCard.classList.add('done');
+            turn.toolCard.querySelector('.tool-output').textContent = output || '';
+            turn.toolCard = null;
+            turn.textEl = null;
+        }
+        ensureTyping(turn);
     }
 
     function handleEvent(ev, turn, log) {
@@ -114,6 +130,7 @@ window.ChatLive = (function () {
                 clearTyping(turn);
                 if (!turn.bodyEl.querySelector('.msg-text') && ev.text) {
                     appendText(ev.text, turn, log);
+                    clearTyping(turn);
                 }
                 if (!turn.bodyEl.textContent.trim()) turn.div.remove();
                 turn.finished = true;
@@ -121,10 +138,13 @@ window.ChatLive = (function () {
             case 'stopped':
                 clearTyping(turn);
                 appendText(ev.text || '(Stopped)', turn, log);
+                clearTyping(turn);
                 turn.finished = true;
                 break;
             case 'error':
+                clearTyping(turn);
                 appendText(`[Error] ${ev.error}`, turn, log);
+                clearTyping(turn);
                 turn.finished = true;
                 break;
         }

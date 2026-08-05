@@ -287,23 +287,35 @@
         return { div, bodyEl, textEl: null, thoughtEl: null, toolCard: null, finished: false };
     }
     function clearTyping(turn) {
+        if (!turn) return;
         const t = turn.bodyEl && turn.bodyEl.querySelector('.typing');
         if (t) t.remove();
+    }
+    function ensureTyping(turn) {
+        if (!turn || turn.finished) return;
+        let t = turn.bodyEl && turn.bodyEl.querySelector('.typing');
+        if (!t) {
+            t = document.createElement('span');
+            t.className = 'typing';
+            t.innerHTML = '<i></i><i></i><i></i>';
+            turn.bodyEl.appendChild(t);
+        } else {
+            turn.bodyEl.appendChild(t);
+        }
     }
     function appendText(delta, turn) {
         if (!turn) {
             turn = startAssistant();
         }
-        clearTyping(turn);
         if (!turn.textEl) {
             turn.textEl = document.createElement('div');
             turn.textEl.className = 'msg-text markdown-body';
             turn.bodyEl.appendChild(turn.textEl);
         }
         ChatRender.appendMarkdown(turn.textEl, delta);
+        ensureTyping(turn);
     }
     function appendThought(delta, turn) {
-        clearTyping(turn);
         if (!turn.thoughtEl) {
             const d = document.createElement('details');
             d.className = 'thought';
@@ -314,9 +326,9 @@
             turn.bodyEl.appendChild(d);
         }
         turn.thoughtEl.textContent += delta;
+        ensureTyping(turn);
     }
     function addToolCall(name, inp, turn) {
-        clearTyping(turn);
         turn.textEl = null; turn.thoughtEl = null;
         const card = document.createElement('details');
         card.className = 'tool-card running';
@@ -328,13 +340,16 @@
             + '<pre class="tool-output"></pre>';
         turn.bodyEl.appendChild(card);
         turn.toolCard = card;
+        ensureTyping(turn);
     }
     function addToolResult(output, turn) {
-        if (!turn.toolCard) return;
-        turn.toolCard.classList.remove('running');
-        turn.toolCard.classList.add('done');
-        turn.toolCard.querySelector('.tool-output').textContent = output || '';
-        turn.toolCard = null; turn.textEl = null;
+        if (turn.toolCard) {
+            turn.toolCard.classList.remove('running');
+            turn.toolCard.classList.add('done');
+            turn.toolCard.querySelector('.tool-output').textContent = output || '';
+            turn.toolCard = null; turn.textEl = null;
+        }
+        ensureTyping(turn);
     }
 
     function handleEvent(ev, turn) {
@@ -346,7 +361,13 @@
             case 'tool_result': addToolResult(ev.output, turn); break;
             case 'done':
                 clearTyping(turn);
-                if (!turn.bodyEl.querySelector('.msg-text') && ev.text) appendText(ev.text, turn);
+                if (!turn.bodyEl.querySelector('.msg-text') && ev.text) {
+                    appendText(ev.text, turn);
+                    clearTyping(turn);
+                }
+                if (!turn.bodyEl.textContent.trim()) turn.div.remove();
+                turn.finished = true;
+                break;
                 if (!turn.bodyEl.textContent.trim()) turn.div.remove();
                 wfcFinishTurn(turn);
                 break;

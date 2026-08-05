@@ -148,9 +148,40 @@ async def fetch_all_recalls() -> list[dict]:
             log.error(f"Failed to fetch user recalls from DB: {e}")
     return recalls
 
-def scan_text_for_recalls(text: str, recalls: list[dict], force_encoder_type=None, force_threshold=None) -> list[dict]:
+def sanitize_text_with_exclude_texts(text: str, exclude_texts: list[str] | None = None) -> str:
+    """Strip exact prior nudge texts and their lines from text before semantic scanning."""
+    if not text:
+        return ""
+    cleaned = text
+    if exclude_texts:
+        for ex in exclude_texts:
+            if ex and isinstance(ex, str):
+                cleaned = cleaned.replace(ex, "")
+        
+        ex_lines = set()
+        for ex in exclude_texts:
+            if isinstance(ex, str):
+                for line in ex.split("\n"):
+                    s = line.strip()
+                    if len(s) > 5:
+                        ex_lines.add(s)
+        
+        cleaned_lines = []
+        for line in cleaned.split("\n"):
+            s = line.strip()
+            if s and s in ex_lines:
+                continue
+            cleaned_lines.append(line)
+        cleaned = "\n".join(cleaned_lines)
+    return cleaned.strip()
+
+def scan_text_for_recalls(text: str, recalls: list[dict], exclude_texts: list[str] | None = None, force_encoder_type=None, force_threshold=None) -> list[dict]:
     """Scan text against all recalls and return matched recall objects using semantic router."""
     if not text or not recalls:
+        return []
+    
+    sanitized_text = sanitize_text_with_exclude_texts(text, exclude_texts)
+    if not sanitized_text:
         return []
     
     router = get_semantic_router(recalls, force_encoder_type, force_threshold)
@@ -161,8 +192,8 @@ def scan_text_for_recalls(text: str, recalls: list[dict], force_encoder_type=Non
     matches = []
     seen = set()
     
-    # Split text into manageable chunks (e.g. paragraphs/lines) for semantic matching
-    chunks = [c.strip() for c in text.split("\n") if c.strip()]
+    # Split sanitized text into manageable chunks (e.g. paragraphs/lines) for semantic matching
+    chunks = [c.strip() for c in sanitized_text.split("\n") if c.strip()]
     
     for chunk in chunks:
         # Semantic router checks if the chunk falls within a threshold tolerance of any route

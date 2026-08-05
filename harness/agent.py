@@ -1634,7 +1634,12 @@ class GaladrielAgent:
         turn_matched_recalls = []
 
         if isinstance(user_message, str):
-            matched = scan_text_for_recalls(user_message, active_recalls, force_threshold=global_threshold)
+            exclude_texts = [
+                m.get("content", "") if isinstance(m.get("content"), str) else ""
+                for m in messages
+                if isinstance(m, dict) and (m.get("kind") == "nudge" or m.get("is_nudge"))
+            ]
+            matched = scan_text_for_recalls(user_message, active_recalls, exclude_texts=exclude_texts, force_threshold=global_threshold)
             for m in matched:
                 if m not in turn_matched_recalls:
                     turn_matched_recalls.append(m)
@@ -1672,11 +1677,13 @@ class GaladrielAgent:
                 f"{nudge_text}\n\n"
                 f"If I already satisfied them, I may continue my normal flow.\n"
             )
-            messages.append({"role": "assistant", "content": nudge_prompt})
+            messages.append({"role": "assistant", "content": nudge_prompt, "kind": "nudge", "is_nudge": True})
             if tick_recorder is not None:
                 await tick_recorder.record_message(messages[-1])
             if run_recorder is not None:
-                await run_recorder.record_message(messages[-1], visibility="system", kind="direct_assistant")
+                await run_recorder.record_message(messages[-1], visibility="user", kind="nudge")
+            if emit is not None:
+                await emit({"type": "text", "text": f"\n\n{nudge_prompt}\n\n"})
 
         # System blocks: stable + dynamic + snapshot + advisory. Rebuilt after
         # any mid-loop / max_tokens compaction so it never goes stale.
@@ -1919,7 +1926,12 @@ class GaladrielAgent:
                 #     if tool_args:
                 #         text_to_scan += "\n" + "\n".join(tool_args)
 
-                matched = scan_text_for_recalls(text_to_scan, active_recalls, force_threshold=global_threshold)
+                exclude_texts = [
+                    m.get("content", "") if isinstance(m.get("content"), str) else ""
+                    for m in messages
+                    if isinstance(m, dict) and (m.get("kind") == "nudge" or m.get("is_nudge"))
+                ]
+                matched = scan_text_for_recalls(text_to_scan, active_recalls, exclude_texts=exclude_texts, force_threshold=global_threshold)
                 if matched:
                     log.debug(f"[Recall Check] Raw matches found: {[(m.get('recall_id'), round(m.get('similarity_score', 0.0), 3)) for m in matched]}")
                 else:
@@ -2004,14 +2016,16 @@ class GaladrielAgent:
                         f"I may check if any of it is sensible I should proceed further, else I will conclude. I will make sure I do not repeat what I already said.\n"
                     )
                     
-                    messages.append({"role": "assistant", "content": nudge_prompt})
+                    messages.append({"role": "assistant", "content": nudge_prompt, "kind": "nudge", "is_nudge": True})
                     
                     if tick_recorder is not None:
                         await tick_recorder.record_message(messages[-1])
                     if run_recorder is not None:
                         await run_recorder.record_message(
-                            messages[-1], visibility="system", kind="direct_assistant"
+                            messages[-1], visibility="user", kind="nudge"
                         )
+                    if emit is not None:
+                        await emit({"type": "text", "text": f"\n\n{nudge_prompt}\n\n"})
                     # Re-run the turn loop so the agent can fix its mistake
                     api_messages = None
                     self._silent_turn = True
@@ -2394,11 +2408,13 @@ class GaladrielAgent:
                     await run_recorder.record_message(messages[-1])
 
                 if new_matches:
-                    messages.append({"role": "assistant", "content": nudge_prompt})
+                    messages.append({"role": "assistant", "content": nudge_prompt, "kind": "nudge", "is_nudge": True})
                     if tick_recorder is not None:
                         await tick_recorder.record_message(messages[-1])
                     if run_recorder is not None:
-                        await run_recorder.record_message(messages[-1], visibility="system", kind="direct_assistant")
+                        await run_recorder.record_message(messages[-1], visibility="user", kind="nudge")
+                    if emit is not None:
+                        await emit({"type": "text", "text": f"\n\n{nudge_prompt}\n\n"})
 
                 # Tool outcomes can change the shared experiential state. Make
                 # that change globally available to the very next reasoning
