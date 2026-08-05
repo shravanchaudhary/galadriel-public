@@ -1646,6 +1646,37 @@ class GaladrielAgent:
             await run_recorder.record_message(
                 messages[-1], visibility="user", kind="direct_user",
             )
+            
+        if turn_matched_recalls:
+            log.info(f"[Recall Check] Injecting matches for in-process steering (user_message): {[m.get('recall_id') for m in turn_matched_recalls]}")
+            for m in turn_matched_recalls:
+                notified_recall_ids.add(m.get("recall_id"))
+                try:
+                    from .db_ops import get_db
+                    db = get_db()
+                    if db is not None:
+                        await db["nudge_logs"].insert_one({
+                            "recall_id": m.get("recall_id"),
+                            "channel_id": channel_id,
+                            "timestamp": datetime.now(timezone.utc),
+                            "score": m.get("similarity_score", 0.0),
+                            "text_scanned": user_message[:500] if isinstance(user_message, str) else ""
+                        })
+                except Exception as e:
+                    log.warning(f"Failed to log nudge to DB: {e}")
+            
+            nudge_text = generate_nudge(turn_matched_recalls)
+            log.info(f"User-message nudge triggered: {nudge_text!r}")
+            nudge_prompt = (
+                f"I may check these suggestions for better answering. If irrelevant, I will ignore."
+                f"{nudge_text}\n\n"
+                f"If I already satisfied them, I may continue my normal flow.\n"
+            )
+            messages.append({"role": "assistant", "content": nudge_prompt})
+            if tick_recorder is not None:
+                await tick_recorder.record_message(messages[-1])
+            if run_recorder is not None:
+                await run_recorder.record_message(messages[-1], visibility="system", kind="direct_assistant")
 
         # System blocks: stable + dynamic + snapshot + advisory. Rebuilt after
         # any mid-loop / max_tokens compaction so it never goes stale.
