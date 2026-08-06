@@ -2396,7 +2396,7 @@ class GaladrielAgent:
                     log.info(f"Tool-use nudge triggered: {nudge_text!r}")
                     
                     nudge_prompt = (
-                        f"I may check these suggestions for better answering. If irrelevant, I will ignore."
+                        f"I may check these suggestions for better answering. If irrelevant, I will ignore.\n"
                         f"{nudge_text}\n\n"
                         f"If I already satisfied them, I may continue my normal flow.\n"
                     )
