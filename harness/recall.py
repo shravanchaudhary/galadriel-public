@@ -175,6 +175,36 @@ def sanitize_text_with_exclude_texts(text: str, exclude_texts: list[str] | None 
         cleaned = "\n".join(cleaned_lines)
     return cleaned.strip()
 
+
+# bge-small-en-v1.5: hard max 512 tokens, 384-dim. For low-dim embedders,
+# ~150-300 token windows keep semantics sharp; ~20% overlap covers boundary phrases.
+_RECALL_CHUNK_TOKENS = 256
+_RECALL_CHUNK_OVERLAP = 50
+
+
+def _split_line_for_embedding(
+    line: str,
+    max_tokens: int = _RECALL_CHUNK_TOKENS,
+    overlap_tokens: int = _RECALL_CHUNK_OVERLAP,
+) -> list[str]:
+    """Split one newline chunk into embedding-sized windows (word approx, with overlap)."""
+    if not line:
+        return []
+    words = line.split()
+    if len(words) <= max_tokens:
+        return [line]
+    step = max(1, max_tokens - overlap_tokens)
+    chunks: list[str] = []
+    for start in range(0, len(words), step):
+        piece = words[start:start + max_tokens]
+        if not piece:
+            break
+        chunks.append(" ".join(piece))
+        if start + max_tokens >= len(words):
+            break
+    return chunks
+
+
 def scan_text_for_recalls(text: str, recalls: list[dict], exclude_texts: list[str] | None = None, force_encoder_type=None, force_threshold=None) -> list[dict]:
     """Scan text against all recalls and return matched recall objects using semantic router."""
     if not text or not recalls:
@@ -192,8 +222,13 @@ def scan_text_for_recalls(text: str, recalls: list[dict], exclude_texts: list[st
     matches = []
     seen = set()
     
-    # Split sanitized text into manageable chunks (e.g. paragraphs/lines) for semantic matching
-    chunks = [c.strip() for c in sanitized_text.split("\n") if c.strip()]
+    # Newline split, then further window each line under the embedder's sweet spot
+    line_chunks = [c.strip() for c in sanitized_text.split("\n") if c.strip()]
+    chunks = [
+        sub
+        for line in line_chunks
+        for sub in _split_line_for_embedding(line)
+    ]
     
     for chunk in chunks:
         # Semantic router checks if the chunk falls within a threshold tolerance of any route
