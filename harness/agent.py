@@ -422,6 +422,9 @@ class GaladrielAgent:
         self.compact_threshold = int(os.environ.get("AGENT_COMPACT_THRESHOLD", "180000"))
         self._last_input_tokens: dict[str, int] = {}  # channel_id -> last measured input tokens
         self._compaction_summary: dict[str, str] = {}  # channel_id -> latest snapshot (folds cumulatively)
+        # Recalls already nudged into the live buffer. Lives across turns; cleared
+        # only when the buffer resets (new conversation / summarization).
+        self._notified_recall_ids: dict[str, set] = {}
         if self._pending_run_recovery is not None:
             run, tail, checkpoint = self._pending_run_recovery
             self.conversations[MAIN_CHANNEL_ID] = list(tail)
@@ -587,14 +590,19 @@ class GaladrielAgent:
         self._last_warn_tier.pop(channel_id, None)
         self._output_ceiling_streak.pop(channel_id, None)
         self._post_recovery_archive_tag.pop(channel_id, None)
+        self._notified_recall_ids.pop(channel_id, None)
 
-    def _hard_reset(self, messages: list, user_message: str | list):
+    def _hard_reset(self, messages: list, user_message: str | list, channel_id: str | None = None):
         """Nuclear option: clear conversation and start fresh with the user message.
 
         Last-resort fallback when max_tokens recovery via compaction can't help.
         """
         messages.clear()
         messages.append({"role": "user", "content": user_message})
+        if channel_id is not None:
+            notified = self._notified_recall_ids.get(channel_id)
+            if notified is not None:
+                notified.clear()
         log.warning("Hard reset: cleared entire conversation, re-seeded with original user message")
 
     def _archive_and_flag(self, channel_id: str, messages: list) -> None:
@@ -925,6 +933,10 @@ class GaladrielAgent:
         #    everything prior; new turns accumulate fresh after it.
         messages.clear()
         self._last_input_tokens.pop(channel_id, None)
+        # Buffer reset — recalls may fire again in the fresh context.
+        notified = self._notified_recall_ids.get(channel_id)
+        if notified is not None:
+            notified.clear()
         # Full conversation was just archived; checkpoint baseline restarts at 0.
         self._last_archived_len[channel_id] = len(messages)
 
@@ -996,6 +1008,11 @@ class GaladrielAgent:
 
         # Rebuild the live conversation: task → progress → resume nudge.
         messages.clear()
+        # Buffer reset — recalls may fire again in the fresh context.
+        # clear() (not pop) so an in-flight respond() local set stays valid.
+        notified = self._notified_recall_ids.get(channel_id)
+        if notified is not None:
+            notified.clear()
         messages.append({"role": "user", "content": user_message})
         messages.append({
             "role": "assistant",
@@ -1641,7 +1658,8 @@ class GaladrielAgent:
         from .recall import fetch_all_recalls, scan_text_for_recalls, generate_nudge, async_get_semantic_threshold
         active_recalls = await fetch_all_recalls()
         global_threshold = await async_get_semantic_threshold(0.80)
-        notified_recall_ids = set()
+        # Buffer-scoped: same set across turns until /new or summarization.
+        notified_recall_ids = self._notified_recall_ids.setdefault(channel_id, set())
         turn_matched_recalls = []
 
         if isinstance(user_message, str):
@@ -1663,9 +1681,18 @@ class GaladrielAgent:
                 messages[-1], visibility="user", kind="direct_user",
             )
             
-        if turn_matched_recalls:
-            log.info(f"[Recall Check] Injecting matches for in-process steering (user_message): {[m.get('recall_id') for m in turn_matched_recalls]}")
-            for m in turn_matched_recalls:
+        new_user_matches = [
+            m for m in turn_matched_recalls
+            if m.get("recall_id") not in notified_recall_ids
+        ]
+        if turn_matched_recalls and not new_user_matches:
+            log.debug(
+                f"[Recall Check] Ignored previously notified nudges (user_message): "
+                f"{[m.get('recall_id') for m in turn_matched_recalls]}"
+            )
+        if new_user_matches:
+            log.info(f"[Recall Check] Injecting matches for in-process steering (user_message): {[m.get('recall_id') for m in new_user_matches]}")
+            for m in new_user_matches:
                 notified_recall_ids.add(m.get("recall_id"))
                 try:
                     from .db_ops import get_db
@@ -1681,7 +1708,7 @@ class GaladrielAgent:
                 except Exception as e:
                     log.warning(f"Failed to log nudge to DB: {e}")
             
-            nudge_text = generate_nudge(turn_matched_recalls)
+            nudge_text = generate_nudge(new_user_matches)
             log.info(f"User-message nudge triggered: {nudge_text!r}")
             nudge_prompt = (
                 f"I may check these suggestions for better answering. If irrelevant, I will ignore.\n"
@@ -2129,7 +2156,7 @@ class GaladrielAgent:
                     # Tried 3 times — give up gracefully. Archive + hard reset so
                     # the next message works.
                     self._archive_and_flag(channel_id, messages)
-                    self._hard_reset(messages, user_message)
+                    self._hard_reset(messages, user_message, channel_id)
                     suffix = (
                         "\n\n*(My response was too long and I could not recover after multiple attempts. "
                         "The conversation has been reset — but your prior exchange was preserved "
@@ -2151,11 +2178,11 @@ class GaladrielAgent:
                     result = await self.compact_channel(channel_id)
                     if not result.get("compacted"):
                         self._archive_and_flag(channel_id, messages)
-                        self._hard_reset(messages, user_message)
+                        self._hard_reset(messages, user_message, channel_id)
                 except Exception as e:
                     log.warning(f"max_tokens recovery: compaction failed ({e}); hard reset")
                     self._archive_and_flag(channel_id, messages)
-                    self._hard_reset(messages, user_message)
+                    self._hard_reset(messages, user_message, channel_id)
 
                 # Rebuild system blocks: compaction set a fresh snapshot, or the
                 # hard-reset fallback set a post-recovery advisory — either way the
@@ -2468,6 +2495,7 @@ class GaladrielAgent:
         self._compaction_summary.pop(channel_id, None)
         self._last_input_tokens.pop(channel_id, None)
         self._last_archived_len.pop(channel_id, None)
+        self._notified_recall_ids.pop(channel_id, None)
 
     async def switch_main_run(self, run_id: str) -> dict:
         """Park the current active main run and resume ``run_id`` as the live tail.
@@ -2509,6 +2537,7 @@ class GaladrielAgent:
         self._output_ceiling_streak.pop(MAIN_CHANNEL_ID, None)
         self._last_input_tokens.pop(MAIN_CHANNEL_ID, None)
         self._last_archived_len[MAIN_CHANNEL_ID] = 0
+        self._notified_recall_ids.pop(MAIN_CHANNEL_ID, None)
         if checkpoint and checkpoint.get("summary"):
             self._compaction_summary[MAIN_CHANNEL_ID] = checkpoint["summary"]
         else:
@@ -2565,6 +2594,7 @@ class GaladrielAgent:
         self._compaction_summary.pop(channel_id, None)
         self._last_input_tokens.pop(channel_id, None)
         self._last_archived_len.pop(channel_id, None)
+        self._notified_recall_ids.pop(channel_id, None)
         try:
             if channel_id != MAIN_CHANNEL_ID:
                 from . import palace
