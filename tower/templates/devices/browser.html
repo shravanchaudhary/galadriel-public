@@ -15,16 +15,12 @@
     {% endif %}
 
     <section class="settings-section devices-section">
-        <div class="settings-section-head">
+        <div class="settings-section-head settings-section-head-row">
             <h2 class="settings-section-title">Install Chrome extension</h2>
-            <p class="settings-section-desc">
-                Install the Browser Command Executor extension so Replika can use your browser.
-                Staging builds connect to <code>bce-stag.clodexa.com</code>.
-            </p>
-        </div>
-        <div class="settings-actions devices-actions">
-            <a class="btn" href="{{ extension_download_url }}" download>Download latest</a>
-            <a class="btn btn-secondary" href="{{ extension_versions_url }}" target="_blank" rel="noopener noreferrer">All versions</a>
+            <div class="settings-actions devices-extension-actions">
+                <a class="btn btn-small" href="{{ extension_download_url }}" download>Download latest</a>
+                <a class="btn btn-small btn-secondary" href="{{ extension_versions_url }}" target="_blank" rel="noopener noreferrer">All versions</a>
+            </div>
         </div>
         <ol class="devices-install-steps">
             <li>Download the zip and unzip it. The folder must contain <code>manifest.json</code>.</li>
@@ -34,10 +30,6 @@
             <li>Open the extension popup, turn <strong>Agent ON</strong>, and copy the pairing code.</li>
             <li>Paste that code under <strong>Add browser</strong> below.</li>
         </ol>
-        <p class="settings-section-desc devices-install-notes">
-            Chrome will show an automation banner while the extension uses the debugger API.
-            Keep the extension Agent ON while Replika works; when it is OFF, commands return disabled.
-        </p>
     </section>
 
     <section class="settings-section devices-section">
