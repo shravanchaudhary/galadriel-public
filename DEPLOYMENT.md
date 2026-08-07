@@ -47,6 +47,8 @@ code comes only from immutable ECR images.
 3. Store the provisioning callback token in Secrets Manager and pass only its
    ARN as `replika_callback_token_secret_arn`. Customer provider keys are
    encrypted with KMS through the product UI; they do not belong in AppConfig.
+   The platform Gemini key for tenant runtimes belongs in Secrets Manager
+   (`GEMINI_API_KEY` via `replika_runtime_provider_secret_arns`), not AppConfig.
 4. Copy `infra/terraform/staging.tfvars.example` to a secure location and fill
    in shared VPC, subnet, ALB, database/cache security-group, listener-priority,
    and CodeConnection values. Never commit the populated file.

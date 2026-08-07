@@ -138,11 +138,12 @@ variable "replika_runtime_provider_secret_arns" {
       "AGENTSOURCE_API_KEY",
       "BCE_API_KEY",
       "FULLENRICH_API_KEY",
+      "GEMINI_API_KEY",
       "HANDINGER_API_KEY",
       "SERPER_API_KEY",
       "TRAFILATURA_API_KEY",
     ]))) == 0
-    error_message = "Runtime provider secrets may include only approved enrichment, browser, search, and web-fetch credentials."
+    error_message = "Runtime provider secrets may include only approved model, enrichment, browser, search, and web-fetch credentials."
   }
 }
 variable "replika_runtime_environment" {
@@ -169,12 +170,13 @@ variable "replika_runtime_environment" {
   }
 }
 variable "replika_runtime_secret_names" {
-  description = "Provider infrastructure secrets exposed to tenant runtimes. Model and Slack installation credentials are intentionally excluded."
+  description = "Provider infrastructure secrets exposed to tenant runtimes. Slack installation credentials stay excluded; platform Gemini is included as the default model key."
   type        = set(string)
   default = [
     "AGENTSOURCE_API_KEY",
     "BCE_API_KEY",
     "FULLENRICH_API_KEY",
+    "GEMINI_API_KEY",
     "HANDINGER_API_KEY",
     "SERPER_API_KEY",
     "TOWER_SECRET_KEY",
@@ -185,12 +187,13 @@ variable "replika_runtime_secret_names" {
       "AGENTSOURCE_API_KEY",
       "BCE_API_KEY",
       "FULLENRICH_API_KEY",
+      "GEMINI_API_KEY",
       "HANDINGER_API_KEY",
       "SERPER_API_KEY",
       "TOWER_SECRET_KEY",
       "TRAFILATURA_API_KEY",
     ]))) == 0
-    error_message = "Tenant runtimes may receive only approved provider infrastructure secrets; model and Slack installation credentials are forbidden."
+    error_message = "Tenant runtimes may receive only approved provider infrastructure secrets; Slack installation credentials remain forbidden."
   }
 }
 variable "host_name" {

@@ -146,10 +146,11 @@ def list_summaries(*, db=None) -> list[dict]:
             continue
         secret = _env_key_for(provider)
         if secret:
+            # Platform/env keys are never fingerprinted to the browser.
             by_provider[provider] = {
                 "provider": provider,
                 "configured": True,
-                "masked": _mask_secret(secret),
+                "masked": None,
                 "source": "env",
                 "updated_at": None,
             }

@@ -74,7 +74,7 @@
         <div class="settings-row provider-keys-block" id="model-provider">
             <div class="settings-row-main">
                 <span class="settings-row-label">Model providers</span>
-                <span class="settings-row-hint">Gemini is configured by default. Add your own key to override.</span>
+                <span class="settings-row-hint">Platform Gemini is used by default. Add your own key to override.</span>
             </div>
             <div class="provider-key-list">
                 <div class="provider-key-item" data-provider="gemini">
@@ -456,6 +456,11 @@ function hasUserProviderKey(provider) {
     return !!(row && row.configured && row.source === 'byom');
 }
 
+function hasPlatformProviderKey(provider) {
+    const row = providerKeyState[provider];
+    return !!(row && row.configured && row.source === 'env');
+}
+
 function updateProviderKeyUI() {
     const status = document.getElementById('provider-key-status-gemini');
     const input = document.getElementById('provider-key-input-gemini');
@@ -464,6 +469,7 @@ function updateProviderKeyUI() {
     if (!status || !input || !saveBtn || !removeBtn) return;
 
     const userKey = hasUserProviderKey('gemini');
+    const platformKey = hasPlatformProviderKey('gemini');
     removeBtn.disabled = !userKey;
     input.value = '';
 
@@ -473,11 +479,16 @@ function updateProviderKeyUI() {
         status.classList.remove('muted');
         status.classList.add('status-on');
         input.placeholder = 'Paste a new key to replace';
-    } else {
+    } else if (platformKey) {
         status.textContent = 'Configured by default';
         status.classList.add('muted');
         status.classList.remove('status-on');
         input.placeholder = 'Paste your API key to override';
+    } else {
+        status.textContent = 'No key configured — add your API key';
+        status.classList.add('muted');
+        status.classList.remove('status-on');
+        input.placeholder = 'Paste your API key';
     }
 }
 

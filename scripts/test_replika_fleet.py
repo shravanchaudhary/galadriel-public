@@ -332,7 +332,7 @@ os.environ.update(
         "BASE_TASK_DEFINITION": "base",
         "CONTAINER_NAME": "clyra",
         "PRODUCT_DOMAIN": "replika.example",
-        "RUNTIME_SECRET_NAMES": '["BCE_API_KEY", "TOWER_SECRET_KEY"]',
+        "RUNTIME_SECRET_NAMES": '["BCE_API_KEY", "GEMINI_API_KEY", "TOWER_SECRET_KEY"]',
         "S3FILES_FILE_SYSTEM_ARN": "arn:aws:s3files:test:file-system/fs",
     }
 )
@@ -368,6 +368,7 @@ assert environment["MONGO_DB"] == "replika_tenant-a"
 assert runtime["secrets"] == [
     {"name": "TOWER_SECRET_KEY", "valueFrom": "session"},
     {"name": "BCE_API_KEY", "valueFrom": "bce"},
+    {"name": "GEMINI_API_KEY", "valueFrom": "platform-key"},
     {
         "name": "SLACK_TENANT_AUTH_SECRET",
         "valueFrom": "arn:aws:secretsmanager:test:slack-auth",
