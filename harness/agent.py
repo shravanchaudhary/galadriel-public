@@ -1694,7 +1694,7 @@ class GaladrielAgent:
             if run_recorder is not None:
                 await run_recorder.record_message(messages[-1], visibility="user", kind="nudge")
             if emit is not None:
-                await emit({"type": "text", "text": f"\n\n{nudge_prompt}\n\n"})
+                await emit({"type": "thought", "text": nudge_prompt, "kind": "nudge"})
 
         # System blocks: stable + dynamic + snapshot + advisory. Rebuilt after
         # any mid-loop / max_tokens compaction so it never goes stale.
@@ -2036,7 +2036,7 @@ class GaladrielAgent:
                             messages[-1], visibility="user", kind="nudge"
                         )
                     if emit is not None:
-                        await emit({"type": "text", "text": f"\n\n{nudge_prompt}\n\n"})
+                        await emit({"type": "thought", "text": nudge_prompt, "kind": "nudge"})
                     # Re-run the turn loop so the agent can fix its mistake
                     api_messages = None
                     self._silent_turn = True
@@ -2425,7 +2425,7 @@ class GaladrielAgent:
                     if run_recorder is not None:
                         await run_recorder.record_message(messages[-1], visibility="user", kind="nudge")
                     if emit is not None:
-                        await emit({"type": "text", "text": f"\n\n{nudge_prompt}\n\n"})
+                        await emit({"type": "thought", "text": nudge_prompt, "kind": "nudge"})
 
                 # Tool outcomes can change the shared experiential state. Make
                 # that change globally available to the very next reasoning

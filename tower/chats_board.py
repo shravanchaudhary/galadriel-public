@@ -127,7 +127,11 @@ def _direct_history(events: list[dict]) -> list[dict]:
             if thought:
                 blocks.append({"type": "thought", "text": thought})
             if text:
-                blocks.append({"type": "text", "text": text})
+                is_nudge = event.get("kind") == "nudge" or event.get("is_nudge")
+                blocks.append({
+                    "type": "thought" if is_nudge else "text",
+                    "text": text,
+                })
             if blocks:
                 if history and history[-1]["role"] == "assistant":
                     history[-1]["blocks"].extend(blocks)

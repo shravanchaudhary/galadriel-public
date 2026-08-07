@@ -144,18 +144,27 @@ def _serialize_assistant_turn(messages: list, start: int) -> tuple[list[dict], i
             if thought:
                 blocks.append({"type": "thought", "text": thought})
 
+            # Nudges stay assistant messages for the model/API; render as thoughts in Tower.
+            is_nudge = msg.get("kind") == "nudge" or msg.get("is_nudge")
+
             if isinstance(content, list):
                 for block in content:
                     btype = _block_type(block)
                     if btype == "text":
                         text = _block_text(block)
                         if text:
-                            blocks.append({"type": "text", "text": text})
+                            blocks.append({
+                                "type": "thought" if is_nudge else "text",
+                                "text": text,
+                            })
                     elif btype == "tool_use":
                         uid, name, inp = _tool_use_fields(block)
                         pending_tools.append({"id": uid, "name": name, "input": inp})
             elif isinstance(content, str) and content:
-                blocks.append({"type": "text", "text": content})
+                blocks.append({
+                    "type": "thought" if is_nudge else "text",
+                    "text": content,
+                })
             i += 1
 
         elif role == "user" and isinstance(content, list) and _is_tool_results(content):
