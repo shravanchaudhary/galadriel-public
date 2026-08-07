@@ -99,6 +99,8 @@ with patch.object(handler, "_provider_post", side_effect=fake_post), patch.objec
 ) as delete_role, patch.object(
     handler, "_delete_slack_auth_secret"
 ) as delete_secret, patch.object(
+    handler, "_purge_tenant_storage"
+) as purge_storage, patch.object(
     handler, "_delete_access_point"
 ) as delete_ap, patch.dict(
     "os.environ",
@@ -122,7 +124,12 @@ _assert(delete_cognito.called, "delete removes Cognito client")
 _assert(deregister.called, "delete deregisters task definitions")
 _assert(delete_role.called, "delete removes IAM role")
 _assert(delete_secret.called, "delete removes Slack auth secret")
+_assert(purge_storage.called, "delete purges tenant S3 object versions")
 _assert(delete_ap.called, "delete removes S3 Files access point")
+_assert(
+    purge_storage.call_args.args[1] == "r1",
+    "storage purge uses replika_id",
+)
 _assert(any(payload.get("action") == "delete" for _, payload in posts), "DB delete broker")
 _assert(posts[-1][1]["status"] == "deleted", "delete callbacks deleted")
 
@@ -185,6 +192,56 @@ with patch.dict("os.environ", {"S3FILES_FILE_SYSTEM_ID": "fs-1"}, clear=False):
 _assert(
     s3files.delete_kwargs == {"accessPointId": "ap-1"},
     "delete passes only the access point ID",
+)
+
+
+class _VersionPaginator:
+    def paginate(self, **kwargs):
+        _assert(kwargs["Bucket"] == "state-bucket", "lists state bucket")
+        _assert(kwargs["Prefix"] == "tenants/r1", "prefixes by tenant path")
+        return [
+            {
+                "Versions": [
+                    {"Key": "tenants/r1/config/SOUL.md", "VersionId": "v1"},
+                    {"Key": "tenants/r1/", "VersionId": "v2"},
+                ],
+                "DeleteMarkers": [
+                    {"Key": "tenants/r1/old", "VersionId": "v3"},
+                ],
+            }
+        ]
+
+
+class _S3:
+    def __init__(self):
+        self.deleted = None
+
+    def get_paginator(self, name):
+        _assert(name == "list_object_versions", "uses version paginator")
+        return _VersionPaginator()
+
+    def delete_objects(self, **kwargs):
+        self.deleted = kwargs
+        return {}
+
+
+s3 = _S3()
+with patch.dict("os.environ", {"S3FILES_STATE_BUCKET": "state-bucket"}, clear=False):
+    handler._purge_tenant_storage(s3, "r1")
+_assert(
+    s3.deleted
+    == {
+        "Bucket": "state-bucket",
+        "Delete": {
+            "Objects": [
+                {"Key": "tenants/r1/config/SOUL.md", "VersionId": "v1"},
+                {"Key": "tenants/r1/", "VersionId": "v2"},
+                {"Key": "tenants/r1/old", "VersionId": "v3"},
+            ],
+            "Quiet": True,
+        },
+    },
+    "purge deletes every object version under the tenant prefix",
 )
 
 # Handler dispatches by operation and accepts legacy owner_id-only payloads.

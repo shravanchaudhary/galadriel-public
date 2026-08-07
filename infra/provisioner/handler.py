@@ -832,6 +832,50 @@ def _delete_slack_auth_secret(secretsmanager, replika_id: str) -> None:
             raise
 
 
+def _purge_tenant_storage(s3, replika_id: str) -> None:
+    """Hard-delete every object/version under tenants/<replika_id> in the
+    S3 Files state bucket. Access-point deletion alone leaves file contents
+    behind; without this, recreate is safe (new UUID path) but orphaned
+    tenant data accumulates."""
+    bucket = os.environ.get("S3FILES_STATE_BUCKET", "").strip()
+    if not bucket:
+        raise RuntimeError("S3FILES_STATE_BUCKET is not configured")
+    # Match both the directory marker and all nested keys.
+    prefix = f"tenants/{replika_id}"
+    to_delete: list[dict[str, str]] = []
+
+    def _flush() -> None:
+        nonlocal to_delete
+        if not to_delete:
+            return
+        response = s3.delete_objects(
+            Bucket=bucket,
+            Delete={"Objects": to_delete, "Quiet": True},
+        )
+        errors = response.get("Errors") or []
+        if errors:
+            raise RuntimeError(
+                f"failed to purge tenant storage for {replika_id}: {errors[:3]}"
+            )
+        to_delete = []
+
+    paginator = s3.get_paginator("list_object_versions")
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        for entry in page.get("Versions", []):
+            to_delete.append(
+                {"Key": entry["Key"], "VersionId": entry["VersionId"]}
+            )
+            if len(to_delete) >= 1000:
+                _flush()
+        for entry in page.get("DeleteMarkers", []):
+            to_delete.append(
+                {"Key": entry["Key"], "VersionId": entry["VersionId"]}
+            )
+            if len(to_delete) >= 1000:
+                _flush()
+    _flush()
+
+
 def _delete_access_point(s3files, replika_id: str) -> None:
     file_system_id = _required("S3FILES_FILE_SYSTEM_ID")
     path = f"/tenants/{replika_id}"
@@ -1042,6 +1086,7 @@ def _delete_replika(
     username: str,
 ) -> dict:
     s3files = boto3.client("s3files")
+    s3 = boto3.client("s3")
     iam = boto3.client("iam")
     secretsmanager = boto3.client("secretsmanager")
     elbv2 = boto3.client("elbv2")
@@ -1055,6 +1100,9 @@ def _delete_replika(
     _deregister_task_definitions(ecs, replika_id)
     role_arn = _delete_task_role(iam, replika_id)
     _delete_slack_auth_secret(secretsmanager, replika_id)
+    # Wipe object versions before removing the access point so recreate cannot
+    # inherit orphaned files and the shared filesystem stays tenant-clean.
+    _purge_tenant_storage(s3, replika_id)
     _delete_access_point(s3files, replika_id)
     _database_identity(replika_id, role_arn or "", action="delete")
     _callback(replika_id, owner_id, "deleted")

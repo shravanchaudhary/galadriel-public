@@ -52,6 +52,20 @@ data "aws_iam_policy_document" "replika_provisioner" {
     resources = ["*"]
   }
 
+  statement {
+    sid = "PurgeTenantStateObjects"
+    actions = [
+      "s3:DeleteObject",
+      "s3:DeleteObjectVersion",
+      "s3:ListBucket",
+      "s3:ListBucketVersions",
+    ]
+    resources = [
+      aws_s3_bucket.state.arn,
+      "${aws_s3_bucket.state.arn}/*",
+    ]
+  }
+
   dynamic "statement" {
     for_each = var.enable_replika_managed_auth ? [1] : []
     content {
@@ -158,6 +172,7 @@ resource "aws_lambda_function" "replika_provisioner" {
       SLACK_TENANT_AUTH_SECRET_PREFIX = "replika/slack-auth"
       S3FILES_FILE_SYSTEM_ARN         = aws_s3files_file_system.clyra.arn
       S3FILES_FILE_SYSTEM_ID          = aws_s3files_file_system.clyra.id
+      S3FILES_STATE_BUCKET            = aws_s3_bucket.state.id
       TASK_SECURITY_GROUP_ID          = aws_security_group.task.id
       VPC_ID                          = var.vpc_id
       VOICE_TRANSCRIBE_ROLE_ARN       = aws_iam_role.browser_transcription.arn
