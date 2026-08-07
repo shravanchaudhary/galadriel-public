@@ -102,6 +102,8 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
         template_folder=str(Path(__file__).parent / "templates"),
         static_folder=str(Path(__file__).parent / "static"),
     )
+    # Local edits to Jinja templates should show up without a process restart.
+    app.config["TEMPLATES_AUTO_RELOAD"] = True
     tower_auth.configure_app_sessions(app)
 
     @app.before_request

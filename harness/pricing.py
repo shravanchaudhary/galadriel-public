@@ -15,16 +15,21 @@ this for a real invoice — model names/rates change.
 # model name -> {"input": $/MTok, "output": $/MTok, "cache_read": $/MTok, "cache_write": $/MTok}
 RATES: dict[str, dict[str, float]] = {
     # Gemini — cache_write always 0 (implicit caching, no write surcharge).
-    "gemini-3.1-pro-preview": {"input": 2.00, "output": 12.00, "cache_read": 0.20, "cache_write": 0.0},
-    "gemini-2.5-flash": {"input": 0.30, "output": 2.50, "cache_read": 0.03, "cache_write": 0.0},
-    "gemini-2.5-pro": {"input": 1.25, "output": 10.00, "cache_read": 0.125, "cache_write": 0.0},
+    "gemini-3.6-flash": {"input": 1.50, "output": 7.50, "cache_read": 0.15, "cache_write": 0.0},
     "gemini-3.5-flash": {"input": 0.30, "output": 2.50, "cache_read": 0.03, "cache_write": 0.0},
-    # Anthropic — cache_write carries a write premium (~1.25x input); cache_read ~10% of input.
+    "gemini-3.5-flash-lite": {"input": 0.30, "output": 2.50, "cache_read": 0.03, "cache_write": 0.0},
+    "gemini-3.1-pro-preview": {"input": 2.00, "output": 12.00, "cache_read": 0.20, "cache_write": 0.0},
+    "gemini-2.5-pro": {"input": 1.25, "output": 10.00, "cache_read": 0.125, "cache_write": 0.0},
+    "gemini-2.5-flash": {"input": 0.30, "output": 2.50, "cache_read": 0.03, "cache_write": 0.0},
+    "gemini-2.5-flash-lite": {"input": 0.10, "output": 0.40, "cache_read": 0.01, "cache_write": 0.0},
+    "gemini-2.0-flash": {"input": 0.10, "output": 0.40, "cache_read": 0.01, "cache_write": 0.0},
+    "gemini-2.0-flash-lite": {"input": 0.075, "output": 0.30, "cache_read": 0.0075, "cache_write": 0.0},
+    "gemini-1.5-pro": {"input": 1.25, "output": 5.00, "cache_read": 0.125, "cache_write": 0.0},
+    "gemini-1.5-flash": {"input": 0.075, "output": 0.30, "cache_read": 0.0075, "cache_write": 0.0},
+    # Anthropic — kept for internal/fallback costing; not selectable in Tower.
     "claude-opus-4-8": {"input": 5.00, "output": 25.00, "cache_read": 0.50, "cache_write": 6.25},
     "claude-haiku-4-5-20251001": {"input": 1.00, "output": 5.00, "cache_read": 0.10, "cache_write": 1.25},
     "claude-sonnet-4-6": {"input": 3.00, "output": 15.00, "cache_read": 0.30, "cache_write": 3.75},
-    # Ollama — local inference, $0 (priced so the cost board doesn't flag unpriced).
-    "qwen3-vl:8b": {"input": 0.0, "output": 0.0, "cache_read": 0.0, "cache_write": 0.0},
 }
 
 

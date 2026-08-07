@@ -51,12 +51,19 @@ def _channel_setting_id(channel: str) -> str:
     return f"channel_model_{channel}"
 
 # Selectable agent models in Tower. Provider is resolved from the model name
-# via model_registry.provider_for_model (gemini-* → Gemini, *:tag → Ollama).
+# via model_registry.provider_for_model (gemini-* → Gemini).
 AGENT_MODEL_OPTIONS: tuple[str, ...] = (
-    "claude-opus-4-8",
-    "gemini-3.1-pro-preview",
+    "gemini-3.6-flash",
     "gemini-3.5-flash",
-    "qwen3-vl:8b",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-pro-preview",
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-lite",
+    "gemini-1.5-pro",
+    "gemini-1.5-flash",
 )
 
 _sync_db = None

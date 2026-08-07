@@ -99,13 +99,17 @@ CONTEXT_WINDOW_OVERRIDES = {
     "claude-opus-4-7": 1_000_000,
     "claude-opus-4-8": 1_000_000,
     # Gemini — 1,048,576-token context window (official, per ai.google.dev).
+    "gemini-3.6-flash": 1_000_000,
     "gemini-3.5-flash": 1_000_000,
+    "gemini-3.5-flash-lite": 1_000_000,
     "gemini-3.1-pro-preview": 1_000_000,
     "gemini-2.5-pro": 1_000_000,
     "gemini-2.5-flash": 1_000_000,
-    # Ollama — serving window is options.num_ctx (OLLAMA_NUM_CTX, default 65536),
-    # not the model's native 256K. Keep this in sync with OllamaProvider.num_ctx.
-    "qwen3-vl:8b": int(os.environ.get("OLLAMA_NUM_CTX") or 65_536),
+    "gemini-2.5-flash-lite": 1_000_000,
+    "gemini-2.0-flash": 1_000_000,
+    "gemini-2.0-flash-lite": 1_000_000,
+    "gemini-1.5-pro": 1_000_000,
+    "gemini-1.5-flash": 1_000_000,
 }
 
 WARN_TIER_ATTENTION = "attention"  # 90%
@@ -126,10 +130,17 @@ def _resolve_context_window(model: str) -> int:
 CACHE_MINIMUM_DEFAULT = 4096
 CACHE_MINIMUM_OVERRIDES = {
     # Gemini (per-tier; 3.x preview values track this project's docs)
-    "gemini-3.1-pro-preview": 4096,
+    "gemini-3.6-flash": 4096,
     "gemini-3.5-flash": 4096,
+    "gemini-3.5-flash-lite": 4096,
+    "gemini-3.1-pro-preview": 4096,
     "gemini-2.5-pro": 2048,
     "gemini-2.5-flash": 2048,
+    "gemini-2.5-flash-lite": 2048,
+    "gemini-2.0-flash": 2048,
+    "gemini-2.0-flash-lite": 2048,
+    "gemini-1.5-pro": 2048,
+    "gemini-1.5-flash": 2048,
     # Claude
     "claude-opus-4-8": 1024,
     "claude-sonnet-4-6": 2048,

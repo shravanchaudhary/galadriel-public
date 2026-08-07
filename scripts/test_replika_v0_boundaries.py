@@ -179,17 +179,17 @@ os.environ["REPLIKA_TENANT_ID"] = "tenant-a"
 os.environ["REPLIKA_KMS_KEY_ID"] = "test-key"
 db = _DB()
 kms = _KMS()
-saved = provider_credentials.put("anthropic", "sk-secret-1234", kms_client=kms, db=db)
+saved = provider_credentials.put("gemini", "sk-secret-1234", kms_client=kms, db=db)
 _assert(saved["masked"] == "****1234", "only a fingerprint may be returned")
 stored = next(iter(db.collection.docs.values()))
 _assert("sk-secret" not in str(stored), "plaintext key must not be stored")
 _assert(
-    provider_credentials.get("anthropic", kms_client=kms, db=db) == "sk-secret-1234",
+    provider_credentials.get("gemini", kms_client=kms, db=db) == "sk-secret-1234",
     "assigned tenant should decrypt its key",
 )
 os.environ["REPLIKA_TENANT_ID"] = "tenant-b"
 _assert(
-    provider_credentials.get("anthropic", kms_client=kms, db=db) is None,
+    provider_credentials.get("gemini", kms_client=kms, db=db) is None,
     "another tenant must not resolve the key",
 )
 _assert(all(c["tenant_id"] == "tenant-a" for c in kms.contexts), "KMS context isolation")

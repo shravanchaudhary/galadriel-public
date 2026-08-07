@@ -539,55 +539,9 @@ body.nav-open {
     padding: 2rem 1.5rem 3rem;
 }
 
-.provider-key-banner {
-    display: flex;
-    align-items: center;
-    gap: 0.55rem;
-    width: fit-content;
-    max-width: 100%;
-    margin: 0 auto 1.25rem;
-    padding: 0.5rem 0.75rem;
-    border: 1px solid rgba(217, 119, 6, 0.24);
-    border-radius: 999px;
-    background: #fff8e8;
-    color: #7c4708;
-    box-shadow: var(--shadow-sm);
-    font-size: 0.78rem;
-    line-height: 1.35;
-    text-decoration: none;
-}
-
-.provider-key-banner[hidden] {
-    display: none;
-}
-
-.provider-key-banner:hover {
-    border-color: rgba(217, 119, 6, 0.42);
-    background: #fff3d4;
-}
-
-.provider-key-banner-icon {
-    color: #d97706;
-    font-size: 0.9rem;
-}
-
-.provider-key-banner-arrow {
-    font-size: 0.9rem;
-    transition: transform 120ms ease;
-}
-
-.provider-key-banner:hover .provider-key-banner-arrow {
-    transform: translateX(2px);
-}
-
 @media (max-width: 640px) {
     .container {
         padding: 1.25rem 1rem 2.5rem;
-    }
-
-    .provider-key-banner {
-        width: 100%;
-        border-radius: var(--radius);
     }
 }
 
@@ -3167,6 +3121,55 @@ body.wfc-resizing * { cursor: inherit !important; }
     gap: 0.5rem;
 }
 
+.provider-keys-block {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.85rem;
+}
+
+.provider-key-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.65rem;
+    width: 100%;
+    max-width: 40rem;
+}
+
+.provider-key-item {
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+    padding: 0.7rem 0.8rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+}
+
+.provider-key-item-soon {
+    background: var(--surface-muted);
+}
+
+.provider-key-item-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.75rem;
+}
+
+.provider-key-name {
+    font-size: 0.9rem;
+    font-weight: 600;
+}
+
+.provider-key-item .settings-inline-form {
+    width: 100%;
+}
+
+.provider-key-item .settings-inline-form input[type="password"] {
+    flex: 1;
+    min-width: 0;
+}
+
 .settings-prompt {
     margin-top: 0.9rem;
     border-top: 1px solid var(--border);
@@ -3388,6 +3391,10 @@ body.wfc-resizing * { cursor: inherit !important; }
     .settings-inline-form {
         flex-direction: column;
         align-items: stretch;
+    }
+
+    .provider-key-list {
+        width: 100%;
     }
 }
 

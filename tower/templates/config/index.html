@@ -71,22 +71,37 @@
             </div>
         </div>
 
-        <div class="settings-row" id="model-provider">
+        <div class="settings-row provider-keys-block" id="model-provider">
             <div class="settings-row-main">
-                <label class="settings-row-label" for="provider-select">Model provider</label>
-                <span class="settings-row-hint" id="provider-key-status">Checking…</span>
+                <span class="settings-row-label">Model providers</span>
+                <span class="settings-row-hint">Gemini is configured by default. Add your own key to override.</span>
             </div>
-            <div class="settings-row-control stacked">
-                <div class="settings-inline-form">
-                    <select id="provider-select" class="interval-select" onchange="onProviderChange()">
-                        <option value="anthropic">Anthropic</option>
-                        <option value="gemini">Gemini</option>
-                    </select>
-                    <input type="password" id="provider-key-input" autocomplete="off" placeholder="Paste API key">
+            <div class="provider-key-list">
+                <div class="provider-key-item" data-provider="gemini">
+                    <div class="provider-key-item-head">
+                        <span class="provider-key-name">Gemini</span>
+                        <span class="settings-row-hint" id="provider-key-status-gemini">Checking…</span>
+                    </div>
+                    <div class="settings-inline-form">
+                        <input type="password" id="provider-key-input-gemini" autocomplete="off"
+                               placeholder="Paste your API key to override">
+                        <button type="button" class="btn btn-small" id="provider-key-save-gemini"
+                                onclick="saveProviderKey('gemini')">Save</button>
+                        <button type="button" class="btn btn-small btn-secondary" id="provider-key-remove-gemini"
+                                onclick="deleteProviderKey('gemini')">Remove</button>
+                    </div>
                 </div>
-                <div class="settings-row-control">
-                    <button type="button" class="btn btn-small" onclick="saveProviderKey()">Save</button>
-                    <button type="button" class="btn btn-small btn-secondary" onclick="deleteProviderKey()">Remove</button>
+                <div class="provider-key-item provider-key-item-soon" data-provider="anthropic">
+                    <div class="provider-key-item-head">
+                        <span class="provider-key-name">Anthropic</span>
+                        <span class="settings-row-hint">Coming soon</span>
+                    </div>
+                </div>
+                <div class="provider-key-item provider-key-item-soon" data-provider="openai">
+                    <div class="provider-key-item-head">
+                        <span class="provider-key-name">OpenAI</span>
+                        <span class="settings-row-hint">Coming soon</span>
+                    </div>
                 </div>
             </div>
         </div>
@@ -436,65 +451,53 @@ async function toggleExperientialState() {
     }
 }
 
-function selectedProvider() {
-    return document.getElementById('provider-select').value;
+function hasUserProviderKey(provider) {
+    const row = providerKeyState[provider];
+    return !!(row && row.configured && row.source === 'byom');
 }
 
 function updateProviderKeyUI() {
-    const provider = selectedProvider();
-    const input = document.getElementById('provider-key-input');
-    const status = document.getElementById('provider-key-status');
-    const row = providerKeyState[provider];
-    if (row && row.configured) {
-        const masked = row.masked || '****';
-        status.textContent = `${masked} · configured`;
+    const status = document.getElementById('provider-key-status-gemini');
+    const input = document.getElementById('provider-key-input-gemini');
+    const saveBtn = document.getElementById('provider-key-save-gemini');
+    const removeBtn = document.getElementById('provider-key-remove-gemini');
+    if (!status || !input || !saveBtn || !removeBtn) return;
+
+    const userKey = hasUserProviderKey('gemini');
+    removeBtn.disabled = !userKey;
+    input.value = '';
+
+    if (userKey) {
+        const masked = providerKeyState.gemini.masked || '****';
+        status.textContent = `${masked} · using your API key`;
         status.classList.remove('muted');
         status.classList.add('status-on');
-        input.placeholder = '****';
-        input.value = '';
+        input.placeholder = 'Paste a new key to replace';
     } else {
-        status.textContent = 'Not configured';
+        status.textContent = 'Configured by default';
         status.classList.add('muted');
         status.classList.remove('status-on');
-        input.placeholder = 'Paste API key';
-        input.value = '';
+        input.placeholder = 'Paste your API key to override';
     }
 }
 
-function onProviderChange() {
-    updateProviderKeyUI();
-}
-
-async function refreshProviderKeys(syncToActiveModel = false) {
-    const [response, modelResponse] = await Promise.all([
-        fetch('/api/provider-keys'),
-        syncToActiveModel ? fetch('/api/model?channel=main') : Promise.resolve(null),
-    ]);
+async function refreshProviderKeys() {
+    const response = await fetch('/api/provider-keys');
     if (!response.ok) return;
     const data = await response.json();
     providerKeyState = {};
     for (const row of data.providers || []) {
         providerKeyState[row.provider] = row;
     }
-    window.updateProviderKeyBanner?.(data.providers || []);
-    if (modelResponse?.ok) {
-        const modelData = await modelResponse.json();
-        const provider = modelData.model?.startsWith('gemini')
-            ? 'gemini'
-            : modelData.model?.startsWith('claude')
-                ? 'anthropic'
-                : null;
-        const select = document.getElementById('provider-select');
-        if (provider && [...select.options].some(o => o.value === provider)) {
-            select.value = provider;
-        }
-    }
     updateProviderKeyUI();
 }
 
-async function saveProviderKey() {
-    const provider = selectedProvider();
-    const input = document.getElementById('provider-key-input');
+async function saveProviderKey(provider) {
+    if (provider !== 'gemini') {
+        if (window.towerToast) window.towerToast('Coming soon', { type: 'error' });
+        return;
+    }
+    const input = document.getElementById('provider-key-input-gemini');
     const response = await fetch(`/api/provider-keys/${provider}`, {
         method: 'PUT',
         headers: {'Content-Type': 'application/json'},
@@ -510,8 +513,8 @@ async function saveProviderKey() {
     await refreshProviderKeys();
 }
 
-async function deleteProviderKey() {
-    const provider = selectedProvider();
+async function deleteProviderKey(provider) {
+    if (provider !== 'gemini' || !hasUserProviderKey(provider)) return;
     const response = await fetch(`/api/provider-keys/${provider}`, {method: 'DELETE'});
     const data = await response.json();
     if (!response.ok) {
@@ -642,7 +645,7 @@ async function loadRecalls() {
 
 initTimezoneMenu();
 refreshExperientialState();
-refreshProviderKeys(true);
+refreshProviderKeys();
 </script>
 <script>
 async function toggleActivity(target, state) {

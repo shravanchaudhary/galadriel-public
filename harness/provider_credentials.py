@@ -10,6 +10,8 @@ from pymongo import MongoClient
 
 COLLECTION = "provider_credentials"
 SUPPORTED_PROVIDERS = frozenset({"anthropic", "gemini"})
+# Providers users can save BYOM keys for in Tower. Others are Coming Soon.
+BYOM_PROVIDERS = frozenset({"gemini"})
 _sync_db = None
 
 
@@ -51,6 +53,8 @@ def _context(provider: str) -> dict[str, str]:
 
 def put(provider: str, api_key: str, *, kms_client=None, db=None) -> dict:
     provider = _provider(provider)
+    if provider not in BYOM_PROVIDERS:
+        raise ValueError(f"{provider.title()} API keys are coming soon")
     secret = (api_key or "").strip()
     if not secret:
         raise ValueError("API key is required")
