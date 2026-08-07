@@ -3530,6 +3530,19 @@ body.wfc-resizing * { cursor: inherit !important; }
     justify-content: flex-start;
     margin-top: 1rem;
 }
+.devices-install-steps {
+    margin: 1rem 0 0.75rem;
+    padding-left: 1.25rem;
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    line-height: 1.55;
+}
+.devices-install-steps li + li { margin-top: 0.35rem; }
+.devices-install-steps code {
+    font-family: var(--font-mono);
+    font-size: 0.84em;
+}
+.devices-install-notes { margin-top: 0.5rem; }
 .device-status {
     padding: 0.2rem 0.5rem;
     border-radius: 999px;

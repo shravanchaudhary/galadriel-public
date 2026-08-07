@@ -149,15 +149,19 @@ variable "replika_runtime_environment" {
   description = "Approved non-secret settings injected only into tenant runtimes."
   type        = map(string)
   default = {
-    BCE_BASE_URL         = "https://bce-stag.clodexa.com/"
-    BCE_TIMEOUT_MS       = "10000"
-    BROWSER_BACKEND      = "bce"
-    TRAFILATURA_ENDPOINT = "https://o73bnbnsxmhfzx6yjncuyvcmwq0jspde.lambda-url.ap-south-1.on.aws"
+    BCE_BASE_URL               = "https://bce-stag.clodexa.com/"
+    BCE_TIMEOUT_MS             = "10000"
+    BCE_EXTENSION_DOWNLOAD_URL = "https://bce-stag-extension-releases-020571892795.s3.ap-south-1.amazonaws.com/latest.zip"
+    BCE_EXTENSION_VERSIONS_URL = "https://bce-stag-extension-releases-020571892795.s3.ap-south-1.amazonaws.com/index.html"
+    BROWSER_BACKEND            = "bce"
+    TRAFILATURA_ENDPOINT       = "https://o73bnbnsxmhfzx6yjncuyvcmwq0jspde.lambda-url.ap-south-1.on.aws"
   }
   validation {
     condition = length(setsubtract(toset(keys(var.replika_runtime_environment)), toset([
       "BCE_BASE_URL",
       "BCE_TIMEOUT_MS",
+      "BCE_EXTENSION_DOWNLOAD_URL",
+      "BCE_EXTENSION_VERSIONS_URL",
       "BROWSER_BACKEND",
       "TRAFILATURA_ENDPOINT",
     ]))) == 0

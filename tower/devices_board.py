@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 
 from flask import Blueprint, jsonify, redirect, render_template, request
 
@@ -12,6 +13,22 @@ from phone_bridge.auth import current_tenant_id, get_auth_store
 from phone_bridge.device_registry import live_phone_snapshot
 
 log = logging.getLogger("galadriel.tower.devices")
+
+_DEFAULT_EXTENSION_DOWNLOAD_URL = (
+    "https://bce-stag-extension-releases-020571892795.s3.ap-south-1.amazonaws.com/latest.zip"
+)
+_DEFAULT_EXTENSION_VERSIONS_URL = (
+    "https://bce-stag-extension-releases-020571892795.s3.ap-south-1.amazonaws.com/index.html"
+)
+
+
+def _extension_download_urls() -> tuple[str, str]:
+    download = (os.environ.get("BCE_EXTENSION_DOWNLOAD_URL") or "").strip()
+    versions = (os.environ.get("BCE_EXTENSION_VERSIONS_URL") or "").strip()
+    return (
+        download or _DEFAULT_EXTENSION_DOWNLOAD_URL,
+        versions or _DEFAULT_EXTENSION_VERSIONS_URL,
+    )
 
 
 def _browser_payload() -> list[dict]:
@@ -54,10 +71,13 @@ def register_devices_board(app) -> None:
             log.warning("Could not load browser devices: %s", exc)
             browsers = []
             error = str(exc)
+        extension_download_url, extension_versions_url = _extension_download_urls()
         return render_template(
             "devices/browser.html",
             browsers=browsers,
             devices_error=error,
+            extension_download_url=extension_download_url,
+            extension_versions_url=extension_versions_url,
         )
 
     @blueprint.get("/devices/phone")

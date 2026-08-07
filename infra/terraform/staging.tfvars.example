@@ -34,10 +34,12 @@ replika_runtime_provider_secret_arns = {
   TRAFILATURA_API_KEY = "arn:aws:secretsmanager:ap-south-1:ACCOUNT:secret:replika/runtime/trafilatura-api-key"
 }
 replika_runtime_environment = {
-  BCE_BASE_URL         = "https://bce-stag.clodexa.com/"
-  BCE_TIMEOUT_MS       = "10000"
-  BROWSER_BACKEND      = "bce"
-  TRAFILATURA_ENDPOINT = "https://web-fetch.example.internal"
+  BCE_BASE_URL               = "https://bce-stag.clodexa.com/"
+  BCE_TIMEOUT_MS             = "10000"
+  BCE_EXTENSION_DOWNLOAD_URL = "https://bce-stag-extension-releases-ACCOUNT.s3.ap-south-1.amazonaws.com/latest.zip"
+  BCE_EXTENSION_VERSIONS_URL = "https://bce-stag-extension-releases-ACCOUNT.s3.ap-south-1.amazonaws.com/index.html"
+  BROWSER_BACKEND            = "bce"
+  TRAFILATURA_ENDPOINT       = "https://web-fetch.example.internal"
 }
 
 # Existing shared infrastructure Secrets Manager ARNs, never secret values.
