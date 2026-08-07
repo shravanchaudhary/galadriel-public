@@ -3122,17 +3122,16 @@ body.wfc-resizing * { cursor: inherit !important; }
 }
 
 .provider-keys-block {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 0.85rem;
+    align-items: flex-start;
 }
 
 .provider-key-list {
     display: flex;
+    flex: 0 1 36rem;
     flex-direction: column;
     gap: 0.65rem;
-    width: 100%;
-    max-width: 40rem;
+    width: min(100%, 36rem);
+    margin-left: auto;
 }
 
 .provider-key-item {
