@@ -15,10 +15,10 @@ from phone_bridge.device_registry import live_phone_snapshot
 log = logging.getLogger("galadriel.tower.devices")
 
 _DEFAULT_EXTENSION_DOWNLOAD_URL = (
-    "https://bce-stag-extension-releases-020571892795.s3.ap-south-1.amazonaws.com/latest.zip"
+    "https://bce-extension-releases-020571892795.s3.ap-south-1.amazonaws.com/latest.zip"
 )
 _DEFAULT_EXTENSION_VERSIONS_URL = (
-    "https://bce-stag-extension-releases-020571892795.s3.ap-south-1.amazonaws.com/index.html"
+    "https://bce-extension-releases-020571892795.s3.ap-south-1.amazonaws.com/index.html"
 )
 
 

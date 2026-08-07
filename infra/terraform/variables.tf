@@ -151,8 +151,8 @@ variable "replika_runtime_environment" {
   default = {
     BCE_BASE_URL               = "https://bce-stag.clodexa.com/"
     BCE_TIMEOUT_MS             = "10000"
-    BCE_EXTENSION_DOWNLOAD_URL = "https://bce-stag-extension-releases-020571892795.s3.ap-south-1.amazonaws.com/latest.zip"
-    BCE_EXTENSION_VERSIONS_URL = "https://bce-stag-extension-releases-020571892795.s3.ap-south-1.amazonaws.com/index.html"
+    BCE_EXTENSION_DOWNLOAD_URL = "https://bce-extension-releases-020571892795.s3.ap-south-1.amazonaws.com/latest.zip"
+    BCE_EXTENSION_VERSIONS_URL = "https://bce-extension-releases-020571892795.s3.ap-south-1.amazonaws.com/index.html"
     BROWSER_BACKEND            = "bce"
     TRAFILATURA_ENDPOINT       = "https://o73bnbnsxmhfzx6yjncuyvcmwq0jspde.lambda-url.ap-south-1.on.aws"
   }
