@@ -1655,9 +1655,8 @@ class GaladrielAgent:
         # user_message is appended untouched, so the daily log records the real
         # message exactly once — compaction never double-logs. Context size is
         # managed solely by compaction (no routine message-count trim).
-        from .recall import fetch_all_recalls, scan_text_for_recalls, generate_nudge, async_get_semantic_threshold
+        from .recall import fetch_all_recalls, scan_text_for_recalls, generate_nudge
         active_recalls = await fetch_all_recalls()
-        global_threshold = await async_get_semantic_threshold(0.80)
         # Buffer-scoped: same set across turns until /new or summarization.
         notified_recall_ids = self._notified_recall_ids.setdefault(channel_id, set())
         turn_matched_recalls = []
@@ -1668,7 +1667,7 @@ class GaladrielAgent:
                 for m in messages
                 if isinstance(m, dict) and (m.get("kind") == "nudge" or m.get("is_nudge"))
             ]
-            matched = scan_text_for_recalls(user_message, active_recalls, exclude_texts=exclude_texts, force_threshold=global_threshold)
+            matched = scan_text_for_recalls(user_message, active_recalls, exclude_texts=exclude_texts)
             for m in matched:
                 if m not in turn_matched_recalls:
                     turn_matched_recalls.append(m)
@@ -1702,7 +1701,10 @@ class GaladrielAgent:
                             "recall_id": m.get("recall_id"),
                             "channel_id": channel_id,
                             "timestamp": datetime.now(timezone.utc),
-                            "score": m.get("similarity_score", 0.0),
+                            "positive_score": m.get("positive_score", 0.0),
+                            "negative_score": m.get("negative_score"),
+                            "match_source": m.get("match_source"),
+                            "lexical_cue": m.get("lexical_cue"),
                             "text_scanned": user_message[:500] if isinstance(user_message, str) else ""
                         })
                 except Exception as e:
@@ -1969,9 +1971,12 @@ class GaladrielAgent:
                     for m in messages
                     if isinstance(m, dict) and (m.get("kind") == "nudge" or m.get("is_nudge"))
                 ]
-                matched = scan_text_for_recalls(text_to_scan, active_recalls, exclude_texts=exclude_texts, force_threshold=global_threshold)
+                matched = scan_text_for_recalls(text_to_scan, active_recalls, exclude_texts=exclude_texts)
                 if matched:
-                    log.debug(f"[Recall Check] Raw matches found: {[(m.get('recall_id'), round(m.get('similarity_score', 0.0), 3)) for m in matched]}")
+                    log.debug(
+                        f"[Recall Check] Raw matches found: "
+                        f"{[(m.get('recall_id'), m.get('match_source'), round(m.get('positive_score', 0.0), 3), m.get('negative_score')) for m in matched]}"
+                    )
                 else:
                     log.debug(f"[Recall Check] No raw matches found.")
 
@@ -2039,7 +2044,10 @@ class GaladrielAgent:
                                     "recall_id": m.get("recall_id"),
                                     "channel_id": channel_id,
                                     "timestamp": datetime.now(timezone.utc),
-                                    "score": m.get("similarity_score", 0.0),
+                                    "positive_score": m.get("positive_score", 0.0),
+                                    "negative_score": m.get("negative_score"),
+                                    "match_source": m.get("match_source"),
+                                    "lexical_cue": m.get("lexical_cue"),
                                     "text_scanned": text_to_scan[:500]  # truncate just in case
                                 })
                         except Exception as e:
@@ -2424,7 +2432,10 @@ class GaladrielAgent:
                                     "recall_id": m.get("recall_id"),
                                     "channel_id": channel_id,
                                     "timestamp": datetime.now(timezone.utc),
-                                    "score": m.get("similarity_score", 0.0),
+                                    "positive_score": m.get("positive_score", 0.0),
+                                    "negative_score": m.get("negative_score"),
+                                    "match_source": m.get("match_source"),
+                                    "lexical_cue": m.get("lexical_cue"),
                                     "text_scanned": text_to_scan[:500]  # truncate just in case
                                 })
                         except Exception as e:

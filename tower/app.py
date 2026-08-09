@@ -844,24 +844,9 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
     @app.route("/api/recalls", methods=["GET"])
     def api_get_recalls():
         from harness.recall import fetch_all_recalls
-        from harness.tower_settings import get_semantic_threshold
         try:
             recalls = _run_async(fetch_all_recalls())
-            threshold = get_semantic_threshold(0.80)
-            return jsonify({"status": "ok", "recalls": recalls, "threshold": threshold})
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
-
-    @app.route("/api/recalls/threshold", methods=["POST"])
-    def api_set_threshold():
-        data = request.json or {}
-        val = data.get("threshold")
-        if val is None:
-            return jsonify({"error": "threshold is required"}), 400
-        from harness.tower_settings import set_semantic_threshold
-        try:
-            saved = set_semantic_threshold(float(val))
-            return jsonify({"status": "ok", "threshold": saved})
+            return jsonify({"status": "ok", "recalls": recalls})
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
@@ -887,18 +872,12 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
         data = request.json or {}
         text = data.get("text", "")
         model = data.get("model", "fastembed")
-        threshold = data.get("threshold")
-        try:
-            if threshold is not None:
-                threshold = float(threshold)
-        except (ValueError, TypeError):
-            threshold = None
             
         from harness.recall import fetch_all_recalls, scan_text_for_recalls
         
         async def _test():
             recalls = await fetch_all_recalls()
-            matches = scan_text_for_recalls(text, recalls, force_encoder_type=model, force_threshold=threshold)
+            matches = scan_text_for_recalls(text, recalls, force_encoder_type=model)
             # Remove mongo objects or make serializable
             res = []
             for m in matches:
@@ -913,7 +892,6 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
             return jsonify({"status": "ok", "matches": matches})
         except Exception as e:
             return jsonify({"status": "error", "error": str(e)}), 500
-
     @app.route("/api/recalls/<recall_id>/toggle", methods=["POST"])
     def api_toggle_recall(recall_id):
         from harness.db_ops import get_db
@@ -947,17 +925,18 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
         from pathlib import Path
         
         data = request.json or {}
-        positive = [x.strip() for x in data.get("positive_examples", []) if x.strip()]
-        negative = [x.strip() for x in data.get("negative_examples", []) if x.strip()]
-        
-        threshold_val = data.get("threshold")
-        if threshold_val is not None and str(threshold_val).strip() != "":
-            try:
-                threshold_val = float(threshold_val)
-            except ValueError:
-                threshold_val = None
-        else:
-            threshold_val = None
+        from harness.recall import normalize_lexical_cue
+        positive = [x.strip() for x in data.get("positive_examples", []) if isinstance(x, str) and x.strip()]
+        negative = [x.strip() for x in data.get("negative_examples", []) if isinstance(x, str) and x.strip()]
+        lexical = []
+        seen_lex = set()
+        for x in data.get("lexical_cues", []) or []:
+            if not isinstance(x, str):
+                continue
+            cue = normalize_lexical_cue(x)
+            if cue and cue not in seen_lex:
+                seen_lex.add(cue)
+                lexical.append(cue)
         
         async def _update():
             config_path = Path("config/system_recalls.json")
@@ -970,10 +949,8 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
                     if r.get("recall_id") == recall_id:
                         r["positive_examples"] = positive
                         r["negative_examples"] = negative
-                        if threshold_val is not None:
-                            r["threshold"] = threshold_val
-                        else:
-                            r.pop("threshold", None)
+                        r["lexical_cues"] = lexical
+                        r.pop("threshold", None)
                         updated = True
                         break
                 
@@ -981,11 +958,8 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
                     with open(config_path, "w", encoding="utf-8") as f:
                         json.dump(sys_recalls, f, indent=4)
                     
-                    # Refresh the router cache
                     from harness.recall import fetch_all_recalls, get_semantic_router
-                    from harness.tower_settings import get_semantic_threshold
-                    all_recalls = await fetch_all_recalls()
-                    get_semantic_router(all_recalls, force_threshold=get_semantic_threshold(0.80), force_reload=True)
+                    get_semantic_router(await fetch_all_recalls(), force_reload=True)
                     return jsonify({"status": "ok", "source": "system"})
             
             db = get_db()
@@ -998,31 +972,23 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
                 if not doc:
                     return jsonify({"error": "Recall not found"}), 404
                 
-                update_fields = {"positive_examples": positive, "negative_examples": negative}
-                unset_fields = {}
-                if threshold_val is not None:
-                    update_fields["threshold"] = threshold_val
-                else:
-                    unset_fields["threshold"] = ""
-                
-                update_op = {"$set": update_fields}
-                if unset_fields:
-                    update_op["$unset"] = unset_fields
-                    
                 await coll.update_one(
-                    {"_id": ObjectId(recall_id)}, 
-                    update_op
+                    {"_id": ObjectId(recall_id)},
+                    {
+                        "$set": {
+                            "positive_examples": positive,
+                            "negative_examples": negative,
+                            "lexical_cues": lexical,
+                        },
+                        "$unset": {"threshold": ""},
+                    },
                 )
                 
-                # Refresh the router cache
                 from harness.recall import fetch_all_recalls, get_semantic_router
-                from harness.tower_settings import get_semantic_threshold
-                all_recalls = await fetch_all_recalls()
-                get_semantic_router(all_recalls, force_threshold=get_semantic_threshold(0.80), force_reload=True)
+                get_semantic_router(await fetch_all_recalls(), force_reload=True)
                 return jsonify({"status": "ok", "source": "user"})
             except Exception as e:
                 return jsonify({"error": str(e)}), 500
-
         try:
             return _run_async(_update())
         except Exception as e:

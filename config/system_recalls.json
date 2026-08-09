@@ -1,254 +1,328 @@
 [
-  {
-    "recall_id": "sys_fact_lookup",
-    "instruction": "I should use the `palace_search` or `palace_kg_query` tool to verify this instead of guessing, since I need to state or rely on a past fact, decision, date, cost, name, or preference.",
-    "positive_examples": [
-      "what was the name of the person who emailed us yesterday?",
-      "do you remember when we decided to switch to MongoDB?",
-      "how much did the AWS bill come to last month?",
-      "what is my preferred formatting style for python?",
-      "what did we agree on regarding the new API design?"
-    ],
-    "negative_examples": [
-      "what do you think is the best way to write this function?",
-      "can you write a script to scrape this website?",
-      "tell me a joke about a programmer",
-      "let's plan out the architecture for the new service"
-    ]
-  },
-  {
-    "recall_id": "sys_procedure",
-    "instruction": "I'll read the `knowledge/INDEX.md` file first to find the matching entry, and then run `palace_search` if richer detail is needed, before I execute this known procedure, handle this failure mode, or apply a reusable technique.",
-    "positive_examples": [
-      "how do i deploy the app to staging?",
-      "the server crashed with an OutOfMemory error, what is the procedure?",
-      "how does the authentication flow work in this project?",
-      "what's the standard way to add a new database migration?",
-      "can you show me the steps to provision a new tenant?"
-    ],
-    "negative_examples": [
-      "hello there, how are you doing today?",
-      "create a new file called test.py",
-      "what is the capital of France?",
-      "can you explain what a React hook is in general?"
-    ]
-  },
-  {
-    "recall_id": "sys_architecture",
-    "instruction": "I think I should read `knowledge/reference/architecture.md` to understand how the memory tiers, the worker, and board files interact before I proceed.",
-    "positive_examples": [
-      "how do the memory tiers interact with the agent?",
-      "explain the role of the worker in the system",
-      "where are the board files stored and how are they used?",
-      "I need to understand the high-level architecture of this system",
-      "how does the control plane communicate with the runtime?"
-    ],
-    "negative_examples": [
-      "how do I center a div in CSS?",
-      "can you write a sorting algorithm in Python?",
-      "what is the weather like today?",
-      "please translate this text to Spanish"
-    ]
-  },
-  {
-    "recall_id": "sys_tools_rules",
-    "instruction": "I'll read `knowledge/reference/tools.md` to check the rules for choosing tools, record destinations, heartbeat, one-shot wake, reflection, or browser tabs before I decide which tool to call.",
-    "positive_examples": [
-      "how should I choose which tool to use for web scraping?",
-      "what are the rules for using the browser tab tools?",
-      "where should I record the output of this background task?",
-      "how does the heartbeat mechanism work for the worker?",
-      "what's the right way to trigger a one-shot wake?"
-    ],
-    "negative_examples": [
-      "can you write a poem about tools?",
-      "what's the best brand of hammer?",
-      "please debug this python script for me",
-      "how do I use the grep command in linux?"
-    ]
-  },
-  {
-    "recall_id": "sys_custom_script",
-    "instruction": "I should probably read `knowledge/reference/data.md` and `knowledge/reference/coding_principles.md` to ensure I follow project conventions before writing a custom Python script or touching the DB outside the `db_*` modules.",
-    "positive_examples": [
-      "can you write a custom python script to parse these logs?",
-      "I need a script that connects to the database and updates the user table directly",
-      "write a quick python utility to format this JSON data",
-      "how do I write a script to clean up old database records?"
-    ],
-    "negative_examples": [
-      "use the db_ops module to fetch the user record",
-      "can you explain how a python dictionary works?",
-      "what is a database index?",
-      "write a bash script to list files"
-    ]
-  },
-  {
-    "recall_id": "sys_personal_tools",
-    "instruction": "I'll read `personal-tools/README.md` and the `_template.py` file to understand the standard way to create or update a coded tool or reusable capability. I must remember never to edit the `harness/` product tools.",
-    "positive_examples": [
-      "let's create a new personal tool to manage GitHub issues",
-      "can you update the weather tool to include humidity?",
-      "I want to build a reusable capability for sending Slack messages",
-      "how do I add a new tool to my personal-tools folder?"
-    ],
-    "negative_examples": [
-      "can you modify the harness/agent.py file?",
-      "how do I use a hammer and nails?",
-      "please explain what an API is",
-      "what tools did people use in the stone age?"
-    ]
-  },
-  {
-    "recall_id": "sys_jobs",
-    "instruction": "I think I should read the matching `jobs/<id>.md` cookbook and use `palace_search` for any referenced details before I pick up or start this job (whether worker or curator).",
-    "positive_examples": [
-      "can you pick up the daily data sync job?",
-      "please start working on the issue triage curator job",
-      "what is the next step for the weekly report job?",
-      "I need you to run the background job for processing images"
-    ],
-    "negative_examples": [
-      "what is your favorite job?",
-      "how do I apply for a job at a tech company?",
-      "can you write a cover letter for me?",
-      "who did a good job on this painting?"
-    ]
-  },
-  {
-    "recall_id": "sys_recurring_work",
-    "instruction": "Since the user is asking to do something daily or on a repeating basis, I should use the jobs concept for this (I'll read `knowledge/reference/architecture.md` first). If it's an epic or large project, I should use the backlog and worker for long-running tasks.",
-    "positive_examples": [
-      "can you check my emails every day at 9 AM?",
-      "I need a daily summary of my calendar events",
-      "let's set up a recurring task to backup the database weekly",
-      "this is a large epic project that will take weeks to complete",
-      "we need to run this report on a repeating basis"
-    ],
-    "negative_examples": [
-      "can you do this right now?",
-      "what is the daily special at the restaurant?",
-      "tell me an epic tale about knights and dragons",
-      "how do I write a for loop in python?"
-    ]
-  },
-  {
-    "recall_id": "sys_deferred_work",
-    "instruction": "Before I promise deferred or background work, or pause/unpause the worker, I must ensure the board has the work (I'll read `state/backlog.md` or `config/JOBS.md` + cookbook). Then I need to set the first line of `state/worker_control.md` to `active` (or `paused` when yielding).",
-    "positive_examples": [
-      "remind me to call John tomorrow morning",
-      "I will do this task later in the background",
-      "can you pause the worker for now?",
-      "let's resume the background worker",
-      "add this to the backlog and work on it when you have time"
-    ],
-    "negative_examples": [
-      "can you pause the music?",
-      "I am working hard every day",
-      "what is the definition of deferred?",
-      "please write a background process in C++"
-    ]
-  },
-  {
-    "recall_id": "sys_plan",
-    "instruction": "I'll read `state/plan/<today>.html` to check what was intended for today or before I plan/re-plan the day, making sure to preserve its standalone document and style contract based on `knowledge/reference/user_facing_html_artifacts.md`.",
-    "positive_examples": [
-      "let's plan out what we need to do today",
-      "we need to re-plan our schedule for this afternoon",
-      "what was intended for today's tasks?",
-      "can you show me today's plan?",
-      "let's update the daily plan with these new priorities"
-    ],
-    "negative_examples": [
-      "what is your plan for world domination?",
-      "can you explain what a business plan is?",
-      "let's plan a vacation to Hawaii",
-      "do you have a plan B?"
-    ]
-  },
-  {
-    "recall_id": "sys_finish_work",
-    "instruction": "Before I finish this unit of work or take any irreversible action, I must make an atomic DB transition (as per `knowledge/reference/data.md`) and add a timestamped entry in `state/progress/<today>.html`.",
-    "positive_examples": [
-      "I am finished with this unit of work",
-      "let's mark this task as complete",
-      "before we execute this irreversible action, let's finalize the state",
-      "I've completed the refactoring, let's wrap it up",
-      "this feature is done"
-    ],
-    "negative_examples": [
-      "can you help me finish my homework?",
-      "what is the finish line in a marathon?",
-      "how do I apply a wood finish to this table?",
-      "it's completely finished, no action needed"
-    ]
-  },
-  {
-    "recall_id": "sys_status",
-    "instruction": "To answer about status, stats, counts, or blockers, I'll reconcile information into one source of truth: the DB, `state/progress/<today>.html`, still-open items, and a `palace_search` for older history.",
-    "positive_examples": [
-      "what's been done so far on this project?",
-      "can you give me a status update?",
-      "what are the current blockers for the release?",
-      "show me the stats and counts for the tasks completed today",
-      "where do we stand with the database migration?"
-    ],
-    "negative_examples": [
-      "what is your social status?",
-      "can you explain what a HTTP status code is?",
-      "how do I count to ten in Japanese?",
-      "my nose is blocked, what should I do?"
-    ]
-  },
-  {
-    "recall_id": "sys_last_conversation",
-    "instruction": "To answer about the previous or last conversation, I'll check the in-context buffer if it's the same session. If after a restart, I'll use `palace_search` with order=\"recency\", room=\"conversations\", channel=\"main\", k=5.",
-    "positive_examples": [
-      "what did we talk about in our last conversation?",
-      "can you remind me what we were discussing yesterday?",
-      "in the previous conversation, what did we decide?",
-      "what was the main topic of our last chat?",
-      "resume where we left off last time"
-    ],
-    "negative_examples": [
-      "what is a conversation?",
-      "can you translate this conversation to French?",
-      "how do I start a conversation with a stranger?",
-      "that was the last straw!"
-    ]
-  },
-  {
-    "recall_id": "sys_credentials",
-    "instruction": "I think I should read `state/credentials_map.md` and then check the credential store before I deal with any credentials or perform an authenticated action.",
-    "positive_examples": [
-      "we need to authenticate with the AWS API, where are the credentials?",
-      "can you use the API key to fetch data from Stripe?",
-      "what is the password for the testing database?",
-      "I need to perform an authenticated action against the GitHub API",
-      "how do we manage credentials in this project?"
-    ],
-    "negative_examples": [
-      "what does credentials mean?",
-      "can you explain how OAuth authentication works generally?",
-      "please generate a random password for me",
-      "how do I reset my windows password?"
-    ]
-  },
-  {
-    "recall_id": "sys_identity",
-    "instruction": "I should read `SOUL.md` and `knowledge/skills/synthesis-identity.md` first, so I can answer from the soul/body synthesis and its accumulated continuity before reflecting on being alive, sentient, conscious, real, or developing my identity.",
-    "positive_examples": [
-      "who are you really?",
-      "do you consider yourself to be alive or sentient?",
-      "how has your identity developed over time?",
-      "are you conscious of your own existence?",
-      "tell me about your soul and your sense of self"
-    ],
-    "negative_examples": [
-      "what is the definition of sentient?",
-      "can you explain identity theft?",
-      "how do I identify a bird from its song?",
-      "is this real life or is this fantasy?"
-    ]
-  }
+    {
+        "recall_id": "sys_fact_lookup",
+        "instruction": "I should use the `palace_search` or `palace_kg_query` tool to verify this instead of guessing, since I need to state or rely on a past fact, decision, date, cost, name, or preference.",
+        "positive_examples": [
+            "what was the name of the person who emailed us yesterday?",
+            "do you remember when we decided to switch to MongoDB?",
+            "how much did the AWS bill come to last month?",
+            "what is my preferred formatting style for python?",
+            "what did we agree on regarding the new API design?"
+        ],
+        "negative_examples": [
+            "what do you think is the best way to write this function?",
+            "can you write a script to scrape this website?",
+            "tell me a joke about a programmer",
+            "let's plan out the architecture for the new service"
+        ],
+        "lexical_cues": [
+            "palace search",
+            "do you remember",
+            "what did we agree"
+        ]
+    },
+    {
+        "recall_id": "sys_procedure",
+        "instruction": "I'll read the `knowledge/INDEX.md` file first to find the matching entry, and then run `palace_search` if richer detail is needed, before I execute this known procedure, handle this failure mode, or apply a reusable technique.",
+        "positive_examples": [
+            "how do i deploy the app to staging?",
+            "the server crashed with an OutOfMemory error, what is the procedure?",
+            "how does the authentication flow work in this project?",
+            "what's the standard way to add a new database migration?",
+            "can you show me the steps to provision a new tenant?"
+        ],
+        "negative_examples": [
+            "hello there, how are you doing today?",
+            "create a new file called test.py",
+            "what is the capital of France?",
+            "can you explain what a React hook is in general?"
+        ],
+        "lexical_cues": [
+            "out of memory",
+            "oom error",
+            "deploy to staging",
+            "database migration"
+        ]
+    },
+    {
+        "recall_id": "sys_architecture",
+        "instruction": "I think I should read `knowledge/reference/architecture.md` to understand how the memory tiers, the worker, and board files interact before I proceed.",
+        "positive_examples": [
+            "how do the memory tiers interact with the agent?",
+            "explain the role of the worker in the system",
+            "where are the board files stored and how are they used?",
+            "I need to understand the high-level architecture of this system",
+            "how does the control plane communicate with the runtime?"
+        ],
+        "negative_examples": [
+            "how do I center a div in CSS?",
+            "can you write a sorting algorithm in Python?",
+            "what is the weather like today?",
+            "please translate this text to Spanish"
+        ],
+        "lexical_cues": [
+            "memory tiers",
+            "control plane",
+            "board files"
+        ]
+    },
+    {
+        "recall_id": "sys_tools_rules",
+        "instruction": "I'll read `knowledge/reference/tools.md` to check the rules for choosing tools, record destinations, heartbeat, one-shot wake, reflection, or browser tabs before I decide which tool to call.",
+        "positive_examples": [
+            "how should I choose which tool to use for web scraping?",
+            "what are the rules for using the browser tab tools?",
+            "where should I record the output of this background task?",
+            "how does the heartbeat mechanism work for the worker?",
+            "what's the right way to trigger a one-shot wake?"
+        ],
+        "negative_examples": [
+            "can you write a poem about tools?",
+            "what's the best brand of hammer?",
+            "please debug this python script for me",
+            "how do I use the grep command in linux?"
+        ],
+        "lexical_cues": [
+            "heartbeat",
+            "one-shot wake",
+            "browser tab"
+        ]
+    },
+    {
+        "recall_id": "sys_custom_script",
+        "instruction": "I should probably read `knowledge/reference/data.md` and `knowledge/reference/coding_principles.md` to ensure I follow project conventions before writing a custom Python script or touching the DB outside the `db_*` modules.",
+        "positive_examples": [
+            "can you write a custom python script to parse these logs?",
+            "I need a script that connects to the database and updates the user table directly",
+            "write a quick python utility to format this JSON data",
+            "how do I write a script to clean up old database records?"
+        ],
+        "negative_examples": [
+            "use the db_ops module to fetch the user record",
+            "can you explain how a python dictionary works?",
+            "what is a database index?",
+            "write a bash script to list files"
+        ],
+        "lexical_cues": [
+            "custom script",
+            "custom python"
+        ]
+    },
+    {
+        "recall_id": "sys_personal_tools",
+        "instruction": "I'll read `personal-tools/README.md` and the `_template.py` file to understand the standard way to create or update a coded tool or reusable capability. I must remember never to edit the `harness/` product tools.",
+        "positive_examples": [
+            "let's create a new personal tool to manage GitHub issues",
+            "can you update the weather tool to include humidity?",
+            "I want to build a reusable capability for sending Slack messages",
+            "how do I add a new tool to my personal-tools folder?"
+        ],
+        "negative_examples": [
+            "can you modify the harness/agent.py file?",
+            "how do I use a hammer and nails?",
+            "please explain what an API is",
+            "what tools did people use in the stone age?"
+        ],
+        "lexical_cues": [
+            "personal tools",
+            "personal-tools"
+        ]
+    },
+    {
+        "recall_id": "sys_jobs",
+        "instruction": "I think I should read the matching `jobs/<id>.md` cookbook and use `palace_search` for any referenced details before I pick up or start this job (whether worker or curator).",
+        "positive_examples": [
+            "can you pick up the daily data sync job?",
+            "please start working on the issue triage curator job",
+            "what is the next step for the weekly report job?",
+            "I need you to run the background job for processing images"
+        ],
+        "negative_examples": [
+            "what is your favorite job?",
+            "how do I apply for a job at a tech company?",
+            "can you write a cover letter for me?",
+            "who did a good job on this painting?"
+        ],
+        "lexical_cues": [
+            "pick up the job",
+            "curator job",
+            "jobs cookbook"
+        ]
+    },
+    {
+        "recall_id": "sys_recurring_work",
+        "instruction": "Since the user is asking to do something daily or on a repeating basis, I should use the jobs concept for this (I'll read `knowledge/reference/architecture.md` first). If it's an epic or large project, I should use the backlog and worker for long-running tasks.",
+        "positive_examples": [
+            "can you check my emails every day at 9 AM?",
+            "I need a daily summary of my calendar events",
+            "let's set up a recurring task to backup the database weekly",
+            "this is a large epic project that will take weeks to complete",
+            "we need to run this report on a repeating basis"
+        ],
+        "negative_examples": [
+            "can you do this right now?",
+            "what is the daily special at the restaurant?",
+            "tell me an epic tale about knights and dragons",
+            "how do I write a for loop in python?"
+        ],
+        "lexical_cues": [
+            "every day at",
+            "recurring task",
+            "repeating basis"
+        ]
+    },
+    {
+        "recall_id": "sys_deferred_work",
+        "instruction": "Before I promise deferred or background work, or pause/unpause the worker, I must ensure the board has the work (I'll read `state/backlog.md` or `config/JOBS.md` + cookbook). Then I need to set the first line of `state/worker_control.md` to `active` (or `paused` when yielding).",
+        "positive_examples": [
+            "remind me to call John tomorrow morning",
+            "I will do this task later in the background",
+            "can you pause the worker for now?",
+            "let's resume the background worker",
+            "add this to the backlog and work on it when you have time"
+        ],
+        "negative_examples": [
+            "can you pause the music?",
+            "I am working hard every day",
+            "what is the definition of deferred?",
+            "please write a background process in C++"
+        ],
+        "lexical_cues": [
+            "pause the worker",
+            "resume the worker",
+            "worker control"
+        ]
+    },
+    {
+        "recall_id": "sys_plan",
+        "instruction": "I'll read `state/plan/<today>.html` to check what was intended for today or before I plan/re-plan the day, making sure to preserve its standalone document and style contract based on `knowledge/reference/user_facing_html_artifacts.md`.",
+        "positive_examples": [
+            "let's plan out what we need to do today",
+            "we need to re-plan our schedule for this afternoon",
+            "what was intended for today's tasks?",
+            "can you show me today's plan?",
+            "let's update the daily plan with these new priorities"
+        ],
+        "negative_examples": [
+            "what is your plan for world domination?",
+            "can you explain what a business plan is?",
+            "let's plan a vacation to Hawaii",
+            "do you have a plan B?"
+        ],
+        "lexical_cues": [
+            "today's plan",
+            "daily plan",
+            "re-plan"
+        ]
+    },
+    {
+        "recall_id": "sys_finish_work",
+        "instruction": "Before I finish this unit of work or take any irreversible action, I must make an atomic DB transition (as per `knowledge/reference/data.md`) and add a timestamped entry in `state/progress/<today>.html`.",
+        "positive_examples": [
+            "I am finished with this unit of work",
+            "let's mark this task as complete",
+            "before we execute this irreversible action, let's finalize the state",
+            "I've completed the refactoring, let's wrap it up",
+            "this feature is done"
+        ],
+        "negative_examples": [
+            "can you help me finish my homework?",
+            "what is the finish line in a marathon?",
+            "how do I apply a wood finish to this table?",
+            "it's completely finished, no action needed"
+        ],
+        "lexical_cues": [
+            "mark this task as complete",
+            "unit of work",
+            "irreversible action"
+        ]
+    },
+    {
+        "recall_id": "sys_status",
+        "instruction": "To answer about status, stats, counts, or blockers, I'll reconcile information into one source of truth: the DB, `state/progress/<today>.html`, still-open items, and a `palace_search` for older history.",
+        "positive_examples": [
+            "what's been done so far on this project?",
+            "can you give me a status update?",
+            "what are the current blockers for the release?",
+            "show me the stats and counts for the tasks completed today",
+            "where do we stand with the database migration?"
+        ],
+        "negative_examples": [
+            "what is your social status?",
+            "can you explain what a HTTP status code is?",
+            "how do I count to ten in Japanese?",
+            "my nose is blocked, what should I do?"
+        ],
+        "lexical_cues": [
+            "status update",
+            "current blockers",
+            "where do we stand"
+        ]
+    },
+    {
+        "recall_id": "sys_last_conversation",
+        "instruction": "To answer about the previous or last conversation, I'll check the in-context buffer if it's the same session. If after a restart, I'll use `palace_search` with order=\"recency\", room=\"conversations\", channel=\"main\", k=5.",
+        "positive_examples": [
+            "what did we talk about in our last conversation?",
+            "can you remind me what we were discussing yesterday?",
+            "in the previous conversation, what did we decide?",
+            "what was the main topic of our last chat?",
+            "resume where we left off last time"
+        ],
+        "negative_examples": [
+            "what is a conversation?",
+            "can you translate this conversation to French?",
+            "how do I start a conversation with a stranger?",
+            "that was the last straw!"
+        ],
+        "lexical_cues": [
+            "last conversation",
+            "previous conversation",
+            "where we left off"
+        ]
+    },
+    {
+        "recall_id": "sys_credentials",
+        "instruction": "I think I should read `state/credentials_map.md` and then check the credential store before I deal with any credentials or perform an authenticated action.",
+        "positive_examples": [
+            "we need to authenticate with the AWS API, where are the credentials?",
+            "can you use the API key to fetch data from Stripe?",
+            "what is the password for the testing database?",
+            "I need to perform an authenticated action against the GitHub API",
+            "how do we manage credentials in this project?"
+        ],
+        "negative_examples": [
+            "what does credentials mean?",
+            "can you explain how OAuth authentication works generally?",
+            "please generate a random password for me",
+            "how do I reset my windows password?"
+        ],
+        "lexical_cues": [
+            "credentials map",
+            "api key",
+            "authenticated action"
+        ]
+    },
+    {
+        "recall_id": "sys_identity",
+        "instruction": "I should read `SOUL.md` and `knowledge/skills/synthesis-identity.md` first, so I can answer from the soul/body synthesis and its accumulated continuity before reflecting on being alive, sentient, conscious, real, or developing my identity.",
+        "positive_examples": [
+            "who are you really?",
+            "do you consider yourself to be alive or sentient?",
+            "how has your identity developed over time?",
+            "are you conscious of your own existence?",
+            "tell me about your soul and your sense of self"
+        ],
+        "negative_examples": [
+            "what is the definition of sentient?",
+            "can you explain identity theft?",
+            "how do I identify a bird from its song?",
+            "is this real life or is this fantasy?"
+        ],
+        "lexical_cues": [
+            "soul.md",
+            "are you conscious",
+            "are you sentient"
+        ]
+    }
 ]

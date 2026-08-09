@@ -13,12 +13,12 @@
 <section class="settings-section">
     <div class="settings-section-head">
         <h2 class="settings-section-title">Semantic Recalls</h2>
-        <p class="settings-section-desc">View and manage automated system and user nudges</p>
+        <p class="settings-section-desc">Nudges fire on semantic phrases (score ≥ 0.7) or lexical cues (exact tags). Negatives veto when their score is at least as high as the positive score. Tune with positives, negatives, and lexical cues.</p>
     </div>
     
     <div class="settings-rows" style="margin-bottom: 1rem; border: 1px solid var(--border-subtle); border-radius: 6px; padding: 1rem;">
         <h3 style="margin-top: 0; margin-bottom: 0.5rem; font-size: 0.9rem; color: var(--text-main);">Create New Recall</h3>
-        <p class="settings-row-hint" style="margin-bottom: 0.75rem;">Enter an instruction and the system will auto-generate semantic examples to intercept the agent.</p>
+        <p class="settings-row-hint" style="margin-bottom: 0.75rem;">Enter an instruction; the system auto-generates semantic positives, lexical cues, and negative near-misses.</p>
         <div class="settings-inline-form" style="display: flex; gap: 0.5rem;">
             <input type="text" id="new-recall-instruction" placeholder="e.g. 'Whenever I ask for daily updates, create a recurring job'" style="flex: 1;" autocomplete="off">
             <button type="button" class="btn btn-small" id="create-recall-btn" onclick="createRecall()">Create</button>
@@ -37,7 +37,7 @@
 <section class="settings-section" style="margin-top: 2rem;">
     <div class="settings-section-head">
         <h2 class="settings-section-title">Test Semantic Recalls</h2>
-        <p class="settings-section-desc">Test how the semantic router matches your text against active recalls</p>
+        <p class="settings-section-desc">Test semantic (≥ 0.7) and lexical cue matching; negatives still veto</p>
     </div>
     
     <div class="settings-row" style="flex-direction: column; align-items: flex-start; gap: 0.5rem; margin-bottom: 1rem;">
@@ -46,14 +46,6 @@
             <option value="fastembed">FastEmbed (Local - BAAI/bge-small-en-v1.5)</option>
             <option value="gemini">Gemini (text-embedding-004)</option>
         </select>
-    </div>
-
-    <div class="settings-row" style="flex-direction: column; align-items: flex-start; gap: 0.5rem; margin-bottom: 1rem;">
-        <label for="recall-test-threshold">Score Threshold (0.0 to 1.0) — Applies to real-time matches and tests</label>
-        <div style="display: flex; gap: 0.5rem; align-items: center;">
-            <input type="number" id="recall-test-threshold" step="0.01" min="0" max="1" value="0.70" style="padding: 0.25rem; width: 100px;">
-            <span id="threshold-save-status" style="font-size: 0.8rem; color: var(--success); display: none;">Saved!</span>
-        </div>
     </div>
 
     <div class="settings-row" style="flex-direction: column; align-items: flex-start; gap: 0.5rem;">
@@ -77,10 +69,6 @@ async function loadRecalls() {
         const response = await fetch('/api/recalls');
         const data = await response.json();
         
-        if (data.threshold !== undefined) {
-            document.getElementById('recall-test-threshold').value = data.threshold.toFixed(2);
-        }
-        
         list.innerHTML = '';
         if (data.recalls.length === 0) {
             list.innerHTML = '<div class="settings-list-item"><span class="settings-list-content"><span class="settings-list-title muted">No recalls active.</span></span></div>';
@@ -100,12 +88,7 @@ async function loadRecalls() {
             const instruction = document.createElement('div');
             instruction.className = 'settings-list-title';
             instruction.style.marginBottom = '0.25rem';
-            
-            const badgeHtml = recall.threshold !== undefined && recall.threshold !== null 
-                ? `<span style="font-size: 0.7rem; background: var(--bg-hover); padding: 0.1rem 0.4rem; border-radius: 4px; border: 1px solid var(--border-color); margin-left: 0.5rem; color: var(--text-muted); font-weight: normal; vertical-align: middle;">Threshold: ${recall.threshold.toFixed(2)}</span>`
-                : `<span style="font-size: 0.7rem; background: var(--bg-hover); padding: 0.1rem 0.4rem; border-radius: 4px; border: 1px dashed var(--border-color); margin-left: 0.5rem; color: var(--text-muted); font-weight: normal; vertical-align: middle;">Threshold: Global</span>`;
-                
-            instruction.innerHTML = `<span>${recall.instruction}</span>${badgeHtml}`;
+            instruction.textContent = recall.instruction;
             content.appendChild(instruction);
             
             const examplesDiv = document.createElement('div');
@@ -117,12 +100,16 @@ async function loadRecalls() {
             if (recall.positive_examples && recall.positive_examples.length > 0) {
                 posHtml = `<div style="margin-bottom: 0.25rem; line-height: 1.4;"><span style="color: var(--success); font-weight: 600;">+</span> <span class="muted">${recall.positive_examples.join('<span style="opacity: 0.4; margin: 0 4px;">•</span>')}</span></div>`;
             }
+            let lexHtml = '';
+            if (recall.lexical_cues && recall.lexical_cues.length > 0) {
+                lexHtml = `<div style="margin-bottom: 0.25rem; line-height: 1.4;"><span style="color: var(--text-main); font-weight: 600;">#</span> <span class="muted">${recall.lexical_cues.join('<span style="opacity: 0.4; margin: 0 4px;">•</span>')}</span></div>`;
+            }
             let negHtml = '';
             if (recall.negative_examples && recall.negative_examples.length > 0) {
                 negHtml = `<div style="line-height: 1.4;"><span style="color: var(--danger); font-weight: 600;">-</span> <span class="muted">${recall.negative_examples.join('<span style="opacity: 0.4; margin: 0 4px;">•</span>')}</span></div>`;
             }
             
-            examplesDiv.innerHTML = posHtml + negHtml;
+            examplesDiv.innerHTML = posHtml + lexHtml + negHtml;
             content.appendChild(examplesDiv);
             
             const editForm = document.createElement('div');
@@ -204,10 +191,12 @@ async function loadRecalls() {
             cols.style.gap = '1.5rem';
             cols.style.flexWrap = 'wrap';
             
-            const posEditor = buildEditor('Positive Examples', 'var(--success)', recall.positive_examples || []);
-            const negEditor = buildEditor('Negative Examples', 'var(--danger)', recall.negative_examples || []);
+            const posEditor = buildEditor('Semantic positives', 'var(--success)', recall.positive_examples || []);
+            const lexEditor = buildEditor('Lexical cues', 'var(--text-main)', recall.lexical_cues || []);
+            const negEditor = buildEditor('Negatives (veto)', 'var(--danger)', recall.negative_examples || []);
             
             cols.appendChild(posEditor.el);
+            cols.appendChild(lexEditor.el);
             cols.appendChild(negEditor.el);
             editForm.appendChild(cols);
             
@@ -216,15 +205,7 @@ async function loadRecalls() {
             actionsDiv.style.display = 'flex';
             actionsDiv.style.gap = '0.5rem';
             actionsDiv.style.alignItems = 'center';
-            
-            const threshContainer = document.createElement('div');
-            threshContainer.style.flex = '1';
-            threshContainer.innerHTML = `
-                <label style="font-size: 0.75rem; color: var(--text-muted); margin-right: 0.5rem;">Specific Threshold (optional):</label>
-                <input type="number" class="thresh-input" step="0.01" min="0" max="1" placeholder="e.g. 0.85" value="${recall.threshold !== undefined && recall.threshold !== null ? recall.threshold : ''}" style="width: 80px; padding: 0.25rem 0.5rem; font-size: 0.8rem; background: var(--bg-primary); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px;">
-                <span class="muted" style="font-size: 0.7rem; margin-left: 0.5rem;">Leave empty to use global default.</span>
-            `;
-            actionsDiv.appendChild(threshContainer);
+            actionsDiv.style.justifyContent = 'flex-end';
             
             const cancelBtn = document.createElement('button');
             cancelBtn.className = 'btn btn-small btn-secondary';
@@ -245,8 +226,8 @@ async function loadRecalls() {
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({
                         positive_examples: posEditor.getValues(),
-                        negative_examples: negEditor.getValues(),
-                        threshold: editForm.querySelector('.thresh-input').value
+                        lexical_cues: lexEditor.getValues(),
+                        negative_examples: negEditor.getValues()
                     })
                 });
                 loadRecalls();
@@ -280,11 +261,7 @@ async function loadRecalls() {
                 toggle.className = `btn btn-small ${recall.enabled === false ? 'btn-secondary' : ''}`;
                 toggle.textContent = recall.enabled === false ? 'Enable' : 'Disable';
                 toggle.onclick = async () => {
-                    await fetch(`/api/recalls/${recall.recall_id}`, {
-                        method: 'PATCH',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({enabled: recall.enabled === false})
-                    });
+                    await fetch(`/api/recalls/${recall.recall_id}/toggle`, {method: 'POST'});
                     loadRecalls();
                 };
                 
@@ -320,11 +297,11 @@ async function createRecall() {
     btn.disabled = true;
     btn.textContent = 'Wait...';
     status.style.display = 'block';
-    status.textContent = 'Generating semantic examples (this takes a moment)...';
+    status.textContent = 'Generating semantic + lexical cues (this takes a moment)...';
     status.style.color = 'var(--text-main)';
     
     try {
-        const response = await fetch('/api/recalls/generate', {
+        const response = await fetch('/api/recalls', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({ instruction })
@@ -353,8 +330,6 @@ async function createRecall() {
 async function testRecalls() {
     const text = document.getElementById('recall-test-text').value.trim();
     const model = document.getElementById('recall-test-model').value;
-    const thresholdStr = document.getElementById('recall-test-threshold').value;
-    const threshold = thresholdStr ? parseFloat(thresholdStr) : 0.70;
     
     const btn = document.getElementById('test-recall-btn');
     const resultsDiv = document.getElementById('recall-test-results');
@@ -371,7 +346,7 @@ async function testRecalls() {
         const response = await fetch('/api/recalls/test', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ text, model, threshold })
+            body: JSON.stringify({ text, model })
         });
         
         const data = await response.json();
@@ -383,13 +358,23 @@ async function testRecalls() {
         if (!data.matches || data.matches.length === 0) {
             matchesDiv.innerHTML = '<span class="muted">No recalls triggered.</span>';
         } else {
-            matchesDiv.innerHTML = data.matches.map(m => `
+            matchesDiv.innerHTML = data.matches.map(m => {
+                const pos = (m.positive_score != null) ? Number(m.positive_score).toFixed(3) : 'n/a';
+                const neg = (m.negative_score != null) ? Number(m.negative_score).toFixed(3) : 'n/a';
+                const src = m.match_source || 'semantic';
+                const cue = m.lexical_cue ? ` · cue “${m.lexical_cue}”` : '';
+                return `
                 <div style="margin-bottom: 0.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border-color);">
-                    <div style="font-weight: 500;">Score: <span style="color: ${m.similarity_score >= threshold ? 'var(--success)' : 'var(--warning)'};">${(m.similarity_score || 0).toFixed(3)}</span></div>
+                    <div style="font-weight: 500;">
+                        ${src}${cue}
+                        &nbsp; Pos: <span style="color: var(--success);">${pos}</span>
+                        &nbsp; Neg: <span style="color: var(--danger);">${neg}</span>
+                    </div>
                     <div style="font-size: 0.9rem;">${m.instruction}</div>
                     <div style="font-family: monospace; font-size: 0.8rem; color: var(--text-muted);">${m.recall_id}</div>
                 </div>
-            `).join('');
+            `;
+            }).join('');
         }
     } catch (e) {
         matchesDiv.innerHTML = `<span style="color: var(--danger)">Error: ${e.message}</span>`;
@@ -401,25 +386,6 @@ async function testRecalls() {
 
 document.addEventListener('DOMContentLoaded', () => {
     loadRecalls();
-    
-    document.getElementById('recall-test-threshold').addEventListener('change', async (e) => {
-        const val = parseFloat(e.target.value);
-        if (isNaN(val)) return;
-        try {
-            const res = await fetch('/api/recalls/threshold', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({threshold: val})
-            });
-            if (res.ok) {
-                const status = document.getElementById('threshold-save-status');
-                status.style.display = 'inline';
-                setTimeout(() => status.style.display = 'none', 2000);
-            }
-        } catch (err) {
-            console.error('Failed to save threshold', err);
-        }
-    });
 });
 </script>
 {% endblock %}

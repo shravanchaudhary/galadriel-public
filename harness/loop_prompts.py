@@ -180,7 +180,7 @@ def reflection_prompt(today: str) -> str:
         "config/GUARDRAILS.md or a RECALL.md trigger row. Time-bound "
         "corrections go to state/steering.md — never dual-write essays into "
         "the stable prompt.\n"
-        "  4. RECALL TUNING: Run `get_recent_nudges` to see if semantic nudges fired. For each nudge, read the surrounding conversation (using memory/palace tools) to gauge if the nudge was genuinely helpful or a false positive. Use `add_recall_example` to file the snippet as a positive/negative example for that recall_id. Once done, run `reconcile_recall_thresholds` to automatically update the trigger sensitivities.\n\n"
+        "  4. RECALL TUNING: Run `get_recent_nudges` to see if semantic/lexical nudges fired. For each nudge, gauge if it was helpful. Use `add_recall_example` with cue_type=positive (semantic miss), negative (false positive veto), or lexical (exact tag/phrase, spaces not underscores). Use `remove_recall_example` with the exact stored text if something was filed wrong. Negatives are live vetoes at match time.\n\n"
         "PART 3 — Audit the worker, reconcile the ledger, steer, and SUMMARIZE. "
         f"Read today's file `state/progress/{today}.html` (if it exists) and the "
         "recent linkedin_profiles DB writes; compare what the worker ACTUALLY did "

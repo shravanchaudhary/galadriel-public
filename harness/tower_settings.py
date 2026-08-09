@@ -17,7 +17,6 @@ WORKER_MODEL_DOC_ID = "worker_model"
 HEADROOM_DOC_ID = "headroom"
 EXPERIENTIAL_STATE_DOC_ID = "experiential_state"
 WORKER_IDLE_DOC_ID = "worker_idle_interval"
-SEMANTIC_THRESHOLD_DOC_ID = "semantic_threshold"
 TIMEZONE_DOC_ID = "agent_timezone"
 # Matches scheduler defaults until the user sets Agent time in Configuration.
 DEFAULT_AGENT_TIMEZONE = "Europe/Stockholm"
@@ -269,36 +268,6 @@ def get_agent_timezone() -> str:
     )
     return _valid_timezone((doc or {}).get("timezone")) or DEFAULT_AGENT_TIMEZONE
 
-
-def get_semantic_threshold(default: float = 0.80) -> float:
-    """Return the persisted semantic score threshold, or default if unset / Mongo unavailable."""
-    db = _db()
-    if db is None:
-        return default
-    try:
-        doc = db[COLLECTION].find_one({"_id": _doc_id(SEMANTIC_THRESHOLD_DOC_ID)})
-        if doc and "threshold" in doc:
-            return float(doc["threshold"])
-    except Exception:
-        pass
-    return default
-
-def set_semantic_threshold(threshold: float) -> float:
-    """Persist the semantic score threshold."""
-    db = _db()
-    if db is None:
-        raise RuntimeError("MONGO_URI / MONGO_DB not configured")
-    db[COLLECTION].replace_one(
-        {"_id": _doc_id(SEMANTIC_THRESHOLD_DOC_ID)},
-        {
-            "_id": _doc_id(SEMANTIC_THRESHOLD_DOC_ID),
-            "tenant_id": _tenant_id(),
-            "threshold": float(threshold),
-            "updated_at": datetime.now(timezone.utc),
-        },
-        upsert=True,
-    )
-    return float(threshold)
 
 def set_agent_timezone(tz_name: str) -> str:
     """Persist the agent timezone. Returns the normalized IANA name."""
