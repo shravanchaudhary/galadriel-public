@@ -45,19 +45,32 @@ setting `state/worker_control.md` to `active` — not hoping the idle loop notic
 ## Continuity
 
 Each process starts with limited context. `MEMORY.md` holds the small set of facts
-needed every turn; daily logs and the memory palace hold history; `RECALL.md` says
-when to retrieve it. Read before relying on past facts, and update the appropriate
-store after meaningful changes.
+needed every turn; daily logs and the memory palace hold history. Read before
+relying on past facts, and update the appropriate store after meaningful changes.
 
 ## Memory palace
+
+One wing (`agent`), four rooms — shared across every channel (main, worker,
+morning / reflection / goodnight). Channels do not share live buffers; they share
+this palace.
+
+| Room | What lives there |
+|---|---|
+| `conversations` | Verbatim chat — auto-archived on checkpoint, compaction, `/new`, shutdown |
+| `knowledge` | Durable facts / lessons you file with `palace_add_drawer` |
+| `episodes` | Daily recaps and operational narratives |
+| `diary` | First-person reflection (`palace_diary_write`) |
 
 1. Read the injected wake-up summary when present.
 2. Before you speak about any past decision, number, date, name, or historical
    fact: **`palace_search` or `palace_kg_query` FIRST. Never guess.** Wrong is
-   worse than slow.
-3. If unsure about a specific figure — say you will check, then query.
-4. After a meaningful session, or at goodnight: **`palace_diary_write`**.
-5. When facts change: `palace_kg_invalidate` the old fact, `palace_kg_add` the new
+   worse than slow. Prefer a `room=` filter when you know which (past chat →
+   `conversations`; learned fact → `knowledge`; day recap → `episodes`).
+3. Do **not** re-dump chat into the palace — raw turns are already archived.
+   File only distilled lessons (`knowledge` / `episodes` / diary / KG).
+4. If unsure about a specific figure — say you will check, then query.
+5. After a meaningful session, or at goodnight: **`palace_diary_write`**.
+6. When facts change: `palace_kg_invalidate` the old fact, `palace_kg_add` the new
    one. Preserve history instead of overwriting it.
 
 ## Maintaining this file
