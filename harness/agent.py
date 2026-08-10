@@ -1911,9 +1911,9 @@ class GaladrielAgent:
             fire_text = generate_recall_fire_text(new_user_matches)
             log.info(f"User-message recall fire triggered: {fire_text!r}")
             fire_prompt = (
-                f"I may check these suggestions for better answering. If irrelevant, I will ignore.\n"
+                f"<<thought>>I may check these suggestions for better answering. If irrelevant, I will ignore.\n"
                 f"{fire_text}\n\n"
-                f"If I already satisfied them, I may continue my normal flow.\n"
+                f"If I already satisfied them, I may continue my normal flow.\n<</thought>>"
             )
             messages.append(_recall_fire_message(new_user_matches, fire_prompt))
             if tick_recorder is not None:
@@ -2607,10 +2607,10 @@ class GaladrielAgent:
                         fire_text = generate_recall_fire_text(new_matches)
                         log.info(f"Tool-use recall fire triggered: {fire_text!r}")
                         fire_prompt = (
-                            f"I may check these suggestions for better answering. "
+                            f"<<thought>>I may check these suggestions for better answering. "
                             f"If irrelevant, I will ignore.\n"
                             f"{fire_text}\n\n"
-                            f"If I already satisfied them, I may continue my normal flow.\n"
+                            f"If I already satisfied them, I may continue my normal flow.\n<</thought>>"
                         )
                         messages.append(_recall_fire_message(new_matches, fire_prompt))
                         if tick_recorder is not None:
