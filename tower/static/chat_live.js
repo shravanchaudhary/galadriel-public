@@ -71,7 +71,7 @@ window.ChatLive = (function () {
     }
 
     function appendThought(delta, turn, opts) {
-        const isNudge = opts && (opts.kind === 'nudge' || opts.is_nudge);
+        const isNudge = opts && (opts.kind === 'nudge' || opts.kind === 'recall_fire' || opts.is_nudge);
         if (!turn.thoughtEl || isNudge) {
             const d = document.createElement('details');
             d.className = 'thought';

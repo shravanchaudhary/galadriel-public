@@ -18,10 +18,26 @@
     
     <div class="settings-rows" style="margin-bottom: 1rem; border: 1px solid var(--border-subtle); border-radius: 6px; padding: 1rem;">
         <h3 style="margin-top: 0; margin-bottom: 0.5rem; font-size: 0.9rem; color: var(--text-main);">Create New Recall</h3>
-        <p class="settings-row-hint" style="margin-bottom: 0.75rem;">Enter an instruction; the system auto-generates semantic positives, lexical cues, and negative near-misses.</p>
-        <div class="settings-inline-form" style="display: flex; gap: 0.5rem;">
-            <input type="text" id="new-recall-instruction" placeholder="e.g. 'Whenever I ask for daily updates, create a recurring job'" style="flex: 1;" autocomplete="off">
-            <button type="button" class="btn btn-small" id="create-recall-btn" onclick="createRecall()">Create</button>
+        <p class="settings-row-hint" style="margin-bottom: 0.75rem;">Supply the instruction plus non-empty positives, negatives, and lexical cues. One cue per line.</p>
+        <div style="display: flex; flex-direction: column; gap: 0.6rem;">
+            <input type="text" id="new-recall-instruction" placeholder="Instruction — e.g. Whenever I ask for daily updates, create a recurring job" autocomplete="off">
+            <div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
+                <label style="flex: 1; min-width: 180px; display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.75rem; font-weight: 600; color: var(--success); text-transform: uppercase;">
+                    Semantic positives
+                    <textarea id="new-recall-positives" rows="3" style="font-weight: 400; text-transform: none; width: 100%; padding: 0.4rem 0.5rem; font-size: 0.85rem; background: var(--bg-primary); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px;" placeholder="One phrase per line"></textarea>
+                </label>
+                <label style="flex: 1; min-width: 180px; display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.75rem; font-weight: 600; color: var(--danger); text-transform: uppercase;">
+                    Negatives (veto)
+                    <textarea id="new-recall-negatives" rows="3" style="font-weight: 400; text-transform: none; width: 100%; padding: 0.4rem 0.5rem; font-size: 0.85rem; background: var(--bg-primary); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px;" placeholder="One near-miss per line"></textarea>
+                </label>
+                <label style="flex: 1; min-width: 180px; display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.75rem; font-weight: 600; color: var(--text-main); text-transform: uppercase;">
+                    Lexical cues
+                    <textarea id="new-recall-lexical" rows="3" style="font-weight: 400; text-transform: none; width: 100%; padding: 0.4rem 0.5rem; font-size: 0.85rem; background: var(--bg-primary); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px;" placeholder="One exact cue per line"></textarea>
+                </label>
+            </div>
+            <div style="display: flex; justify-content: flex-end;">
+                <button type="button" class="btn btn-small" id="create-recall-btn" onclick="createRecall()">Create</button>
+            </div>
         </div>
         <div id="create-recall-status" class="settings-row-hint" style="margin-top: 0.5rem; display: none;"></div>
     </div>
@@ -221,16 +237,26 @@ async function loadRecalls() {
             saveBtn.onclick = async () => {
                 saveBtn.disabled = true;
                 saveBtn.textContent = 'Saving...';
-                await fetch(`/api/recalls/${recall.recall_id}/examples`, {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
-                        positive_examples: posEditor.getValues(),
-                        lexical_cues: lexEditor.getValues(),
-                        negative_examples: negEditor.getValues()
-                    })
-                });
-                loadRecalls();
+                try {
+                    const response = await fetch(`/api/recalls/${recall.recall_id}/examples`, {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({
+                            positive_examples: posEditor.getValues(),
+                            lexical_cues: lexEditor.getValues(),
+                            negative_examples: negEditor.getValues()
+                        })
+                    });
+                    const data = await response.json();
+                    if (!response.ok) {
+                        throw new Error(data.error || 'Failed to save examples');
+                    }
+                    loadRecalls();
+                } catch (e) {
+                    alert(e.message);
+                    saveBtn.disabled = false;
+                    saveBtn.textContent = 'Save Changes';
+                }
             };
             
             actionsDiv.appendChild(cancelBtn);
@@ -286,37 +312,66 @@ async function loadRecalls() {
     }
 }
 
+function linesToList(el) {
+    return el.value.split('\n').map(s => s.trim()).filter(Boolean);
+}
+
 async function createRecall() {
     const input = document.getElementById('new-recall-instruction');
+    const posEl = document.getElementById('new-recall-positives');
+    const negEl = document.getElementById('new-recall-negatives');
+    const lexEl = document.getElementById('new-recall-lexical');
     const btn = document.getElementById('create-recall-btn');
     const status = document.getElementById('create-recall-status');
     const instruction = input.value.trim();
-    
-    if (!instruction) return;
-    
+    const positive_examples = linesToList(posEl);
+    const negative_examples = linesToList(negEl);
+    const lexical_cues = linesToList(lexEl);
+
+    if (!instruction) {
+        status.style.display = 'block';
+        status.style.color = 'var(--danger)';
+        status.textContent = 'Instruction is required.';
+        return;
+    }
+    if (!positive_examples.length || !negative_examples.length || !lexical_cues.length) {
+        status.style.display = 'block';
+        status.style.color = 'var(--danger)';
+        status.textContent = 'Positive, negative, and lexical cues each need at least one non-empty line.';
+        return;
+    }
+
     btn.disabled = true;
-    btn.textContent = 'Wait...';
+    btn.textContent = 'Creating...';
     status.style.display = 'block';
-    status.textContent = 'Generating semantic + lexical cues (this takes a moment)...';
+    status.textContent = 'Saving recall...';
     status.style.color = 'var(--text-main)';
-    
+
     try {
         const response = await fetch('/api/recalls', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ instruction })
+            body: JSON.stringify({
+                instruction,
+                positive_examples,
+                negative_examples,
+                lexical_cues,
+            })
         });
-        
+
+        const data = await response.json();
         if (!response.ok) {
-            const data = await response.json();
             throw new Error(data.error || 'Failed to create recall');
         }
-        
+
         input.value = '';
+        posEl.value = '';
+        negEl.value = '';
+        lexEl.value = '';
         status.textContent = 'Recall created successfully.';
         status.style.color = 'var(--success)';
         setTimeout(() => { status.style.display = 'none'; }, 3000);
-        
+
         loadRecalls();
     } catch (e) {
         status.textContent = `Error: ${e.message}`;

@@ -274,12 +274,24 @@ class ConversationRunRecorder:
             seed = _content_text(content).strip()
             if seed:
                 self._title_seed = seed
+        matched_ids = None
+        is_nudge = None
+        if isinstance(safe, dict):
+            raw_ids = safe.get("matched_recall_ids")
+            if isinstance(raw_ids, list):
+                matched_ids = [str(x) for x in raw_ids if x]
+            if safe.get("is_nudge"):
+                is_nudge = True
+            elif kind in ("recall_fire", "nudge"):
+                is_nudge = True
         return await self._record_event(
             kind,
             content,
             visibility=visibility,
             role=safe.get("role") if isinstance(safe, dict) else None,
             thought=safe.get("_thought") if isinstance(safe, dict) else None,
+            is_nudge=is_nudge,
+            matched_recall_ids=matched_ids,
         )
 
     async def record_direct_reply(
@@ -439,6 +451,8 @@ class ConversationRunRecorder:
         role: str | None = None,
         thought: str | None = None,
         meta: dict | None = None,
+        is_nudge: bool | None = None,
+        matched_recall_ids: list[str] | None = None,
     ) -> int | None:
         self._event_sequence += 1
         sequence = self._event_sequence
@@ -457,6 +471,10 @@ class ConversationRunRecorder:
             event["thought"] = thought
         if meta:
             event["meta"] = sanitize(meta)
+        if is_nudge:
+            event["is_nudge"] = True
+        if matched_recall_ids:
+            event["matched_recall_ids"] = list(matched_recall_ids)
         self._pending_events.append(event)
         return sequence
 
@@ -545,7 +563,10 @@ def protocol_tail_for_run(run_id: str) -> tuple[list[dict], dict | None]:
     checkpoint_id = run.get("latest_checkpoint_id")
     if checkpoint_id:
         checkpoint = db[CHECKPOINTS].find_one({"checkpoint_id": checkpoint_id})
-    query: dict[str, Any] = {"run_id": run_id, "kind": {"$in": ["protocol_message", "nudge"]}}
+    query: dict[str, Any] = {
+        "run_id": run_id,
+        "kind": {"$in": ["protocol_message", "nudge", "recall_fire"]},
+    }
     boundary = run.get("latest_checkpoint_sequence")
     if boundary is not None:
         query["sequence"] = {"$gt": boundary}
@@ -556,8 +577,9 @@ def protocol_tail_for_run(run_id: str) -> tuple[list[dict], dict | None]:
 def buffer_messages_for_run(run_id: str) -> tuple[list[dict], dict | None]:
     """Rebuild the live agent message buffer from a run's durable events.
 
-    Includes ``direct_user``, ``protocol_message``, and ``nudge`` events after the latest
-    checkpoint (user turns are stored as direct_user, not protocol_message).
+    Includes ``direct_user``, ``protocol_message``, ``recall_fire``, and legacy
+    ``nudge`` events after the latest checkpoint (user turns are stored as
+    direct_user, not protocol_message).
     """
     db = _sync_db()
     if db is None:
@@ -571,7 +593,7 @@ def buffer_messages_for_run(run_id: str) -> tuple[list[dict], dict | None]:
         checkpoint = db[CHECKPOINTS].find_one({"checkpoint_id": checkpoint_id})
     query: dict[str, Any] = {
         "run_id": run_id,
-        "kind": {"$in": ["direct_user", "protocol_message", "nudge"]},
+        "kind": {"$in": ["direct_user", "protocol_message", "nudge", "recall_fire"]},
     }
     boundary = run.get("latest_checkpoint_sequence")
     if boundary is not None:
@@ -586,9 +608,16 @@ def buffer_messages_for_run(run_id: str) -> tuple[list[dict], dict | None]:
         }
         if event.get("thought"):
             message["_thought"] = event["thought"]
-        if event.get("kind") == "nudge" or event.get("is_nudge"):
-            message["kind"] = "nudge"
+        if (
+            event.get("kind") in ("nudge", "recall_fire")
+            or event.get("is_nudge")
+        ):
+            kind = event.get("kind")
+            message["kind"] = kind if kind in ("nudge", "recall_fire") else "recall_fire"
             message["is_nudge"] = True
+            ids = event.get("matched_recall_ids")
+            if isinstance(ids, list) and ids:
+                message["matched_recall_ids"] = [str(x) for x in ids if x]
         messages.append(message)
     return messages, checkpoint
 

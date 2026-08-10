@@ -51,17 +51,89 @@ TOOL_DEFINITIONS = [
         },
     },
     {
-        "name": "set_recall",
-        "description": "Create or update a reactive recall instruction. Use this when you are asked to remember a rule or recurring job (e.g. 'whenever I ask for something daily, create a recurring job'). The system will automatically generate trigger phrases (regexes) and either merge with an existing recall or create a new one.",
+        "name": "learn_recall",
+        "description": (
+            "Create or patch a semantic recall (reactive one-liner lookup). "
+            "This is the only writer of recall definition fields — YOU must supply "
+            "instruction and cue arrays; the tool does not invent or merge via LLM. "
+            "Omit recall_id to create (requires instruction plus non-empty "
+            "positive_examples, negative_examples, and lexical_cues). "
+            "Pass recall_id to patch: any provided field among instruction, "
+            "positive_examples, negative_examples, lexical_cues, enabled is written; "
+            "omitted fields stay unchanged. Provided cue arrays must be non-empty "
+            "and are FULL REPLACEMENTS — call get_recall first and pass the complete "
+            "intended array. "
+            "To update an existing rule, pass its recall_id (use get_recall to find it). "
+            "System recalls (sys_*): cue arrays may be replaced; instruction changes "
+            "are rejected. Keep instructions as short pointers "
+            "(to a file, palace room, or one-liner rule), not essays."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "instruction": {
                     "type": "string",
-                    "description": "The exact instruction or behavior you should remember and perform when triggered.",
+                    "description": "Short reactive instruction / pointer. Required on create; optional on patch.",
+                },
+                "recall_id": {
+                    "type": "string",
+                    "description": "Existing recall to patch. Omit to create a new user recall.",
+                },
+                "positive_examples": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Semantic trigger utterances. Required non-empty on create; full replace on patch.",
+                },
+                "negative_examples": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Near-miss veto utterances. Required non-empty on create; full replace on patch.",
+                },
+                "lexical_cues": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Exact tags/phrases (lowercase, spaces ok). Required non-empty on create; full replace on patch.",
+                },
+                "enabled": {
+                    "type": "boolean",
+                    "description": "Whether the recall is active (user recalls only).",
                 },
             },
-            "required": ["instruction"],
+            "required": [],
+        },
+    },
+    {
+        "name": "get_recall",
+        "description": (
+            "Read recall DEFINITIONS (catalog), not recent firings. "
+            "Pass recall_id for the full record; omit for a compact catalog "
+            "(recall_id, instruction, cue counts, source). "
+            "Use get_recent_recalls for what recently fired."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "recall_id": {
+                    "type": "string",
+                    "description": "Recall to fetch in full. Omit for compact catalog.",
+                },
+            },
+        },
+    },
+    {
+        "name": "purge_recall",
+        "description": (
+            "Delete a user-created recall by recall_id. System recalls (sys_*) cannot be purged."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "recall_id": {
+                    "type": "string",
+                    "description": "User recall id to delete.",
+                },
+            },
+            "required": ["recall_id"],
         },
     },
     {
@@ -753,8 +825,11 @@ TOOL_DEFINITIONS = [
         },
     },
     {
-        "name": "get_recent_nudges",
-        "description": "Fetch recently triggered semantic nudges (recalls) to evaluate if they were helpful or false positives.",
+        "name": "get_recent_recalls",
+        "description": (
+            "Read recent recall FIRES (activation log: which recall fired, on what text, "
+            "scores, channel, time). Not the definition catalog — use get_recall for that."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -763,69 +838,6 @@ TOOL_DEFINITIONS = [
                     "description": "How many hours of history to fetch (default 24)."
                 }
             }
-        }
-    },
-    {
-        "name": "add_recall_example",
-        "description": (
-            "Add a cue to a recall. cue_type=positive: semantic phrases that should fire; "
-            "negative: live vetoes (suppressed when neg score >= pos score); "
-            "lexical: exact tags/phrases (spaces ok, no underscores) matched by word boundary. "
-            "Use remove_recall_example to undo a wrong filing. is_positive is legacy fallback "
-            "(true→positive, false→negative) when cue_type is omitted."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "recall_id": {
-                    "type": "string",
-                    "description": "The ID of the recall rule."
-                },
-                "example_text": {
-                    "type": "string",
-                    "description": "The exact text snippet, phrase, or lexical cue to store."
-                },
-                "cue_type": {
-                    "type": "string",
-                    "enum": ["positive", "negative", "lexical"],
-                    "description": "Which list to update."
-                },
-                "is_positive": {
-                    "type": "boolean",
-                    "description": "Legacy: true→positive, false→negative. Ignored if cue_type is set."
-                }
-            },
-            "required": ["recall_id", "example_text"]
-        }
-    },
-    {
-        "name": "remove_recall_example",
-        "description": (
-            "Remove a positive, negative, or lexical cue from a recall. example_text must match "
-            "the stored string exactly (lexical cues are stored normalized: lowercase, spaces not underscores)."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "recall_id": {
-                    "type": "string",
-                    "description": "The ID of the recall rule."
-                },
-                "example_text": {
-                    "type": "string",
-                    "description": "The exact example text or cue to remove."
-                },
-                "cue_type": {
-                    "type": "string",
-                    "enum": ["positive", "negative", "lexical"],
-                    "description": "Which list to update."
-                },
-                "is_positive": {
-                    "type": "boolean",
-                    "description": "Legacy: true→positive, false→negative. Ignored if cue_type is set."
-                }
-            },
-            "required": ["recall_id", "example_text"]
         }
     },
 ]
@@ -1059,7 +1071,8 @@ async def execute_tool(
         )
 
 
-async def _get_recent_nudges(hours_ago: int = 24) -> str:
+async def _get_recent_recalls(hours_ago: int = 24) -> str:
+    """Read recent recall fires from recall_fires (+ legacy nudge_logs)."""
     from .db_ops import get_db
     db = get_db()
     if db is None:
@@ -1067,12 +1080,28 @@ async def _get_recent_nudges(hours_ago: int = 24) -> str:
     from datetime import datetime, timedelta, timezone
     since = datetime.now(timezone.utc) - timedelta(hours=hours_ago)
     try:
-        nudges = await db["nudge_logs"].find({"timestamp": {"$gte": since}}).sort("timestamp", -1).to_list(length=50)
-        if not nudges:
-            return f"No nudges recorded in the last {hours_ago} hours."
-            
+        fires = []
+        for coll_name in ("recall_fires", "nudge_logs"):
+            try:
+                docs = await (
+                    db[coll_name]
+                    .find({"timestamp": {"$gte": since}})
+                    .sort("timestamp", -1)
+                    .to_list(length=50)
+                )
+                for d in docs:
+                    d = dict(d)
+                    d["_log_source"] = coll_name
+                    fires.append(d)
+            except Exception:
+                continue
+        fires.sort(key=lambda d: d.get("timestamp") or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+        fires = fires[:50]
+        if not fires:
+            return f"No recall fires recorded in the last {hours_ago} hours."
+
         res = []
-        for n in nudges:
+        for n in fires:
             r_id = n.get("recall_id", "")
             text = n.get("text_scanned", "")
             pos = n.get("positive_score", n.get("score", 0.0))
@@ -1088,174 +1117,69 @@ async def _get_recent_nudges(hours_ago: int = 24) -> str:
             )
         return "\n\n".join(res)
     except Exception as e:
-        return f"Error fetching nudges: {e}"
-
-def _resolve_cue_field(cue_type: str | None, is_positive: bool | None) -> tuple[str, str] | str:
-    """Return (field, kind) or an error string."""
-    if cue_type:
-        kind = str(cue_type).strip().lower()
-        if kind not in ("positive", "negative", "lexical"):
-            return "[error] cue_type must be positive, negative, or lexical."
-    elif is_positive is not None:
-        kind = "positive" if is_positive else "negative"
-    else:
-        return "[error] Provide cue_type (positive|negative|lexical) or is_positive."
-    field = {
-        "positive": "positive_examples",
-        "negative": "negative_examples",
-        "lexical": "lexical_cues",
-    }[kind]
-    return field, kind
+        return f"Error fetching recent recall fires: {e}"
 
 
-def _prepare_cue_text(text: str, kind: str) -> str:
-    from harness.recall import normalize_lexical_cue
-    text = (text or "").strip()
-    if kind == "lexical":
-        return normalize_lexical_cue(text)
-    return text
+async def _get_recall(recall_id: str | None = None) -> str:
+    """Read recall definitions — one full record or compact catalog."""
+    import json
+    from .recall import fetch_all_recalls
+
+    try:
+        recalls = await fetch_all_recalls()
+    except Exception as e:
+        return f"[error] Failed to fetch recalls: {e}"
+
+    if recall_id:
+        rid = str(recall_id).strip()
+        for r in recalls:
+            if str(r.get("recall_id", "")) == rid:
+                return json.dumps(r, indent=2, default=str)
+        return f"[error] Recall '{rid}' not found."
+
+    catalog = []
+    for r in recalls:
+        catalog.append({
+            "recall_id": r.get("recall_id"),
+            "instruction": r.get("instruction"),
+            "source": r.get("source"),
+            "enabled": r.get("enabled", True),
+            "positive_count": len(r.get("positive_examples") or []),
+            "negative_count": len(r.get("negative_examples") or []),
+            "lexical_count": len(r.get("lexical_cues") or []),
+        })
+    return json.dumps(catalog, indent=2, default=str)
 
 
-async def _add_recall_example(
-    recall_id: str,
-    example_text: str,
-    is_positive: bool | None = None,
-    cue_type: str | None = None,
-) -> str:
+def _is_system_recall_id(recall_id: str) -> bool:
+    rid = (recall_id or "").strip()
+    return rid.startswith("sys_")
+
+
+async def _purge_recall(recall_id: str) -> str:
     from .db_ops import get_db
-    from bson.objectid import ObjectId
+
+    rid = (recall_id or "").strip()
+    if not rid:
+        return "[error] recall_id is required."
+    if _is_system_recall_id(rid):
+        return "[error] System recalls cannot be purged."
+
     db = get_db()
     if db is None:
         return "[error] No DB connection available."
-    resolved = _resolve_cue_field(cue_type, is_positive)
-    if isinstance(resolved, str):
-        return resolved
-    field, kind = resolved
-    text = _prepare_cue_text(example_text, kind)
-    if not text:
-        return "[error] example_text is empty."
-
+    query = _user_recall_query(rid)
+    if isinstance(query, str):
+        return query
     try:
-        coll = db["recalls"]
-        query = {"_id": ObjectId(recall_id)} if len(recall_id) == 24 else {"recall_id": recall_id}
-        recall = await coll.find_one(query)
-
-        if recall:
-            await coll.update_one(
-                query,
-                {"$addToSet": {field: text}, "$unset": {"threshold": ""}},
-            )
-            from harness.recall import fetch_all_recalls, get_semantic_router
-            get_semantic_router(await fetch_all_recalls(), force_reload=True)
-            return f"Successfully added {kind} cue to user recall {recall_id}."
-
-        import json
-        from pathlib import Path
-        config_path = Path("config/system_recalls.json")
-        if config_path.exists():
-            with open(config_path, "r", encoding="utf-8") as f:
-                sys_recalls = json.load(f)
-
-            updated = False
-            found = False
-            for r in sys_recalls:
-                if r.get("recall_id") != recall_id:
-                    continue
-                found = True
-                r.pop("threshold", None)
-                if field not in r:
-                    r[field] = []
-                if text not in r[field]:
-                    r[field].append(text)
-                    updated = True
-                break
-
-            if found and not updated:
-                return f"{kind.capitalize()} cue already present on system recall {recall_id}."
-            if updated:
-                with open(config_path, "w", encoding="utf-8") as f:
-                    json.dump(sys_recalls, f, indent=4)
-
-                from harness.recall import fetch_all_recalls, get_semantic_router
-                get_semantic_router(await fetch_all_recalls(), force_reload=True)
-                return f"Successfully added {kind} cue to system recall {recall_id}."
-
-        return f"Error: Recall {recall_id} not found in DB or system config."
+        res = await db["recalls"].delete_one(query)
+        if res.deleted_count == 0:
+            return f"[error] User recall '{rid}' not found."
+        from harness.recall import fetch_all_recalls, get_semantic_router
+        get_semantic_router(await fetch_all_recalls(), force_reload=True)
+        return f"Purged user recall '{rid}'."
     except Exception as e:
-        return f"Error updating recall: {e}"
-
-
-async def _remove_recall_example(
-    recall_id: str,
-    example_text: str,
-    is_positive: bool | None = None,
-    cue_type: str | None = None,
-) -> str:
-    from .db_ops import get_db
-    from bson.objectid import ObjectId
-    db = get_db()
-    if db is None:
-        return "[error] No DB connection available."
-    resolved = _resolve_cue_field(cue_type, is_positive)
-    if isinstance(resolved, str):
-        return resolved
-    field, kind = resolved
-    text = _prepare_cue_text(example_text, kind)
-    if not text:
-        return "[error] example_text is empty."
-
-    try:
-        coll = db["recalls"]
-        query = {"_id": ObjectId(recall_id)} if len(recall_id) == 24 else {"recall_id": recall_id}
-        recall = await coll.find_one(query)
-
-        if recall:
-            examples = recall.get(field) or []
-            if text not in examples:
-                return (
-                    f"No matching {kind} cue on user recall {recall_id}. "
-                    f"Stored count={len(examples)}. Use the exact stored string."
-                )
-            await coll.update_one(
-                query,
-                {"$pull": {field: text}, "$unset": {"threshold": ""}},
-            )
-            from harness.recall import fetch_all_recalls, get_semantic_router
-            get_semantic_router(await fetch_all_recalls(), force_reload=True)
-            return f"Removed {kind} cue from user recall {recall_id}."
-
-        import json
-        from pathlib import Path
-        config_path = Path("config/system_recalls.json")
-        if config_path.exists():
-            with open(config_path, "r", encoding="utf-8") as f:
-                sys_recalls = json.load(f)
-
-            updated = False
-            for r in sys_recalls:
-                if r.get("recall_id") != recall_id:
-                    continue
-                r.pop("threshold", None)
-                examples = r.get(field) or []
-                if text not in examples:
-                    return (
-                        f"No matching {kind} cue on system recall {recall_id}. "
-                        f"Stored count={len(examples)}. Use the exact stored string."
-                    )
-                r[field] = [e for e in examples if e != text]
-                updated = True
-                break
-
-            if updated:
-                with open(config_path, "w", encoding="utf-8") as f:
-                    json.dump(sys_recalls, f, indent=4)
-                from harness.recall import fetch_all_recalls, get_semantic_router
-                get_semantic_router(await fetch_all_recalls(), force_reload=True)
-                return f"Removed {kind} cue from system recall {recall_id}."
-
-        return f"Error: Recall {recall_id} not found in DB or system config."
-    except Exception as e:
-        return f"Error removing recall example: {e}"
+        return f"[error] Failed to purge recall: {e}"
 
 
 async def _execute_tool_impl(
@@ -1308,8 +1232,19 @@ async def _execute_tool_impl(
         )
     elif name == "read_file":
         return await _read_file(inputs["path"])
-    elif name == "set_recall":
-        return await _set_recall(inputs["instruction"])
+    elif name == "learn_recall":
+        return await _learn_recall(
+            instruction=inputs.get("instruction"),
+            recall_id=inputs.get("recall_id"),
+            positive_examples=inputs.get("positive_examples"),
+            negative_examples=inputs.get("negative_examples"),
+            lexical_cues=inputs.get("lexical_cues"),
+            enabled=inputs.get("enabled"),
+        )
+    elif name == "get_recall":
+        return await _get_recall(recall_id=inputs.get("recall_id"))
+    elif name == "purge_recall":
+        return await _purge_recall(inputs["recall_id"])
     elif name == "write_file":
         return await _write_file(inputs["path"], inputs["content"])
     elif name == "browser":
@@ -1487,22 +1422,8 @@ async def _execute_tool_impl(
             incr=inputs.get("incr", 0),
             cap=inputs.get("cap"),
         )
-    elif name == "get_recent_nudges":
-        return await _get_recent_nudges(hours_ago=inputs.get("hours_ago", 24))
-    elif name == "add_recall_example":
-        return await _add_recall_example(
-            recall_id=inputs.get("recall_id"),
-            example_text=inputs.get("example_text"),
-            is_positive=inputs.get("is_positive"),
-            cue_type=inputs.get("cue_type"),
-        )
-    elif name == "remove_recall_example":
-        return await _remove_recall_example(
-            recall_id=inputs.get("recall_id"),
-            example_text=inputs.get("example_text"),
-            is_positive=inputs.get("is_positive"),
-            cue_type=inputs.get("cue_type"),
-        )
+    elif name == "get_recent_recalls":
+        return await _get_recent_recalls(hours_ago=inputs.get("hours_ago", 24))
     elif name in EXPLORIUM_TOOL_NAMES:
         return await execute_explorium_tool(name, inputs)
     elif name in CONTACT_TOOL_NAMES:
@@ -2160,15 +2081,6 @@ def _tail_file(path: Path) -> str:
         return ""
 
 
-def _strip_json_fence(text: str) -> str:
-    clean = (text or "").strip()
-    if clean.startswith("```json"):
-        clean = clean[7:-3].strip()
-    elif clean.startswith("```"):
-        clean = clean[3:-3].strip()
-    return clean
-
-
 def _normalize_cue_list(values, *, lexical: bool = False) -> list[str]:
     from harness.recall import normalize_lexical_cue
     out = []
@@ -2186,167 +2098,214 @@ def _normalize_cue_list(values, *, lexical: bool = False) -> list[str]:
     return out
 
 
-async def _set_recall(instruction: str) -> str:
-    """Implement reactive recall registration via compaction LLM."""
-    from .db_ops import get_db
-    from .model_registry import get_provider
-    from .recall import fetch_all_recalls
+def _cue_field_or_error(values, field_name: str, *, lexical: bool = False):
+    """Normalize a provided cue array; error if empty after normalize.
+
+    Returns (normalized_list, None) or (None, error_string).
+    Caller must only invoke when ``values is not None``.
+    """
+    normalized = _normalize_cue_list(values, lexical=lexical)
+    if not normalized:
+        return None, (
+            f"[error] {field_name} cannot be empty when provided — "
+            f"pass at least one non-empty string, or omit the field."
+        )
+    return normalized, None
+
+
+def _user_recall_query(rid: str):
+    """Build a Mongo query for a user recall id, or an error string."""
+    from bson import ObjectId
+    from bson.errors import InvalidId
+
+    if len(rid) == 24:
+        try:
+            return {"_id": ObjectId(rid)}
+        except InvalidId:
+            return (
+                f"[error] Invalid recall_id '{rid}' — "
+                f"not a valid 24-char ObjectId hex string."
+            )
+    return {"recall_id": rid}
+
+
+async def _patch_system_recall_cues(
+    recall_id: str,
+    *,
+    positive_examples=None,
+    negative_examples=None,
+    lexical_cues=None,
+) -> str:
+    """Replace cue arrays on a system recall in config/system_recalls.json."""
     import json
+    from pathlib import Path
+    from harness.recall import fetch_all_recalls, get_semantic_router
 
-    provider = get_provider("compaction")
+    updates = {}
+    if positive_examples is not None:
+        pos, err = _cue_field_or_error(positive_examples, "positive_examples")
+        if err:
+            return err
+        updates["positive_examples"] = pos
+    if negative_examples is not None:
+        neg, err = _cue_field_or_error(negative_examples, "negative_examples")
+        if err:
+            return err
+        updates["negative_examples"] = neg
+    if lexical_cues is not None:
+        lex, err = _cue_field_or_error(lexical_cues, "lexical_cues", lexical=True)
+        if err:
+            return err
+        updates["lexical_cues"] = lex
 
-    prompt = f"""
-You generate training cues for a semantic recall router.
-Given an instruction, return ONLY valid JSON (no markdown) with this shape:
-{{
-  "positive_examples": ["3-5 natural language sentences a user might say"],
-  "lexical_cues": ["2-5 short tags or multi-word phrases"],
-  "negative_examples": ["2-4 near-miss sentences that should NOT trigger"]
-}}
+    config_path = Path("config/system_recalls.json")
+    if not config_path.exists():
+        return f"[error] System recall '{recall_id}' not found (no system_recalls.json)."
+    with open(config_path, "r", encoding="utf-8") as f:
+        sys_recalls = json.load(f)
 
-Rules:
-- positive_examples: full realistic utterances (no regex).
-- lexical_cues: lowercase, no underscores (use spaces), short distinctive tokens/phrases.
-- negative_examples: lookalike utterances that should stay quiet.
-- Return ONLY the JSON object.
+    found = False
+    for r in sys_recalls:
+        if r.get("recall_id") != recall_id:
+            continue
+        found = True
+        r.pop("threshold", None)
+        r.update(updates)
+        break
 
-Instruction:
-"{instruction}"
-"""
-    try:
-        resp = await provider.create_message(
-            model=provider.model_for("compaction"),
-            max_tokens=500,
-            system=[{"type": "text", "text": "You output only JSON objects for recall cue generation."}],
-            tools=[],
-            messages=[{"role": "user", "content": prompt}]
-        )
-        clean_resp = resp.content[0]["text"].strip() if isinstance(resp.content, list) else resp.content.strip()
-        generated = json.loads(_strip_json_fence(clean_resp))
-        if isinstance(generated, list):
-            # Backward compat if model returns a bare array
-            generated = {
-                "positive_examples": generated,
-                "lexical_cues": [],
-                "negative_examples": [],
-            }
-        if not isinstance(generated, dict):
-            return "[error] Failed to generate cues for recall: expected JSON object."
-        generated_positives = _normalize_cue_list(generated.get("positive_examples"))
-        generated_lexical = _normalize_cue_list(generated.get("lexical_cues"), lexical=True)
-        generated_negatives = _normalize_cue_list(generated.get("negative_examples"))
-        if not generated_positives and not generated_lexical:
-            return "[error] Failed to generate cues for recall: empty positives and lexical cues."
-    except Exception as e:
-        log.error(f"set_recall cue generation failed: {e}")
-        return f"[error] Failed to generate cues for recall: {e}"
+    if not found:
+        return f"[error] System recall '{recall_id}' not found."
+    with open(config_path, "w", encoding="utf-8") as f:
+        json.dump(sys_recalls, f, indent=4)
+    get_semantic_router(await fetch_all_recalls(), force_reload=True)
+    return f"Updated cue arrays on system recall '{recall_id}'."
 
-    all_recalls = await fetch_all_recalls()
 
-    compare_prompt = f"""
-We are adding a new reactive recall instruction.
-New Instruction: {instruction}
-Generated positive_examples: {json.dumps(generated_positives)}
-Generated lexical_cues: {json.dumps(generated_lexical)}
-Generated negative_examples: {json.dumps(generated_negatives)}
+async def _learn_recall(
+    instruction: str | None = None,
+    recall_id: str | None = None,
+    positive_examples=None,
+    negative_examples=None,
+    lexical_cues=None,
+    enabled: bool | None = None,
+) -> str:
+    """Create or patch a recall dict. Agent supplies all fields; no inner LLM."""
+    from .db_ops import get_db
+    from .recall import fetch_all_recalls, get_semantic_router
+    from datetime import datetime, timezone
 
-Here are the existing active recalls:
-{json.dumps(all_recalls, indent=2)}
+    rid = (recall_id or "").strip() or None
+    instr = (instruction or "").strip() if instruction is not None else None
 
-Decide if the new instruction should be merged into an EXISTING_RECALL or if a NEW_RECALL should be created.
-- If it's a duplicate or close variation of an existing recall, merge it.
-- If it's distinct, create a new one.
-- If merging into a "system" recall, we MUST create a NEW_RECALL instead because system recalls are read-only.
+    # ── Patch path ────────────────────────────────────────────────
+    if rid:
+        is_system = _is_system_recall_id(rid)
+        if is_system:
+            if instr is not None:
+                return "[error] System recall instructions cannot be changed."
+            if enabled is not None:
+                return "[error] System recall enabled flag cannot be changed via learn_recall."
+            if (
+                positive_examples is None
+                and negative_examples is None
+                and lexical_cues is None
+            ):
+                return "[error] Provide at least one cue array to patch on a system recall."
+            return await _patch_system_recall_cues(
+                rid,
+                positive_examples=positive_examples,
+                negative_examples=negative_examples,
+                lexical_cues=lexical_cues,
+            )
 
-Return ONLY valid JSON matching this schema:
-For existing: {{"decision": "EXISTING_RECALL", "recall_id": "id", "positive_examples_to_add": ["..."], "lexical_cues_to_add": ["..."], "negative_examples_to_add": ["..."]}}
-For new: {{"decision": "NEW_RECALL", "instruction": "the instruction", "positive_examples": ["..."], "lexical_cues": ["..."], "negative_examples": ["..."]}}
-"""
+        db = get_db()
+        if db is None:
+            return "[error] No DB connection available."
+        query = _user_recall_query(rid)
+        if isinstance(query, str):
+            return query
+        coll = db["recalls"]
+        doc = await coll.find_one(query)
+        if not doc:
+            return f"[error] User recall '{rid}' not found."
 
-    try:
-        resp = await provider.create_message(
-            model=provider.model_for("compaction"),
-            max_tokens=700,
-            system=[{"type": "text", "text": "You output only JSON objects."}],
-            tools=[],
-            messages=[{"role": "user", "content": compare_prompt}]
-        )
-        clean_resp = resp.content[0]["text"].strip() if isinstance(resp.content, list) else resp.content.strip()
-        decision = json.loads(_strip_json_fence(clean_resp))
-    except Exception as e:
-        log.error(f"set_recall decision failed: {e}")
-        return f"[error] Failed to decide recall merging: {e}"
+        updates = {}
+        if instr is not None:
+            if not instr:
+                return "[error] instruction cannot be empty."
+            updates["instruction"] = instr
+        if positive_examples is not None:
+            pos, err = _cue_field_or_error(positive_examples, "positive_examples")
+            if err:
+                return err
+            updates["positive_examples"] = pos
+        if negative_examples is not None:
+            neg, err = _cue_field_or_error(negative_examples, "negative_examples")
+            if err:
+                return err
+            updates["negative_examples"] = neg
+        if lexical_cues is not None:
+            lex, err = _cue_field_or_error(lexical_cues, "lexical_cues", lexical=True)
+            if err:
+                return err
+            updates["lexical_cues"] = lex
+        if enabled is not None:
+            updates["enabled"] = bool(enabled)
+        if not updates:
+            return "[error] No fields to update. Pass instruction and/or cue arrays and/or enabled."
+        updates["updated_at"] = datetime.now(timezone.utc)
+        await coll.update_one(query, {"$set": updates, "$unset": {"threshold": ""}})
+        get_semantic_router(await fetch_all_recalls(), force_reload=True)
+        changed = ", ".join(sorted(k for k in updates if k != "updated_at"))
+        return f"Updated recall '{rid}' ({changed})."
+
+    # ── Create path (agent must supply instruction + all cue arrays) ────────
+    if not instr:
+        return "[error] instruction is required when creating a recall (omit recall_id)."
+
+    if positive_examples is None:
+        return "[error] Create requires non-empty positive_examples."
+    if negative_examples is None:
+        return "[error] Create requires non-empty negative_examples."
+    if lexical_cues is None:
+        return "[error] Create requires non-empty lexical_cues."
+
+    pos, err = _cue_field_or_error(positive_examples, "positive_examples")
+    if err:
+        return err
+    neg, err = _cue_field_or_error(negative_examples, "negative_examples")
+    if err:
+        return err
+    lex, err = _cue_field_or_error(lexical_cues, "lexical_cues", lexical=True)
+    if err:
+        return err
 
     db = get_db()
-    if not db:
+    if db is None:
         return "[error] No DB connection available."
 
-    from datetime import datetime, timezone
-    coll = db["recalls"]
     now = datetime.now(timezone.utc)
+    doc = {
+        "instruction": instr,
+        "positive_examples": pos,
+        "lexical_cues": lex,
+        "negative_examples": neg,
+        "enabled": True if enabled is None else bool(enabled),
+        "created_by": "agent",
+        "created_at": now,
+        "updated_at": now,
+    }
+    try:
+        result = await db["recalls"].insert_one(doc)
+        get_semantic_router(await fetch_all_recalls(), force_reload=True)
+        return (
+            f"Created new recall with ID '{result.inserted_id}' "
+            f"({len(pos)} pos, {len(lex)} lexical, {len(neg)} neg)."
+        )
+    except Exception as e:
+        return f"[error] Failed to insert new recall: {e}"
 
-    if decision.get("decision") == "EXISTING_RECALL":
-        r_id = decision.get("recall_id")
-        pos_add = _normalize_cue_list(decision.get("positive_examples_to_add") or [])
-        lex_add = _normalize_cue_list(decision.get("lexical_cues_to_add") or [], lexical=True)
-        neg_add = _normalize_cue_list(decision.get("negative_examples_to_add") or [])
-        if not pos_add and not lex_add and not neg_add:
-            return f"No update needed. Instruction matched existing recall '{r_id}'."
 
-        try:
-            from bson import ObjectId
-            add_each = {}
-            if pos_add:
-                add_each["positive_examples"] = {"$each": pos_add}
-            if lex_add:
-                add_each["lexical_cues"] = {"$each": lex_add}
-            if neg_add:
-                add_each["negative_examples"] = {"$each": neg_add}
-            updated = await coll.find_one_and_update(
-                {"_id": ObjectId(r_id)},
-                {
-                    "$addToSet": add_each,
-                    "$set": {"updated_at": now},
-                    "$unset": {"threshold": ""},
-                },
-                return_document=True
-            )
-            if updated:
-                from harness.recall import get_semantic_router
-                get_semantic_router(await fetch_all_recalls(), force_reload=True)
-                return (
-                    f"Merged successfully. Updated recall '{r_id}' "
-                    f"(+{len(pos_add)} pos, +{len(lex_add)} lexical, +{len(neg_add)} neg)."
-                )
-            else:
-                return f"[error] Existing recall '{r_id}' not found in user DB."
-        except Exception as e:
-            return f"[error] Failed to update existing recall: {e}"
-
-    else:
-        pos = _normalize_cue_list(decision.get("positive_examples") or generated_positives)
-        lex = _normalize_cue_list(decision.get("lexical_cues") or generated_lexical, lexical=True)
-        neg = _normalize_cue_list(decision.get("negative_examples") or generated_negatives)
-        doc = {
-            "instruction": decision.get("instruction", instruction),
-            "positive_examples": pos,
-            "lexical_cues": lex,
-            "negative_examples": neg,
-            "enabled": True,
-            "created_by": "agent",
-            "created_at": now,
-            "updated_at": now
-        }
-        try:
-            result = await coll.insert_one(doc)
-            from harness.recall import get_semantic_router
-            get_semantic_router(await fetch_all_recalls(), force_reload=True)
-            return (
-                f"Created new recall with ID '{result.inserted_id}' "
-                f"({len(pos)} pos, {len(lex)} lexical, {len(neg)} neg)."
-            )
-        except Exception as e:
-            return f"[error] Failed to insert new recall: {e}"
 async def _read_file(path: str) -> str:
     """Read a file's contents without blocking the event loop."""
     loop = asyncio.get_running_loop()

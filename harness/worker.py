@@ -186,6 +186,20 @@ class WorkerLoop:
             worker_status=status,
             notification=note,
         )
+        # Sync silent recall learn+audit only when this tick reported work.
+        # Gate uses the existing WORKER_STATUS tag — no extra LLM.
+        if status == "worked":
+            log.info("[Worker] status=worked — starting recall learn pass")
+            try:
+                await self.agent.run_ephemeral_recall_update(
+                    WORKER_CHANNEL, holding_lock=False,
+                )
+            except Exception as e:
+                log.warning(f"Worker ephemeral recall update failed: {e}")
+        else:
+            log.info(
+                f"[Worker] status={status} — skipping recall learn pass"
+            )
         # Rising edge into a work burst (idle/paused → working): ping once so the
         # user sees the worker pick up a task. Subsequent worked ticks in the same
         # burst don't re-ping; an idle/paused tick resets the edge.

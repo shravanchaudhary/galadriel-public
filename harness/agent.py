@@ -75,7 +75,52 @@ LOOP_TICK_CHANNELS = frozenset({
     "wake", "heartbeat", "morning", AMBIENT_CHANNEL_ID, "goodnight", "completions",
 })
 
+EPHEMERAL_RECALL_TOOLS = frozenset({
+    "get_recall", "get_recent_recalls", "learn_recall", "purge_recall",
+})
+
 _STOPPED_ASSISTANT_NOTE = "(Stopped — turn cancelled.)"
+
+
+def _is_recall_fire_message(msg: dict) -> bool:
+    """True for injected recall fires (new + legacy nudge markers)."""
+    if not isinstance(msg, dict):
+        return False
+    return (
+        msg.get("kind") in ("recall_fire", "nudge")
+        or bool(msg.get("is_nudge"))
+    )
+
+
+async def _log_recall_fire(channel_id: str, match: dict, text_scanned: str) -> None:
+    try:
+        from .db_ops import get_db
+        db = get_db()
+        if db is None:
+            return
+        doc = {
+            "recall_id": match.get("recall_id"),
+            "channel_id": channel_id,
+            "timestamp": datetime.now(timezone.utc),
+            "positive_score": match.get("positive_score", 0.0),
+            "negative_score": match.get("negative_score"),
+            "match_source": match.get("match_source"),
+            "lexical_cue": match.get("lexical_cue"),
+            "text_scanned": (text_scanned or "")[:500],
+        }
+        await db["recall_fires"].insert_one(doc)
+    except Exception as e:
+        log.warning(f"Failed to log recall fire to DB: {e}")
+
+
+def _recall_fire_message(matches: list[dict], fire_text: str) -> dict:
+    return {
+        "role": "assistant",
+        "content": fire_text,
+        "kind": "recall_fire",
+        "is_nudge": True,  # legacy UI/readers
+        "matched_recall_ids": [m.get("recall_id") for m in matches if m.get("recall_id")],
+    }
 
 class TurnCancelled(Exception):
     """Raised when a channel turn is cancelled via request_stop()."""
@@ -869,15 +914,17 @@ class GaladrielAgent:
         if tokens > 0:
             self._last_input_tokens[channel_id] = tokens
 
-    async def compact_channel(self, channel_id: str = "default") -> dict:
+    async def compact_channel(
+        self, channel_id: str = "default", *, holding_lock: bool = False,
+    ) -> dict:
         """Snapshot-compact a channel.
 
         Archives the full conversation to the palace (durable write + synchronous
         mine — archival is mandatory and must finish before the next task, which
-        may recall from the palace, runs), generates a cumulative structured
-        snapshot that folds in any prior snapshot, stores it (re-injected as a
-        system block by respond() until the next compaction), and clears the
-        message list.
+        may recall from the palace, runs), runs a sync ephemeral recall learn+audit
+        on the live buffer, generates a cumulative structured snapshot that folds
+        in any prior snapshot, stores it (re-injected as a system block by
+        respond() until the next compaction), and clears the message list.
 
         Returns the compaction stats dict (with "compacted": bool).
         """
@@ -909,6 +956,14 @@ class GaladrielAgent:
                     await palace.mine_batch_dir(batch_dir, agent="compaction")
         except Exception as e:
             log.warning(f"Compaction archive failed (channel={channel_id}): {e}")
+
+        # 1b. Sync ephemeral recall learn+FP/FN audit on the live buffer.
+        #     Rolled back before snapshot; learn failure never blocks clear.
+        log.info(
+            f"[Compact] archive done; starting recall learn "
+            f"(channel={channel_id}, messages={len(snapshot_msgs)})"
+        )
+        await self.run_ephemeral_recall_update(channel_id, holding_lock=holding_lock)
 
         # 2. Snapshot — fold in any prior snapshot for this channel.
         from .compaction import compact_to_snapshot
@@ -1581,10 +1636,11 @@ class GaladrielAgent:
         client_dedup_key: str | None = None,
         request_context: dict | None = None,
         run_holder: dict | None = None,
+        ephemeral: bool = False,
     ) -> str:
         messages = self._get_messages(channel_id)
         run_recorder = None
-        if channel_id == MAIN_CHANNEL_ID:
+        if (not ephemeral) and channel_id == MAIN_CHANNEL_ID:
             from .conversation_run_store import ConversationRunRecorder
             model = self.model_for_channel(channel_id)
             run_recorder = await ConversationRunRecorder.start(
@@ -1620,35 +1676,40 @@ class GaladrielAgent:
                 )
             ),
         )
-        self._active_experience_episodes[channel_id] = episode
-        # Human input can itself be consequential. Scheduled/worker prompts are
-        # boilerplate and are appraised only once, at a meaningful outcome.
-        if channel_id == MAIN_CHANNEL_ID:
-            await self._appraise_episode(episode, "input")
+        if not ephemeral:
+            self._active_experience_episodes[channel_id] = episode
+            # Human input can itself be consequential. Scheduled/worker prompts are
+            # boilerplate and are appraised only once, at a meaningful outcome.
+            if channel_id == MAIN_CHANNEL_ID:
+                await self._appraise_episode(episode, "input")
 
-        if channel_id == MAIN_CHANNEL_ID:
-            experience_snapshot = self._record_experience_event(
-                "turn_started",
-                channel_id,
-                details={"source": run_source or "direct"},
-                idempotency_key=f"{episode.episode_id}:turn_started",
+            if channel_id == MAIN_CHANNEL_ID:
+                experience_snapshot = self._record_experience_event(
+                    "turn_started",
+                    channel_id,
+                    details={"source": run_source or "direct"},
+                    idempotency_key=f"{episode.episode_id}:turn_started",
+                )
+            else:
+                # Defer scheduled/worker lifecycle events until the outcome proves
+                # meaningful. Idle ticks leave no experiential history.
+                experience_snapshot = prior_experience
+            await self._audit_experience_snapshot(
+                experience_snapshot, tick_recorder, run_recorder,
             )
-        else:
-            # Defer scheduled/worker lifecycle events until the outcome proves
-            # meaningful. Idle ticks leave no experiential history.
-            experience_snapshot = prior_experience
-        await self._audit_experience_snapshot(
-            experience_snapshot, tick_recorder, run_recorder,
-        )
 
         # Auto-compaction: if the last measured input context for this channel
         # crossed the threshold, snapshot+archive the whole conversation. This
         # clears the message list; the snapshot is injected as its own system
         # block (see _assemble_system_blocks). Resilient — a compaction failure
         # must not crash the turn; we just proceed with the full context.
-        if messages and self._last_input_tokens.get(channel_id, 0) > self.compact_threshold:
+        if (
+            (not ephemeral)
+            and messages
+            and self._last_input_tokens.get(channel_id, 0) > self.compact_threshold
+        ):
             try:
-                await self.compact_channel(channel_id)
+                await self.compact_channel(channel_id, holding_lock=True)
             except Exception as e:
                 log.warning(f"Pre-turn compaction failed ({e}); proceeding with full context")
 
@@ -1656,16 +1717,16 @@ class GaladrielAgent:
         # message exactly once — compaction never double-logs. Context size is
         # managed solely by compaction (no routine message-count trim).
         from .recall import fetch_all_recalls, scan_text_for_recalls, generate_nudge
-        active_recalls = await fetch_all_recalls()
+        active_recalls = [] if ephemeral else await fetch_all_recalls()
         # Buffer-scoped: same set across turns until /new or summarization.
         notified_recall_ids = self._notified_recall_ids.setdefault(channel_id, set())
         turn_matched_recalls = []
 
-        if isinstance(user_message, str):
+        if (not ephemeral) and isinstance(user_message, str):
             exclude_texts = [
                 m.get("content", "") if isinstance(m.get("content"), str) else ""
                 for m in messages
-                if isinstance(m, dict) and (m.get("kind") == "nudge" or m.get("is_nudge"))
+                if _is_recall_fire_message(m)
             ]
             matched = scan_text_for_recalls(user_message, active_recalls, exclude_texts=exclude_texts)
             for m in matched:
@@ -1673,7 +1734,7 @@ class GaladrielAgent:
                     turn_matched_recalls.append(m)
 
         messages.append({"role": "user", "content": user_message})
-        if tick_recorder is not None:
+        if (not ephemeral) and tick_recorder is not None:
             await tick_recorder.record_message(messages[-1])
         if run_recorder is not None:
             await run_recorder.record_message(
@@ -1686,44 +1747,30 @@ class GaladrielAgent:
         ]
         if turn_matched_recalls and not new_user_matches:
             log.debug(
-                f"[Recall Check] Ignored previously notified nudges (user_message): "
+                f"[Recall Check] Ignored previously notified recall fires (user_message): "
                 f"{[m.get('recall_id') for m in turn_matched_recalls]}"
             )
         if new_user_matches:
             log.info(f"[Recall Check] Injecting matches for in-process steering (user_message): {[m.get('recall_id') for m in new_user_matches]}")
             for m in new_user_matches:
                 notified_recall_ids.add(m.get("recall_id"))
-                try:
-                    from .db_ops import get_db
-                    db = get_db()
-                    if db is not None:
-                        await db["nudge_logs"].insert_one({
-                            "recall_id": m.get("recall_id"),
-                            "channel_id": channel_id,
-                            "timestamp": datetime.now(timezone.utc),
-                            "positive_score": m.get("positive_score", 0.0),
-                            "negative_score": m.get("negative_score"),
-                            "match_source": m.get("match_source"),
-                            "lexical_cue": m.get("lexical_cue"),
-                            "text_scanned": user_message[:500] if isinstance(user_message, str) else ""
-                        })
-                except Exception as e:
-                    log.warning(f"Failed to log nudge to DB: {e}")
+                scanned = user_message[:500] if isinstance(user_message, str) else ""
+                await _log_recall_fire(channel_id, m, scanned)
             
             nudge_text = generate_nudge(new_user_matches)
-            log.info(f"User-message nudge triggered: {nudge_text!r}")
+            log.info(f"User-message recall fire triggered: {nudge_text!r}")
             nudge_prompt = (
                 f"I may check these suggestions for better answering. If irrelevant, I will ignore.\n"
                 f"{nudge_text}\n\n"
                 f"If I already satisfied them, I may continue my normal flow.\n"
             )
-            messages.append({"role": "assistant", "content": nudge_prompt, "kind": "nudge", "is_nudge": True})
+            messages.append(_recall_fire_message(new_user_matches, nudge_prompt))
             if tick_recorder is not None:
                 await tick_recorder.record_message(messages[-1])
             if run_recorder is not None:
-                await run_recorder.record_message(messages[-1], visibility="user", kind="nudge")
+                await run_recorder.record_message(messages[-1], visibility="user", kind="recall_fire")
             if emit is not None:
-                await emit({"type": "thought", "text": nudge_prompt, "kind": "nudge"})
+                await emit({"type": "thought", "text": nudge_prompt, "kind": "recall_fire"})
 
         # System blocks: stable + dynamic + snapshot + advisory. Rebuilt after
         # any mid-loop / max_tokens compaction so it never goes stale.
@@ -1740,11 +1787,20 @@ class GaladrielAgent:
         }
         untrusted_org_slack = is_untrusted_organization_slack(actor_context)
         turn_tools = tools_for_request(self.tools, actor_context)
+        if ephemeral:
+            turn_tools = [
+                {k: v for k, v in t.items() if k != "cache_control"}
+                for t in turn_tools
+                if t.get("name") in EPHEMERAL_RECALL_TOOLS
+            ]
+            if turn_tools:
+                turn_tools[-1] = {
+                    **turn_tools[-1],
+                    "cache_control": {"type": "ephemeral"},
+                }
 
         max_tokens_retries = 0  # Track consecutive max_tokens hits
         turn_thought = ""  # Accumulated thought deltas for the current API response
-        is_nudge_turn = False # Tracks if the current API call is purely resolving a system nudge
-
         # Turn-local API message list. When Headroom is ON we accumulate the
         # *compressed* bytes already sent so the provider prefix stays
         # byte-identical across the tool cascade. Stored history (`messages`)
@@ -1762,7 +1818,11 @@ class GaladrielAgent:
                 log.error("Message list is empty — cannot call API. Seeding with user message.")
                 messages.append({"role": "user", "content": user_message})
 
-            log.info(f"API call with {len(messages)} messages, last role: {messages[-1]['role']}")
+            eph = " ephemeral_recall=1" if ephemeral else ""
+            log.info(
+                f"API call with {len(messages)} messages, "
+                f"last role: {messages[-1]['role']}{eph}"
+            )
             channel_model = self.model_for_channel(channel_id)
             provider = self._provider_for(channel_model)
 
@@ -1943,62 +2003,52 @@ class GaladrielAgent:
 
             # --- BEGIN RECALL SCAN (IN-PROCESS STEERING) ---
             text_to_scan = ""
-            _text_parts = [
-                block.get("text", "") if isinstance(block, dict) else (block.text if hasattr(block, "text") else "")
-                for block in (assistant_content if isinstance(assistant_content, list) else [])
-                if (isinstance(block, dict) and block.get("type") == "text") or (hasattr(block, "type") and block.type == "text")
-            ]
-            text_to_scan = "\n".join(_text_parts).strip()
-            if turn_thought:
-                text_to_scan += "\n" + turn_thought
-                
-            log.debug(f"[Recall Check] Scanning output. Stop reason: {response.stop_reason}. Text length: {len(text_to_scan)}")
-            if len(text_to_scan) > 0:
-                log.debug(f"[Recall Check] Text to scan:\n{text_to_scan}")
-
-                # We no longer process tool calls for semantic steering, only thoughts and final output
-                # if response.stop_reason == "tool_use":
-                #     tool_args = [
-                #         _summarize_tool_input(block.input if hasattr(block, "input") else block.get("input", {}))
-                #         for block in (response.content if hasattr(response, "content") else [])
-                #         if (hasattr(block, "type") and block.type == "tool_use") or (isinstance(block, dict) and block.get("type") == "tool_use")
-                #     ]
-                #     if tool_args:
-                #         text_to_scan += "\n" + "\n".join(tool_args)
-
-                exclude_texts = [
-                    m.get("content", "") if isinstance(m.get("content"), str) else ""
-                    for m in messages
-                    if isinstance(m, dict) and (m.get("kind") == "nudge" or m.get("is_nudge"))
-                ]
-                matched = scan_text_for_recalls(text_to_scan, active_recalls, exclude_texts=exclude_texts)
-                if matched:
-                    log.debug(
-                        f"[Recall Check] Raw matches found: "
-                        f"{[(m.get('recall_id'), m.get('match_source'), round(m.get('positive_score', 0.0), 3), m.get('negative_score')) for m in matched]}"
-                    )
-                else:
-                    log.debug(f"[Recall Check] No raw matches found.")
-
-                for m in matched:
-                    if m not in turn_matched_recalls:
-                        turn_matched_recalls.append(m)
-
             new_matches = []
-            already_notified = []
-            
-            for m in turn_matched_recalls:
-                rid = m.get("recall_id")
-                if rid in notified_recall_ids:
-                    already_notified.append(rid)
-                else:
-                    if m not in new_matches:
-                        new_matches.append(m)
-                        
-            if already_notified:
-                log.debug(f"[Recall Check] Ignored previously notified nudges (already in context): {already_notified}")
-            if new_matches:
-                log.debug(f"[Recall Check] Pending new matches to inject: {[m.get('recall_id') for m in new_matches]}")
+            if not ephemeral:
+                _text_parts = [
+                    block.get("text", "") if isinstance(block, dict) else (block.text if hasattr(block, "text") else "")
+                    for block in (assistant_content if isinstance(assistant_content, list) else [])
+                    if (isinstance(block, dict) and block.get("type") == "text") or (hasattr(block, "type") and block.type == "text")
+                ]
+                text_to_scan = "\n".join(_text_parts).strip()
+                if turn_thought:
+                    text_to_scan += "\n" + turn_thought
+
+                log.debug(f"[Recall Check] Scanning output. Stop reason: {response.stop_reason}. Text length: {len(text_to_scan)}")
+                if len(text_to_scan) > 0:
+                    log.debug(f"[Recall Check] Text to scan:\n{text_to_scan}")
+
+                    exclude_texts = [
+                        m.get("content", "") if isinstance(m.get("content"), str) else ""
+                        for m in messages
+                        if _is_recall_fire_message(m)
+                    ]
+                    matched = scan_text_for_recalls(text_to_scan, active_recalls, exclude_texts=exclude_texts)
+                    if matched:
+                        log.debug(
+                            f"[Recall Check] Raw matches found: "
+                            f"{[(m.get('recall_id'), m.get('match_source'), round(m.get('positive_score', 0.0), 3), m.get('negative_score')) for m in matched]}"
+                        )
+                    else:
+                        log.debug(f"[Recall Check] No raw matches found.")
+
+                    for m in matched:
+                        if m not in turn_matched_recalls:
+                            turn_matched_recalls.append(m)
+
+                already_notified = []
+                for m in turn_matched_recalls:
+                    rid = m.get("recall_id")
+                    if rid in notified_recall_ids:
+                        already_notified.append(rid)
+                    else:
+                        if m not in new_matches:
+                            new_matches.append(m)
+
+                if already_notified:
+                    log.debug(f"[Recall Check] Ignored previously notified recall fires (already in context): {already_notified}")
+                if new_matches:
+                    log.debug(f"[Recall Check] Pending new matches to inject: {[m.get('recall_id') for m in new_matches]}")
             # --- END RECALL SCAN ---
 
             # Recalls are bypassed when stop_reason == "tool_use" or "max_tokens"
@@ -2035,26 +2085,10 @@ class GaladrielAgent:
 
                     for m in new_matches:
                         notified_recall_ids.add(m.get("recall_id"))
-                        # Record the nudge to DB for ambient reflection
-                        try:
-                            from .db_ops import get_db
-                            db = get_db()
-                            if db is not None:
-                                await db["nudge_logs"].insert_one({
-                                    "recall_id": m.get("recall_id"),
-                                    "channel_id": channel_id,
-                                    "timestamp": datetime.now(timezone.utc),
-                                    "positive_score": m.get("positive_score", 0.0),
-                                    "negative_score": m.get("negative_score"),
-                                    "match_source": m.get("match_source"),
-                                    "lexical_cue": m.get("lexical_cue"),
-                                    "text_scanned": text_to_scan[:500]  # truncate just in case
-                                })
-                        except Exception as e:
-                            log.warning(f"Failed to log nudge to DB: {e}")
+                        await _log_recall_fire(channel_id, m, text_to_scan[:500])
 
                     nudge_text = generate_nudge(new_matches)
-                    log.info(f"Completion nudge triggered: {nudge_text!r}")
+                    log.info(f"Completion recall fire triggered: {nudge_text!r}")
                     
                     nudge_prompt = (
                         f"Okay, I'm done but I may have missed something. I'll quickly verify."
@@ -2062,20 +2096,25 @@ class GaladrielAgent:
                         f"I may check if any of it is sensible I should proceed further, else I will conclude. I will make sure I do not repeat what I already said.\n"
                     )
                     
-                    messages.append({"role": "assistant", "content": nudge_prompt, "kind": "nudge", "is_nudge": True})
+                    messages.append(_recall_fire_message(new_matches, nudge_prompt))
                     
                     if tick_recorder is not None:
                         await tick_recorder.record_message(messages[-1])
                     if run_recorder is not None:
                         await run_recorder.record_message(
-                            messages[-1], visibility="user", kind="nudge"
+                            messages[-1], visibility="user", kind="recall_fire"
                         )
                     if emit is not None:
-                        await emit({"type": "thought", "text": nudge_prompt, "kind": "nudge"})
+                        await emit({"type": "thought", "text": nudge_prompt, "kind": "recall_fire"})
                     # Re-run the turn loop so the agent can fix its mistake
                     api_messages = None
                     self._silent_turn = True
                     continue
+
+                if ephemeral:
+                    # Silent recall pass: no experience, daily log, or disk persist.
+                    # Caller rolls the buffer back.
+                    return final_text
 
                 meaningful_outcome = self._should_appraise_outcome(
                     episode,
@@ -2141,6 +2180,13 @@ class GaladrielAgent:
                 return final_text
 
             if response.stop_reason == "max_tokens":
+                if ephemeral:
+                    # Silent recall pass must not compact/clear the live buffer.
+                    log.warning(
+                        "Ephemeral recall update hit max_tokens; aborting learn pass "
+                        f"(channel={channel_id})"
+                    )
+                    return ""
                 max_tokens_retries += 1
 
                 # Remove the incomplete assistant message
@@ -2183,7 +2229,7 @@ class GaladrielAgent:
                 # snapshot system block. If compaction can't help or fails, fall
                 # back to archive + hard reset (the only remaining last resort).
                 try:
-                    result = await self.compact_channel(channel_id)
+                    result = await self.compact_channel(channel_id, holding_lock=True)
                     if not result.get("compacted"):
                         self._archive_and_flag(channel_id, messages)
                         self._hard_reset(messages, user_message, channel_id)
@@ -2343,14 +2389,23 @@ class GaladrielAgent:
 
                     # execute_tool never raises — missing args / tool bugs come
                     # back as "[tool error] …" so the model can correct + retry.
-                    result = await execute_tool(
-                        tool_name, tool_input,
-                        memory_manager=self.memory,
-                        working_dir=self.working_dir,
-                        experience_manager=self.experience,
-                        channel_id=channel_id,
-                    )
-                    if tool_name == "experience_report":
+                    if ephemeral and tool_name not in EPHEMERAL_RECALL_TOOLS:
+                        result = (
+                            f"[blocked] tool `{tool_name}` is not available during "
+                            "the silent recall-update pass. Use get_recall, "
+                            "get_recent_recalls, learn_recall, or purge_recall."
+                        )
+                    else:
+                        result = await execute_tool(
+                            tool_name, tool_input,
+                            memory_manager=self.memory,
+                            working_dir=self.working_dir,
+                            experience_manager=self.experience,
+                            channel_id=channel_id,
+                        )
+                    if ephemeral:
+                        experience_snapshot = prior_experience
+                    elif tool_name == "experience_report":
                         # The tool already recorded a non-authoritative
                         # self_report event. Counting the report itself as task
                         # success would let introspective prose reward state.
@@ -2365,9 +2420,10 @@ class GaladrielAgent:
                         experience_changed = (
                             experience_changed or bool(experience_snapshot)
                         )
-                    await self._audit_experience_snapshot(
-                        experience_snapshot, tick_recorder, run_recorder,
-                    )
+                    if not ephemeral:
+                        await self._audit_experience_snapshot(
+                            experience_snapshot, tick_recorder, run_recorder,
+                        )
 
                     if (
                         is_new_file
@@ -2423,26 +2479,10 @@ class GaladrielAgent:
 
                     for m in new_matches:
                         notified_recall_ids.add(m.get("recall_id"))
-                        # Record the nudge to DB for ambient reflection
-                        try:
-                            from .db_ops import get_db
-                            db = get_db()
-                            if db is not None:
-                                await db["nudge_logs"].insert_one({
-                                    "recall_id": m.get("recall_id"),
-                                    "channel_id": channel_id,
-                                    "timestamp": datetime.now(timezone.utc),
-                                    "positive_score": m.get("positive_score", 0.0),
-                                    "negative_score": m.get("negative_score"),
-                                    "match_source": m.get("match_source"),
-                                    "lexical_cue": m.get("lexical_cue"),
-                                    "text_scanned": text_to_scan[:500]  # truncate just in case
-                                })
-                        except Exception as e:
-                            log.warning(f"Failed to log nudge to DB: {e}")
+                        await _log_recall_fire(channel_id, m, text_to_scan[:500])
 
                     nudge_text = generate_nudge(new_matches)
-                    log.info(f"Tool-use nudge triggered: {nudge_text!r}")
+                    log.info(f"Tool-use recall fire triggered: {nudge_text!r}")
                     
                     nudge_prompt = (
                         f"I may check these suggestions for better answering. If irrelevant, I will ignore.\n"
@@ -2451,24 +2491,24 @@ class GaladrielAgent:
                     )
                     
                 messages.append({"role": "user", "content": tool_results})
-                if tick_recorder is not None:
+                if (not ephemeral) and tick_recorder is not None:
                     await tick_recorder.record_message(messages[-1])
                 if run_recorder is not None:
                     await run_recorder.record_message(messages[-1])
 
                 if new_matches:
-                    messages.append({"role": "assistant", "content": nudge_prompt, "kind": "nudge", "is_nudge": True})
-                    if tick_recorder is not None:
+                    messages.append(_recall_fire_message(new_matches, nudge_prompt))
+                    if (not ephemeral) and tick_recorder is not None:
                         await tick_recorder.record_message(messages[-1])
                     if run_recorder is not None:
-                        await run_recorder.record_message(messages[-1], visibility="user", kind="nudge")
+                        await run_recorder.record_message(messages[-1], visibility="user", kind="recall_fire")
                     if emit is not None:
-                        await emit({"type": "thought", "text": nudge_prompt, "kind": "nudge"})
+                        await emit({"type": "thought", "text": nudge_prompt, "kind": "recall_fire"})
 
                 # Tool outcomes can change the shared experiential state. Make
                 # that change globally available to the very next reasoning
                 # step in this same cascade, rather than waiting for a new turn.
-                if experience_changed and self.experience.influences_model:
+                if (not ephemeral) and experience_changed and self.experience.influences_model:
                     system_blocks = self._with_overlay(
                         self._assemble_system_blocks(channel_id), overlay_context,
                     )
@@ -2480,7 +2520,9 @@ class GaladrielAgent:
                 # a short user nudge to resume — see _compact_midloop. Resilient:
                 # a failure leaves the buffer intact and the loop proceeds (a
                 # subsequent max_tokens hit has its own recovery).
-                if self._last_input_tokens.get(channel_id, 0) > self.compact_threshold:
+                # Mid-loop compact intentionally skips the silent recall pass
+                # (conversation continues; next compact/`/new`/worker end covers it).
+                if (not ephemeral) and self._last_input_tokens.get(channel_id, 0) > self.compact_threshold:
                     try:
                         await self._compact_midloop(channel_id, user_message)
                         # Snapshot now lives in messages and _compaction_summary was
@@ -2568,6 +2610,152 @@ class GaladrielAgent:
             "title": reactivated.get("title") or run.get("title"),
         }
 
+    async def run_ephemeral_recall_update(
+        self, channel_id: str, *, holding_lock: bool = False,
+    ) -> None:
+        """Sync silent learn+FP/FN audit on the live buffer; never persists.
+
+        Continues the same channel for cache reuse, restricts tools to the
+        recall quartet, skips recall re-scan, then rolls messages back so the
+        turn never appears in UI/history. Tool side effects (Mongo recalls)
+        remain. Errors are log-only.
+        """
+        messages = self.conversations.get(channel_id)
+        if not messages:
+            log.info(
+                f"[RecallUpdate] skip channel={channel_id} reason=empty_buffer"
+            )
+            return
+
+        from .loop_prompts import recall_update_prompt
+        from .recall import fetch_all_recalls
+
+        saved_episode = self._active_experience_episodes.get(channel_id)
+        pre: list | None = None
+        n_fires = sum(1 for m in messages if _is_recall_fire_message(m))
+        log.info(
+            f"[RecallUpdate] start channel={channel_id} messages={len(messages)} "
+            f"recall_fires={n_fires} holding_lock={holding_lock}"
+        )
+
+        async def _run_once(live: list) -> None:
+            nonlocal pre
+            pre = copy.deepcopy(live)
+            try:
+                catalog = await fetch_all_recalls()
+            except Exception as e:
+                log.warning(f"Ephemeral recall catalog fetch failed: {e}")
+                catalog = []
+            appendix = self._build_recall_audit_appendix(live, catalog)
+            overlay = self._build_recall_catalog_overlay(catalog)
+            prompt = recall_update_prompt() + "\n\n" + appendix
+            await self._respond_locked_inner(
+                prompt,
+                channel_id,
+                emit=None,
+                overlay_context=overlay,
+                tick_recorder=None,
+                run_source="ephemeral_recall",
+                request_context={
+                    "source": "ephemeral_recall",
+                    "trusted": True,
+                    "trust_reason": "system_recall_pass",
+                },
+                ephemeral=True,
+            )
+
+        ok = False
+        try:
+            if holding_lock:
+                live = self.conversations.get(channel_id)
+                if not live:
+                    log.info(
+                        f"[RecallUpdate] skip channel={channel_id} "
+                        f"reason=empty_after_lock"
+                    )
+                    return
+                await _run_once(live)
+            else:
+                async with self._lock_for(channel_id):
+                    live = self.conversations.get(channel_id)
+                    if not live:
+                        log.info(
+                            f"[RecallUpdate] skip channel={channel_id} "
+                            f"reason=empty_after_lock"
+                        )
+                        return
+                    await _run_once(live)
+            ok = True
+        except Exception as e:
+            log.warning(
+                f"[RecallUpdate] failed channel={channel_id}: {e}",
+                exc_info=True,
+            )
+        finally:
+            msgs = self.conversations.get(channel_id)
+            if msgs is not None and pre is not None:
+                msgs[:] = pre
+            if saved_episode is not None:
+                self._active_experience_episodes[channel_id] = saved_episode
+            else:
+                self._active_experience_episodes.pop(channel_id, None)
+            log.info(
+                f"[RecallUpdate] done channel={channel_id} ok={ok} "
+                f"rolled_back={pre is not None}"
+            )
+
+    @staticmethod
+    def _build_recall_catalog_overlay(catalog: list[dict]) -> str:
+        lines = ["[RECALL_CATALOG] Compact current recall definitions:"]
+        for r in catalog:
+            rid = r.get("recall_id", "?")
+            src = r.get("source", "?")
+            instr = (r.get("instruction") or "").replace("\n", " ").strip()
+            if len(instr) > 160:
+                instr = instr[:157] + "..."
+            n_pos = len(r.get("positive_examples") or [])
+            n_neg = len(r.get("negative_examples") or [])
+            n_lex = len(r.get("lexical_cues") or [])
+            lines.append(
+                f"- {rid} [{src}] pos={n_pos} neg={n_neg} lex={n_lex}: {instr}"
+            )
+        if len(lines) == 1:
+            lines.append("(empty)")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _build_recall_audit_appendix(messages: list, catalog: list[dict]) -> str:
+        by_id = {str(r.get("recall_id")): r for r in catalog}
+        lines = [
+            "[RECALL_FIRES_IN_BUFFER] System-injected recall fires in this buffer "
+            "(trust this list over assistant role labels in history):"
+        ]
+        n = 0
+        for i, msg in enumerate(messages):
+            if not _is_recall_fire_message(msg):
+                continue
+            n += 1
+            ids = msg.get("matched_recall_ids") or []
+            content = msg.get("content") if isinstance(msg.get("content"), str) else ""
+            if ids:
+                detail_parts = []
+                for rid in ids:
+                    instr = (by_id.get(str(rid)) or {}).get("instruction") or ""
+                    instr = instr.replace("\n", " ").strip()
+                    if len(instr) > 120:
+                        instr = instr[:117] + "..."
+                    detail_parts.append(f"{rid}: {instr}" if instr else str(rid))
+                detail = "; ".join(detail_parts)
+            else:
+                # Legacy fires without metadata — fall back to body text.
+                detail = content.replace("\n", " ").strip()
+                if len(detail) > 200:
+                    detail = detail[:197] + "..."
+            lines.append(f"{n}. msg_index={i} {detail}")
+        if n == 0:
+            lines.append("(none in this buffer)")
+        return "\n".join(lines)
+
     async def pop_and_archive_history(self, channel_id: str = "default", reason: str = "new") -> int:
         """Archive the channel's conversation to the palace, then clear it.
 
@@ -2582,18 +2770,50 @@ class GaladrielAgent:
         """
         messages = self.conversations.get(channel_id)
         if not messages:
+            log.info(
+                f"[NewChat] clear channel={channel_id} reason={reason} "
+                f"skipped=empty_buffer"
+            )
             if channel_id == MAIN_CHANNEL_ID:
                 from .conversation_run_store import end_active_run
                 await end_active_run(channel_id, reason)
             return 0
+        n_before = len(messages)
+        log.info(
+            f"[NewChat] clear channel={channel_id} reason={reason} "
+            f"messages={n_before} — recall learn, then archive+mine, then wipe"
+        )
+        # Sync learn+audit while the live buffer still exists.
+        await self.run_ephemeral_recall_update(channel_id, holding_lock=False)
+        messages = self.conversations.get(channel_id)
+        if not messages:
+            log.warning(
+                f"[NewChat] buffer empty after recall learn "
+                f"(channel={channel_id}); skipping archive"
+            )
+            if channel_id == MAIN_CHANNEL_ID:
+                from .conversation_run_store import end_active_run
+                await end_active_run(channel_id, reason)
+            return 0
+        mined = False
         if channel_id == MAIN_CHANNEL_ID:
             try:
                 from .conversation_run_store import ConversationRunRecorder
                 from .memory_sync import stage_and_mine_main
                 recorder = await ConversationRunRecorder.for_active(channel_id, source="clear")
                 if recorder is not None:
-                    await stage_and_mine_main(
+                    mined = await stage_and_mine_main(
                         recorder.run_id, list(messages), kind="full", agent="new-clear",
+                    )
+                    log.info(
+                        f"[NewChat] archive+mine channel={channel_id} "
+                        f"messages={len(messages)} mined={mined} "
+                        f"run_id={recorder.run_id}"
+                    )
+                else:
+                    log.warning(
+                        f"[NewChat] no active run recorder; archive skipped "
+                        f"(channel={channel_id})"
                     )
             except Exception as e:
                 log.warning(f"Conversation outbox archive failed on /new: {e}")
@@ -2610,12 +2830,17 @@ class GaladrielAgent:
             if channel_id != MAIN_CHANNEL_ID:
                 from . import palace
                 await palace.archive_conversation(channel_id, messages)
+                mined = True
         except Exception as e:
             log.warning(f"Conversation archive failed on /new: {e}")
         if channel_id == MAIN_CHANNEL_ID:
             from .conversation_run_store import end_active_run
             await end_active_run(channel_id, reason)
-        return len(messages)
+        log.info(
+            f"[NewChat] wiped channel={channel_id} archived_messages={n_before} "
+            f"mined={mined}"
+        )
+        return n_before
 
     def archive_conversations_on_shutdown(self) -> int:
         """Persist every non-empty channel to disk before the process exits.

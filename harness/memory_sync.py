@@ -24,13 +24,26 @@ async def stage_and_mine_main(
 ) -> bool:
     """Stage a stable Palace batch, record it in Mongo, then mine it once."""
     if not messages:
+        log.info(
+            f"[PalaceSync] stage_and_mine skip run_id={run_id} kind={kind} "
+            f"agent={agent} reason=empty_messages"
+        )
         return True
     from . import palace
 
+    log.info(
+        f"[PalaceSync] staging run_id={run_id} kind={kind} agent={agent} "
+        f"messages={len(messages)}"
+    )
     batch_dir = palace.archive_conversation_durable("main", messages, kind=kind)
     if batch_dir is None:
+        log.warning(
+            f"[PalaceSync] stage failed run_id={run_id} kind={kind} "
+            f"(archive_conversation_durable returned None)"
+        )
         return False
     batch_key = batch_dir.name
+    log.info(f"[PalaceSync] staged batch_key={batch_key} path={batch_dir}")
     try:
         from scripts.lib.db import get_db
         db = get_db()
@@ -53,6 +66,10 @@ async def stage_and_mine_main(
         log.warning("Palace outbox stage was not recorded: %s", exc)
 
     ok = await palace.mine_batch_dir(batch_dir, agent=agent)
+    log.info(
+        f"[PalaceSync] mine {'ok' if ok else 'FAILED'} batch_key={batch_key} "
+        f"agent={agent} kind={kind} messages={len(messages)}"
+    )
     try:
         from scripts.lib.db import get_db
         await get_db()[conversation_run_store.OUTBOX].update_one(

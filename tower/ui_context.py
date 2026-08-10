@@ -144,8 +144,11 @@ def _serialize_assistant_turn(messages: list, start: int) -> tuple[list[dict], i
             if thought:
                 blocks.append({"type": "thought", "text": thought})
 
-            # Nudges stay assistant messages for the model/API; render as thoughts in Tower.
-            is_nudge = msg.get("kind") == "nudge" or msg.get("is_nudge")
+            # Recall fires stay assistant messages for the model/API; render as thoughts in Tower.
+            is_nudge = (
+                msg.get("kind") in ("recall_fire", "nudge")
+                or msg.get("is_nudge")
+            )
 
             if isinstance(content, list):
                 for block in content:

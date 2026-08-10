@@ -324,5 +324,33 @@
             "are you conscious",
             "are you sentient"
         ]
+    },
+    {
+        "recall_id": "sys_learn_recall",
+        "instruction": "The user is teaching something durable to reuse later. Store a short semantic recall via `learn_recall` (one-liner pointer / preference / rule — not an essay). Put elaborate detail in MEMORY.md, a knowledge file, or the palace as needed, then point the recall at that. Use `get_recall` first if updating an existing rule; `purge_recall` only for bad user recalls. System recall instructions stay immutable.",
+        "positive_examples": [
+            "remember i like to",
+            "please remember that",
+            "don't forget",
+            "note this preference",
+            "keep this in mind for later",
+            "you should recall that"
+        ],
+        "negative_examples": [
+            "do you remember when",
+            "what did we agree on",
+            "can you remind me what",
+            "hello how are you today",
+            "write a script to scrape this website"
+        ],
+        "lexical_cues": [
+            "remember",
+            "remember that",
+            "from now on",
+            "always remember",
+            "don't forget",
+            "keep this in mind",
+            "learn recall"
+        ]
     }
 ]

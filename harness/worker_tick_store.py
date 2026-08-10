@@ -217,6 +217,11 @@ class WorkerTickRecorder:
                 event["kind"] = safe["kind"]
             if safe.get("is_nudge"):
                 event["is_nudge"] = safe["is_nudge"]
+            raw_ids = safe.get("matched_recall_ids")
+            if isinstance(raw_ids, list):
+                ids = [str(x) for x in raw_ids if x]
+                if ids:
+                    event["matched_recall_ids"] = ids
         self._sequence += 1
         await self._insert_event(event)
         await self._update_tick({"$set": {

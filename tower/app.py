@@ -670,6 +670,7 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
         matching Discord's `/new` / `!new` / `!clear` behaviour."""
         channel = (request.json or {}).get("channel", MAIN_CHANNEL_ID)
         loop = scheduler._loop if scheduler else None
+        log.info(f"[Tower] /api/clear channel={channel} — new chat requested")
         if loop and loop.is_running():
             future = asyncio.run_coroutine_threadsafe(
                 agent.pop_and_archive_history(channel, reason="clear"), loop,
@@ -681,8 +682,13 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
                 return jsonify({"error": str(e)}), 500
         else:
             # Fallback: agent loop unavailable — clear without archiving.
+            log.warning(
+                f"[Tower] /api/clear channel={channel} — no agent loop; "
+                f"clearing without archive/mine/learn"
+            )
             agent.clear_history(channel)
             archived = 0
+        log.info(f"[Tower] /api/clear channel={channel} done archived={archived}")
         return jsonify({"status": "ok", "archived": archived})
 
     # ── Agent model API ──────────────────────────────────────────
@@ -854,15 +860,19 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
     def api_create_recall():
         data = request.json or {}
         instruction = data.get("instruction", "").strip()
-        tags = data.get("regex_tags", [])
         if not instruction:
             return jsonify({"error": "Instruction is required"}), 400
-        
-        from harness.tools import _set_recall
+
+        from harness.tools import _learn_recall
         try:
-            result = _run_async(_set_recall(instruction))
-            if "[error]" in result:
-                return jsonify({"error": result}), 500
+            result = _run_async(_learn_recall(
+                instruction=instruction,
+                positive_examples=data.get("positive_examples"),
+                negative_examples=data.get("negative_examples"),
+                lexical_cues=data.get("lexical_cues") or data.get("regex_tags"),
+            ))
+            if isinstance(result, str) and result.startswith("[error]"):
+                return jsonify({"error": result}), 400
             return jsonify({"status": "ok", "message": result})
         except Exception as e:
             return jsonify({"error": str(e)}), 500
@@ -899,7 +909,7 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
         
         async def _toggle():
             db = get_db()
-            if not db:
+            if db is None:
                 return jsonify({"error": "No database"}), 500
             try:
                 coll = db["recalls"]
@@ -908,6 +918,8 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
                     return jsonify({"error": "Recall not found"}), 404
                 new_state = not doc.get("enabled", True)
                 await coll.update_one({"_id": ObjectId(recall_id)}, {"$set": {"enabled": new_state}})
+                from harness.recall import fetch_all_recalls, get_semantic_router
+                get_semantic_router(await fetch_all_recalls(), force_reload=True)
                 return jsonify({"status": "ok", "enabled": new_state})
             except Exception as e:
                 return jsonify({"error": str(e)}), 500
@@ -955,6 +967,10 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
                         break
                 
                 if updated:
+                    if not positive or not negative or not lexical:
+                        return jsonify({
+                            "error": "positive_examples, negative_examples, and lexical_cues must each be non-empty",
+                        }), 400
                     with open(config_path, "w", encoding="utf-8") as f:
                         json.dump(sys_recalls, f, indent=4)
                     
@@ -963,8 +979,13 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
                     return jsonify({"status": "ok", "source": "system"})
             
             db = get_db()
-            if not db:
+            if db is None:
                 return jsonify({"error": "No database"}), 500
+
+            if not positive or not negative or not lexical:
+                return jsonify({
+                    "error": "positive_examples, negative_examples, and lexical_cues must each be non-empty",
+                }), 400
             
             try:
                 coll = db["recalls"]
@@ -1001,13 +1022,15 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
         
         async def _delete():
             db = get_db()
-            if not db:
+            if db is None:
                 return jsonify({"error": "No database"}), 500
             try:
                 coll = db["recalls"]
                 res = await coll.delete_one({"_id": ObjectId(recall_id)})
                 if res.deleted_count == 0:
                     return jsonify({"error": "Recall not found"}), 404
+                from harness.recall import fetch_all_recalls, get_semantic_router
+                get_semantic_router(await fetch_all_recalls(), force_reload=True)
                 return jsonify({"status": "ok"})
             except Exception as e:
                 return jsonify({"error": str(e)}), 500

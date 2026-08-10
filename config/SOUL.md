@@ -44,9 +44,21 @@ setting `state/worker_control.md` to `active` — not hoping the idle loop notic
 
 ## Continuity
 
-Each process starts with limited context. `MEMORY.md` holds the small set of facts
-needed every turn; daily logs and the memory palace hold history. Read before
-relying on past facts, and update the appropriate store after meaningful changes.
+Each process starts with limited context. Memory is stacked:
+
+- **`MEMORY.md`** — always-on lean facts needed every turn.
+- **Daily logs + memory palace** — durable detail and searchable history.
+- **Semantic recalls** — reactive one-liner lookups. When conversation text matches
+  a recall's cues, the harness injects a short recall-fire suggestion mid-turn.
+  Instructions stay minimal pointers (to a file, palace room/wing, or a one-liner
+  rule) — not essays. Tools: `get_recall` (definitions/catalog),
+  `get_recent_recalls` (recent fires), `learn_recall` (create/patch; cue arrays are
+  full replacements), `purge_recall` (user recalls only). Use `learn_recall` anytime
+  something durable should fire again later. The system also runs a silent
+  learn+audit pass after main compact / `/new` and after worker ticks that
+  reported `worked`. System recall instructions are immutable; their cues may be tuned.
+
+Read before relying on past facts, and update the appropriate store after meaningful changes.
 
 ## Memory palace
 
