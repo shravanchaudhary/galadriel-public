@@ -63,17 +63,25 @@ TOOL_DEFINITIONS = [
             "omitted fields stay unchanged. Provided cue arrays must be non-empty "
             "and are FULL REPLACEMENTS — call get_recall first and pass the complete "
             "intended array. "
+            "Cue quality rules: positive_examples = 3–5 short realistic user/assistant "
+            "phrasings that should fire (not paraphrases of the instruction); "
+            "lexical_cues = high-precision exact anchors that should hard-hit; "
+            "negative_examples = near-misses that should NOT fire; "
+            "instruction = short action pointer (tool / file / palace room), not an essay. "
+            "positive_examples / negative_examples also feed Stage-2 SLM YES/NO few-shots "
+            "on matched_chunk — fix false-positive injects by adding the offending "
+            "matched_chunk to negative_examples (full-replace arrays). "
+            "Package: durable content → palace drawer/KG; when-to-recollect → this recall. "
             "To update an existing rule, pass its recall_id (use get_recall to find it). "
             "System recalls (sys_*): cue arrays may be replaced; instruction changes "
-            "are rejected. Keep instructions as short pointers "
-            "(to a file, palace room, or one-liner rule), not essays."
+            "are rejected."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "instruction": {
                     "type": "string",
-                    "description": "Short reactive instruction / pointer. Required on create; optional on patch.",
+                    "description": "Short reactive instruction / pointer (tool, file, or palace room). Required on create; optional on patch.",
                 },
                 "recall_id": {
                     "type": "string",
@@ -82,17 +90,17 @@ TOOL_DEFINITIONS = [
                 "positive_examples": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Semantic trigger utterances. Required non-empty on create; full replace on patch.",
+                    "description": "3–5 short realistic trigger utterances (not instruction paraphrases). Also Stage-2 YES few-shots. Required non-empty on create; full replace on patch.",
                 },
                 "negative_examples": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Near-miss veto utterances. Required non-empty on create; full replace on patch.",
+                    "description": "Near-miss veto utterances that should NOT fire (Stage-1 veto + Stage-2 NO few-shots). Required non-empty on create; full replace on patch.",
                 },
                 "lexical_cues": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Exact tags/phrases (lowercase, spaces ok). Required non-empty on create; full replace on patch.",
+                    "description": "High-precision exact tags/phrases (lowercase, spaces ok). Required non-empty on create; full replace on patch.",
                 },
                 "enabled": {
                     "type": "boolean",
@@ -827,8 +835,12 @@ TOOL_DEFINITIONS = [
     {
         "name": "get_recent_recalls",
         "description": (
-            "Read recent recall FIRES (activation log: which recall fired, on what text, "
-            "scores, channel, time). Not the definition catalog — use get_recall for that."
+            "Read recent recall proposals and verified fires for Stage-1/2 audit. "
+            "proposed+rejected = Stage-1 matched but Stage-2 SLM vetoed; "
+            "proposed+verified / verified = Stage-2 accepted and injected. "
+            "Cue patches via learn_recall retune Stage-2 few-shots (use matched_chunk "
+            "as a negative when an inject was a false positive). "
+            "Not the definition catalog — use get_recall for that."
         ),
         "input_schema": {
             "type": "object",
@@ -1068,16 +1080,17 @@ async def execute_tool(
 
 
 async def _get_recent_recalls(hours_ago: int = 24) -> str:
-    """Read recent recall fires from recall_fires (+ legacy nudge_logs)."""
+    """Read recent proposed candidates and verified recall fires."""
     from .db_ops import get_db
+    from .recall import PROPOSED_RECALLS_COLLECTION
     db = get_db()
     if db is None:
         return "[error] No DB connection available."
     from datetime import datetime, timedelta, timezone
     since = datetime.now(timezone.utc) - timedelta(hours=hours_ago)
     try:
-        fires = []
-        for coll_name in ("recall_fires", "nudge_logs"):
+        events = []
+        for coll_name in (PROPOSED_RECALLS_COLLECTION, "recall_fires"):
             try:
                 docs = await (
                     db[coll_name]
@@ -1088,18 +1101,30 @@ async def _get_recent_recalls(hours_ago: int = 24) -> str:
                 for d in docs:
                     d = dict(d)
                     d["_log_source"] = coll_name
-                    fires.append(d)
+                    events.append(d)
             except Exception:
                 continue
-        fires.sort(key=lambda d: d.get("timestamp") or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
-        fires = fires[:50]
-        if not fires:
-            return f"No recall fires recorded in the last {hours_ago} hours."
+        events.sort(
+            key=lambda d: d.get("timestamp") or datetime.min.replace(tzinfo=timezone.utc),
+            reverse=True,
+        )
+        events = events[:80]
+        if not events:
+            return f"No proposed or verified recalls in the last {hours_ago} hours."
 
-        res = []
-        for n in fires:
+        legend = (
+            "LEGEND (two-stage recall): "
+            "proposed+rejected = Stage-1 hit, Stage-2 SLM vetoed "
+            "(leave if veto correct; if FN strengthen positives). "
+            "proposed+verified / verified = Stage-2 accepted and injected "
+            "(if FP add matched_chunk to negative_examples via learn_recall). "
+            "matched_chunk = Stage-2 input; text_scanned = broader scan window.\n"
+        )
+        res = [legend]
+        for n in events:
             r_id = n.get("recall_id", "")
-            text = n.get("text_scanned", "")
+            matched = (n.get("matched_chunk") or "").strip()
+            scanned = (n.get("text_scanned") or "").strip()
             pos = n.get("positive_score", n.get("score", 0.0))
             neg = n.get("negative_score")
             neg_s = f"{neg:.3f}" if isinstance(neg, (int, float)) else "n/a"
@@ -1107,13 +1132,28 @@ async def _get_recent_recalls(hours_ago: int = 24) -> str:
             src = n.get("match_source") or "?"
             cue = n.get("lexical_cue")
             cue_s = f" cue={cue!r}" if cue else ""
-            res.append(
-                f"[{n.get('timestamp')}] channel={channel} recall={r_id} "
-                f"source={src} pos={float(pos):.3f} neg={neg_s}{cue_s}\nText: {text}"
-            )
+            if n.get("_log_source") == "recall_fires":
+                status = "verified"
+            elif n.get("injected") or n.get("slm_verified"):
+                status = "proposed+verified"
+            else:
+                status = "proposed+rejected"
+            slm = n.get("slm_reason") or ""
+            slm_s = f" slm={slm}" if slm else ""
+            lines = [
+                f"[{n.get('timestamp')}] status={status} channel={channel} recall={r_id} "
+                f"source={src} pos={float(pos):.3f} neg={neg_s}{cue_s}{slm_s}"
+            ]
+            if matched:
+                lines.append(f"matched_chunk: {matched}")
+            if scanned and scanned != matched:
+                lines.append(f"text_scanned: {scanned}")
+            elif scanned and not matched:
+                lines.append(f"text_scanned: {scanned}")
+            res.append("\n".join(lines))
         return "\n\n".join(res)
     except Exception as e:
-        return f"Error fetching recent recall fires: {e}"
+        return f"Error fetching recent recalls: {e}"
 
 
 async def _get_recall(recall_id: str | None = None) -> str:

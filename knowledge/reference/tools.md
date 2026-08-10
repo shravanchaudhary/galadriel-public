@@ -110,6 +110,15 @@ or truncated, grep the source file the result names.
 | A daily recap / operational narrative | `palace_add_drawer(..., room="episodes")` | Immediately — goodnight uses this for `daily-recap-YYYY-MM-DD` |
 | A structured relational fact | `palace_kg_add(subject, predicate, object)` | Immediately via KG |
 | A reflection in your own voice | `palace_diary_write(entry, topic)` | Immediately into diary |
+| When to recollect a stored fact/rule (reactive trigger) | `learn_recall(...)` pointing at palace/file | No — injects a mid-turn recall-fire suggestion |
+| Always-on lean fact every turn | `MEMORY.md` (stable block) | No — already in context |
+
+**Package learnings:** durable content → drawer/KG; when-to-recollect →
+`learn_recall` with quality cues (positives = realistic phrasings, lexical =
+high-precision anchors, negatives = near-misses that also feed Stage-2 SLM
+few-shots, instruction = short pointer). `get_recent_recalls` shows proposed vs
+verified: FP inject → add `matched_chunk` to negatives; Stage-2 reject that
+should have fired → strengthen positives (ambient + silent learn passes).
 
 **Don't** duplicate. Daily-log lines are an index pointer — durable facts still
 need an explicit palace write.

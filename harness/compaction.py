@@ -33,12 +33,15 @@ COMPRESSION_MESSAGE = (
     "CONVERSATION FLOW: <ordered list of exchanges — 'user asked [brief intent] → agent [what was done/found]'. "
     "Reference user intent, do NOT quote messages verbatim. Keep each entry to one line.>\n"
     "FINDINGS: <what was discovered, confirmed, or ruled out — the 'what we now know'>\n"
+    "LEARNED: <if learned recalls are listed below, cite them as pointers like "
+    "'Learned X → recall(<id>)' instead of re-embedding the full fact prose>\n"
     "WORK DONE: <tools called, decisions made, results obtained — compact, no fluff>\n"
     "DEAD ENDS: <approaches tried that failed or were ruled out, so the next context doesn't retry them>\n"
     "CURRENT STATE: <exactly where things stand right now — ids, board state, partial results>\n"
     "NEXT: <what still needs to happen to close the goal>\n\n"
     "Be ruthlessly concise. Every word must earn its place. "
-    "Preserve exact IDs, names, and numbers — those cannot be reconstructed from prose."
+    "Preserve exact IDs, names, and numbers — those cannot be reconstructed from prose. "
+    "Facts already stored via learn_recall must appear only as recall(<id>) pointers."
 )
 
 
@@ -128,11 +131,15 @@ async def compact_to_snapshot(
     provider: BaseModelProvider = None,
     channel_id: str = "compaction",
     run_id: str | None = None,
+    learned_recall_ids: list[str] | None = None,
 ) -> dict:
     """Compress an entire conversation into one structured memory snapshot.
 
     If `prior_snapshot` is given (a snapshot from an earlier compaction of the
     same channel), it is folded in so cumulative compactions never lose ground.
+
+    `learned_recall_ids` are recalls created/patched in the preceding learn pass;
+    the snapshot should cite them as pointers rather than re-stating full prose.
 
     `channel_id` is only used to tag the cost log entry (the channel being
     compacted), so cost per channel stays accurate even though this call
@@ -152,6 +159,13 @@ async def compact_to_snapshot(
     transcript = _render_transcript(messages)
 
     user_parts = [COMPRESSION_MESSAGE]
+    if learned_recall_ids:
+        ids = ", ".join(f"recall({rid})" for rid in learned_recall_ids if rid)
+        if ids:
+            user_parts.append(
+                "\n\nLEARNED RECALLS FROM THIS BUFFER (cite as pointers in LEARNED; "
+                f"do not restate their full content):\n{ids}"
+            )
     if prior_snapshot:
         user_parts.append(
             "\n\nThere is an EXISTING snapshot from a prior compaction of this same "

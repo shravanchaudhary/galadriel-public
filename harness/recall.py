@@ -13,17 +13,23 @@ from .db_ops import get_db
 log = logging.getLogger("galadriel.recall")
 
 RECALLS_COLLECTION = "recalls"
+PROPOSED_RECALLS_COLLECTION = "proposed_recalls"
 
 _ENCODER = None
 _ENCODER_TYPE = None
 _ROUTER_CACHE = None
 _CACHED_RECALL_IDS = set()
+_SLM_CLIENT = None
+_SLM_CLIENT_FAILED = False
 
 # Noise floor: candidate must be at least this similar to the positive route.
 # Pos/neg compare then discriminates; this is not a tuning dial.
-_POSITIVE_SCORE_FLOOR = 0.7
+_POSITIVE_SCORE_FLOOR = 0.6
 # Lexical hard-hit score (exact cue match); still subject to neg veto.
 _LEXICAL_POSITIVE_SCORE = 1.0
+
+# YES must beat NO by this logit margin (tiny models are YES-biased otherwise).
+_SLM_LOGIT_MARGIN_DEFAULT = 2.0
 
 
 def get_encoder(force_type=None):
@@ -136,7 +142,7 @@ async def fetch_all_recalls() -> list[dict]:
 
 
 def sanitize_text_with_exclude_texts(text: str, exclude_texts: list[str] | None = None) -> str:
-    """Strip exact prior nudge texts and their lines from text before semantic scanning."""
+    """Strip exact prior recall-fire texts and their lines from text before semantic scanning."""
     if not text:
         return ""
     cleaned = text
@@ -285,6 +291,7 @@ def _accept_candidate(
     match_obj["positive_score"] = positive_score
     match_obj["negative_score"] = negative_score
     match_obj["match_source"] = match_source
+    match_obj["matched_chunk"] = chunk
     if lexical_cue:
         match_obj["lexical_cue"] = lexical_cue
     matches.append(match_obj)
@@ -380,13 +387,166 @@ def scan_text_for_recalls(
     return matches
 
 
-def generate_nudge(matched_recalls: list[dict]) -> str:
-    """Generate the nudge text from matched recalls."""
+def generate_recall_fire_text(matched_recalls: list[dict]) -> str:
+    """Generate the injected recall-fire suggestion text from matched recalls."""
     if not matched_recalls:
         return ""
 
-    nudge_lines = []
+    fire_lines = []
     for recall in matched_recalls:
-        nudge_lines.append(f"- {recall.get('instruction')}")
+        fire_lines.append(f"- {recall.get('instruction')}")
 
-    return "\n".join(nudge_lines)
+    return "\n".join(fire_lines)
+
+
+def _slm_verify_enabled() -> bool:
+    raw = (os.environ.get("RECALL_SLM_VERIFY") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def _get_slm_client():
+    """Lazy LocalLLMClient for Stage-2 verify. None if unavailable."""
+    global _SLM_CLIENT, _SLM_CLIENT_FAILED
+    if not _slm_verify_enabled():
+        return None
+    if _SLM_CLIENT is not None:
+        return _SLM_CLIENT
+    if _SLM_CLIENT_FAILED:
+        return None
+    try:
+        from local_llm import LocalLLMClient, default_model_path
+
+        path = default_model_path()
+        if not path.exists():
+            # Do not sticky-fail: image/entrypoint may populate weights later.
+            log.warning(
+                "Recall SLM verify: GGUF missing at %s; fail-open until available",
+                path,
+            )
+            return None
+        _SLM_CLIENT = LocalLLMClient(in_process=True)
+        return _SLM_CLIENT
+    except Exception as e:
+        log.warning(f"Recall SLM verify: client init failed ({e}); fail-open")
+        _SLM_CLIENT_FAILED = True
+        return None
+
+
+def _slm_logit_margin() -> float:
+    raw = (os.environ.get("RECALL_SLM_MARGIN") or "").strip()
+    if not raw:
+        return _SLM_LOGIT_MARGIN_DEFAULT
+    try:
+        return float(raw)
+    except ValueError:
+        return _SLM_LOGIT_MARGIN_DEFAULT
+
+
+# Global hard-negatives shown on every Stage-2 prompt. Tiny models are YES-biased
+# on markup / bare tool names / file-write ack noise from tool-output scanning.
+_SLM_GLOBAL_HARD_NEGATIVES: tuple[str, ...] = (
+    "<!doctype html>",
+    "<head>",
+    "--bg: #ffffff;",
+    "read_file",
+    "write_file",
+    "Written 7 bytes to state/worker_control.md",
+    "hello how are you today",
+)
+
+
+def _build_slm_verify_prompt(chunk: str, recall: dict) -> str:
+    """Few-shot YES/NO prompt for logit scoring.
+
+    Order: task rule → recall instruction → global hard-negatives → this
+    recall's own pos/neg cues → query chunk. Keep examples short; 270M models
+    need explicit NO anchors more than long prose.
+    """
+    instruction = (recall.get("instruction") or "").strip()
+    lines = [
+        "Decide if TEXT matches the recall intent. Answer YES or NO.",
+        "YES only if TEXT clearly asks for or is about that intent.",
+        "NO for HTML/CSS markup, bare tool names, file-write acks, or unrelated chatter.",
+        f"Recall: {instruction[:160]}",
+    ]
+    # Global hard-negatives first (tool-output junk), then this recall's cues.
+    # Putting globals last over-biases tiny models toward NO on true positives.
+    for ex in _SLM_GLOBAL_HARD_NEGATIVES:
+        lines.append(f"TEXT: {ex}\nAnswer: NO")
+    for ex in (recall.get("positive_examples") or [])[:3]:
+        if isinstance(ex, str) and ex.strip():
+            lines.append(f"TEXT: {ex.strip()[:160]}\nAnswer: YES")
+    for ex in (recall.get("negative_examples") or [])[:3]:
+        if isinstance(ex, str) and ex.strip():
+            if ex.strip() in _SLM_GLOBAL_HARD_NEGATIVES:
+                continue
+            lines.append(f"TEXT: {ex.strip()[:160]}\nAnswer: NO")
+    lines.append(f"TEXT: {chunk.strip()[:400]}\nAnswer:")
+    return "\n".join(lines)
+
+
+def verify_recall_candidate_slm(
+    chunk: str,
+    recall: dict,
+    *,
+    client=None,
+    margin: float | None = None,
+) -> tuple[bool, str]:
+    """Stage-2 intent filter. Returns (ok, reason). Fail-open on errors.
+
+    Uses in-process LocalLLM YES/NO logit margin with few-shot examples from
+    the recall itself. ok=True means inject/fire; ok=False means proposed-only.
+    """
+    if not _slm_verify_enabled():
+        return True, "slm_disabled"
+
+    instruction = (recall.get("instruction") or "").strip()
+    text = (chunk or "").strip()
+    if not text or not instruction:
+        return True, "slm_skip_empty"
+
+    llm = client if client is not None else _get_slm_client()
+    if llm is None:
+        return True, "slm_unavailable"
+
+    prompt = _build_slm_verify_prompt(text, recall)
+    threshold = _slm_logit_margin() if margin is None else float(margin)
+    try:
+        diff = float(llm.yes_no_logit_margin(prompt))
+        ok = diff > threshold
+        reason = (
+            f"slm_logit:{diff:+.2f}>{threshold:.2f}"
+            if ok
+            else f"slm_logit:{diff:+.2f}<={threshold:.2f}"
+        )
+        return ok, reason
+    except Exception as e:
+        log.warning(
+            "Recall SLM verify error for %s (%s); fail-open",
+            recall.get("recall_id"),
+            e,
+        )
+        return True, f"slm_error:{type(e).__name__}"
+
+
+def filter_matches_with_slm(matches: list[dict], *, client=None) -> tuple[list[dict], list[dict]]:
+    """Verify Stage-1 matches. Returns (verified, rejected). Fail-open keeps match."""
+    verified: list[dict] = []
+    rejected: list[dict] = []
+    for match in matches:
+        chunk = match.get("matched_chunk") or ""
+        ok, reason = verify_recall_candidate_slm(chunk, match, client=client)
+        enriched = dict(match)
+        enriched["slm_verified"] = bool(ok)
+        enriched["slm_reason"] = reason
+        if ok:
+            verified.append(enriched)
+        else:
+            rejected.append(enriched)
+            log.info(
+                "[SLM Reject] route=%r reason=%s chunk=%r",
+                match.get("recall_id"),
+                reason,
+                (chunk or "")[:100],
+            )
+    return verified, rejected

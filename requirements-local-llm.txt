@@ -1,0 +1,17 @@
+# Deps for the in-process Gemma 3 270M runtime (local_llm/).
+# The staging runtime Dockerfile installs this alongside requirements.txt and
+# bakes the GGUF for Stage-2 recall verification on Fargate CPU.
+#
+# Local install:
+#   pip install -r requirements-local-llm.txt
+#
+# Platform wheels (recommended):
+#   macOS Apple Silicon (Metal):
+#     CMAKE_ARGS="-DGGML_METAL=on" pip install llama-cpp-python --force-reinstall --no-cache-dir
+#   Linux CPU (staging / Fargate):
+#     pip install llama-cpp-python --force-reinstall --no-cache-dir
+#   Linux NVIDIA:
+#     CMAKE_ARGS="-DGGML_CUDA=on" pip install llama-cpp-python --force-reinstall --no-cache-dir
+
+llama-cpp-python>=0.3.0
+# fastapi + uvicorn + httpx already in requirements.txt

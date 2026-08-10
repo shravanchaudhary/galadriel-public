@@ -34,7 +34,7 @@
       "harness/**",
       "tower/**",
       "*_bot/**",
-      "cmd/**"
+      "local_llm/**"
     ],
     "excludes": [
       "tower/control_app.py",

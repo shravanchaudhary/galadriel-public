@@ -71,8 +71,8 @@ window.ChatLive = (function () {
     }
 
     function appendThought(delta, turn, opts) {
-        const isNudge = opts && (opts.kind === 'nudge' || opts.kind === 'recall_fire' || opts.is_nudge);
-        if (!turn.thoughtEl || isNudge) {
+        const isRecallFire = opts && opts.kind === 'recall_fire';
+        if (!turn.thoughtEl || isRecallFire) {
             const d = document.createElement('details');
             d.className = 'thought';
             d.innerHTML = '<summary>Thinking</summary>';
@@ -82,8 +82,8 @@ window.ChatLive = (function () {
             turn.bodyEl.appendChild(d);
         }
         turn.thoughtEl.textContent += delta;
-        if (isNudge) {
-            // Close the nudge thought so later model thoughts stream into a fresh block.
+        if (isRecallFire) {
+            // Close the recall-fire thought so later model thoughts stream into a fresh block.
             turn.thoughtEl = null;
         }
         ensureTyping(turn);

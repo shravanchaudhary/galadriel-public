@@ -145,10 +145,7 @@ def _serialize_assistant_turn(messages: list, start: int) -> tuple[list[dict], i
                 blocks.append({"type": "thought", "text": thought})
 
             # Recall fires stay assistant messages for the model/API; render as thoughts in Tower.
-            is_nudge = (
-                msg.get("kind") in ("recall_fire", "nudge")
-                or msg.get("is_nudge")
-            )
+            is_recall_fire = msg.get("kind") == "recall_fire"
 
             if isinstance(content, list):
                 for block in content:
@@ -157,7 +154,7 @@ def _serialize_assistant_turn(messages: list, start: int) -> tuple[list[dict], i
                         text = _block_text(block)
                         if text:
                             blocks.append({
-                                "type": "thought" if is_nudge else "text",
+                                "type": "thought" if is_recall_fire else "text",
                                 "text": text,
                             })
                     elif btype == "tool_use":
@@ -165,7 +162,7 @@ def _serialize_assistant_turn(messages: list, start: int) -> tuple[list[dict], i
                         pending_tools.append({"id": uid, "name": name, "input": inp})
             elif isinstance(content, str) and content:
                 blocks.append({
-                    "type": "thought" if is_nudge else "text",
+                    "type": "thought" if is_recall_fire else "text",
                     "text": content,
                 })
             i += 1

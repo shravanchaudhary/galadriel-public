@@ -37,3 +37,8 @@ state/phone_bridge_auth.json
 sessionmanager-bundle/
 sessionmanager-bundle.zip
 test_db.py
+
+# Local Gemma 3 270M GGUF weights (downloaded via `python -m local_llm download`)
+local_llm/models/*.gguf
+local_llm/models/*.partial
+.ipynb_checkpoints/

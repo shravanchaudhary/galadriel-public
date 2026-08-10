@@ -38,3 +38,10 @@ venv/
 # because the storage entrypoint seeds config, jobs, state, and knowledge defaults.
 img/
 ext_images_provided/
+
+# Local LLM experiments / host-downloaded weights. The image downloads the
+# staging GGUF in a dedicated layer (see Dockerfile) instead of copying these.
+local_llm/models/*.gguf
+local_llm/models/*.partial
+local_llm/experimental_gemma270m.ipynb
+.ipynb_checkpoints/

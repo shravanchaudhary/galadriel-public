@@ -327,30 +327,33 @@
     },
     {
         "recall_id": "sys_learn_recall",
-        "instruction": "The user is teaching something durable to reuse later. Store a short semantic recall via `learn_recall` (one-liner pointer / preference / rule — not an essay). Put elaborate detail in MEMORY.md, a knowledge file, or the palace as needed, then point the recall at that. Use `get_recall` first if updating an existing rule; `purge_recall` only for bad user recalls. System recall instructions stay immutable.",
+        "instruction": "The user is teaching something durable to reuse later. Store durable detail via palace_add_drawer / palace_kg_add (or MEMORY.md / knowledge file), then create/patch a short when-to-recollect recall via `learn_recall` pointing at that store. Cue quality: positive_examples = 3–5 realistic phrasings (not instruction paraphrases); lexical_cues = high-precision anchors; negative_examples = near-misses; instruction = one-liner pointer — not an essay. Use `get_recall` first if updating; `purge_recall` only for bad user recalls. System recall instructions stay immutable.",
         "positive_examples": [
             "remember i like to",
             "please remember that",
             "don't forget",
             "note this preference",
             "keep this in mind for later",
-            "you should recall that"
+            "you should recall that",
+            "from now on always do it this way",
+            "save this as a rule for next time"
         ],
         "negative_examples": [
             "do you remember when",
             "what did we agree on",
             "can you remind me what",
             "hello how are you today",
-            "write a script to scrape this website"
+            "write a script to scrape this website",
+            "what was the name of the person who emailed us"
         ],
         "lexical_cues": [
-            "remember",
             "remember that",
             "from now on",
             "always remember",
             "don't forget",
             "keep this in mind",
-            "learn recall"
+            "learn recall",
+            "save this as a rule"
         ]
     }
 ]

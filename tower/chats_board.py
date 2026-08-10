@@ -64,24 +64,20 @@ def _as_messages(events: list[dict]) -> list[dict]:
     User turns are stored as ``direct_user`` (not ``protocol_message``); assistant
     / tool traffic is ``protocol_message`` and may carry ``thought``. Both are
     required — protocol-only drops users, so serialize_chat_history skips every
-    assistant turn (and its thoughts). Recall-fire messages (kind=recall_fire or
-    legacy kind=nudge) are also preserved so suggestions appear in the transcript.
+    assistant turn (and its thoughts). Recall-fire messages (kind=recall_fire)
+    are also preserved so suggestions appear in the transcript.
     """
     messages = []
     for event in events:
-        if event.get("kind") not in ("protocol_message", "direct_user", "nudge", "recall_fire"):
+        if event.get("kind") not in ("protocol_message", "direct_user", "recall_fire"):
             continue
         if event.get("role") is None or event.get("content") is None:
             continue
         message = {"role": event.get("role"), "content": event.get("content")}
         if event.get("thought"):
             message["_thought"] = event["thought"]
-        if (
-            event.get("kind") in ("nudge", "recall_fire")
-            or event.get("is_nudge")
-        ):
-            message["kind"] = event.get("kind") if event.get("kind") in ("nudge", "recall_fire") else "recall_fire"
-            message["is_nudge"] = True
+        if event.get("kind") == "recall_fire":
+            message["kind"] = "recall_fire"
             if event.get("matched_recall_ids"):
                 message["matched_recall_ids"] = event["matched_recall_ids"]
         messages.append(message)
@@ -94,12 +90,8 @@ def _events_to_messages(events: list[dict]) -> list[dict]:
         message = {"role": event.get("role", "unknown"), "content": event.get("content")}
         if event.get("thought"):
             message["_thought"] = event["thought"]
-        if (
-            event.get("kind") in ("nudge", "recall_fire")
-            or event.get("is_nudge")
-        ):
-            message["kind"] = event.get("kind") if event.get("kind") in ("nudge", "recall_fire") else "recall_fire"
-            message["is_nudge"] = True
+        if event.get("kind") == "recall_fire":
+            message["kind"] = "recall_fire"
             if event.get("matched_recall_ids"):
                 message["matched_recall_ids"] = event["matched_recall_ids"]
         messages.append(message)
@@ -137,12 +129,9 @@ def _direct_history(events: list[dict]) -> list[dict]:
             if thought:
                 blocks.append({"type": "thought", "text": thought})
             if text:
-                is_nudge = (
-                    event.get("kind") in ("nudge", "recall_fire")
-                    or event.get("is_nudge")
-                )
+                is_recall_fire = event.get("kind") == "recall_fire"
                 blocks.append({
-                    "type": "thought" if is_nudge else "text",
+                    "type": "thought" if is_recall_fire else "text",
                     "text": text,
                 })
             if blocks:

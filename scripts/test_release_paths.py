@@ -40,6 +40,7 @@ EXPECTED = {
     "Dockerfile": {"runtime"},
     "Dockerfile.control": {"control"},
     "requirements.txt": {"runtime"},
+    "local_llm/engine.py": {"runtime"},
     "requirements-control.txt": {"control"},
     "control_main.py": {"control"},
     "tower/control_app.py": {"control"},

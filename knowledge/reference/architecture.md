@@ -108,7 +108,8 @@ everything into one file.
 | Hard irreversible / safety rule needed every turn | **Edit `GUARDRAILS.md` or `RECALL.md`** | Only promote durable hard rules — not one-off corrections (those → `state/steering.md`) |
 | A new coded tool / reusable capability as code | **`personal-tools/`** (never `harness/`) | See §3 — agent-owned tools. Product tools are provider-updated and blocked from agent edits |
 | A DB read / write / state change / counter | **The `db_*` primitive tools** | See `knowledge/reference/data.md`, `state/db_index.md`. Freestyle pymongo/mongosh in `run_shell` is refused. New kind of state → author a `workflows/*.json` spec |
-| Something to remember long-term, recallable later | **Palace** — `palace_add_drawer`, `palace_kg_add`, `palace_diary_write`, or `memory_log` (hot daily index only) | See `knowledge/reference/tools.md` decision matrix. Don't duplicate |
+| Something to remember long-term, searchable later | **Palace** — `palace_add_drawer`, `palace_kg_add`, `palace_diary_write`, or `memory_log` (hot daily index only) | See `knowledge/reference/tools.md` decision matrix. Don't duplicate |
+| When to recollect a stored fact mid-turn | **Semantic recall** — `learn_recall` (Stage-1 embed/lexical + Stage-2 SLM verify) | Point at palace/file; don't essay the fact into the instruction |
 | Deep expertise on a subject | **The SME workflow** (section 4) | Curate `.md` files under `sme/`; durable learned facts → palace `room=knowledge` |
 
 ### 3. Two tool sections — developer tools vs personal tools
