@@ -502,6 +502,28 @@ def _ensure_rule(
     )
 
 
+def _bind_state_volume(volumes: list, access_point_arn: str) -> None:
+    """Reinstate S3 Files config on the state volume.
+
+    ``describe_task_definition`` returns volumes with only ``name`` set —
+    ``s3filesVolumeConfiguration`` is omitted — so any re-register path that
+    copies the describe payload must call this before register_task_definition.
+    """
+    for volume in volumes:
+        if volume.get("name") != "state":
+            continue
+        volume.pop("host", None)
+        volume.pop("dockerVolumeConfiguration", None)
+        volume["configuredAtLaunch"] = False
+        volume["s3filesVolumeConfiguration"] = {
+            "fileSystemArn": _required("S3FILES_FILE_SYSTEM_ARN"),
+            "accessPointArn": access_point_arn,
+            "rootDirectory": "/",
+        }
+        return
+    raise RuntimeError("Task definition is missing the state volume")
+
+
 def _task_definition(
     ecs,
     replika_id: str,
@@ -524,20 +546,7 @@ def _task_definition(
     request["family"] = f"replika-{_slug(replika_id)}"
     request["taskRoleArn"] = task_role_arn
     request["volumes"] = copy.deepcopy(current.get("volumes", []))
-    state_volume_found = False
-    for volume in request["volumes"]:
-        if volume["name"] == "state":
-            state_volume_found = True
-            volume.pop("host", None)
-            volume.pop("dockerVolumeConfiguration", None)
-            volume["configuredAtLaunch"] = False
-            volume["s3filesVolumeConfiguration"] = {
-                "fileSystemArn": _required("S3FILES_FILE_SYSTEM_ARN"),
-                "accessPointArn": access_point_arn,
-                "rootDirectory": "/",
-            }
-    if not state_volume_found:
-        raise RuntimeError("Base task definition is missing the state volume")
+    _bind_state_volume(request["volumes"], access_point_arn)
     request["containerDefinitions"] = [
         container
         for container in request["containerDefinitions"]
@@ -957,7 +966,11 @@ def _create_replika(
 def _reset_replika_config(*, replika_id: str) -> dict:
     # ECS containerOverrides cannot set entryPoint, so register a short-lived
     # task definition that runs the overwrite payload instead of the app.
+    # describe_task_definition omits s3filesVolumeConfiguration, so re-bind the
+    # tenant access point before register — otherwise the RunTask writes to an
+    # ephemeral empty mount and the durable tenant config is unchanged.
     ecs = boto3.client("ecs")
+    s3files = boto3.client("s3files")
     cluster = _required("ECS_CLUSTER")
     service_name = f"replika-{_slug(replika_id)}"
     services = ecs.describe_services(cluster=cluster, services=[service_name]).get(
@@ -968,6 +981,7 @@ def _reset_replika_config(*, replika_id: str) -> dict:
     )
     if not service:
         raise RuntimeError(f"Replika runtime service {service_name} was not found")
+    access_point_arn, _ = _create_access_point(s3files, replika_id)
     task_definition_arn = service["taskDefinition"]
     task_definition = ecs.describe_task_definition(taskDefinition=task_definition_arn)[
         "taskDefinition"
@@ -995,6 +1009,8 @@ def _reset_replika_config(*, replika_id: str) -> dict:
     }
     request["family"] = f"replika-config-reset-{_slug(replika_id)}"
     request["containerDefinitions"] = [container]
+    request["volumes"] = copy.deepcopy(task_definition.get("volumes", []))
+    _bind_state_volume(request["volumes"], access_point_arn)
     reset_task_definition = None
     try:
         reset_task_definition = ecs.register_task_definition(**request)[
