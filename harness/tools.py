@@ -973,10 +973,6 @@ def visible_tool_definitions() -> list:
     )
     if not phone_tools_enabled():
         tools = [tool for tool in tools if tool["name"] not in PHONE_TOOL_NAMES]
-    from .path_policy import managed_runtime
-
-    if managed_runtime():
-        tools = [tool for tool in tools if tool["name"] != "run_shell"]
     from . import personal_tools
 
     tools = tools + personal_tools.personal_tool_definitions(
