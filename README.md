@@ -305,6 +305,7 @@ These aren't abstract ideals — they are mechanically enforced via the `CLAUDE.
 - **Tool use** — shell execution, file read/write, memory logging, a headed browser driver, web search + fast page fetch, TOTP 2FA, **7 `db_*` workflow primitives** (the agent's only path to MongoDB — they enforce a per-workflow spec's state machine + audit trail), and 10 [MemPalace](https://github.com/MemPalace/mempalace) tools (semantic search, knowledge graph, diary, taxonomy); all async, non-blocking
 - **Structured workflows (mini-app generator)** — declarative `workflows/*.json` specs define entities and their state machines; the `db_*` primitives enforce them (legal transitions only, dedup, auto history) and the Tower screens auto-render live MongoDB state. The agent designs a workflow with you in chat, then operates it — no freestyle DB scripting
 - **Persistent verbatim memory** — local MemPalace integration with wings/rooms/halls/drawers, zero-token retrieval, archive-before-clear on `/new`, goodnight mine of daily logs, wake-up snapshot in the dynamic block
+- **Semantic recalls (two-stage)** — reactive mid-turn pointers (`learn_recall` / `get_recall` / `get_recent_recalls`). Stage-1 proposes via embed floor + lexical cues; Stage-2 verifies intent with an in-process Gemma 3 270M SLM before inject. See [Semantic recalls](#semantic-recalls--reactive-mid-turn-pointers)
 - **Shared experiential state** — bounded, replayable episode appraisals shared across chat, worker, and ambient streams; default-on causal influence is toggled in Tower and fails open if appraisal is unavailable
 - **Safety tiers** — green (auto), yellow (notify), red (Discord reaction approval required)
 - **Scheduler** — morning briefing, goodnight, configurable heartbeat (with custom task-monitor prompts), a restart-surviving **one-shot wake**, and **ambient reflection** (workday palace filing + worker audit + brief status to the user)
@@ -324,6 +325,9 @@ cd galadriel-public
 
 # 2. Install (includes mempalace — dependency of the memory palace)
 pip install -r requirements.txt
+# Optional: Stage-2 recall SLM (Gemma 3 270M via llama.cpp)
+pip install -r requirements-local-llm.txt
+python -m local_llm download
 
 # 3. Configure
 cp .env.example .env
@@ -337,6 +341,8 @@ mempalace init              # creates ~/.mempalace/
 # 5. Run
 python main.py
 ```
+
+Skipping the local-LLM install is fine — Stage-2 **fail-opens** (Stage-1 still proposes; without the GGUF you will see more false injects). Staging runtime images bake the GGUF + `llama-cpp-python` automatically.
 
 **Tower-only mode:** Omit `DISCORD_BOT_TOKEN` (and `SLACK_BOT_TOKEN`/`SLACK_APP_TOKEN`) — the harness runs with just the web UI on port 8080.
 
@@ -444,8 +450,8 @@ memory or runtime state.
   to enable the `/login` form and session cookies (Basic/Bearer headers still
   work for scripts). The compose file binds to `127.0.0.1:8080` deliberately;
   do **not** expose it on `0.0.0.0` on a public host without auth enabled.
-- **Image size is ~1.3 GB** — onnxruntime (a transitive dependency of the
-  memory palace) is the bulk. That's the cost of zero-API-cost semantic recall.
+- **Image size is ~1.5+ GB** — onnxruntime (MemPalace) plus the baked Gemma 3
+  270M GGUF (~256 MB) for Stage-2 recall verify are the bulk.
 - **Multi-arch:** `python:3.12-slim` is published for amd64 and arm64, so a
   plain `docker build` works on both. For a registry image covering both:
   `docker buildx build --platform linux/amd64,linux/arm64 -t <repo> --push .`
@@ -460,7 +466,8 @@ main.py                   Entry point — wires all components, starts Discord +
 harness/
   agent.py                Core agent loop: LLM API (Gemini default), tool use, cache management
   memory.py               Stable + dynamic system prompt blocks; daily memory logs
-  tools.py                Tool defs + dispatch: run_shell, wait, read/write_file, browser, web, 7 db_*, 10 palace_*
+  recall.py               Two-stage semantic recalls (Stage-1 embed/lexical + Stage-2 SLM verify)
+  tools.py                Tool defs + dispatch: run_shell, wait, read/write_file, browser, web, 7 db_*, 10 palace_*, learn_recall*
   db_ops.py               DB primitives — the agent's only MongoDB path (enforces the workflow spec)
   workflows.py            Workflow spec loader / entity registry (reads workflows/*.json)
   palace.py               MemPalace wrapper: search, archive, wake-up, KG, diary, taxonomy
@@ -471,6 +478,7 @@ harness/
   worker.py               Background worker — executes the jobs/ + state/ board (opt-in)
   completion_watcher.py   External shell-process completion notifications
   error_humanizer.py      Readable API error mapping (Anthropic + Gemini)
+local_llm/                In-process Gemma 3 270M (llama.cpp GGUF) for Stage-2 recall verify
 discord_bot/
   bot.py                  Discord gateway, approval buttons, slash + prefix commands
 slack_bot/
@@ -486,6 +494,7 @@ config/
   MEMORY.md               Long-term memory (agent-maintained)
   GUARDRAILS.md           Hard operating rules (cookbook is truth, verify before claiming done)
   RECALL.md               Reflex index — operation → what to load/recall first
+  system_recalls.json     Built-in semantic recall definitions (cues tunable; instructions immutable)
   JOBS.md                 Ritual / background-job goals (stable allowlist)
   visions/                Optional per-project context files
 knowledge/
@@ -497,6 +506,37 @@ memory/                   Daily logs — auto-generated, gitignored (hot dynamic
 mempalace.yaml.example    Agent-wing room template for `mempalace init` (copy to mempalace.yaml)
 ~/.mempalace/             Palace storage (created by `mempalace init`) — overridable via MEMPALACE_PATH
 ```
+
+### Semantic recalls — reactive mid-turn pointers
+
+Palace search is **pull** (the model decides to look something up). Semantic recalls are **push**: when conversation text matches a recall's cues, the harness injects a short assistant `recall_fire` suggestion so the main model can act on a one-liner pointer (usually to a palace room, knowledge file, or board path).
+
+| Stage | What runs | Role |
+|---|---|---|
+| **1 — propose** | FastEmbed / lexical cues (`harness/recall.py`) | Positive score floor **0.6**, negative veto, exact lexical hard-hits. Emits `matched_chunk`. |
+| **2 — verify** | Local Gemma 3 270M YES/NO logit margin (`local_llm/`) | Few-shots from that recall's positive/negative examples (+ global hard-negatives for HTML/tool junk). Only verified matches inject. |
+
+**When inject happens**
+- Start of turn: scan the new user message.
+- Mid-turn: only on `stop_reason=tool_use` (thought + tool args + tool results).
+- **Not** on bare `end_turn` / `max_tokens` (no silent re-loop).
+
+**Tools:** `learn_recall` (create/patch; cue arrays are full replacements), `get_recall`, `get_recent_recalls` (proposed vs verified), `purge_recall` (user recalls only). System recall **instructions** are immutable; cues may be tuned.
+
+**Package rule:** durable content → palace / KG / `MEMORY.md`; when-to-recollect → `learn_recall` pointing at that store. Cue quality: positives = 3–5 realistic phrasings; lexical = high-precision anchors; negatives = near-misses (Stage-1 veto **and** Stage-2 NO few-shots). False-positive inject → add the short `matched_chunk` to negatives.
+
+**Learn passes:** silent learn+audit after main compact / `/new` and after worker ticks that reported `worked` (mid-loop compact skips learn). Ambient reflection also tunes cues from recent proposed/verified events.
+
+**Ops / env**
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `RECALL_SLM_VERIFY` | `1` | Set `0` to disable Stage-2 (Stage-1 only; more false injects). |
+| `RECALL_SLM_MARGIN` | `2.0` | Required YES−NO logit margin (tiny models are YES-biased). |
+| `LOCAL_LLM_FORCE_CPU` | unset (staging image sets `1`) | Force CPU backend for Fargate. |
+| `LOCAL_LLM_MODELS_DIR` | `local_llm/models` | GGUF location (gitignored `*.gguf`). |
+
+Staging runtime images install `requirements-local-llm.txt` and bake the Q4_K_M GGUF. Without the model, Stage-2 fail-opens until the GGUF is available. Collections: `proposed_recalls` (every Stage-1 candidate) and `recall_fires` (verified injects). Event kind is `recall_fire` (legacy `nudge` / `is_nudge` markers are gone).
 
 ---
 

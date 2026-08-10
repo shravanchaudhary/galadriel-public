@@ -93,6 +93,23 @@ Rules of thumb:
 - **Older operational history, a past decision, a number, the exact words of a past message?** `palace_search` FIRST, never guess (SOUL.md Palace Protocol). The daily log only has the truncated index.
 - **Only the five allowlisted files are L1.** Put reusable procedures under `knowledge/` and index them.
 - **Recall has to fire at the right moment.** `config/RECALL.md` (L1) is the reflex map: *operation → the recall you must do first*.
+- **Reactive when-to-recollect** is a separate path: semantic recalls (below), not palace search and not L1 essays.
+
+### 1b. Semantic recalls (push, two-stage)
+
+Palace tools are **pull**. Semantic recalls are **push**: Stage-1 (embed floor
+0.6 / lexical) proposes on `matched_chunk`; Stage-2 (local Gemma 270M SLM)
+verifies intent with that recall's pos/neg examples as YES/NO few-shots; only
+verified fires inject an assistant `recall_fire` suggestion.
+
+Inject windows: new user message at turn start, and mid-turn **only** on
+`tool_use` pauses (thought + tool args + tool results). Not on bare `end_turn`.
+
+Package: durable fact → palace/KG/`MEMORY.md`; when-to-recollect →
+`learn_recall` short pointer + quality cues (positives = realistic phrasings,
+lexical = anchors, negatives = near-misses for Stage-1 veto and Stage-2).
+Audit with `get_recent_recalls` (proposed vs verified). System recall
+instructions are immutable; cues may be tuned.
 
 ### 2. Updating yourself — pick the right surface
 

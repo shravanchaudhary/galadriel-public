@@ -1859,15 +1859,26 @@ class GaladrielAgent:
         turn_matched_recalls = []
 
         if (not ephemeral) and isinstance(user_message, str):
-            exclude_texts = [
-                m.get("content", "") if isinstance(m.get("content"), str) else ""
-                for m in messages
-                if _is_recall_fire_message(m)
-            ]
-            matched = scan_text_for_recalls(user_message, active_recalls, exclude_texts=exclude_texts)
-            for m in matched:
-                if m not in turn_matched_recalls:
-                    turn_matched_recalls.append(m)
+            # WORKER_TICK prompt names every board file / ritual / DB guard by design —
+            # scanning it floods Stage-1. Skip that user_message only; tool_use still
+            # runs the normal recall path once the worker starts reading/acting.
+            if user_message.lstrip().startswith("[SYSTEM:WORKER_TICK]"):
+                log.info(
+                    "[Recall Check] Skipping user_message scan for WORKER_TICK "
+                    "(dense board meta; tool_use recalls unchanged)"
+                )
+            else:
+                exclude_texts = [
+                    m.get("content", "") if isinstance(m.get("content"), str) else ""
+                    for m in messages
+                    if _is_recall_fire_message(m)
+                ]
+                matched = scan_text_for_recalls(
+                    user_message, active_recalls, exclude_texts=exclude_texts,
+                )
+                for m in matched:
+                    if m not in turn_matched_recalls:
+                        turn_matched_recalls.append(m)
 
         messages.append({"role": "user", "content": user_message})
         if (not ephemeral) and tick_recorder is not None:
