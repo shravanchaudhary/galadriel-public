@@ -99,6 +99,13 @@ class LocalLLMClient:
             raise RuntimeError("yes_no_logit_margin requires in_process=True")
         return self._get_engine().yes_no_logit_margin(prompt)
 
+    def close(self) -> None:
+        """Unload the in-process engine (no-op for HTTP-only clients)."""
+        engine = self._engine
+        self._engine = None
+        if engine is not None:
+            engine.close()
+
     def _http_chat(
         self,
         messages: list[dict[str, Any]],

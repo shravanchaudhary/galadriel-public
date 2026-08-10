@@ -43,5 +43,6 @@ ext_images_provided/
 # staging GGUF in a dedicated layer (see Dockerfile) instead of copying these.
 local_llm/models/*.gguf
 local_llm/models/*.partial
+local_llm/experimental_gemma1b.ipynb
 local_llm/experimental_gemma270m.ipynb
 .ipynb_checkpoints/

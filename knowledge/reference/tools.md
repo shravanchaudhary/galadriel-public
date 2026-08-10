@@ -120,6 +120,11 @@ few-shots, instruction = short pointer). `get_recent_recalls` shows proposed vs
 verified: FP inject → add `matched_chunk` to negatives; Stage-2 reject that
 should have fired → strengthen positives (ambient + silent learn passes).
 
+For encode → retrieve-test → spaced retest when filing durable knowledge, follow
+`knowledge/skills/retrieval-practice.md` (INDEX id `retrieval-practice`): dig deep
+into palace/KG neighbors, file, retrieve-test once, then create/patch the pointer
+recall.
+
 **Don't** duplicate. Daily-log lines are an index pointer — durable facts still
 need an explicit palace write.
 

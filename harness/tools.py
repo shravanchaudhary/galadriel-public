@@ -59,7 +59,8 @@ TOOL_DEFINITIONS = [
             "Omit recall_id to create (requires instruction plus non-empty "
             "positive_examples, negative_examples, and lexical_cues). "
             "Pass recall_id to patch: any provided field among instruction, "
-            "positive_examples, negative_examples, lexical_cues, enabled is written; "
+            "positive_examples, negative_examples, lexical_cues, enabled, "
+            "positive_threshold, negative_threshold is written; "
             "omitted fields stay unchanged. Provided cue arrays must be non-empty "
             "and are FULL REPLACEMENTS — call get_recall first and pass the complete "
             "intended array. "
@@ -68,13 +69,18 @@ TOOL_DEFINITIONS = [
             "lexical_cues = high-precision exact anchors that should hard-hit; "
             "negative_examples = near-misses that should NOT fire; "
             "instruction = short action pointer (tool / file / palace room), not an essay. "
+            "Stage-1 thresholds (per recall, default 0.6 each, semantic path only): "
+            "positive_score must be >= positive_threshold; if negatives exist, "
+            "negative_score must be < negative_threshold (absolute — not compared to "
+            "positive). Lexical cue hard-hits skip the negative threshold. "
+            "Tune thresholds when cue edits alone cannot fix FP/FN. "
             "positive_examples / negative_examples also feed Stage-2 SLM YES/NO few-shots "
             "on matched_chunk — fix false-positive injects by adding the offending "
             "matched_chunk to negative_examples (full-replace arrays). "
             "Package: durable content → palace drawer/KG; when-to-recollect → this recall. "
             "To update an existing rule, pass its recall_id (use get_recall to find it). "
-            "System recalls (sys_*): cue arrays may be replaced; instruction changes "
-            "are rejected."
+            "System recalls (sys_*): cue arrays and thresholds may be replaced; "
+            "instruction changes are rejected."
         ),
         "input_schema": {
             "type": "object",
@@ -102,6 +108,14 @@ TOOL_DEFINITIONS = [
                     "items": {"type": "string"},
                     "description": "High-precision exact tags/phrases (lowercase, spaces ok). Required non-empty on create; full replace on patch.",
                 },
+                "positive_threshold": {
+                    "type": "number",
+                    "description": "Stage-1: require cosine(pos) >= this (0–1, default 0.6).",
+                },
+                "negative_threshold": {
+                    "type": "number",
+                    "description": "Stage-1: reject if cosine(neg) >= this (0–1, default 0.6). Independent of positive_threshold.",
+                },
                 "enabled": {
                     "type": "boolean",
                     "description": "Whether the recall is active (user recalls only).",
@@ -114,8 +128,9 @@ TOOL_DEFINITIONS = [
         "name": "get_recall",
         "description": (
             "Read recall DEFINITIONS (catalog), not recent firings. "
-            "Pass recall_id for the full record; omit for a compact catalog "
-            "(recall_id, instruction, cue counts, source). "
+            "Pass recall_id for the full record (includes positive_threshold / "
+            "negative_threshold); omit for a compact catalog "
+            "(recall_id, instruction, cue counts, thresholds, source). "
             "Use get_recent_recalls for what recently fired."
         ),
         "input_schema": {
@@ -1166,15 +1181,19 @@ async def _get_recall(recall_id: str | None = None) -> str:
     except Exception as e:
         return f"[error] Failed to fetch recalls: {e}"
 
+    from .recall import normalize_recall_thresholds
+
     if recall_id:
         rid = str(recall_id).strip()
         for r in recalls:
             if str(r.get("recall_id", "")) == rid:
+                normalize_recall_thresholds(r)
                 return json.dumps(r, indent=2, default=str)
         return f"[error] Recall '{rid}' not found."
 
     catalog = []
     for r in recalls:
+        normalize_recall_thresholds(r)
         catalog.append({
             "recall_id": r.get("recall_id"),
             "instruction": r.get("instruction"),
@@ -1183,6 +1202,8 @@ async def _get_recall(recall_id: str | None = None) -> str:
             "positive_count": len(r.get("positive_examples") or []),
             "negative_count": len(r.get("negative_examples") or []),
             "lexical_count": len(r.get("lexical_cues") or []),
+            "positive_threshold": r.get("positive_threshold"),
+            "negative_threshold": r.get("negative_threshold"),
         })
     return json.dumps(catalog, indent=2, default=str)
 
@@ -1276,6 +1297,8 @@ async def _execute_tool_impl(
             negative_examples=inputs.get("negative_examples"),
             lexical_cues=inputs.get("lexical_cues"),
             enabled=inputs.get("enabled"),
+            positive_threshold=inputs.get("positive_threshold"),
+            negative_threshold=inputs.get("negative_threshold"),
         )
     elif name == "get_recall":
         return await _get_recall(recall_id=inputs.get("recall_id"))
@@ -2165,17 +2188,36 @@ def _user_recall_query(rid: str):
     return {"recall_id": rid}
 
 
+def _threshold_field_or_error(value, field: str):
+    """Parse a Stage-1 threshold (0–1). Returns (float|None, error|None)."""
+    from .recall import recall_negative_threshold, recall_positive_threshold
+
+    if value is None:
+        return None, None
+    try:
+        float(value)
+    except (TypeError, ValueError):
+        return None, f"[error] {field} must be a number between 0 and 1."
+    if field == "positive_threshold":
+        return recall_positive_threshold({"positive_threshold": value}), None
+    if field == "negative_threshold":
+        return recall_negative_threshold({"negative_threshold": value}), None
+    return None, f"[error] Unknown threshold field {field}."
+
+
 async def _patch_system_recall_cues(
     recall_id: str,
     *,
     positive_examples=None,
     negative_examples=None,
     lexical_cues=None,
+    positive_threshold=None,
+    negative_threshold=None,
 ) -> str:
-    """Replace cue arrays on a system recall in config/system_recalls.json."""
+    """Replace cue arrays / thresholds on a system recall in config/system_recalls.json."""
     import json
     from pathlib import Path
-    from harness.recall import fetch_all_recalls, get_semantic_router
+    from harness.recall import fetch_all_recalls, get_semantic_router, normalize_recall_thresholds
 
     updates = {}
     if positive_examples is not None:
@@ -2193,6 +2235,16 @@ async def _patch_system_recall_cues(
         if err:
             return err
         updates["lexical_cues"] = lex
+    if positive_threshold is not None:
+        thr, err = _threshold_field_or_error(positive_threshold, "positive_threshold")
+        if err:
+            return err
+        updates["positive_threshold"] = thr
+    if negative_threshold is not None:
+        thr, err = _threshold_field_or_error(negative_threshold, "negative_threshold")
+        if err:
+            return err
+        updates["negative_threshold"] = thr
 
     config_path = Path("config/system_recalls.json")
     if not config_path.exists():
@@ -2205,8 +2257,8 @@ async def _patch_system_recall_cues(
         if r.get("recall_id") != recall_id:
             continue
         found = True
-        r.pop("threshold", None)
         r.update(updates)
+        normalize_recall_thresholds(r)
         break
 
     if not found:
@@ -2224,10 +2276,17 @@ async def _learn_recall(
     negative_examples=None,
     lexical_cues=None,
     enabled: bool | None = None,
+    positive_threshold=None,
+    negative_threshold=None,
 ) -> str:
     """Create or patch a recall dict. Agent supplies all fields; no inner LLM."""
     from .db_ops import get_db
-    from .recall import fetch_all_recalls, get_semantic_router
+    from .recall import (
+        DEFAULT_NEGATIVE_THRESHOLD,
+        DEFAULT_POSITIVE_THRESHOLD,
+        fetch_all_recalls,
+        get_semantic_router,
+    )
     from datetime import datetime, timezone
 
     rid = (recall_id or "").strip() or None
@@ -2245,13 +2304,20 @@ async def _learn_recall(
                 positive_examples is None
                 and negative_examples is None
                 and lexical_cues is None
+                and positive_threshold is None
+                and negative_threshold is None
             ):
-                return "[error] Provide at least one cue array to patch on a system recall."
+                return (
+                    "[error] Provide at least one cue array or threshold to patch "
+                    "on a system recall."
+                )
             return await _patch_system_recall_cues(
                 rid,
                 positive_examples=positive_examples,
                 negative_examples=negative_examples,
                 lexical_cues=lexical_cues,
+                positive_threshold=positive_threshold,
+                negative_threshold=negative_threshold,
             )
 
         db = get_db()
@@ -2285,10 +2351,23 @@ async def _learn_recall(
             if err:
                 return err
             updates["lexical_cues"] = lex
+        if positive_threshold is not None:
+            thr, err = _threshold_field_or_error(positive_threshold, "positive_threshold")
+            if err:
+                return err
+            updates["positive_threshold"] = thr
+        if negative_threshold is not None:
+            thr, err = _threshold_field_or_error(negative_threshold, "negative_threshold")
+            if err:
+                return err
+            updates["negative_threshold"] = thr
         if enabled is not None:
             updates["enabled"] = bool(enabled)
         if not updates:
-            return "[error] No fields to update. Pass instruction and/or cue arrays and/or enabled."
+            return (
+                "[error] No fields to update. Pass instruction and/or cue arrays "
+                "and/or thresholds and/or enabled."
+            )
         updates["updated_at"] = datetime.now(timezone.utc)
         await coll.update_one(query, {"$set": updates, "$unset": {"threshold": ""}})
         get_semantic_router(await fetch_all_recalls(), force_reload=True)
@@ -2315,6 +2394,16 @@ async def _learn_recall(
     lex, err = _cue_field_or_error(lexical_cues, "lexical_cues", lexical=True)
     if err:
         return err
+    pos_thr = DEFAULT_POSITIVE_THRESHOLD
+    if positive_threshold is not None:
+        pos_thr, err = _threshold_field_or_error(positive_threshold, "positive_threshold")
+        if err:
+            return err
+    neg_thr = DEFAULT_NEGATIVE_THRESHOLD
+    if negative_threshold is not None:
+        neg_thr, err = _threshold_field_or_error(negative_threshold, "negative_threshold")
+        if err:
+            return err
 
     db = get_db()
     if db is None:
@@ -2326,6 +2415,8 @@ async def _learn_recall(
         "positive_examples": pos,
         "lexical_cues": lex,
         "negative_examples": neg,
+        "positive_threshold": pos_thr,
+        "negative_threshold": neg_thr,
         "enabled": True if enabled is None else bool(enabled),
         "created_by": "agent",
         "created_at": now,
@@ -2336,7 +2427,8 @@ async def _learn_recall(
         get_semantic_router(await fetch_all_recalls(), force_reload=True)
         return (
             f"Created new recall with ID '{result.inserted_id}' "
-            f"({len(pos)} pos, {len(lex)} lexical, {len(neg)} neg)."
+            f"({len(pos)} pos, {len(lex)} lexical, {len(neg)} neg, "
+            f"pos_thr={pos_thr}, neg_thr={neg_thr})."
         )
     except Exception as e:
         return f"[error] Failed to insert new recall: {e}"

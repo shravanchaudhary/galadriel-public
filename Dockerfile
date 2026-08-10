@@ -65,13 +65,13 @@ RUN pip install --no-cache-dir --no-index --find-links=/wheels \
         -r requirements-local-llm.txt \
     && rm -rf /wheels
 
-# Bake Gemma 3 270M GGUF for Stage-2 recall verify (cached unless download/config
-# change). Use a stub package init so we do not import llama.cpp here; the full
-# COPY below replaces the stub. Weights stay in place (.gguf is dockerignored).
+# Bake both Stage-2 recall SLM GGUFs (270M + 1B) so UI hot-swap never downloads
+# at runtime. Stub package init avoids importing llama.cpp here; the full COPY
+# below replaces the stub. Weights stay in place (.gguf is dockerignored).
 RUN mkdir -p local_llm && touch local_llm/__init__.py
 COPY local_llm/config.py local_llm/download.py local_llm/
 RUN mkdir -p local_llm/models \
-    && python -c "from local_llm.download import ensure_model; print(ensure_model())"
+    && python -c "from local_llm.download import ensure_all_profile_models; print(ensure_all_profile_models())"
 
 # Application code. .dockerignore keeps keys/, .env, memory logs and bloat out.
 COPY . .

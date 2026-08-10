@@ -1,4 +1,4 @@
-"""CLI entrypoints for the local Gemma 3 270M runtime.
+"""CLI entrypoints for the local Gemma 3 1B runtime.
 
 Examples:
   python -m local_llm download
@@ -120,7 +120,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="python -m local_llm", description="Local Gemma 3 270M (GGUF)")
+    p = argparse.ArgumentParser(prog="python -m local_llm", description="Local Gemma 3 1B (GGUF)")
     sub = p.add_subparsers(dest="command", required=True)
 
     d = sub.add_parser("download", help="download the QAT GGUF into local_llm/models/")

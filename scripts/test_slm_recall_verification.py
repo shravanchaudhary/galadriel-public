@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Benchmark Stage-2 SLM recall verification (local Gemma 270M).
+"""Benchmark Stage-2 SLM recall verification (local Gemma 1B).
 
 Uses YES/NO logit margin with few-shot examples from each recall.
 Held-out paraphrases (not copied from positive_examples) measure generalization.

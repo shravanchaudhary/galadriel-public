@@ -1,4 +1,4 @@
-"""llama.cpp-backed Gemma 3 270M engine with Mac/Linux runtime tuning."""
+"""llama.cpp-backed Gemma 3 1B engine with Mac/Linux runtime tuning."""
 
 from __future__ import annotations
 
@@ -95,11 +95,13 @@ class LocalGemma:
         ensure: bool = True,
         n_ctx: int | None = None,
         verbose: bool = False,
+        model_id: str | None = None,
+        hf_repo: str | None = None,
     ) -> None:
-        self.model_id = MODEL_ID
+        self.model_id = model_id or MODEL_ID
         path = Path(model_path) if model_path else default_model_path()
         if ensure and not path.exists():
-            path = ensure_model(filename=path.name)
+            path = ensure_model(filename=path.name, repo=hf_repo)
         if not path.exists():
             raise FileNotFoundError(
                 f"model not found at {path}; run: python -m local_llm download"
@@ -154,7 +156,18 @@ class LocalGemma:
 
     def close(self) -> None:
         with self._lock:
+            llm = self._llm
             self._llm = None
+            self._yes_token_id = None
+            self._no_token_id = None
+        # Drop llama.cpp handle promptly so hot-swap does not keep two models.
+        del llm
+        try:
+            import gc
+
+            gc.collect()
+        except Exception:  # noqa: BLE001 — best-effort reclaim
+            pass
 
     def __enter__(self) -> LocalGemma:
         return self

@@ -98,7 +98,7 @@ Rules of thumb:
 ### 1b. Semantic recalls (push, two-stage)
 
 Palace tools are **pull**. Semantic recalls are **push**: Stage-1 (embed floor
-0.6 / lexical) proposes on `matched_chunk`; Stage-2 (local Gemma 270M SLM)
+0.6 / lexical) proposes on `matched_chunk`; Stage-2 (local Gemma 1B SLM)
 verifies intent with that recall's pos/neg examples as YES/NO few-shots; only
 verified fires inject an assistant `recall_fire` suggestion.
 

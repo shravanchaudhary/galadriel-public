@@ -305,7 +305,7 @@ These aren't abstract ideals — they are mechanically enforced via the `CLAUDE.
 - **Tool use** — shell execution, file read/write, memory logging, a headed browser driver, web search + fast page fetch, TOTP 2FA, **7 `db_*` workflow primitives** (the agent's only path to MongoDB — they enforce a per-workflow spec's state machine + audit trail), and 10 [MemPalace](https://github.com/MemPalace/mempalace) tools (semantic search, knowledge graph, diary, taxonomy); all async, non-blocking
 - **Structured workflows (mini-app generator)** — declarative `workflows/*.json` specs define entities and their state machines; the `db_*` primitives enforce them (legal transitions only, dedup, auto history) and the Tower screens auto-render live MongoDB state. The agent designs a workflow with you in chat, then operates it — no freestyle DB scripting
 - **Persistent verbatim memory** — local MemPalace integration with wings/rooms/halls/drawers, zero-token retrieval, archive-before-clear on `/new`, goodnight mine of daily logs, wake-up snapshot in the dynamic block
-- **Semantic recalls (two-stage)** — reactive mid-turn pointers (`learn_recall` / `get_recall` / `get_recent_recalls`). Stage-1 proposes via embed floor + lexical cues; Stage-2 verifies intent with an in-process Gemma 3 270M SLM before inject. See [Semantic recalls](#semantic-recalls--reactive-mid-turn-pointers)
+- **Semantic recalls (two-stage)** — reactive mid-turn pointers (`learn_recall` / `get_recall` / `get_recent_recalls`). Stage-1 proposes via embed floor + lexical cues; Stage-2 verifies intent with an in-process Gemma 3 1B SLM before inject. See [Semantic recalls](#semantic-recalls--reactive-mid-turn-pointers)
 - **Shared experiential state** — bounded, replayable episode appraisals shared across chat, worker, and ambient streams; default-on causal influence is toggled in Tower and fails open if appraisal is unavailable
 - **Safety tiers** — green (auto), yellow (notify), red (Discord reaction approval required)
 - **Scheduler** — morning briefing, goodnight, configurable heartbeat (with custom task-monitor prompts), a restart-surviving **one-shot wake**, and **ambient reflection** (workday palace filing + worker audit + brief status to the user)
@@ -325,7 +325,7 @@ cd galadriel-public
 
 # 2. Install (includes mempalace — dependency of the memory palace)
 pip install -r requirements.txt
-# Optional: Stage-2 recall SLM (Gemma 3 270M via llama.cpp)
+# Optional: Stage-2 recall SLM (Gemma 3 1B via llama.cpp)
 pip install -r requirements-local-llm.txt
 python -m local_llm download
 
@@ -450,8 +450,8 @@ memory or runtime state.
   to enable the `/login` form and session cookies (Basic/Bearer headers still
   work for scripts). The compose file binds to `127.0.0.1:8080` deliberately;
   do **not** expose it on `0.0.0.0` on a public host without auth enabled.
-- **Image size is ~1.5+ GB** — onnxruntime (MemPalace) plus the baked Gemma 3
-  270M GGUF (~256 MB) for Stage-2 recall verify are the bulk.
+- **Image size is ~2+ GB** — onnxruntime (MemPalace) plus the baked Gemma 3
+  1B GGUF (~770 MB Q4_K_M) for Stage-2 recall verify are the bulk.
 - **Multi-arch:** `python:3.12-slim` is published for amd64 and arm64, so a
   plain `docker build` works on both. For a registry image covering both:
   `docker buildx build --platform linux/amd64,linux/arm64 -t <repo> --push .`
@@ -478,7 +478,7 @@ harness/
   worker.py               Background worker — executes the jobs/ + state/ board (opt-in)
   completion_watcher.py   External shell-process completion notifications
   error_humanizer.py      Readable API error mapping (Anthropic + Gemini)
-local_llm/                In-process Gemma 3 270M (llama.cpp GGUF) for Stage-2 recall verify
+local_llm/                In-process Gemma 3 1B (llama.cpp GGUF) for Stage-2 recall verify
 discord_bot/
   bot.py                  Discord gateway, approval buttons, slash + prefix commands
 slack_bot/
@@ -514,7 +514,7 @@ Palace search is **pull** (the model decides to look something up). Semantic rec
 | Stage | What runs | Role |
 |---|---|---|
 | **1 — propose** | FastEmbed / lexical cues (`harness/recall.py`) | Positive score floor **0.6**, negative veto, exact lexical hard-hits. Emits `matched_chunk`. |
-| **2 — verify** | Local Gemma 3 270M YES/NO logit margin (`local_llm/`) | Few-shots from that recall's positive/negative examples (+ global hard-negatives for HTML/tool junk). Only verified matches inject. |
+| **2 — verify** | Local Gemma 3 1B YES/NO logit margin (`local_llm/`) | Few-shots from that recall's positive/negative examples (+ global hard-negatives for HTML/tool junk). Only verified matches inject. |
 
 **When inject happens**
 - Start of turn: scan the new user message.

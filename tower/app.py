@@ -831,6 +831,42 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
             "persisted": True,
         })
 
+    @app.route("/api/recall-slm-model", methods=["GET"])
+    def api_recall_slm_model_get():
+        from harness.recall import get_recall_slm_status
+
+        status = get_recall_slm_status()
+        status["persisted"] = tower_settings.is_configured()
+        return jsonify(status)
+
+    @app.route("/api/recall-slm-model", methods=["POST"])
+    def api_recall_slm_model_set():
+        from harness.recall import set_recall_slm_model
+
+        data = request.json or {}
+        model = (data.get("model") or "").strip().lower()
+        if not model:
+            return jsonify({"error": "Missing 'model' field"}), 400
+        if model not in tower_settings.RECALL_SLM_MODEL_OPTIONS:
+            return jsonify({
+                "error": (
+                    f"Invalid model; expected one of "
+                    f"{list(tower_settings.RECALL_SLM_MODEL_OPTIONS)}"
+                ),
+            }), 400
+        try:
+            status = set_recall_slm_model(model, preload=True)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except RuntimeError as e:
+            return jsonify({"error": str(e)}), 503
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+        status["persisted"] = True
+        if status.get("error") and not status.get("loaded"):
+            return jsonify(status), 503
+        return jsonify(status)
+
     def _run_async(coro):
         loop = None
         if scheduler and hasattr(scheduler, "_loop") and scheduler._loop.is_running():
@@ -870,6 +906,8 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
                 positive_examples=data.get("positive_examples"),
                 negative_examples=data.get("negative_examples"),
                 lexical_cues=data.get("lexical_cues") or data.get("regex_tags"),
+                positive_threshold=data.get("positive_threshold"),
+                negative_threshold=data.get("negative_threshold"),
             ))
             if isinstance(result, str) and result.startswith("[error]"):
                 return jsonify({"error": result}), 400
@@ -937,7 +975,12 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
         from pathlib import Path
         
         data = request.json or {}
-        from harness.recall import normalize_lexical_cue
+        from harness.recall import (
+            normalize_lexical_cue,
+            normalize_recall_thresholds,
+            recall_negative_threshold,
+            recall_positive_threshold,
+        )
         positive = [x.strip() for x in data.get("positive_examples", []) if isinstance(x, str) and x.strip()]
         negative = [x.strip() for x in data.get("negative_examples", []) if isinstance(x, str) and x.strip()]
         lexical = []
@@ -949,7 +992,12 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
             if cue and cue not in seen_lex:
                 seen_lex.add(cue)
                 lexical.append(cue)
-        
+        pos_thr = recall_positive_threshold({"positive_threshold": data.get("positive_threshold")})
+        neg_thr = recall_negative_threshold({"negative_threshold": data.get("negative_threshold")})
+        # If client omitted thresholds, keep existing values (handled below).
+        has_pos_thr = "positive_threshold" in data
+        has_neg_thr = "negative_threshold" in data
+
         async def _update():
             config_path = Path("config/system_recalls.json")
             if config_path.exists():
@@ -962,7 +1010,11 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
                         r["positive_examples"] = positive
                         r["negative_examples"] = negative
                         r["lexical_cues"] = lexical
-                        r.pop("threshold", None)
+                        if has_pos_thr:
+                            r["positive_threshold"] = pos_thr
+                        if has_neg_thr:
+                            r["negative_threshold"] = neg_thr
+                        normalize_recall_thresholds(r)
                         updated = True
                         break
                 
@@ -992,15 +1044,21 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
                 doc = await coll.find_one({"_id": ObjectId(recall_id)})
                 if not doc:
                     return jsonify({"error": "Recall not found"}), 404
+
+                set_fields = {
+                    "positive_examples": positive,
+                    "negative_examples": negative,
+                    "lexical_cues": lexical,
+                }
+                if has_pos_thr:
+                    set_fields["positive_threshold"] = pos_thr
+                if has_neg_thr:
+                    set_fields["negative_threshold"] = neg_thr
                 
                 await coll.update_one(
                     {"_id": ObjectId(recall_id)},
                     {
-                        "$set": {
-                            "positive_examples": positive,
-                            "negative_examples": negative,
-                            "lexical_cues": lexical,
-                        },
+                        "$set": set_fields,
                         "$unset": {"threshold": ""},
                     },
                 )

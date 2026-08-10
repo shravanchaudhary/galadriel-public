@@ -2,6 +2,8 @@ import json
 import logging
 import os
 import re
+import threading
+import time
 from pathlib import Path
 
 import numpy as np
@@ -21,15 +23,55 @@ _ROUTER_CACHE = None
 _CACHED_RECALL_IDS = set()
 _SLM_CLIENT = None
 _SLM_CLIENT_FAILED = False
+_SLM_LOADED_KEY = None
+_SLM_LOCK = threading.RLock()
 
-# Noise floor: candidate must be at least this similar to the positive route.
-# Pos/neg compare then discriminates; this is not a tuning dial.
-_POSITIVE_SCORE_FLOOR = 0.6
-# Lexical hard-hit score (exact cue match); still subject to neg veto.
+# Default per-recall Stage-1 thresholds (absolute, independent).
+DEFAULT_POSITIVE_THRESHOLD = 0.6
+DEFAULT_NEGATIVE_THRESHOLD = 0.6
+# Router encoder floor is open so per-recall positive_threshold can go below 0.6.
+_ROUTER_SCORE_FLOOR = 0.0
+# Lexical hard-hit score (exact cue match); still subject to neg threshold.
 _LEXICAL_POSITIVE_SCORE = 1.0
 
 # YES must beat NO by this logit margin (tiny models are YES-biased otherwise).
 _SLM_LOGIT_MARGIN_DEFAULT = 2.0
+
+
+def _clamp_threshold(value, default: float) -> float:
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return default
+    if v != v:  # NaN
+        return default
+    return max(0.0, min(1.0, v))
+
+
+def recall_positive_threshold(recall: dict | None) -> float:
+    if not isinstance(recall, dict):
+        return DEFAULT_POSITIVE_THRESHOLD
+    return _clamp_threshold(
+        recall.get("positive_threshold"), DEFAULT_POSITIVE_THRESHOLD
+    )
+
+
+def recall_negative_threshold(recall: dict | None) -> float:
+    if not isinstance(recall, dict):
+        return DEFAULT_NEGATIVE_THRESHOLD
+    return _clamp_threshold(
+        recall.get("negative_threshold"), DEFAULT_NEGATIVE_THRESHOLD
+    )
+
+
+def normalize_recall_thresholds(recall: dict) -> dict:
+    """Ensure positive/negative thresholds are present with defaults; drop legacy."""
+    if not isinstance(recall, dict):
+        return recall
+    recall.pop("threshold", None)
+    recall["positive_threshold"] = recall_positive_threshold(recall)
+    recall["negative_threshold"] = recall_negative_threshold(recall)
+    return recall
 
 
 def get_encoder(force_type=None):
@@ -39,10 +81,10 @@ def get_encoder(force_type=None):
     encoder_type = (force_type or os.environ.get("RECALL_ENCODER", "fastembed")).lower()
 
     if _ENCODER is not None and _ENCODER_TYPE == encoder_type:
-        if getattr(_ENCODER, "score_threshold", None) != _POSITIVE_SCORE_FLOOR:
-            _ENCODER.score_threshold = _POSITIVE_SCORE_FLOOR
+        if getattr(_ENCODER, "score_threshold", None) != _ROUTER_SCORE_FLOOR:
+            _ENCODER.score_threshold = _ROUTER_SCORE_FLOOR
             if _ROUTER_CACHE is not None:
-                _ROUTER_CACHE.score_threshold = _POSITIVE_SCORE_FLOOR
+                _ROUTER_CACHE.score_threshold = _ROUTER_SCORE_FLOOR
         return _ENCODER
 
     # If encoder type changed, clear the router cache
@@ -54,7 +96,7 @@ def get_encoder(force_type=None):
         try:
             from semantic_router.encoders import GoogleEncoder
             _ENCODER = GoogleEncoder(name="models/text-embedding-004")
-            _ENCODER.score_threshold = _POSITIVE_SCORE_FLOOR
+            _ENCODER.score_threshold = _ROUTER_SCORE_FLOOR
             _ENCODER_TYPE = "gemini"
             log.info("Initialized Gemini encoder for semantic router")
         except Exception as e:
@@ -64,7 +106,7 @@ def get_encoder(force_type=None):
     if encoder_type == "fastembed":
         from semantic_router.encoders import FastEmbedEncoder
         _ENCODER = FastEmbedEncoder(name="BAAI/bge-small-en-v1.5")
-        _ENCODER.score_threshold = _POSITIVE_SCORE_FLOOR
+        _ENCODER.score_threshold = _ROUTER_SCORE_FLOOR
         _ENCODER_TYPE = "fastembed"
         log.info("Initialized FastEmbedEncoder for semantic router")
 
@@ -117,7 +159,7 @@ def _load_system_recalls() -> list[dict]:
             data = json.load(f)
             for recall in data:
                 recall["source"] = "system"
-                recall.pop("threshold", None)
+                normalize_recall_thresholds(recall)
             return data
     except Exception as e:
         log.error(f"Failed to load system recalls: {e}")
@@ -134,7 +176,7 @@ async def fetch_all_recalls() -> list[dict]:
             async for doc in coll.find({"enabled": {"$ne": False}}):
                 doc["source"] = "user"
                 doc["recall_id"] = str(doc.pop("_id"))
-                doc.pop("threshold", None)
+                normalize_recall_thresholds(doc)
                 recalls.append(doc)
         except Exception as e:
             log.error(f"Failed to fetch user recalls from DB: {e}")
@@ -268,26 +310,44 @@ def _accept_candidate(
     matches: list,
     lexical_cue: str | None = None,
 ) -> None:
+    """Accept semantic if pos >= pos_thr and neg < neg_thr; lexical hard-hits skip neg thr."""
+    pos_thr = recall_positive_threshold(recall)
+    neg_thr = recall_negative_threshold(recall)
     negatives = recall.get("negative_examples") or []
     negative_score = _max_cosine(encoder, chunk, negatives) if negatives else None
 
-    if negative_score is not None and negative_score >= positive_score:
+    if match_source == "semantic" and positive_score < pos_thr:
+        log.info(
+            f"[Semantic Miss] route='{recall_id}' source={match_source} "
+            f"pos={positive_score:.4f} < pos_thr={pos_thr:.4f} chunk='{chunk[:100]}'"
+        )
+        return
+
+    # Absolute negative threshold applies to semantic proposals only. Lexical cues
+    # are intentional hard triggers and must not be blocked by near-miss cosine.
+    if (
+        match_source == "semantic"
+        and negative_score is not None
+        and negative_score >= neg_thr
+    ):
         log.info(
             f"[Semantic Veto] route='{recall_id}' source={match_source} "
-            f"pos={positive_score:.4f} neg={negative_score:.4f} chunk='{chunk[:100]}'"
+            f"pos={positive_score:.4f} neg={negative_score:.4f} "
+            f">= neg_thr={neg_thr:.4f} chunk='{chunk[:100]}'"
         )
         return
 
     cue_note = f" cue={lexical_cue!r}" if lexical_cue else ""
     log.info(
         f"[Semantic Match] route='{recall_id}' source={match_source} "
-        f"pos={positive_score:.4f} "
+        f"pos={positive_score:.4f}>={pos_thr:.4f} "
         f"neg={negative_score if negative_score is not None else 'n/a'}"
+        f"(thr={neg_thr:.4f})"
         f"{cue_note} chunk='{chunk[:100]}'"
     )
     seen.add(recall_id)
     match_obj = dict(recall)
-    match_obj.pop("threshold", None)
+    normalize_recall_thresholds(match_obj)
     match_obj["positive_score"] = positive_score
     match_obj["negative_score"] = negative_score
     match_obj["match_source"] = match_source
@@ -303,7 +363,7 @@ def scan_text_for_recalls(
     exclude_texts: list[str] | None = None,
     force_encoder_type=None,
 ) -> list[dict]:
-    """Scan text: semantic (pos>=floor) OR lexical cue hit, then shared neg veto."""
+    """Scan text: semantic OR lexical cue hit, then per-recall pos/neg thresholds."""
     if not text or not recalls:
         return []
 
@@ -343,12 +403,6 @@ def scan_text_for_recalls(
                     log.info(
                         f"[Semantic Match] route='{decision.name}' missing positive_score; "
                         f"treating as miss chunk='{chunk[:100]}'"
-                    )
-                    continue
-                if positive_score < _POSITIVE_SCORE_FLOOR:
-                    log.info(
-                        f"[Semantic Miss] route='{decision.name}' pos={positive_score:.4f} "
-                        f"< floor={_POSITIVE_SCORE_FLOOR} chunk='{chunk[:100]}'"
                     )
                     continue
 
@@ -404,32 +458,207 @@ def _slm_verify_enabled() -> bool:
     return raw not in ("0", "false", "no", "off")
 
 
+def _configured_slm_model_key() -> str:
+    """Active Stage-2 profile key from tower_settings (falls back to default)."""
+    try:
+        from . import tower_settings
+
+        return tower_settings.get_recall_slm_model()
+    except Exception:
+        from local_llm.config import DEFAULT_RECALL_SLM_MODEL
+
+        return DEFAULT_RECALL_SLM_MODEL
+
+
+def _close_slm_client_unlocked() -> None:
+    global _SLM_CLIENT, _SLM_CLIENT_FAILED, _SLM_LOADED_KEY
+    client = _SLM_CLIENT
+    _SLM_CLIENT = None
+    _SLM_LOADED_KEY = None
+    _SLM_CLIENT_FAILED = False
+    if client is not None:
+        try:
+            client.close()
+        except Exception as e:
+            log.warning("Recall SLM close failed: %s", e)
+
+
+def _build_slm_client(model_key: str):
+    """Construct an in-process client for one profile. Raises on hard failures."""
+    from local_llm import LocalGemma, LocalLLMClient, model_path_for, resolve_model_profile
+
+    profile = resolve_model_profile(model_key)
+    path = model_path_for(model_key)
+    if not path.exists():
+        return None, path, profile
+    engine = LocalGemma(
+        model_path=path,
+        ensure=False,
+        model_id=profile["model_id"],
+        hf_repo=profile["hf_repo"],
+    )
+    client = LocalLLMClient(
+        in_process=True,
+        engine=engine,
+        model=profile["model_id"],
+    )
+    return client, path, profile
+
+
 def _get_slm_client():
-    """Lazy LocalLLMClient for Stage-2 verify. None if unavailable."""
-    global _SLM_CLIENT, _SLM_CLIENT_FAILED
+    """Lazy LocalLLMClient for Stage-2 verify. One model loaded; None if unavailable."""
+    global _SLM_CLIENT, _SLM_CLIENT_FAILED, _SLM_LOADED_KEY
     if not _slm_verify_enabled():
         return None
-    if _SLM_CLIENT is not None:
-        return _SLM_CLIENT
-    if _SLM_CLIENT_FAILED:
-        return None
-    try:
-        from local_llm import LocalLLMClient, default_model_path
-
-        path = default_model_path()
-        if not path.exists():
-            # Do not sticky-fail: image/entrypoint may populate weights later.
-            log.warning(
-                "Recall SLM verify: GGUF missing at %s; fail-open until available",
+    with _SLM_LOCK:
+        if _SLM_CLIENT_FAILED:
+            return None
+        wanted = _configured_slm_model_key()
+        if _SLM_CLIENT is not None and _SLM_LOADED_KEY == wanted:
+            return _SLM_CLIENT
+        if _SLM_CLIENT is not None and _SLM_LOADED_KEY != wanted:
+            log.info(
+                "Recall SLM: configured model changed %s → %s; unloading",
+                _SLM_LOADED_KEY,
+                wanted,
+            )
+            _close_slm_client_unlocked()
+        try:
+            client, path, profile = _build_slm_client(wanted)
+            if client is None:
+                # Do not sticky-fail: image/entrypoint may populate weights later.
+                log.warning(
+                    "Recall SLM verify: GGUF missing at %s; fail-open until available",
+                    path,
+                )
+                return None
+            _SLM_CLIENT = client
+            _SLM_LOADED_KEY = wanted
+            log.info(
+                "Recall SLM loaded model=%s id=%s path=%s",
+                wanted,
+                profile["model_id"],
                 path,
             )
+            return _SLM_CLIENT
+        except Exception as e:
+            log.warning(f"Recall SLM verify: client init failed ({e}); fail-open")
+            _SLM_CLIENT_FAILED = True
             return None
-        _SLM_CLIENT = LocalLLMClient(in_process=True)
-        return _SLM_CLIENT
-    except Exception as e:
-        log.warning(f"Recall SLM verify: client init failed ({e}); fail-open")
-        _SLM_CLIENT_FAILED = True
-        return None
+
+
+def get_recall_slm_status() -> dict:
+    """Status payload for Tower UI / API."""
+    from local_llm import list_model_profiles
+
+    key = _configured_slm_model_key()
+    with _SLM_LOCK:
+        loaded = _SLM_LOADED_KEY
+        loaded_now = _SLM_CLIENT is not None and loaded == key
+    return {
+        "model": key,
+        "loaded_model": loaded,
+        "loaded": loaded_now,
+        "enabled": _slm_verify_enabled(),
+        "options": list_model_profiles(),
+    }
+
+
+def set_recall_slm_model(model_key: str, *, preload: bool = True) -> dict:
+    """Switch Stage-2 model. With preload=True, persist only after a successful load.
+
+    Only one GGUF is resident at a time. On preload failure the previous model
+    stays configured and is best-effort reloaded (unload-then-load to fit 4GB
+    tenants). Returns status including load_ms.
+    """
+    global _SLM_CLIENT, _SLM_CLIENT_FAILED, _SLM_LOADED_KEY
+    from . import tower_settings
+
+    model = tower_settings.normalize_recall_slm_model(model_key)
+    if model is None:
+        raise ValueError(
+            f"Unsupported recall SLM model: {model_key}; "
+            f"expected one of {list(tower_settings.RECALL_SLM_MODEL_OPTIONS)}"
+        )
+
+    load_ms = None
+    error = None
+    with _SLM_LOCK:
+        # Config-only: persist immediately; unload mismatch so the next verify
+        # lazy-loads the new key.
+        if not preload or not _slm_verify_enabled():
+            saved = tower_settings.set_recall_slm_model(model)
+            if _SLM_LOADED_KEY != saved:
+                _close_slm_client_unlocked()
+            status = get_recall_slm_status()
+            status["load_ms"] = load_ms
+            return status
+
+        # Already resident — just ensure Mongo matches.
+        if _SLM_CLIENT is not None and _SLM_LOADED_KEY == model:
+            tower_settings.set_recall_slm_model(model)
+            status = get_recall_slm_status()
+            status["load_ms"] = 0.0
+            return status
+
+        previous_loaded = _SLM_LOADED_KEY
+        # Free RAM before loading the replacement (important on 4GB tenants).
+        if _SLM_LOADED_KEY != model:
+            _close_slm_client_unlocked()
+
+        t0 = time.perf_counter()
+        # Clear sticky fail so a previous hard fail can recover after bake/swap.
+        _SLM_CLIENT_FAILED = False
+        try:
+            client, path, profile = _build_slm_client(model)
+            if client is None:
+                error = f"GGUF missing at {path}"
+            else:
+                _SLM_CLIENT = client
+                _SLM_LOADED_KEY = model
+                tower_settings.set_recall_slm_model(model)
+                load_ms = round((time.perf_counter() - t0) * 1000.0, 1)
+                log.info(
+                    "Recall SLM hot-swap model=%s id=%s load_ms=%.1f",
+                    model,
+                    profile["model_id"],
+                    load_ms,
+                )
+        except Exception as e:
+            error = str(e)
+            log.warning("Recall SLM hot-swap failed: %s", e)
+
+        if error:
+            # Do not persist the failed key. Reload the previous resident model.
+            if previous_loaded:
+                try:
+                    restored, _, _ = _build_slm_client(previous_loaded)
+                    if restored is not None:
+                        _SLM_CLIENT = restored
+                        _SLM_LOADED_KEY = previous_loaded
+                        _SLM_CLIENT_FAILED = False
+                        log.info(
+                            "Recall SLM restored previous model=%s after failed swap",
+                            previous_loaded,
+                        )
+                    else:
+                        # Missing weights must not sticky-fail the process.
+                        _SLM_CLIENT_FAILED = False
+                except Exception as restore_e:
+                    log.warning(
+                        "Recall SLM restore after failed swap failed: %s", restore_e
+                    )
+                    _SLM_CLIENT_FAILED = True
+            elif "GGUF missing" in error:
+                _SLM_CLIENT_FAILED = False
+            else:
+                _SLM_CLIENT_FAILED = True
+
+    status = get_recall_slm_status()
+    status["load_ms"] = load_ms
+    if error:
+        status["error"] = error
+    return status
 
 
 def _slm_logit_margin() -> float:
@@ -459,7 +688,7 @@ def _build_slm_verify_prompt(chunk: str, recall: dict) -> str:
     """Few-shot YES/NO prompt for logit scoring.
 
     Order: task rule → recall instruction → global hard-negatives → this
-    recall's own pos/neg cues → query chunk. Keep examples short; 270M models
+    recall's own pos/neg cues → query chunk. Keep examples short; 1B models
     need explicit NO anchors more than long prose.
     """
     instruction = (recall.get("instruction") or "").strip()

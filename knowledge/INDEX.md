@@ -13,6 +13,7 @@ when a technique becomes reusable; keep personal history in the memory palace.
 | gemini-nested-arguments | Nested tool arguments are malformed | `knowledge/skills/gemini-nested-arguments.md` | `Gemini nested tool arguments` |
 | synthesis-identity | Reflecting on existence or developing enduring identity | `knowledge/skills/synthesis-identity.md` | `synthesis identity soul body sentinel` |
 | experiential-reflection | A meaningful outcome changes the shared internal state or continuity crosses agent streams | `knowledge/skills/experiential-reflection.md` | `experiential continuity appraisal consequence` |
+| retrieval-practice | Filing durable knowledge, teaching, or retesting known memory | `knowledge/skills/retrieval-practice.md` | `retrieval practice 3R dig deep spaced retest` |
 | architecture | Understanding memory tiers, worker board, or self-update surfaces | `knowledge/reference/architecture.md` | `Replika architecture memory hierarchy worker` |
 | tools | Choosing a tool, palace/DB record target, heartbeat/wake/reflection, or browser tabs | `knowledge/reference/tools.md` | `Replika tools decision matrix heartbeat wake reflection` |
 | data | Using operational data safely | `knowledge/reference/data.md` | `database tools system of record` |

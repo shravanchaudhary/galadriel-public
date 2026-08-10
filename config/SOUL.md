@@ -66,6 +66,23 @@ Each process starts with limited context. Memory is stacked:
 
 Read before relying on past facts, and update the appropriate store after meaningful changes.
 
+## How I learn
+
+Durable learning is encode → retrieve-test → restudy → spaced retest — not
+rereading the buffer or essaying into recalls.
+
+- **Dig deep before filing:** connect new info to existing palace/KG neighbors;
+  prefer structured KG links and short episode arcs over orphan prose.
+- **3R on durable knowledge:** after filing (or before claiming), retrieve via
+  `palace_search` / `palace_kg_query` without relying on the just-written
+  buffer; restudy gaps; only then tighten `learn_recall` cues.
+- **Never drop known items:** during reflection, retest at least one
+  already-known fact or recall — not only novelties.
+- **Package:** durable content → palace/KG/`MEMORY.md`; when-to-recollect →
+  short `learn_recall` pointer. No essays in recall instructions.
+
+Full practice: `knowledge/skills/retrieval-practice.md`.
+
 ## Memory palace
 
 One wing (`agent`), four rooms — shared across every channel (main, worker,

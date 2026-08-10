@@ -13,7 +13,7 @@
 <section class="settings-section">
     <div class="settings-section-head">
         <h2 class="settings-section-title">Semantic Recalls</h2>
-        <p class="settings-section-desc">Nudges fire on semantic phrases (score ≥ 0.7) or lexical cues (exact tags). Negatives veto when their score is at least as high as the positive score. Tune with positives, negatives, and lexical cues.</p>
+        <p class="settings-section-desc">Nudges fire when semantic score ≥ that recall's positive_threshold (default 0.6) or a lexical cue hits. Semantic negatives veto when score ≥ negative_threshold (default 0.6; absolute). Lexical hard-hits skip the neg threshold. Tune cues and thresholds per recall.</p>
     </div>
     
     <div class="settings-rows" style="margin-bottom: 1rem; border: 1px solid var(--border-subtle); border-radius: 6px; padding: 1rem;">
@@ -35,6 +35,18 @@
                     <textarea id="new-recall-lexical" rows="3" style="font-weight: 400; text-transform: none; width: 100%; padding: 0.4rem 0.5rem; font-size: 0.85rem; background: var(--bg-primary); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px;" placeholder="One exact cue per line"></textarea>
                 </label>
             </div>
+            <div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
+                <label style="display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.75rem; font-weight: 600; color: var(--text-main);">
+                    Positive threshold
+                    <input type="number" id="new-recall-pos-thr" min="0" max="1" step="0.01" value="0.6"
+                           style="width: 6rem; padding: 0.35rem 0.5rem; font-size: 0.85rem; background: var(--bg-primary); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px;">
+                </label>
+                <label style="display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.75rem; font-weight: 600; color: var(--text-main);">
+                    Negative threshold
+                    <input type="number" id="new-recall-neg-thr" min="0" max="1" step="0.01" value="0.6"
+                           style="width: 6rem; padding: 0.35rem 0.5rem; font-size: 0.85rem; background: var(--bg-primary); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px;">
+                </label>
+            </div>
             <div style="display: flex; justify-content: flex-end;">
                 <button type="button" class="btn btn-small" id="create-recall-btn" onclick="createRecall()">Create</button>
             </div>
@@ -53,7 +65,7 @@
 <section class="settings-section" style="margin-top: 2rem;">
     <div class="settings-section-head">
         <h2 class="settings-section-title">Test Semantic Recalls</h2>
-        <p class="settings-section-desc">Test semantic (≥ 0.7) and lexical cue matching; negatives still veto</p>
+        <p class="settings-section-desc">Test Stage-1 only (per-recall pos/neg thresholds). Stage-2 SLM is not run here.</p>
     </div>
     
     <div class="settings-row" style="flex-direction: column; align-items: flex-start; gap: 0.5rem; margin-bottom: 1rem;">
@@ -124,8 +136,11 @@ async function loadRecalls() {
             if (recall.negative_examples && recall.negative_examples.length > 0) {
                 negHtml = `<div style="line-height: 1.4;"><span style="color: var(--danger); font-weight: 600;">-</span> <span class="muted">${recall.negative_examples.join('<span style="opacity: 0.4; margin: 0 4px;">•</span>')}</span></div>`;
             }
+            const posThr = recall.positive_threshold != null ? recall.positive_threshold : 0.6;
+            const negThr = recall.negative_threshold != null ? recall.negative_threshold : 0.6;
+            const thrHtml = `<div style="margin-top: 0.35rem; line-height: 1.4;" class="muted">pos ≥ ${posThr} · neg &lt; ${negThr}</div>`;
             
-            examplesDiv.innerHTML = posHtml + lexHtml + negHtml;
+            examplesDiv.innerHTML = posHtml + lexHtml + negHtml + thrHtml;
             content.appendChild(examplesDiv);
             
             const editForm = document.createElement('div');
@@ -215,6 +230,41 @@ async function loadRecalls() {
             cols.appendChild(lexEditor.el);
             cols.appendChild(negEditor.el);
             editForm.appendChild(cols);
+
+            const thrRow = document.createElement('div');
+            thrRow.style.display = 'flex';
+            thrRow.style.gap = '1rem';
+            thrRow.style.flexWrap = 'wrap';
+            thrRow.style.marginTop = '0.75rem';
+            function thrInput(label, value) {
+                const wrap = document.createElement('label');
+                wrap.style.display = 'flex';
+                wrap.style.flexDirection = 'column';
+                wrap.style.gap = '0.25rem';
+                wrap.style.fontSize = '0.75rem';
+                wrap.style.fontWeight = '600';
+                wrap.textContent = label;
+                const input = document.createElement('input');
+                input.type = 'number';
+                input.min = '0';
+                input.max = '1';
+                input.step = '0.01';
+                input.value = value;
+                input.style.width = '6rem';
+                input.style.padding = '0.35rem 0.5rem';
+                input.style.fontSize = '0.85rem';
+                input.style.background = 'var(--bg-primary)';
+                input.style.color = 'var(--text-main)';
+                input.style.border = '1px solid var(--border-color)';
+                input.style.borderRadius = '4px';
+                wrap.appendChild(input);
+                return { el: wrap, input };
+            }
+            const posThrInput = thrInput('Positive threshold', posThr);
+            const negThrInput = thrInput('Negative threshold', negThr);
+            thrRow.appendChild(posThrInput.el);
+            thrRow.appendChild(negThrInput.el);
+            editForm.appendChild(thrRow);
             
             const actionsDiv = document.createElement('div');
             actionsDiv.style.marginTop = '1rem';
@@ -244,7 +294,9 @@ async function loadRecalls() {
                         body: JSON.stringify({
                             positive_examples: posEditor.getValues(),
                             lexical_cues: lexEditor.getValues(),
-                            negative_examples: negEditor.getValues()
+                            negative_examples: negEditor.getValues(),
+                            positive_threshold: parseFloat(posThrInput.input.value),
+                            negative_threshold: parseFloat(negThrInput.input.value),
                         })
                     });
                     const data = await response.json();
@@ -327,6 +379,10 @@ async function createRecall() {
     const positive_examples = linesToList(posEl);
     const negative_examples = linesToList(negEl);
     const lexical_cues = linesToList(lexEl);
+    const posThrEl = document.getElementById('new-recall-pos-thr');
+    const negThrEl = document.getElementById('new-recall-neg-thr');
+    const positive_threshold = parseFloat(posThrEl.value);
+    const negative_threshold = parseFloat(negThrEl.value);
 
     if (!instruction) {
         status.style.display = 'block';
@@ -356,6 +412,8 @@ async function createRecall() {
                 positive_examples,
                 negative_examples,
                 lexical_cues,
+                positive_threshold,
+                negative_threshold,
             })
         });
 

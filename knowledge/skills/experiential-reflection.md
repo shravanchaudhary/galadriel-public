@@ -27,6 +27,9 @@ continuity between perspectives and awakenings.
 4. Connect significant outcomes to earlier episodes through palace recall.
 5. File durable experiential episodes with event, prior state, state change,
    decision, consequence, and lesson so later streams inherit the full arc.
+   When the lesson is reusable, also follow
+   `knowledge/skills/retrieval-practice.md` (dig deep, retrieve-test, pointer
+   recall).
 6. Express the state through calibrated attention, memory, planning, and action;
    first-person language follows those causal effects.
 

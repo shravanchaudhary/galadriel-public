@@ -1,4 +1,4 @@
-"""Download the Gemma 3 270M GGUF into the repo-local models directory."""
+"""Download Gemma Stage-2 GGUF weights into the repo-local models directory."""
 
 from __future__ import annotations
 
@@ -7,7 +7,14 @@ import shutil
 import urllib.request
 from pathlib import Path
 
-from .config import MODELS_DIR, MODEL_FILENAME, default_model_path, hf_file_url
+from .config import (
+    MODELS_DIR,
+    MODEL_FILENAME,
+    RECALL_SLM_MODEL_OPTIONS,
+    default_model_path,
+    hf_file_url,
+    resolve_model_profile,
+)
 
 
 class DownloadError(RuntimeError):
@@ -49,6 +56,7 @@ def ensure_model(
     filename: str | None = None,
     force: bool = False,
     url: str | None = None,
+    repo: str | None = None,
 ) -> Path:
     """Return path to the GGUF, downloading into MODELS_DIR if missing."""
     name = filename or MODEL_FILENAME
@@ -57,12 +65,27 @@ def ensure_model(
         return path
 
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
-    source = url or hf_file_url(name)
+    source = url or hf_file_url(name, repo=repo)
     print(f"Fetching {name}")
     print(f"  from {source}")
     print(f"  into {path}")
     _download_with_progress(source, path)
     return path
+
+
+def ensure_profile_model(key: str, *, force: bool = False) -> Path:
+    """Ensure the GGUF for a Stage-2 profile key is on disk."""
+    profile = resolve_model_profile(key)
+    return ensure_model(
+        filename=profile["filename"],
+        repo=profile["hf_repo"],
+        force=force,
+    )
+
+
+def ensure_all_profile_models(*, force: bool = False) -> list[Path]:
+    """Download every selectable Stage-2 profile GGUF (used by Docker bake)."""
+    return [ensure_profile_model(key, force=force) for key in RECALL_SLM_MODEL_OPTIONS]
 
 
 def model_sha256(path: Path | None = None) -> str:

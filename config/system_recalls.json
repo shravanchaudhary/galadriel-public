@@ -327,7 +327,7 @@
     },
     {
         "recall_id": "sys_learn_recall",
-        "instruction": "The user is teaching something durable to reuse later. Store durable detail via palace_add_drawer / palace_kg_add (or MEMORY.md / knowledge file), then create/patch a short when-to-recollect recall via `learn_recall` pointing at that store. Cue quality: positive_examples = 3–5 realistic phrasings (not instruction paraphrases); lexical_cues = high-precision anchors; negative_examples = near-misses; instruction = one-liner pointer — not an essay. Use `get_recall` first if updating; `purge_recall` only for bad user recalls. System recall instructions stay immutable.",
+        "instruction": "The user is teaching something durable to reuse later. Dig deep: link to existing palace/KG neighbors, then store durable detail via palace_add_drawer / palace_kg_add (or MEMORY.md / knowledge file); create/patch a short when-to-recollect recall via `learn_recall` pointing at that store — do not essay the fact into the instruction. Cue quality: positive_examples = 3–5 realistic phrasings (not instruction paraphrases); lexical_cues = high-precision anchors; negative_examples = near-misses; instruction = one-liner pointer. Use `get_recall` first if updating; `purge_recall` only for bad user recalls. System recall instructions stay immutable.",
         "positive_examples": [
             "remember i like to",
             "please remember that",
