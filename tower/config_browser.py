@@ -22,10 +22,10 @@ taken from the request — that enumeration IS the whitelist.
 
 from datetime import datetime, timezone
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 from flask import Blueprint, abort, redirect, render_template, request, url_for, jsonify
 
+from harness import tower_settings as _tower_settings
 from harness.memory import STABLE_FILES
 from harness.loop_prompts import (
     DEFAULT_HEARTBEAT_PROMPT,
@@ -45,7 +45,6 @@ JOBS_DIR = Path("jobs")
 STATE_DIR = Path("state")
 SME_DIR = Path("sme")
 KNOWLEDGE_DIR = Path("knowledge")
-CET = ZoneInfo("Europe/Stockholm")
 
 PROMPT_CHANNELS = (
     ("main", "Main conversation"),
@@ -175,7 +174,7 @@ def _browse_url_for_relpath(relpath: str) -> str:
 
 def _preview_trigger(channel: str, scheduler) -> tuple[str, str]:
     """Return the next user-message shape for a channel's API request."""
-    today = datetime.now(CET).strftime("%Y-%m-%d")
+    today = _tower_settings.agent_today()
 
     if channel == "main":
         return (
@@ -228,8 +227,6 @@ def register_config_browser(app, agent, scheduler=None):
             {"key": key, "label": label, "note": note}
             for key, (label, note, _base, _files_fn) in CATEGORIES.items() if key != "tools"
         ]
-        from harness import tower_settings as _tower_settings
-
         state_dir = Path("state")
         worker_control = state_dir / "worker_control.md"
         scheduler_control = state_dir / "scheduler_control.md"

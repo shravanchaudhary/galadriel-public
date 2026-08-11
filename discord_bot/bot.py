@@ -182,7 +182,13 @@ def _format_status_report(agent, scheduler) -> str:
         lines.append("**Scheduler**")
         lines.append(f"Heartbeat: {hb_emoji} (every {s['heartbeat_interval']}m{custom})")
         lines.append(f"Morning: {s['morning_time']} · Goodnight: {s['goodnight_time']}")
-        lines.append(f"Now: {s['server_time_cet']} · {'Workday' if s['is_workday'] else 'Weekend'}")
+        now_label = s.get("server_time") or s.get("server_time_cet")
+        tz = s.get("agent_timezone")
+        tz_bit = f" ({tz})" if tz else ""
+        lines.append(
+            f"Now{tz_bit}: {now_label} · "
+            f"{'Workday' if s['is_workday'] else 'Weekend'}"
+        )
 
     return "\n".join(lines)
 

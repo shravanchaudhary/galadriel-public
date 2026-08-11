@@ -6,8 +6,6 @@ wake) can be edited here; fixed templates live in harness/loop_prompts.py.
 """
 
 import os
-from datetime import datetime
-from zoneinfo import ZoneInfo
 
 from flask import Blueprint, abort, redirect, render_template, request, url_for
 
@@ -25,8 +23,6 @@ from harness.loop_prompts import (
     reflection_prompt,
 )
 
-CET = ZoneInfo("Europe/Stockholm")
-
 # Loops that own a real channel_id and can pick their own model.
 _MODEL_SELECTABLE = frozenset({
     "worker", "heartbeat", "wake", "morning", "ambient", "goodnight", "completions",
@@ -34,7 +30,7 @@ _MODEL_SELECTABLE = frozenset({
 
 
 def _today() -> str:
-    return datetime.now(CET).strftime("%Y-%m-%d")
+    return tower_settings.agent_today()
 
 
 def _build_agent_items(scheduler, agent, today: str, worker=None) -> list[dict]:
@@ -54,6 +50,7 @@ def _build_agent_items(scheduler, agent, today: str, worker=None) -> list[dict]:
     }
     morning_hhmm = sched.get("morning_hhmm") or "09:10"
     goodnight_hhmm = sched.get("goodnight_hhmm") or "21:00"
+    tz_label = sched.get("agent_timezone") or tower_settings.get_agent_timezone()
 
     loops = [
         {
@@ -106,7 +103,9 @@ def _build_agent_items(scheduler, agent, today: str, worker=None) -> list[dict]:
             "id": "morning",
             "name": "Morning routine",
             "channel": "morning",
-            "schedule": sched.get("morning_time", f"{morning_hhmm} CET (workdays)"),
+            "schedule": sched.get(
+                "morning_time", f"{morning_hhmm} {tz_label} (workdays)"
+            ),
             "status": (
                 "running"
                 if sched.get("morning_manual_running")
@@ -118,7 +117,7 @@ def _build_agent_items(scheduler, agent, today: str, worker=None) -> list[dict]:
             "note": "Plans the day: writes state/plan/<today>.html, pauses worker during planning.",
             "time_editable": True,
             "time_hhmm": morning_hhmm,
-            "time_label": "Daily time (CET, workdays)",
+            "time_label": f"Daily time ({tz_label}, workdays)",
             "manual_trigger": True,
             "manual_trigger_label": "Run morning plan now",
             "manual_trigger_running": bool(sched.get("morning_manual_running")),
@@ -138,7 +137,9 @@ def _build_agent_items(scheduler, agent, today: str, worker=None) -> list[dict]:
             "id": "ambient",
             "name": "Ambient",
             "channel": "reflection",
-            "schedule": sched.get("reflection_times", "11/14/17/20 CET workdays"),
+            "schedule": sched.get(
+                "reflection_times", f"11/14/17/20 {tz_label} workdays"
+            ),
             "status": "DISABLED" if reflection_off else "enabled",
             "source": "harness/loop_prompts.py → reflection_prompt()",
             "editable": False,
@@ -149,7 +150,9 @@ def _build_agent_items(scheduler, agent, today: str, worker=None) -> list[dict]:
             "id": "goodnight",
             "name": "Goodnight",
             "channel": "goodnight",
-            "schedule": sched.get("goodnight_time", f"{goodnight_hhmm} CET (daily)"),
+            "schedule": sched.get(
+                "goodnight_time", f"{goodnight_hhmm} {tz_label} (daily)"
+            ),
             "status": "always on",
             "source": "harness/loop_prompts.py → goodnight_prompt()",
             "editable": False,
@@ -157,7 +160,7 @@ def _build_agent_items(scheduler, agent, today: str, worker=None) -> list[dict]:
             "note": "Reconciles the day, files daily-recap to palace, disables heartbeat (REST).",
             "time_editable": True,
             "time_hhmm": goodnight_hhmm,
-            "time_label": "Daily time (CET)",
+            "time_label": f"Daily time ({tz_label})",
         },
         {
             "id": "completions",

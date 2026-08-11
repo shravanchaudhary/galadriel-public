@@ -149,16 +149,15 @@ class MemoryManager:
             except Exception:
                 pass  # never break prompt assembly on a palace hiccup
 
-        today = datetime.now()
+        now, tz_name = self._agent_now()
         # Chronological order: yesterday first, then today.
         for delta in (1, 0):
-            day = today - timedelta(days=delta)
+            day = now - timedelta(days=delta)
             filename = day.strftime("%Y-%m-%d.md")
             note = self._read_file(self.memory_dir / filename)
             if note:
                 parts.append(f"# Daily Log ({filename})\n\n{note}")
 
-        now, tz_name = self._agent_now()
         tail = (
             f"Current date/time: {now.strftime('%Y-%m-%d %H:%M:%S %Z')} "
             f"({tz_name}, weekday {now.strftime('%A')})"
@@ -172,15 +171,10 @@ class MemoryManager:
         """Now in the user-configured agent timezone (Configuration → Agent time)."""
         try:
             from . import tower_settings
-            tz_name = tower_settings.get_agent_timezone()
+            return tower_settings.agent_now(), tower_settings.get_agent_timezone()
         except Exception:
             tz_name = "Europe/Stockholm"
-        try:
-            tz = ZoneInfo(tz_name)
-        except Exception:
-            tz_name = "UTC"
-            tz = ZoneInfo("UTC")
-        return datetime.now(tz), tz_name
+            return datetime.now(ZoneInfo(tz_name)), tz_name
 
     # ── Public API for agent.py ─────────────────────────────────
 
@@ -212,8 +206,9 @@ class MemoryManager:
 
     def append_daily_log(self, entry: str):
         """Append an entry to today's daily log."""
-        today = datetime.now().strftime("%Y-%m-%d")
+        now, _ = self._agent_now()
+        today = now.strftime("%Y-%m-%d")
         path = self.memory_dir / f"{today}.md"
-        timestamp = datetime.now().strftime("%H:%M")
+        timestamp = now.strftime("%H:%M")
         with open(path, "a", encoding="utf-8") as f:
             f.write(f"\n- **{timestamp}:** {entry}\n")

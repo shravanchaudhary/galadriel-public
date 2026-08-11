@@ -274,6 +274,25 @@ def get_agent_timezone() -> str:
     return _valid_timezone((doc or {}).get("timezone")) or DEFAULT_AGENT_TIMEZONE
 
 
+def agent_zoneinfo() -> ZoneInfo:
+    """ZoneInfo for the configured agent timezone (falls back to default)."""
+    name = get_agent_timezone()
+    try:
+        return ZoneInfo(name)
+    except Exception:
+        return ZoneInfo(DEFAULT_AGENT_TIMEZONE)
+
+
+def agent_now() -> datetime:
+    """Current wall-clock time in the configured agent timezone."""
+    return datetime.now(agent_zoneinfo())
+
+
+def agent_today() -> str:
+    """Today's date (YYYY-MM-DD) in the configured agent timezone."""
+    return agent_now().strftime("%Y-%m-%d")
+
+
 def set_agent_timezone(tz_name: str) -> str:
     """Persist the agent timezone. Returns the normalized IANA name."""
     tz = _valid_timezone(tz_name)

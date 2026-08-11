@@ -26,11 +26,13 @@ Loop shape (work-conserving, single asyncio task = inherently single-flight):
     with a machine tag <<WORKER_STATUS: worked|idle>> the loop reads to decide
     whether to keep going (work remains) or idle-poll (nothing to do).
 
-The current time (CET) and elapsed session time are injected at the TAIL of the
-prompt each turn, so the worker is time-aware without carrying prior-tick
-transcript (which would inflate tokens and hurt prompt-cache hits). Opt-in: set
-GALADRIEL_WORKER=1 to enable.
+The current time (configured Agent time timezone) and elapsed session time are
+injected at the TAIL of the prompt each turn, so the worker is time-aware without
+carrying prior-tick transcript (which would inflate tokens and hurt prompt-cache
+hits). Opt-in: set GALADRIEL_WORKER=1 to enable.
 """
+
+from __future__ import annotations
 
 import asyncio
 import logging
@@ -39,7 +41,6 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 from .loop_prompts import WORKER_PROMPT
 from . import worker_tick_store
@@ -47,8 +48,6 @@ from . import model_registry
 from . import tower_settings
 
 log = logging.getLogger("galadriel.worker")
-
-CET = ZoneInfo("Europe/Stockholm")
 
 WORKER_CHANNEL = "worker"
 # When the agent reports work remains, loop again after a short floor gap (never
@@ -101,7 +100,7 @@ class WorkerLoop:
 
     def start(self):
         """Start the worker loop. Call from an async context (e.g. on_ready)."""
-        self._started_at = datetime.now(CET)
+        self._started_at = tower_settings.agent_now()
         self._task = asyncio.ensure_future(self._loop())
         log.info(
             f"Worker loop started (idle poll every {self.idle_interval_minutes()}m)."
@@ -152,7 +151,7 @@ class WorkerLoop:
         # never poisons the next.
         self.agent.reset_channel(WORKER_CHANNEL)
         prompt = WORKER_PROMPT + "\n\n" + self._build_clock()
-        started_at = datetime.now(CET)
+        started_at = tower_settings.agent_now()
         tick_id = str(uuid.uuid4())
         model = self.agent.model_for_channel(WORKER_CHANNEL)
         recorder = worker_tick_store.WorkerTickRecorder(
@@ -174,7 +173,7 @@ class WorkerLoop:
             log.exception(f"Worker turn error: {e}")
             await recorder.finalize(
                 state="error",
-                finished_at=datetime.now(CET),
+                finished_at=tower_settings.agent_now(),
                 error=str(e),
             )
             return "idle"
@@ -182,7 +181,7 @@ class WorkerLoop:
         status, note = self._parse(text)
         await recorder.finalize(
             state="completed",
-            finished_at=datetime.now(CET),
+            finished_at=tower_settings.agent_now(),
             worker_status=status,
             notification=note,
         )
@@ -238,7 +237,8 @@ class WorkerLoop:
         """Tail-injected, cache-safe time block. Harness computes the diffs (and
         today's ledger file paths) so the model never has to do time math or
         construct a filename itself."""
-        now = datetime.now(CET)
+        now = tower_settings.agent_now()
+        tz_name = tower_settings.get_agent_timezone()
         elapsed = "unknown"
         if self._started_at:
             secs = int((now - self._started_at).total_seconds())
@@ -246,7 +246,8 @@ class WorkerLoop:
         today = now.strftime("%Y-%m-%d")
         return (
             "[WORKER:CLOCK]\n"
-            f"NOW = {now.strftime('%Y-%m-%d %H:%M')} CET (weekday {now.strftime('%A')})\n"
+            f"NOW = {now.strftime('%Y-%m-%d %H:%M')} {tz_name} "
+            f"(weekday {now.strftime('%A')})\n"
             f"session_elapsed = {elapsed}\n"
             f"project_slice_cap = {PROJECT_SLICE_CAP_MIN}m "
             "(if you have spent longer than this on one project, checkpoint and re-scan)\n"

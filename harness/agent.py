@@ -1598,11 +1598,10 @@ class GaladrielAgent:
     async def _start_loop_tick(self, channel_id: str, user_message: str | list):
         """Create a durable tick recorder for a scheduler/completion channel."""
         import uuid
-        from zoneinfo import ZoneInfo
+        from . import tower_settings
         from . import worker_tick_store
 
-        cet = ZoneInfo("Europe/Stockholm")
-        started_at = datetime.now(cet)
+        started_at = tower_settings.agent_now()
         if isinstance(user_message, str):
             prompt = user_message
         elif isinstance(user_message, list):
@@ -1634,10 +1633,10 @@ class GaladrielAgent:
         if tick_recorder is None:
             return
         try:
-            from zoneinfo import ZoneInfo
+            from . import tower_settings
             await tick_recorder.finalize(
                 state=state,
-                finished_at=datetime.now(ZoneInfo("Europe/Stockholm")),
+                finished_at=tower_settings.agent_now(),
                 error=error,
             )
         except Exception as exc:

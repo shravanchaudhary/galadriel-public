@@ -10,7 +10,7 @@
 
 {% if scheduler %}
 <div class="settings-meta">
-    CET now: <strong>{{ scheduler.server_time_cet }}</strong>
+    Agent time ({{ scheduler.agent_timezone or 'configured TZ' }}) now: <strong>{{ scheduler.server_time or scheduler.server_time_cet }}</strong>
     · Heartbeat: <strong id="hb-bar-status">{{ 'ON' if scheduler.heartbeat_enabled else 'OFF' }}</strong><span id="hb-bar-interval">{% if scheduler.heartbeat_enabled %} ({{ scheduler.heartbeat_interval }}m){% endif %}</span>
     · Wake: <strong>{{ 'armed' if scheduler.pending_wake else 'disarmed' }}</strong>
     · {{ 'Workday' if scheduler.is_workday else 'Weekend' }}

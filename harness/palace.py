@@ -35,7 +35,14 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+from . import tower_settings
+
 log = logging.getLogger("galadriel.palace")
+
+
+def _agent_stamp() -> datetime:
+    """Wall clock for agent-visible archive stamps (Configuration → Agent time)."""
+    return tower_settings.agent_now()
 
 DEFAULT_PALACE_PATH = str(Path.home() / ".mempalace" / "palace")
 DEFAULT_ARCHIVE_ROOT = str(Path.home() / ".mempalace" / "archive")
@@ -608,7 +615,7 @@ def write_slack_observation_batch(observations: list[dict]) -> Path | None:
     """Durably stage exact Slack observations for one bounded Palace mine."""
     if not observations:
         return None
-    ts = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+    ts = _agent_stamp().strftime("%Y-%m-%dT%H-%M-%S")
     batch_dir = _archive_root() / f"slack_observations_{ts}_{uuid.uuid4().hex[:8]}"
     target_dir = batch_dir / CONVERSATION_ROOM
     try:
@@ -619,7 +626,7 @@ def write_slack_observation_batch(observations: list[dict]) -> Path | None:
         sections = [
             "# Slack channel observations",
             "",
-            f"- staged: {datetime.now().astimezone().isoformat()}",
+            f"- staged: {_agent_stamp().isoformat()}",
             f"- observation count: {len(observations)}",
             f"- wing: {DEFAULT_WING}",
             f"- room: {CONVERSATION_ROOM}",
@@ -709,7 +716,7 @@ def _write_conversation_batch(
     """
     if not messages:
         return None
-    ts = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+    ts = _agent_stamp().strftime("%Y-%m-%dT%H-%M-%S")
     safe_channel = _safe_channel(channel_id)
     safe_kind = _safe_archive_kind(kind)
     batch_dir = root / f"conversation_{safe_channel}_{safe_kind}_{ts}"
@@ -914,7 +921,7 @@ async def add_drawer(
         except Exception as e:
             return f"[palace add] {type(e).__name__}: {e}"
 
-    ts = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+    ts = _agent_stamp().strftime("%Y-%m-%dT%H-%M-%S")
     slug = _slug(topic) if topic else _slug(content.strip().split("\n", 1)[0])
     resolved_room = room or DEFAULT_DRAWER_ROOM
     room_slug = _slug(resolved_room)

@@ -78,7 +78,7 @@ WORKER_PROMPT = (
 
 WORKER_CLOCK_SUFFIX = (
     "\n\n[WORKER:CLOCK]\n"
-    "NOW = <YYYY-MM-DD HH:MM> CET (weekday <Day>)\n"
+    "NOW = <YYYY-MM-DD HH:MM> <agent timezone> (weekday <Day>)\n"
     "session_elapsed = <elapsed since worker started>\n"
     "project_slice_cap = 30m (if you have spent longer than this on one project, "
     "checkpoint and re-scan)\n"
@@ -129,7 +129,7 @@ def morning_prompt(today: str) -> str:
 def catchup_prompt(today: str) -> str:
     return (
         "[SYSTEM:CATCHUP] You just came back online and the morning planning slot "
-        "(09:10 CET) was missed while the process was down or busy — today's plan was "
+        "(09:10 agent timezone) was missed while the process was down or busy — today's plan was "
         "never set up. Run it now and reconcile what slipped:\n"
         f"- read_file `state/plan/{today}.html` (was today's plan ever written? a "
         f"missing file means no) and `state/progress/{today}.html` (what actually got "
@@ -253,7 +253,7 @@ def reflection_prompt(today: str) -> str:
 
 def goodnight_prompt(today: str) -> str:
     return (
-        "[SYSTEM:GOODNIGHT_ROUTINE] It is 21:00 CET. Wish the user a peaceful "
+        "[SYSTEM:GOODNIGHT_ROUTINE] It is goodnight time in the agent timezone. Wish the user a peaceful "
         "good night, with a brief reflection if the day had anything notable.\n"
         "First, reconcile the day to ONE truth — you are ONE agent and this is "
         f"a fresh channel, so `state/progress/{today}.html` alone is NOT the whole "

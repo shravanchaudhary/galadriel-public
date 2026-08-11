@@ -6,18 +6,18 @@ Files live under `state/plan/` and `state/progress/` (one HTML file per day).
 import re
 from datetime import datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 from flask import Blueprint, Response, abort, redirect, request, url_for
 
-CET = ZoneInfo("Europe/Stockholm")
+from harness import tower_settings
+
 PLAN_DIR = Path("state/plan")
 PROGRESS_DIR = Path("state/progress")
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 def _today() -> str:
-    return datetime.now(CET).strftime("%Y-%m-%d")
+    return tower_settings.agent_today()
 
 
 def _valid_date(date: str) -> bool:

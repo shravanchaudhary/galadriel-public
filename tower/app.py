@@ -1246,7 +1246,7 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
 
     @app.route("/api/scheduler/routine-time", methods=["POST"])
     def api_scheduler_routine_time():
-        """Set morning or goodnight fire time (CET). Body: {routine, time: HH:MM}."""
+        """Set morning or goodnight fire time (agent timezone). Body: {routine, time: HH:MM}."""
         if not scheduler:
             return jsonify({"error": "Scheduler not available"}), 503
         data = request.json or {}

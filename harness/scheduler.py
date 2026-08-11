@@ -7,11 +7,11 @@ Scheduled activities:
   2. One-shot wake: a single, restart-surviving self-prompt. Unlike the
      heartbeat, it fires EXACTLY ONCE and clears itself only after delivery.
      This is the correct mechanism for "resume me after I restart myself".
-  3. Morning (09:10 CET, workdays only): morning greeting, calendar, coffers.
+  3. Morning (09:10 agent timezone, workdays only): morning greeting, calendar, coffers.
   4. Ambient reflection (workday slots): the agent thinks, files anything worth
      keeping to the palace, audits the background worker, and posts a brief
      worker-status summary (pausing the worker if it is misbehaving).
-  5. Goodnight (21:00 CET): wish good night and disable heartbeat (REST).
+  5. Goodnight (21:00 agent timezone): wish good night and disable heartbeat (REST).
 
 Ambient reflection is opt-out: set GALADRIEL_REFLECTION=0 to disable.
 """
@@ -22,8 +22,8 @@ import json
 import os
 from datetime import datetime, time, timedelta
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
+from . import tower_settings
 from .loop_prompts import (
     DEFAULT_HEARTBEAT_PROMPT,
     catchup_prompt as _catchup_prompt,
@@ -34,7 +34,15 @@ from .loop_prompts import (
 
 log = logging.getLogger("galadriel.scheduler")
 
-CET = ZoneInfo("Europe/Stockholm")
+
+def _agent_now() -> datetime:
+    """Wall clock in Configuration → Agent time timezone."""
+    return tower_settings.agent_now()
+
+
+def _tz_label() -> str:
+    return tower_settings.get_agent_timezone()
+
 
 # Channels owned by the scheduler's own routines (not real user conversations).
 # Used to decide which channels to checkpoint-mine before reflection.
@@ -43,9 +51,9 @@ SCHEDULER_CHANNELS = {"wake", "heartbeat", "morning", "reflection", "goodnight"}
 # every tick, so we only checkpoint the heartbeat channel once per hour.
 HEARTBEAT_CHECKPOINT_MIN_GAP = timedelta(hours=1)
 
-# Morning: 09:10 CET on workdays (Mon-Fri) — overridable via Tower /agent
+# Morning: 09:10 agent-local on workdays (Mon-Fri) — overridable via Tower /agent
 MORNING_TIME = time(9, 10)
-# Goodnight: 21:00 CET every day — overridable via Tower /agent
+# Goodnight: 21:00 agent-local every day — overridable via Tower /agent
 GOODNIGHT_TIME = time(21, 0)
 # Ambient reflection slots (workdays only): palace filing + worker audit +
 # a brief status summary to the user at each slot.
@@ -105,7 +113,7 @@ class Scheduler:
         self.pending_wake: str | None = None
         self._wake_task: asyncio.Task | None = None
 
-        # Configurable routine times (CET); defaults match MORNING/GOODNIGHT_TIME
+        # Configurable routine times (agent timezone); defaults match MORNING/GOODNIGHT_TIME
         self.morning_time: time = MORNING_TIME
         self.goodnight_time: time = GOODNIGHT_TIME
 
@@ -202,9 +210,11 @@ class Scheduler:
 
     def get_status(self) -> dict:
         """Return current scheduler status for the Tower UI."""
-        now_cet = datetime.now(CET)
+        now = _agent_now()
+        tz = _tz_label()
         morning = _format_hhmm(self.morning_time)
         goodnight = _format_hhmm(self.goodnight_time)
+        server_time = now.strftime("%Y-%m-%d %H:%M:%S %Z")
         return {
             "heartbeat_enabled": self.heartbeat_enabled,
             "heartbeat_interval": self.heartbeat_interval,
@@ -213,11 +223,17 @@ class Scheduler:
             "valid_intervals": VALID_INTERVALS,
             "morning_hhmm": morning,
             "goodnight_hhmm": goodnight,
-            "morning_time": f"{morning} CET (workdays)",
-            "goodnight_time": f"{goodnight} CET (daily)",
-            "reflection_times": "11:00/14:00/17:00/20:00 CET (workdays — palace + worker audit + status)",
-            "server_time_cet": now_cet.strftime("%Y-%m-%d %H:%M:%S %Z"),
-            "is_workday": now_cet.weekday() < 5,
+            "morning_time": f"{morning} {tz} (workdays)",
+            "goodnight_time": f"{goodnight} {tz} (daily)",
+            "reflection_times": (
+                f"11:00/14:00/17:00/20:00 {tz} "
+                "(workdays — palace + worker audit + status)"
+            ),
+            "agent_timezone": tz,
+            "server_time": server_time,
+            # Backward-compatible alias for Discord / older UI.
+            "server_time_cet": server_time,
+            "is_workday": now.weekday() < 5,
             "morning_manual_running": bool(
                 self._manual_morning_future is not None
                 and not self._manual_morning_future.done()
@@ -225,8 +241,8 @@ class Scheduler:
         }
 
     def set_routine_time(self, routine: str, hhmm: str) -> None:
-        """Update morning or goodnight fire time (CET). Thread-safe; takes effect
-        on the next cron poll (≤30s)."""
+        """Update morning or goodnight fire time (agent timezone). Thread-safe;
+        takes effect on the next cron poll (≤30s)."""
         routine = (routine or "").strip().lower()
         parsed = _try_parse_hhmm(hhmm)
         if parsed is None:
@@ -278,7 +294,7 @@ class Scheduler:
             # Mark today's cron slot consumed so a still-pending grace window
             # cannot double-fire while this manual run is in flight. Manual
             # re-triggers remain allowed via this same entry point.
-            today = datetime.now(CET).strftime("%Y-%m-%d")
+            today = tower_settings.agent_today()
             self._mark_fired("_last_morning", today)
             log.info("Morning routine starting (manual trigger)...")
             await self._morning_routine()
@@ -465,9 +481,9 @@ class Scheduler:
         # tracker — based on the persisted `_last_morning`. Morning only: a missed
         # reflection slot won't re-fire (persisted fired-set) and a missed goodnight
         # is not replayed (no 2am "good night").
-        now_cet = datetime.now(CET)
-        today_str = now_cet.strftime("%Y-%m-%d")
-        morning_dt = now_cet.replace(
+        now = _agent_now()
+        today_str = now.strftime("%Y-%m-%d")
+        morning_dt = now.replace(
             hour=self.morning_time.hour,
             minute=self.morning_time.minute,
             second=0,
@@ -482,9 +498,9 @@ class Scheduler:
         # the plain cron loop's stale-skip branch below.
         catchup_from = morning_dt + timedelta(minutes=5)
         if (
-            now_cet.weekday() < 5
+            now.weekday() < 5
             and self._last_morning != today_str
-            and catchup_from <= now_cet
+            and catchup_from <= now
         ):
             self._catchup_task = asyncio.ensure_future(self._catchup_loop())
             log.info("Downtime catch-up: morning planning missed today — will run shortly after boot.")
@@ -565,7 +581,7 @@ class Scheduler:
                 )
                 # Heartbeats are frequent — only checkpoint-mine the heartbeat
                 # channel once per hour, not every tick.
-                now = datetime.now()
+                now = _agent_now()
                 if (
                     self._last_heartbeat_checkpoint is None
                     or (now - self._last_heartbeat_checkpoint) >= HEARTBEAT_CHECKPOINT_MIN_GAP
@@ -600,14 +616,14 @@ class Scheduler:
         self._save_state()
 
     async def _cron_loop(self, name: str, time_attr: str, callback, workday_only: bool):
-        """Generic cron-style loop that fires a callback once per day at a CET time.
+        """Generic cron-style loop that fires a callback once per day at agent-local time.
 
         ``time_attr`` is an instance attribute (e.g. ``morning_time``) re-read
         each poll so Tower UI changes take effect within ~30s without restart.
         """
         try:
             while True:
-                now = datetime.now(CET)
+                now = _agent_now()
                 today_str = now.strftime("%Y-%m-%d")
                 tracker = f"_last_{name}"
                 target_time = getattr(self, time_attr)
@@ -647,12 +663,12 @@ class Scheduler:
                 if seconds_to_wait > 55:
                     log.info(
                         f"Cron [{name}]: waiting {seconds_to_wait:.0f}s until "
-                        f"{_format_hhmm(target_time)} CET"
+                        f"{_format_hhmm(target_time)} {_tz_label()}"
                     )
                 await asyncio.sleep(min(30, max(1, seconds_to_wait)))
 
                 # Re-check after sleep (time_attr may have changed)
-                now = datetime.now(CET)
+                now = _agent_now()
                 today_str = now.strftime("%Y-%m-%d")
                 target_time = getattr(self, time_attr)
                 target_dt = now.replace(
@@ -700,7 +716,7 @@ class Scheduler:
         """
         try:
             while True:
-                now = datetime.now(CET)
+                now = _agent_now()
                 today_str = now.strftime("%Y-%m-%d")
 
                 # Weekend: skip, but keep looping (cheap poll).
@@ -741,9 +757,9 @@ class Scheduler:
     # ── Routines ─────────────────────────────────────────────────
 
     async def _morning_routine(self):
-        """Morning greeting + daily planning — workday morning slot (CET)."""
+        """Morning greeting + daily planning — workday morning slot (agent timezone)."""
         log.info("Morning routine starting...")
-        today = datetime.now(CET).strftime("%Y-%m-%d")
+        today = tower_settings.agent_today()
         await self._send_agent_message(prompt=_morning_prompt(today), channel_id="morning")
         await self._checkpoint("morning")
 
@@ -756,10 +772,10 @@ class Scheduler:
         success, so a delivery failure can retry on the next boot.
         """
         log.info("Catch-up routine starting (missed morning planning)...")
-        today = datetime.now(CET).strftime("%Y-%m-%d")
+        today = tower_settings.agent_today()
         ok = await self._send_agent_message(prompt=_catchup_prompt(today), channel_id="morning")
         if ok:
-            self._mark_fired("_last_morning", datetime.now(CET).strftime("%Y-%m-%d"))
+            self._mark_fired("_last_morning", tower_settings.agent_today())
             await self._checkpoint("morning")
             log.info("Catch-up routine complete.")
         else:
@@ -785,7 +801,7 @@ class Scheduler:
         # runs 4x/workday, so any active chat gets mined regularly regardless of
         # whether it ever hit the compaction threshold.
         await self._checkpoint_user_conversations()
-        today = datetime.now(CET).strftime("%Y-%m-%d")
+        today = tower_settings.agent_today()
         await self._send_agent_message(
             prompt=_reflection_prompt(today),
             channel_id="reflection",
@@ -793,13 +809,13 @@ class Scheduler:
         await self._checkpoint("reflection")
 
     async def _goodnight_routine(self):
-        """Goodnight — 21:00 CET, then REST.
+        """Goodnight — scheduled evening slot in agent timezone, then REST.
 
         Daily markdown logs stay as the hot dynamic index only. The agent's
         goodnight prompt files the durable recap to palace room=episodes.
         """
         log.info("Goodnight routine starting...")
-        today = datetime.now(CET).strftime("%Y-%m-%d")
+        today = tower_settings.agent_today()
         await self._send_agent_message(
             prompt=_goodnight_prompt(today),
             channel_id="goodnight",

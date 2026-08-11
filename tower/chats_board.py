@@ -8,12 +8,10 @@ from zoneinfo import ZoneInfo
 
 from flask import Blueprint, abort, jsonify, redirect, render_template, request, url_for
 
-from harness import conversation_run_store, worker_tick_store
+from harness import conversation_run_store, tower_settings, worker_tick_store
 from . import ui_context as ui_ctx
 
 _LIST_POOL = ThreadPoolExecutor(max_workers=2)
-
-CET = ZoneInfo("Europe/Stockholm")
 
 # Filter value → label. "reflection" is shown as Ambient in the product UI.
 FILTERS = [
@@ -54,8 +52,12 @@ BUCKET_ORDER = [
 PAGE_SIZE = 25
 
 
+def _agent_tz() -> ZoneInfo:
+    return tower_settings.agent_zoneinfo()
+
+
 def _today() -> str:
-    return datetime.now(CET).strftime("%Y-%m-%d")
+    return tower_settings.agent_today()
 
 
 def _as_messages(events: list[dict]) -> list[dict]:
@@ -177,24 +179,25 @@ def _fmt_time(value) -> str:
     value = _aware(value)
     if not value:
         return "—"
-    return value.astimezone(CET).strftime("%H:%M")
+    return value.astimezone(_agent_tz()).strftime("%H:%M")
 
 
 def _cet_date(value) -> str:
+    """Date string in agent timezone (name kept for call-site compatibility)."""
     value = _aware(value)
     if not value:
         return _today()
-    return value.astimezone(CET).strftime("%Y-%m-%d")
+    return value.astimezone(_agent_tz()).strftime("%Y-%m-%d")
 
 
 def _bucket_for(value) -> str:
-    """Classify a timestamp into today / yesterday / past week / older (CET)."""
+    """Classify a timestamp into today / yesterday / past week / older (agent TZ)."""
     value = _aware(value)
     if not value:
         return "older"
-    local = value.astimezone(CET)
+    local = value.astimezone(_agent_tz())
     day = local.date()
-    today = datetime.now(CET).date()
+    today = tower_settings.agent_now().date()
     yesterday = today - timedelta(days=1)
     week_floor = today - timedelta(days=7)
     if day == today:
@@ -210,7 +213,7 @@ def _list_time(value, bucket: str) -> str:
     value = _aware(value)
     if not value:
         return "—"
-    local = value.astimezone(CET)
+    local = value.astimezone(_agent_tz())
     if bucket in {"today", "yesterday"}:
         return local.strftime("%H:%M")
     if bucket == "week":
@@ -560,7 +563,7 @@ def register_chats_board(app, agent=None):
         if not value:
             return "—"
         value = _aware(value)
-        return value.astimezone(CET).strftime("%H:%M:%S")
+        return value.astimezone(_agent_tz()).strftime("%H:%M:%S")
 
     @app.template_filter("run_duration")
     def _run_duration(value):
