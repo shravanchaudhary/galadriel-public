@@ -115,8 +115,10 @@ class DailyArtifactContractTests(unittest.TestCase):
             encoding="utf-8"
         )
         worker_source = (ROOT / "harness" / "worker.py").read_text(encoding="utf-8")
-        recall = (ROOT / "config" / "RECALL.md").read_text(encoding="utf-8")
-        combined = prompt_source + worker_source + recall
+        system_recalls = (ROOT / "config" / "system_recalls.json").read_text(
+            encoding="utf-8"
+        )
+        combined = prompt_source + worker_source + system_recalls
         self.assertNotRegex(
             combined,
             r"state/(?:plan|progress)/(?:\{today\}|<today>|\d{4}-\d{2}-\d{2})\.md",

@@ -9,10 +9,10 @@ you know; this file is *how you work* — memory tiers, which surface to edit, a
 how background work runs.
 
 **Prompt cost model:** Replika uses prompt caching. The stable block is an
-explicit allowlist (`SOUL.md`, `MEMORY.md`, `GUARDRAILS.md`, `RECALL.md`,
+explicit allowlist (`SOUL.md`, `MEMORY.md`, `GUARDRAILS.md`,
 `JOBS.md`, plus an opt-in active vision) — cached after the first call. Detailed
 procedures and this manual live under `knowledge/` and load on demand. Only the
-five allowlisted config files are L1; adding a random `config/*.md` does **not**
+four allowlisted config files are L1; adding a random `config/*.md` does **not**
 put it in the prompt.
 
 ---
@@ -65,7 +65,7 @@ the first two tiers automatically; the palace you query on demand.
 
 | Tier | What it is | Where | Cost | Use for |
 |---|---|---|---|---|
-| **L1 — stable block (cached)** | Explicit allowlist: `SOUL.md`, `MEMORY.md`, `GUARDRAILS.md`, `RECALL.md`, `JOBS.md` (+ opt-in active vision) | system prompt, always present | cached | Identity + safety + recall routing + ritual index |
+| **L1 — stable block (cached)** | Explicit allowlist: `SOUL.md`, `MEMORY.md`, `GUARDRAILS.md`, `JOBS.md` (+ opt-in active vision) | system prompt, always present | cached | Identity + safety + ritual index |
 | **L2 — dynamic block** | Yesterday + today's daily logs, wake-up snapshot, timestamp, active-project banner | system prompt, rebuilt each call | not cached, small | Recent context; what happened today |
 | **Shared experiential workspace** | Bounded interoceptive state + most salient change | agent-owned dynamic block, every stream in `influence` mode | not cached, small | Causal attention, calibration, continuity, and reflection |
 | **L2.5 — file knowledge** | `knowledge/INDEX.md` → procedures / skills / reference | `read_file` on demand | tokens only when loaded | Known procedures and deep reference |
@@ -91,16 +91,15 @@ Rules of thumb:
 - **In the stable/dynamic block already?** Just read it — no tool call.
 - **Known procedure / failure?** `knowledge/INDEX.md` → matching entry → palace only if richer detail is needed.
 - **Older operational history, a past decision, a number, the exact words of a past message?** `palace_search` FIRST, never guess (SOUL.md Palace Protocol). The daily log only has the truncated index.
-- **Only the five allowlisted files are L1.** Put reusable procedures under `knowledge/` and index them.
-- **Recall has to fire at the right moment.** `config/RECALL.md` (L1) is the reflex map: *operation → the recall you must do first*.
-- **Reactive when-to-recollect** is a separate path: semantic recalls (below), not palace search and not L1 essays.
+- **Only the four allowlisted files are L1.** Put reusable procedures under `knowledge/` and index them.
+- **Reactive when-to-recollect** is semantic recalls (below), not palace search and not L1 essays.
 
 ### 1b. Semantic recalls (push, two-stage)
 
 Palace tools are **pull**. Semantic recalls are **push**: Stage-1 (embed floor
-0.6 / lexical) proposes on `matched_chunk`; Stage-2 (local Gemma 1B SLM)
-verifies intent with that recall's pos/neg examples as YES/NO few-shots; only
-verified fires inject an assistant `recall_fire` suggestion.
+0.6 / lexical) proposes on `matched_chunk`; Stage-2 re-scores with FastEmbed
+`max(pos) − max(neg)` plus a junk filter; only verified fires inject an
+assistant `recall_fire` suggestion.
 
 Inject windows: new user message at turn start, and mid-turn **only** on
 `tool_use` pauses (thought + tool args + tool results). Not on bare `end_turn`.
@@ -122,11 +121,11 @@ everything into one file.
 | A durable fact you need every run (a name, a path, a standing constraint) | **Edit `MEMORY.md`** (L1) | Keep it lean — only the essential index. Everything else → palace / knowledge |
 | How you operate (this manual) | **Edit this file** | `knowledge/reference/architecture.md` |
 | A reusable procedure / skill / failure recovery | **Write a `knowledge/` entry + INDEX row** | Compact entry: trigger, one-line rule, short steps, exact palace query. Richer context → palace `room=knowledge` |
-| Hard irreversible / safety rule needed every turn | **Edit `GUARDRAILS.md` or `RECALL.md`** | Only promote durable hard rules — not one-off corrections (those → `state/steering.md`) |
+| Hard irreversible / safety rule needed every turn | **Edit `GUARDRAILS.md`** | Only promote durable hard rules — not one-off corrections (those → `state/steering.md`) |
 | A new coded tool / reusable capability as code | **`personal-tools/`** (never `harness/`) | See §3 — agent-owned tools. Product tools are provider-updated and blocked from agent edits |
 | A DB read / write / state change / counter | **The `db_*` primitive tools** | See `knowledge/reference/data.md`, `state/db_index.md`. Freestyle pymongo/mongosh in `run_shell` is refused. New kind of state → author a `workflows/*.json` spec |
 | Something to remember long-term, searchable later | **Palace** — `palace_add_drawer`, `palace_kg_add`, `palace_diary_write`, or `memory_log` (hot daily index only) | See `knowledge/reference/tools.md` decision matrix. Don't duplicate |
-| When to recollect a stored fact mid-turn | **Semantic recall** — `learn_recall` (Stage-1 embed/lexical + Stage-2 SLM verify) | Point at palace/file; don't essay the fact into the instruction |
+| When to recollect a stored fact mid-turn | **Semantic recall** — `learn_recall` (Stage-1 embed/lexical + Stage-2 embed verify) | Point at palace/file; don't essay the fact into the instruction |
 | Deep expertise on a subject | **The SME workflow** (section 4) | Curate `.md` files under `sme/`; durable learned facts → palace `room=knowledge` |
 
 ### 3. Two tool sections — developer tools vs personal tools
@@ -246,8 +245,8 @@ see it every turn without `read_file`:
 | `config/SOUL.md` | Identity (keep short) |
 | `config/MEMORY.md` | L1 long-term memory / index (keep lean) |
 | `config/GUARDRAILS.md` | Hard operating guardrails (always on, in L1) |
-| `config/RECALL.md` | Reflex recall index — operation → load first (in L1) |
 | `config/JOBS.md` | Background-job goals + recurring rules / rituals (curator-owned, in L1) |
+| `config/system_recalls.json` | Built-in semantic recalls (not L1; Stage-1/2 matcher) |
 | `knowledge/INDEX.md` | Deterministic index of procedures / skills / reference |
 | `knowledge/reference/architecture.md` | This manual (on demand) |
 | `knowledge/reference/tools.md` | Full tool reference + record-where decision matrix |

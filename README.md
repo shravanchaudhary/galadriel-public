@@ -255,7 +255,7 @@ Prompt caching has a **minimum prefix length** before it engages. If your stable
 *(Sources: [Google AI caching docs](https://ai.google.dev/gemini-api/docs/interactions/caching), [Anthropic prompt-caching docs](https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching). Verify against the live table for your exact model.)*
 
 Out of the box, the stable allowlist (`SOUL.md` + `MEMORY.md` + `GUARDRAILS.md` +
-`RECALL.md` + `JOBS.md`) is sized to clear the cache floor for the default Gemini
+`JOBS.md`) is sized to clear the cache floor for the default Gemini
 agent. Detailed procedures and project reference live under `knowledge/` and load
 on demand via `knowledge/INDEX.md` — they are **not** auto-injected into L1.
 
@@ -273,7 +273,7 @@ Look for lines like:
 Tokens | input=60 cache_read=5800 cache_write=0 output=240
 ```
 
-`cache_read` climbing and `cache_write` near zero after the first call = caching is engaged and you're paying 10 cents on the dollar for that context. (On Gemini, `cache_write` is always 0 — implicit caching has no write surcharge.) If `cache_read` stays at 0, thicken lean always-on facts in the allowlisted stable files (`MEMORY.md` / `GUARDRAILS.md` / `RECALL.md` / `JOBS.md`) — not by dumping reference manuals into `config/`. See `CACHING.md` for the full breakdown.
+`cache_read` climbing and `cache_write` near zero after the first call = caching is engaged and you're paying 10 cents on the dollar for that context. (On Gemini, `cache_write` is always 0 — implicit caching has no write surcharge.) If `cache_read` stays at 0, thicken lean always-on facts in the allowlisted stable files (`MEMORY.md` / `GUARDRAILS.md` / `JOBS.md`) — not by dumping reference manuals into `config/`. See `CACHING.md` for the full breakdown.
 
 > Deep project manuals now live under `knowledge/reference/` and are loaded on demand. Keep the stable allowlist small and high-signal.
 
@@ -493,7 +493,6 @@ config/
   SOUL.md                 Agent personality and values (your main customization point)
   MEMORY.md               Long-term memory (agent-maintained)
   GUARDRAILS.md           Hard operating rules (cookbook is truth, verify before claiming done)
-  RECALL.md               Reflex index — operation → what to load/recall first
   system_recalls.json     Built-in semantic recall definitions (cues tunable; instructions immutable)
   JOBS.md                 Ritual / background-job goals (stable allowlist)
   visions/                Optional per-project context files
@@ -855,7 +854,7 @@ See `.env.example` for the full list with inline documentation.
 Operational docs above reflect this branch. Highlights:
 
 - **Slack gateway:** shared-channel Socket Mode with durable observations, sender identity propagated into each agent turn, read-only permissions for ordinary organization members, and admin-only Block Kit approvals. Pushes go to the configured channel. Only one gateway runs per deployment — see [Slack](#slack).
-- **Shared work ledger:** `state/progress/` (one standalone HTML file per day) is written by curator *and* worker (append-style narration); main-chat sends/completions must be recorded there too, and the DB is the authoritative ledger behind it (`config/GUARDRAILS.md`, `config/RECALL.md`, `config/SOUL.md`).
+- **Shared work ledger:** `state/progress/` (one standalone HTML file per day) is written by curator *and* worker (append-style narration); main-chat sends/completions must be recorded there too, and the DB is the authoritative ledger behind it (`config/GUARDRAILS.md`, `config/SOUL.md`).
 - **No double-work guard:** the DB atomic precondition-guarded transition on a unique key makes a double-action impossible by construction — no separate ownership-claim file; coarse coordination is `state/worker_control.md` (pause the worker while the curator drives).
 - **Coordination files:** `state/steering.md` (reflection corrections).
 - **Ambient reflection:** no longer silent — each slot files to the palace, audits the worker, may pause it, and posts a brief status summary. (The 1.13 release note below describes the original silent design.)

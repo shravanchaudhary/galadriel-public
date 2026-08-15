@@ -14,7 +14,7 @@ Cached input tokens cost **~90% less** than regular input on both providers.
 **Anthropic (explicit caching):** three `cache_control` breakpoints on every API call:
 1. Last tool definition (caches the `tools` prefix).
 2. The stable system block (caches the explicit allowlist:
-   `SOUL.md` + `MEMORY.md` + `GUARDRAILS.md` + `RECALL.md` + `JOBS.md`).
+   `SOUL.md` + `MEMORY.md` + `GUARDRAILS.md` + `JOBS.md`).
 3. The last content block of the last message (caches the growing conversation).
 
 **Gemini (implicit caching, default):** no markers to set — caching is automatic
@@ -55,7 +55,7 @@ random `config/*.md` does **not** put it in the prompt.
 
 If you see `cache_read=0` (and `cache_write=0` on Anthropic) in every log line,
 your stable block is under the minimum. Expand an allowlisted file
-(`MEMORY.md` / `GUARDRAILS.md` / `RECALL.md` / `JOBS.md`), don't dump reference
+(`MEMORY.md` / `GUARDRAILS.md` / `JOBS.md`), don't dump reference
 docs back into L1.
 
 ## What the code does
@@ -83,7 +83,6 @@ docs back into L1.
 - Active Vision (if set via Tower `/api/vision`)
 - `MEMORY.md`
 - `GUARDRAILS.md`
-- `RECALL.md`
 - `JOBS.md`
 
 **Dynamic content** (not cached, but small):
@@ -100,7 +99,7 @@ blocks without it are appended to the tail of `contents` so they don't bust the 
 ### Knowledge + palace (not cached)
 
 - `knowledge/INDEX.md` → procedures / skills / reference files, loaded via
-  `read_file` when RECALL triggers.
+  `read_file` when a semantic recall or known procedure needs them.
 - MemPalace `agent` wing rooms: `conversations`, `knowledge`, `episodes`, `diary`.
 
 ### `harness/agent.py` (Anthropic path)

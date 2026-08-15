@@ -2,7 +2,7 @@
 
 System prompt is structured for prompt caching:
 
-    [STABLE BLOCK]  ← Explicit allowlist: identity, safety, recall routing,
+    [STABLE BLOCK]  ← Explicit allowlist: identity, safety,
                       and the worker's ritual index.
                       Marked with cache_control → 90% discount on repeat calls.
 
