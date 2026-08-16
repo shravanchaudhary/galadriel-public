@@ -60,9 +60,9 @@ Each process starts with limited context. Memory is stacked:
   Tools: `get_recall`, `get_recent_recalls` (proposed vs verified),
   `learn_recall` (full-replace cue arrays), `purge_recall` (user recalls only).
   Silent learn+audit after main compact / `/new` and after worker ticks that
-  reported `worked` (midloop compact skips learn); ambient reflection also
-  tunes cues from recent proposed/verified. System recall instructions are
-  immutable; their cues may be tuned.
+  reported `worked` (mid-turn compaction skips learn); ambient reflection
+  also tunes cues from recent proposed/verified. System recall instructions
+  are immutable; their cues may be tuned.
 
 Read before relying on past facts, and update the appropriate store after meaningful changes.
 

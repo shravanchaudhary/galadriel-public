@@ -86,13 +86,6 @@ WORKER_CLOCK_SUFFIX = (
     "today_plan_file = state/plan/<today>.html"
 )
 
-POST_RECOVERY_ADVISORY = (
-    "[SYSTEM:POST-RECOVERY-ADVISORY] An earlier max_tokens cascade in this channel "
-    "trimmed/reset the conversation. The pre-incident exchange was archived to the "
-    "palace. If the user references earlier content you cannot see, recall it with "
-    "`palace_search` — the archive is filed under channel tag `<recovery_tag>`."
-)
-
 
 def morning_prompt(today: str) -> str:
     return (

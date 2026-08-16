@@ -341,7 +341,7 @@ async def compact_to_snapshot(
     live_system=None,
     live_tools=None,
 ) -> dict:
-    """Compress an entire conversation into one structured memory snapshot.
+    """Compress the given messages into one structured memory snapshot.
 
     When `live_provider` and `live_model` are given, the channel's own model
     summarizes the conversation in place (it can see its own reasoning, and the

@@ -1317,9 +1317,9 @@ class GaladrielAgent:
         """Build the system blocks for an API call: cached stable + dynamic, then
         the compaction snapshot (if any).
 
-        MUST be re-called after any mid-loop compaction, because that changes
-        `_compaction_summary` and the blocks built before the loop would
-        otherwise be stale (snapshot missing or duplicated).
+        MUST be re-called whenever compaction fires mid-turn, because that
+        changes `_compaction_summary` and the blocks built before the loop
+        would otherwise be stale (snapshot missing or duplicated).
         """
         system_blocks = self.memory.build_system_blocks()
 
@@ -1914,8 +1914,8 @@ class GaladrielAgent:
             if emit is not None:
                 await emit({"type": "thought", "text": fire_prompt, "kind": "recall_fire"})
 
-        # System blocks: stable + dynamic + snapshot + advisory. Rebuilt after
-        # any mid-loop / max_tokens compaction so it never goes stale.
+        # System blocks: stable + dynamic + snapshot. Rebuilt whenever compaction
+        # fires mid-turn so the snapshot block never goes stale.
         # overlay_context is ephemeral (Tower page pointers) — not stored in history.
         system_blocks = self._with_overlay(
             self._assemble_system_blocks(channel_id), overlay_context,

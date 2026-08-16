@@ -105,7 +105,6 @@ def _format_status_report(agent, scheduler) -> str:
       - Cache efficiency + cost + savings
       - Active channels (top 5 by message count)
       - Output-ceiling streak state (if non-zero)
-      - Post-recovery advisory (if any channel has a pending tag)
       - Scheduler (if wired)
     """
     lines: list[str] = []

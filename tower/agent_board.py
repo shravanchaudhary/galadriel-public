@@ -13,7 +13,6 @@ from . import ui_context as ui_ctx
 from harness import tower_settings
 from harness.loop_prompts import (
     DEFAULT_HEARTBEAT_PROMPT,
-    POST_RECOVERY_ADVISORY,
     PROCESS_COMPLETE_EXAMPLE,
     WORKER_CLOCK_SUFFIX,
     WORKER_PROMPT,
@@ -172,17 +171,6 @@ def _build_agent_items(scheduler, agent, today: str, worker=None) -> list[dict]:
             "editable": False,
             "prompt": PROCESS_COMPLETE_EXAMPLE,
             "note": "Template — actual prompt is built from the JSON marker each process writes.",
-        },
-        {
-            "id": "post_recovery",
-            "name": "Post-recovery advisory",
-            "channel": "(injected into any channel after max_tokens recovery)",
-            "schedule": "Conditional — only after a compaction/recovery hard-reset",
-            "status": "conditional",
-            "source": "harness/loop_prompts.py",
-            "editable": False,
-            "prompt": POST_RECOVERY_ADVISORY,
-            "note": "Not a scheduled loop; injected as an extra system block so the model knows to palace_search.",
         },
     ]
 

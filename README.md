@@ -236,7 +236,7 @@ The stable block alone — your SOUL.md, MEMORY.md, identity files — is typica
 
 For a persistent agent that carries memory across sessions, caching also cuts latency on long prompts — the difference between a tool that feels alive and one that grinds.
 
-**Compaction** finishes the job. The `/compact` command — and automatic compaction once a channel's context crosses the threshold — uses **gemini-2.5-flash** (default) or **Claude Haiku** (if you switch back in `model_registry.py`) — the cheapest model in each family — to fold the **entire conversation** into one compact, structured snapshot (goal, findings, work done, dead ends, current state, next steps). The full verbatim history is archived to the memory palace first (recall it any time via `palace_search`), then the live message list is reset to the snapshot. A long, tool-heavy session collapses to a few thousand tokens for a fraction of a cent. The cheap model handles the summarization; the flagship model handles the thinking.
+**Compaction** finishes the job, folding a long conversation into one compact, structured snapshot (goal, findings, work done, dead ends, current state, next steps). `/compact` folds **everything**. Automatic compaction — once a channel's measured input context crosses the threshold — folds only what came **before the last real user turn**, so the instruction being worked on and every tool result gathered for it survive verbatim. The channel's own model writes the snapshot in place, since it can see its own reasoning and reuses the prompt cache it already paid for; if that fails it falls back to **gemini-2.5-flash** (default) or **Claude Haiku** (if you switch back in `model_registry.py`) reading a rendered transcript. The verbatim history is archived to the memory palace first, so `palace_search` can recall it any time. A long, tool-heavy session collapses to a few thousand tokens for a fraction of a cent.
 
 Use `/status` in Discord at any time to watch live token numbers — input, cache_read, cache_write, output — for the last API call.
 
@@ -311,7 +311,7 @@ These aren't abstract ideals — they are mechanically enforced via the `CLAUDE.
 - **Scheduler** — morning briefing, goodnight, configurable heartbeat (with custom task-monitor prompts), a restart-surviving **one-shot wake**, and **ambient reflection** (workday palace filing + worker audit + brief status to the user)
 - **Background worker** — an opt-in worker stream of the same agent that autonomously executes a markdown **job board** (recurring "rituals" + carry-forward "projects") on a 10-min loop while the main stream stays free for the user; coordinated through markdown files under `jobs/` and `state/`, with the DB as the authoritative ledger for irreversible actions
 - **Completion watcher** — monitors `/tmp/galadriel-jobs/*.done` markers and reports when external/detached shell processes finish (distinct from the worker's job board)
-- **Compaction** — gemini-2.5-flash / Haiku-powered context compression, on demand (`/compact`) or automatically at a token threshold; archives the full conversation to the palace, then replaces it with one structured snapshot
+- **Compaction** — context compression, on demand (`/compact`, whole conversation) or automatically at a token threshold (only what precedes the last real user turn); archives the summarized messages to the palace, then replaces them with one structured snapshot
 - **Prompt caching** — automatically managed, always active (implicit on Gemini, explicit breakpoints on Claude)
 
 ---
@@ -472,7 +472,7 @@ harness/
   workflows.py            Workflow spec loader / entity registry (reads workflows/*.json)
   palace.py               MemPalace wrapper: search, archive, wake-up, KG, diary, taxonomy
   safety.py               Command classification (green / yellow / red); blocks freestyle DB access
-  compaction.py           gemini-2.5-flash / Haiku snapshot compaction (archives full conversation to palace first)
+  compaction.py           Snapshot compaction + the head/tail cut (archives to palace first)
   model_registry.py       Task → (provider, model) — single source of truth for model selection
   scheduler.py            Morning briefing, goodnight (mines daily logs), heartbeat
   worker.py               Background worker — executes the jobs/ + state/ board (opt-in)
@@ -524,7 +524,7 @@ Palace search is **pull** (the model decides to look something up). Semantic rec
 
 **Package rule:** durable content → palace / KG / `MEMORY.md`; when-to-recollect → `learn_recall` pointing at that store (or the unified `learn` tool, which packages kg/drawer/recall in one call). Cue quality: positives = realistic phrasings (dense coverage up to ~100); lexical = high-precision anchors; negatives = known misfires (Stage-2 counter-signal only). Fire feedback → `tune_recall(recall_id, applicable)` appends the fired chunk to positives or negatives automatically.
 
-**Learn passes:** silent learn+audit after main compact / `/new` and after worker ticks that reported `worked` (mid-loop compact skips learn). Ambient reflection also tunes cues from recent proposed/verified events.
+**Learn passes:** silent learn+audit after main compact / `/new` and after worker ticks that reported `worked` (compaction that fires mid-turn skips learn — too slow to make the user wait). Ambient reflection also tunes cues from recent proposed/verified events.
 
 **Ops / env**
 
@@ -588,7 +588,7 @@ of the stable cache block. Richer incident detail goes to MemPalace
 | Command | Description |
 |---------|-------------|
 | `/new` | Archive conversation to the palace, then start fresh |
-| `/compact` | Snapshot-compact history with gemini-2.5-flash / Haiku (archives the full conversation to the palace first) — reports token reduction |
+| `/compact` | Snapshot-compact the whole history (archives the full conversation to the palace first) — reports token reduction |
 | `/status` | Model, memory usage, last API token breakdown, scheduler state |
 
 ### Prefix commands
@@ -870,6 +870,8 @@ Operational docs above reflect this branch. Highlights:
 
 ### 1.18 — Snapshot compaction replaces history trimming
 
+> Partly superseded by **Unreleased** above: automatic compaction no longer resets the whole message list, and mid-loop compaction is no longer a separate path. The archive-before-compact contract described here still holds.
+
 The routine, message-count history trim (`GaladrielAgent._trim_history` — the 100-message cadence described in 1.17) is **retired**. Context size is now managed entirely by **snapshot compaction**, a more honest mechanism than dropping the oldest messages off the front.
 
 What changed:
@@ -980,6 +982,8 @@ additive and degrade gracefully — the wake/reflection loops silently no-op if
 MemPalace isn't installed, and ambient cognition is fully optional.
 
 ### 1.12.1 — max_tokens recovery hardening
+
+> Superseded by **Unreleased** above: the trim → trim → hard-reset cascade and the post-recovery advisory described here no longer exist. A response truncated at the output ceiling now keeps its text and is asked to continue. Only the output-ceiling early warning (item 2) is still live.
 
 A silent dataloss path was identified and closed. Previously, if an agent response ran over the `max_tokens` ceiling three times in a row, the harness trimmed the conversation twice (dropping messages from the front) and then hard-reset it — **without** archiving the dropped content to the palace. The archive-before-clear contract established in 1.12 for `/new` and `/compact` didn't extend to this recovery path. A runaway output cascade could eat an entire channel's verbatim history.
 
