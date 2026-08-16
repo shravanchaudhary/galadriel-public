@@ -154,7 +154,6 @@ class SwitchMainRunTests(unittest.TestCase):
         agent = GaladrielAgent.__new__(GaladrielAgent)
         agent.conversations = {MAIN_CHANNEL_ID: [{"role": "user", "content": "old"}]}
         agent.working_dir = "/tmp/galadriel-test"
-        agent._post_recovery_archive_tag = {}
         agent._output_ceiling_streak = {}
         agent._compaction_summary = {}
         agent._last_input_tokens = {}

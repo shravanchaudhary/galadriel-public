@@ -166,12 +166,6 @@ def _format_status_report(agent, scheduler) -> str:
         lines.append(f"**Output ceiling:** 🟡 near-ceiling streak — {', '.join(parts)}")
     else:
         lines.append("**Output ceiling:** ✅ healthy")
-
-    # ── Post-recovery advisory ──
-    recovery_tags = getattr(agent, "_post_recovery_archive_tag", {}) or {}
-    if recovery_tags:
-        tags_str = ", ".join(f"`{t}`" for t in recovery_tags.values())
-        lines.append(f"**Post-recovery advisory:** ⚠️ active — archive tags: {tags_str}")
     lines.append("")
 
     # ── Scheduler ──

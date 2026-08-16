@@ -819,7 +819,8 @@ See `.env.example` for the full list with inline documentation.
 | `TOWER_AUTH_TOKEN` | No | Login password and legacy Bearer token |
 | `TOWER_COOKIE_SECURE` | No | Secure session cookies (`true` by default when auth is required) |
 | Model selection | — | Edit `TASKS` in `harness/model_registry.py` (default: gemini-3.1-pro-preview agent, gemini-2.5-flash compaction; copy from `ANTHROPIC_DEFAULTS` to switch back to Claude Opus / Haiku) |
-| `AGENT_MAX_TOKENS` | No | Max output tokens per call (default: `8192`) |
+| Max output tokens | — | Not an env var. Each model's documented ceiling comes from `MODEL_CAPS` in `harness/agent.py` (Gemini 3.x: 65,536; Claude 4.6+: 128,000) |
+| `AGENT_COMPACT_THRESHOLD` | No | Input tokens that trigger compaction (default: `300000`) |
 | `MEMPALACE_PATH` | No | Palace directory — read by the [MemPalace](https://github.com/MemPalace/mempalace) library itself (default: `~/.mempalace/palace`) |
 | `PALACE_ARCHIVE_ROOT` | No | Where archived conversations + pre-compaction tool_results land before mining (default: `~/.mempalace/archive`) |
 | `PALACE_WAKE_UP_FILE` | No | Cached wake-up snapshot path (default: `~/.mempalace/wake_up.md`) |
@@ -862,6 +863,8 @@ Operational docs above reflect this branch. Highlights:
 - **Ambient reflection:** no longer silent — each slot files to the palace, audits the worker, may pause it, and posts a brief status summary. (The 1.13 release note below describes the original silent design.)
 - **Worker lean ticks:** each worker turn resets its channel history; state is reconstructed from the board + DB + palace.
 - **Compaction mining:** archive mining during `/compact` now completes synchronously before the next task runs.
+- **Windowed compaction:** automatic compaction summarizes only the conversation *before* the last real user turn — the instruction in flight and the work gathered for it stay verbatim. Manual `/compact` still summarizes everything. Injected user-role messages (recall fires, truncation notices, tool results) never define the cut, and the channel's own model writes the snapshot so it can see its own reasoning, falling back to the cheap compaction model. Mid-loop and pre-turn compaction are now one code path.
+- **Per-model token ceilings:** output limits and context windows come from `MODEL_CAPS` (`harness/agent.py`), so Gemini 3.x gets its full 65,536 output tokens. The `AGENT_MAX_TOKENS` env var is gone — one number could never be right for every model, and a stale value silently capped every response. Hitting the output ceiling no longer deletes the truncated response or triggers compaction — the text is kept, only the unfinished tool call is dropped, and the model is asked to continue.
 - **Palace shutdown:** `palace.close()` on process exit flushes in-process vector writes so recall survives restarts.
 - **Strict approval nuance:** bare LinkedIn connection requests (no note) may be sent autonomously; message-bearing outbound still requires approval.
 
