@@ -7,6 +7,10 @@ Benchmark suite for choosing:
    better response — is the rule genuinely applicable to this text?"*
 2. **Stage-1 rerank pass** — embedding / reranker alternatives to the current
    FastEmbed `BAAI/bge-small-en-v1.5` cosine approach.
+3. **Stage-1 chunking / gating** — whether the chunker hands the embedder text it
+   can judge, scanning whole raw mid-turn documents rather than pre-split
+   sentences. This is the only suite that exercises `scan_text_for_recalls`
+   end-to-end on realistic tool output.
 
 Everything here is **additive and read-only** over production code: it imports
 from `harness/` and `local_llm/` but never modifies them. Weights download to
@@ -46,6 +50,22 @@ Inspect: `venv/bin/python -m eval.dataset`
 
 Leakage guard: for `cue_audit` cases the prompt builders exclude the exact eval
 chunk from the recall's few-shot examples.
+
+### Raw-document dataset (chunking eval)
+
+`eval/chunk_dataset.py` is a separate corpus of **77 whole documents** shaped like
+what `_build_tool_use_recall_scan_text` actually sends (thought + tool request +
+raw result, newline-joined), each labeled with the recall_ids that *should* be
+proposed. Noise bodies are seeded, so the corpus is byte-stable.
+
+- `tool_noise` (10): `ls -l`, pretty and **minified** JSON, git status, traceback,
+  HTML, app log, single-line prose. Nothing should fire.
+- `chatter` (3): ordinary multi-line conversation. Nothing should fire.
+- `signal_in_noise` (48): one real cue buried in tool output at head / middle /
+  tail. Guards against a "fix" that just suppresses everything.
+- `clean_signal` (16): the bare cue — the only shape the other suites test.
+
+Inspect: `venv/bin/python -m eval.chunk_dataset`
 
 ## Candidates and download sizes
 
@@ -106,6 +126,12 @@ venv/bin/python -m eval.run_stage2_eval --max-cases 40      # quick smoke run
 venv/bin/python -m eval.run_stage1_rerank_eval
 venv/bin/python -m eval.run_stage1_rerank_eval --scorers baseline,qwen3-embed
 venv/bin/python -m eval.run_stage1_rerank_eval --reranker-backend transformers
+
+# Stage-1 chunking / gating (no weights beyond fastembed; ~5 s)
+venv/bin/python -m eval.run_stage1_chunking_eval
+venv/bin/python -m eval.run_stage1_chunking_eval --margins 0,0.03,0.05,0.10   # separation gate
+venv/bin/python -m eval.run_stage1_chunking_eval --gate both                  # regex gate contribution
+venv/bin/python -m eval.run_stage1_chunking_eval --windows 64,128,256
 ```
 
 Both CLIs default to **CPU-only** (matching the 4 GB Fargate tenants); Stage-2
@@ -148,6 +174,28 @@ the markdown is the summary table.
   **best-F1 swept threshold** — cosine scales differ per embedding model, so
   the sweep is the fair comparison; the default rule shows what a drop-in
   replacement would do with no retuning.
+- **Chunking eval** (`stage1_chunking_<ts>.md`) reports, per configuration:
+  `fp props (noise docs)` — Stage-1 proposals on documents that should fire
+  nothing, each of which costs a Stage-2 forward pass in production; `buried R` /
+  `clean R` — recall on cues inside noise and cues alone; `trunc chunks` — chunks
+  whose *true* token length exceeds the embedder's 512 limit and are therefore
+  silently cut before scoring; and an **accept-floor sweep** re-deciding every
+  proposal at higher `positive_threshold` values. Read the two together: FPs
+  falling while `buried R` also falls means the change is suppressing signal, not
+  filtering noise.
+- **Why the accept floor is the wrong knob.** Sweeping `positive_threshold` has no
+  clean operating point — zero FPs costs ~35% of buried recall — because
+  `bge-small` scores unrelated text ~0.7 anyway. `--margins` sweeps
+  `RECALL_STAGE1_MARGIN` instead, which reads the *shape* of the router's ranking
+  (flat = recognised nothing) rather than its absolute value:
+
+  | margin | FPs on no-fire docs | buried R | clean R | dropped by cap |
+  |---|---|---|---|---|
+  | 0 (off) | 75 | 1.00 | 1.00 | 8 |
+  | 0.03 | 7 | 1.00 | 1.00 | 0 |
+  | 0.05 (default) | 1 | 1.00 | 1.00 | 0 |
+  | 0.07 | 0 | 1.00 | 1.00 | 0 |
+  | 0.10 | 0 | 0.94 | 0.94 | 0 |
 
 ## Timeout / fail-open semantics (Stage-2)
 

@@ -65,6 +65,17 @@ _STRUCTURED_CHUNK_RE = re.compile(
     r")"
 )
 
+# Stage-1 separation gate: how far the accepted routes must sit above the next
+# one down, per chunk. Absolute cosine cannot tell tool noise from intent —
+# bge-small is anisotropic, so unrelated text still lands ~0.7 and the accept
+# floor has no clean operating point (measured: raising it to kill all noise
+# costs ~35% of real recall). What does separate them is the *shape* of the
+# router's ranking. Noise is equally close to everything, so its top-5 comes
+# back flat (top1−top2 mean 0.020, max 0.027); real intent picks one recall out
+# (0.107 buried in noise, 0.161 standalone). Accept only a leading group the
+# runner-up cannot keep up with. See eval/run_stage1_chunking_eval.py.
+_STAGE1_MARGIN_DEFAULT = 0.05
+
 # Legacy logit-margin default (experimental RECALL_STAGE2_MODE=logit only).
 _SLM_LOGIT_MARGIN_DEFAULT = 2.0
 # Embedding pos−neg margin (explicit RECALL_STAGE2_MODE=embed only — never an
@@ -294,15 +305,96 @@ def sanitize_text_with_exclude_texts(text: str, exclude_texts: list[str] | None 
 _RECALL_CHUNK_TOKENS = 256
 _RECALL_CHUNK_OVERLAP = 50
 
+# Sentinel so a failed tokenizer lookup is cached instead of retried per line.
+_UNSET = object()
+_EMBED_TOKENIZER = _UNSET
+
+
+def _embedding_tokenizer():
+    """Untruncated copy of the encoder's tokenizer, or None if unavailable.
+
+    The encoder's live tokenizer pins truncation at 512, so it reports 512 for
+    anything longer and cannot say how much it dropped. A copy with truncation
+    off is what lets the splitter measure a line before the model silently cuts
+    it. Non-fastembed encoders (gemini) and any upstream attribute rename fall
+    back to the word approximation rather than breaking the scan.
+    """
+    global _EMBED_TOKENIZER
+    if _EMBED_TOKENIZER is not _UNSET:
+        return _EMBED_TOKENIZER
+    _EMBED_TOKENIZER = None
+    try:
+        from tokenizers import Tokenizer
+
+        live = get_encoder()._client.model.tokenizer
+        raw = Tokenizer.from_str(live.to_str())
+        raw.no_truncation()
+        _EMBED_TOKENIZER = raw
+    except Exception as e:
+        log.warning(
+            "Embedding tokenizer unavailable (%s); chunking by word approximation", e
+        )
+    return _EMBED_TOKENIZER
+
+
+def _split_by_true_tokens(
+    line: str, tokenizer, max_tokens: int, overlap_tokens: int
+) -> list[str] | None:
+    """Window a line by real token count, slicing on token offsets. None on failure.
+
+    Offsets keep the returned text byte-identical to the input, so lexical cue
+    matching and logging see the original characters rather than a detokenized
+    approximation. Special tokens ([CLS]/[SEP]) are zero-width and dropped here;
+    they still count against the model's 512 at encode time, which is why the
+    window sits well below it.
+    """
+    try:
+        spans = [(s, e) for s, e in tokenizer.encode(line).offsets if e > s]
+    except Exception as e:
+        log.warning("Tokenizing line for chunking failed (%s); using word approximation", e)
+        return None
+    if len(spans) <= max_tokens:
+        return [line]
+    step = max(1, max_tokens - overlap_tokens)
+    chunks: list[str] = []
+    for start in range(0, len(spans), step):
+        window = spans[start:start + max_tokens]
+        if not window:
+            break
+        piece = line[window[0][0]:window[-1][1]].strip()
+        if piece:
+            chunks.append(piece)
+        if start + max_tokens >= len(spans):
+            break
+    return chunks
+
 
 def _split_line_for_embedding(
     line: str,
-    max_tokens: int = _RECALL_CHUNK_TOKENS,
-    overlap_tokens: int = _RECALL_CHUNK_OVERLAP,
+    max_tokens: int | None = None,
+    overlap_tokens: int | None = None,
 ) -> list[str]:
-    """Split one newline chunk into embedding-sized windows (word approx, with overlap)."""
+    """Split one newline chunk into embedding-sized windows, with overlap.
+
+    Counts real tokens, not words. The two diverge hard on machine output: a
+    minified JSON body or CSV row has no spaces at all, so `str.split()` sees
+    one "word" and never splits, handing the embedder a 6000-token line that
+    fastembed truncates at 512 — 92% of it discarded with no signal that it
+    happened. Prose is unaffected (~1.0 tokens/word).
+    """
     if not line:
         return []
+    if max_tokens is None:
+        max_tokens = _RECALL_CHUNK_TOKENS
+    if overlap_tokens is None:
+        overlap_tokens = _RECALL_CHUNK_OVERLAP
+
+    tokenizer = _embedding_tokenizer()
+    if tokenizer is not None:
+        chunks = _split_by_true_tokens(line, tokenizer, max_tokens, overlap_tokens)
+        if chunks is not None:
+            return chunks
+
     words = line.split()
     if len(words) <= max_tokens:
         return [line]
@@ -493,6 +585,46 @@ def _accept_candidate(
     matches.append(match_obj)
 
 
+def _rank_decisions(decisions, recall_map: dict, chunk: str) -> list[tuple[str, float]]:
+    """(recall_id, score) for scorable, known routes, best first."""
+    ranked: list[tuple[str, float]] = []
+    for decision in decisions or []:
+        name = getattr(decision, "name", None)
+        if not name or name == "None" or name not in recall_map:
+            continue
+        score = _as_float_score(getattr(decision, "similarity_score", None))
+        if score is None:
+            log.info(
+                f"[Semantic Match] route='{name}' missing positive_score; "
+                f"treating as miss chunk='{chunk[:100]}'"
+            )
+            continue
+        ranked.append((name, score))
+    ranked.sort(key=lambda pair: pair[1], reverse=True)
+    return ranked
+
+
+def _margin_accepts(
+    ranked: list[tuple[str, float]], margin: float
+) -> list[tuple[str, float]]:
+    """The leading route, when the runner-up cannot keep up with it.
+
+    One line of text carries one intent, so a router that likes five recalls
+    equally has recognised nothing — that flat shape is what tool output and
+    small talk produce. Requiring the top route to beat the second by `margin`
+    reads that shape directly, which an absolute cosine floor cannot. Returns
+    [] for a flat ranking. margin <= 0 disables the gate (RECALL_STAGE1_MARGIN=0)
+    and restores the pre-gate behaviour of accepting every route over the floor.
+    """
+    if not ranked:
+        return []
+    if margin <= 0:
+        return ranked
+    if len(ranked) == 1:
+        return ranked
+    return ranked[:1] if (ranked[0][1] - ranked[1][1]) >= margin else []
+
+
 def scan_text_for_recalls(
     text: str,
     recalls: list[dict],
@@ -523,6 +655,7 @@ def scan_text_for_recalls(
 
     matches = []
     seen = set()
+    margin = _stage1_margin()
 
     line_chunks = [c.strip() for c in sanitized_text.split("\n") if c.strip()]
     chunks = [
@@ -540,23 +673,25 @@ def scan_text_for_recalls(
             decisions = router(chunk, limit=5)
             if decisions and not isinstance(decisions, list):
                 decisions = [decisions]
-            for decision in decisions or []:
-                if not decision or not decision.name or decision.name == "None":
-                    continue
-                if decision.name in seen or decision.name not in recall_map:
-                    continue
 
-                positive_score = _as_float_score(getattr(decision, "similarity_score", None))
-                if positive_score is None:
-                    log.info(
-                        f"[Semantic Match] route='{decision.name}' missing positive_score; "
-                        f"treating as miss chunk='{chunk[:100]}'"
-                    )
-                    continue
+            # Rank before the `seen` filter: a recall already accepted from an
+            # earlier chunk still holds its place here, because its similarity
+            # is what tells us whether this chunk resolved to anything.
+            ranked = _rank_decisions(decisions, recall_map, chunk)
+            accepted = _margin_accepts(ranked, margin)
+            if ranked and not accepted:
+                log.info(
+                    f"[Stage1 Flat] top={ranked[0][0]!r} pos={ranked[0][1]:.4f} "
+                    f"runner_up={ranked[1][1]:.4f} gap<{margin:.4f} "
+                    f"chunk='{chunk[:100]}'"
+                )
 
+            for recall_id, positive_score in accepted:
+                if recall_id in seen:
+                    continue
                 _accept_candidate(
-                    recall=recall_map[decision.name],
-                    recall_id=decision.name,
+                    recall=recall_map[recall_id],
+                    recall_id=recall_id,
                     chunk=chunk,
                     positive_score=positive_score,
                     match_source="semantic",
@@ -884,6 +1019,16 @@ def _stage2_max_candidates() -> int:
         return max(1, int(raw))
     except ValueError:
         return _STAGE2_MAX_CANDIDATES_DEFAULT
+
+
+def _stage1_margin() -> float:
+    raw = (os.environ.get("RECALL_STAGE1_MARGIN") or "").strip()
+    if not raw:
+        return _STAGE1_MARGIN_DEFAULT
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return _STAGE1_MARGIN_DEFAULT
 
 
 def _reranker_present() -> bool:
