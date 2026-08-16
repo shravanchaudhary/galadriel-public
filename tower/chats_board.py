@@ -118,9 +118,24 @@ def _content_text(content) -> str:
 
 def _direct_history(events: list[dict]) -> list[dict]:
     history: list[dict] = []
+
+    def _append_blocks(blocks: list[dict]) -> None:
+        if not blocks:
+            return
+        if history and history[-1]["role"] == "assistant":
+            history[-1]["blocks"].extend(blocks)
+        else:
+            history.append({"role": "assistant", "blocks": blocks})
+
     for event in events:
         role = event.get("role")
         text = _content_text(event.get("content"))
+        # Harness-injected recall fires (user-role now, assistant-role in old
+        # runs) render as "Learned behavior" blocks, never as user messages.
+        if event.get("kind") == "recall_fire":
+            if text:
+                _append_blocks([{"type": "learned", "text": text}])
+            continue
         if role == "user":
             disp = ui_ctx.display_user_text(text)
             if disp:
@@ -131,16 +146,8 @@ def _direct_history(events: list[dict]) -> list[dict]:
             if thought:
                 blocks.append({"type": "thought", "text": thought})
             if text:
-                is_recall_fire = event.get("kind") == "recall_fire"
-                blocks.append({
-                    "type": "thought" if is_recall_fire else "text",
-                    "text": text,
-                })
-            if blocks:
-                if history and history[-1]["role"] == "assistant":
-                    history[-1]["blocks"].extend(blocks)
-                else:
-                    history.append({"role": "assistant", "blocks": blocks})
+                blocks.append({"type": "text", "text": text})
+            _append_blocks(blocks)
     return history
 
 

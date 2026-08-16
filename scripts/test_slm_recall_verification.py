@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Benchmark Stage-2 SLM recall verification (local Gemma 1B).
+"""Benchmark Stage-2 recall verification (embedding pos−neg margin).
 
-Uses YES/NO logit margin with few-shot examples from each recall.
-Held-out paraphrases (not copied from positive_examples) measure generalization.
+Default Stage-2 does NOT ask a tiny IT model YES/NO — those latch onto a
+completion token. This suite scores FastEmbed max(pos)−max(neg) (+ junk filter).
 Exit non-zero if metrics fall below thresholds.
 """
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 from pathlib import Path
@@ -16,9 +17,14 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+os.environ.setdefault("RECALL_STAGE2_MODE", "embed")
+os.environ.setdefault("RECALL_SLM_VERIFY", "1")
+
 from harness.recall import (  # noqa: E402
-    _build_slm_verify_prompt,
+    _is_stage2_junk,
     _load_system_recalls,
+    _stage2_mode,
+    verify_recall_candidate_embed,
     verify_recall_candidate_slm,
 )
 
@@ -42,9 +48,13 @@ CASES: list[tuple[str, str, bool]] = [
     ("sys_learn_recall", "please remember that I prefer dark mode in editors", True),
     ("sys_learn_recall", "from now on always use type hints in python", True),
     ("sys_learn_recall", "save this rule: no emoji in commit messages", True),
+    ("sys_learn_recall", "can you remember bill gates is no longer the godfather of capitalism", True),
+    ("sys_learn_recall", "can you remember i like mangoes", True),
+    ("sys_learn_recall", "[Tower]: can you remember i like mangoes", True),
     ("sys_learn_recall", "do you remember when we decided to switch to MongoDB?", False),
     ("sys_learn_recall", "what did we agree on regarding the new API design?", False),
     ("sys_learn_recall", "hello how are you today", False),
+    ("sys_learn_recall", "why are you not creating semantic recall as well ?", False),
     ("sys_architecture", "how do memory tiers interact with the worker loop?", True),
     ("sys_architecture", "walk me through board files and compaction", True),
     ("sys_architecture", "write a unit test for the login form", False),
@@ -65,33 +75,39 @@ def _assert(cond: bool, msg: str) -> None:
         raise AssertionError(msg)
 
 
-def test_prompt_includes_examples() -> None:
+def test_junk_heuristic() -> None:
+    _assert(_is_stage2_junk("read_file"), "bare tool should be junk")
+    _assert(_is_stage2_junk("<!doctype html>"), "doctype should be junk")
+    _assert(_is_stage2_junk("Written 7 bytes to state/x.md"), "write ack should be junk")
+    _assert(not _is_stage2_junk("can you remember i like mangoes"), "teaching not junk")
+    print("ok junk_heuristic")
+
+
+def test_configured_mode_routes() -> None:
+    """verify_recall_candidate_slm dispatches to the configured Stage-2 backend."""
     recall = {
-        "instruction": "Look up past facts.",
-        "positive_examples": ["what was the bill?"],
-        "negative_examples": ["tell me a joke"],
+        "recall_id": "t",
+        "instruction": "User teaching durable prefs.",
+        "positive_examples": ["please remember that I like tea"],
+        "negative_examples": ["do you remember when we met?"],
     }
-    prompt = _build_slm_verify_prompt("cloud cost last month?", recall)
-    _assert("Answer: YES" in prompt, "missing positive few-shot")
-    _assert("Answer: NO" in prompt, "missing negative few-shot")
-    _assert("TEXT: <!doctype html>\nAnswer: NO" in prompt, "missing global hard-negative")
-    _assert("TEXT: read_file\nAnswer: NO" in prompt, "missing tool-name hard-negative")
-    _assert("YES only if TEXT clearly asks" in prompt, "missing YES rule")
-    _assert(prompt.endswith("Answer:"), "missing query slot")
-    print("ok prompt_shape")
+    mode = _stage2_mode()
+    expected_prefix = {"embed": "embed_", "rerank": "rerank:", "logit": "slm_logit"}[mode]
+    ok, reason = verify_recall_candidate_slm(
+        "please remember that I like green tea", recall
+    )
+    _assert(ok, f"expected {mode} accept, got {reason}")
+    _assert(
+        reason.startswith(expected_prefix),
+        f"expected {mode} reason ({expected_prefix}...), got {reason}",
+    )
+    print(f"ok mode_routes ({mode})")
 
 
 def main() -> int:
-    test_prompt_includes_examples()
+    test_junk_heuristic()
+    test_configured_mode_routes()
 
-    from local_llm import LocalLLMClient, default_model_path, ensure_model
-
-    path = default_model_path()
-    if not path.exists():
-        print(f"GGUF missing at {path}; downloading…")
-        ensure_model()
-
-    client = LocalLLMClient(in_process=True)
     recalls = {r["recall_id"]: r for r in _load_system_recalls()}
 
     tp = fp = tn = fn = 0
@@ -105,9 +121,13 @@ def main() -> int:
             failures.append(f"missing recall {recall_id}")
             continue
         t0 = time.perf_counter()
-        ok, reason = verify_recall_candidate_slm(text, recall, client=client)
+        ok, reason = verify_recall_candidate_embed(text, recall)
         latencies.append(time.perf_counter() - t0)
-        if reason.startswith("slm_error") or reason in ("slm_unavailable", "slm_disabled"):
+        if reason.startswith("stage2_error") or reason in (
+            "stage2_disabled",
+            "slm_unavailable",
+            "slm_disabled",
+        ):
             fail_open += 1
 
         if expect_yes and ok:
@@ -140,10 +160,10 @@ def main() -> int:
         print("FAIL:", line)
 
     _assert(total >= 20, "need >=20 cases")
-    _assert(precision >= 0.70, f"precision {precision:.2f} < 0.70")
-    _assert(recall_m >= 0.70, f"recall {recall_m:.2f} < 0.70")
+    _assert(precision >= 0.85, f"precision {precision:.2f} < 0.85")
+    _assert(recall_m >= 0.85, f"recall {recall_m:.2f} < 0.85")
     _assert(fail_open == 0, f"unexpected fail-open count {fail_open}")
-    print("ok slm_recall_verification")
+    print("ok stage2_embed_verification")
     return 0
 
 

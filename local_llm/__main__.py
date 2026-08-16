@@ -19,6 +19,12 @@ from .engine import LocalGemma, detect_runtime
 
 
 def cmd_download(args: argparse.Namespace) -> int:
+    if args.reranker:
+        from .download import ensure_reranker
+
+        path = ensure_reranker(force=args.force)
+        print(f"ready: {path} ({path.stat().st_size / (1024 * 1024):.1f} MB)")
+        return 0
     path = ensure_model(force=args.force)
     print(f"ready: {path} ({path.stat().st_size / (1024 * 1024):.1f} MB)")
     print(f"quant: {QUANT}  file: {MODEL_FILENAME}")
@@ -125,6 +131,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     d = sub.add_parser("download", help="download the QAT GGUF into local_llm/models/")
     d.add_argument("--force", action="store_true")
+    d.add_argument("--reranker", action="store_true", help="download the Stage-2 cross-encoder instead")
     d.set_defaults(func=cmd_download)
 
     i = sub.add_parser("info", help="show model path and detected runtime knobs")

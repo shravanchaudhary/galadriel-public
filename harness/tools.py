@@ -51,34 +51,86 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "learn",
+        "description": (
+            "PREFERRED one-stop learning tool. Describe what you learned in "
+            "`content` (a preference, rule, strategy, mistake, project fact, "
+            "relationship, correction…) and the tool packages it into the right "
+            "artifact mix automatically: KG triplets (entity facts), a palace "
+            "drawer (durable prose), and/or a semantic recall (reactive "
+            "when-to-recollect trigger) — any combination, decided internally. "
+            "To control packaging yourself, pass explicit kg_triplets / drawer / "
+            "recall alongside content; explicit artifacts are written verbatim "
+            "and skip the internal decomposition. "
+            "Use the granular tools (palace_kg_add, palace_add_drawer, "
+            "learn_recall) only when you need their full parameter surface."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "string",
+                    "description": "What was learned, with enough context to package it well. Required.",
+                },
+                "kg_triplets": {
+                    "type": "array",
+                    "items": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                    "description": "Optional explicit [subject, predicate, object] triplets to store in the knowledge graph.",
+                },
+                "drawer": {
+                    "type": "object",
+                    "properties": {
+                        "topic": {"type": "string"},
+                        "room": {"type": "string"},
+                        "content": {"type": "string"},
+                    },
+                    "description": "Optional explicit palace drawer: {topic, room?, content}.",
+                },
+                "recall": {
+                    "type": "object",
+                    "properties": {
+                        "recall_id": {"type": "string"},
+                        "instruction": {"type": "string"},
+                        "positive_examples": {"type": "array", "items": {"type": "string"}},
+                        "negative_examples": {"type": "array", "items": {"type": "string"}},
+                        "lexical_cues": {"type": "array", "items": {"type": "string"}},
+                        "positive_threshold": {"type": "number"},
+                    },
+                    "description": "Optional explicit semantic recall (same fields as learn_recall).",
+                },
+            },
+            "required": ["content"],
+        },
+    },
+    {
         "name": "learn_recall",
         "description": (
             "Create or patch a semantic recall (reactive one-liner lookup). "
             "This is the only writer of recall definition fields — YOU must supply "
             "instruction and cue arrays; the tool does not invent or merge via LLM. "
             "Omit recall_id to create (requires instruction plus non-empty "
-            "positive_examples, negative_examples, and lexical_cues). "
+            "positive_examples and lexical_cues; negative_examples optional). "
             "Pass recall_id to patch: any provided field among instruction, "
             "positive_examples, negative_examples, lexical_cues, enabled, "
-            "positive_threshold, negative_threshold is written; "
-            "omitted fields stay unchanged. Provided cue arrays must be non-empty "
-            "and are FULL REPLACEMENTS — call get_recall first and pass the complete "
-            "intended array. "
-            "Cue quality rules: positive_examples = 3–5 short realistic user/assistant "
-            "phrasings that should fire (not paraphrases of the instruction); "
+            "positive_threshold is written; omitted fields stay unchanged. "
+            "Provided cue arrays must be non-empty and are FULL REPLACEMENTS — "
+            "call get_recall first and pass the complete intended array. "
+            "Cue quality rules: positive_examples = realistic user/assistant "
+            "phrasings that should fire (not instruction paraphrases) — dense "
+            "coverage is good, up to 100 entries; "
             "lexical_cues = high-precision exact anchors that should hard-hit; "
-            "negative_examples = near-misses that should NOT fire; "
+            "negative_examples = known misfires (Stage-2 veto only — they NEVER "
+            "gate Stage-1); "
             "instruction = short action pointer (tool / file / palace room), not an essay. "
-            "Stage-1 thresholds (per recall, default 0.6 each, semantic path only): "
-            "positive_score must be >= positive_threshold; if negatives exist, "
-            "negative_score must be < negative_threshold (absolute — not compared to "
-            "positive). Lexical cue hard-hits skip the negative threshold. "
-            "Tune thresholds when cue edits alone cannot fix FP/FN. "
-            "positive_examples / negative_examples also feed Stage-2 SLM YES/NO few-shots "
-            "on matched_chunk — fix false-positive injects by adding the offending "
-            "matched_chunk to negative_examples (full-replace arrays). "
+            "Stage-1 is positive-only: semantic match requires positive_score >= "
+            "positive_threshold (default 0.6); lexical cue hits are hard triggers. "
+            "Chunks under 4 words are lexical-only (no semantic scan). "
+            "For firing feedback use tune_recall (it appends the fired chunk to "
+            "positives/negatives for you); use learn_recall for full edits. "
             "Package: durable content → palace drawer/KG; when-to-recollect → this recall. "
-            "To update an existing rule, pass its recall_id (use get_recall to find it). "
             "System recalls (sys_*): cue arrays and thresholds may be replaced; "
             "instruction changes are rejected."
         ),
@@ -96,12 +148,12 @@ TOOL_DEFINITIONS = [
                 "positive_examples": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "3–5 short realistic trigger utterances (not instruction paraphrases). Also Stage-2 YES few-shots. Required non-empty on create; full replace on patch.",
+                    "description": "Realistic trigger utterances that should fire (not instruction paraphrases). Dense coverage helps — up to 100. Required non-empty on create; full replace on patch.",
                 },
                 "negative_examples": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Near-miss veto utterances that should NOT fire (Stage-1 veto + Stage-2 NO few-shots). Required non-empty on create; full replace on patch.",
+                    "description": "Known misfire texts. Stage-2 veto only (a misfire outscoring the best positive rejects the fire) — never gates Stage-1. Optional on create; full replace on patch.",
                 },
                 "lexical_cues": {
                     "type": "array",
@@ -114,7 +166,7 @@ TOOL_DEFINITIONS = [
                 },
                 "negative_threshold": {
                     "type": "number",
-                    "description": "Stage-1: reject if cosine(neg) >= this (0–1, default 0.6). Independent of positive_threshold.",
+                    "description": "Legacy; stored for API/UI compat only (0–1, default 0.6). Never gates matching.",
                 },
                 "enabled": {
                     "type": "boolean",
@@ -122,6 +174,42 @@ TOOL_DEFINITIONS = [
                 },
             },
             "required": [],
+        },
+    },
+    {
+        "name": "tune_recall",
+        "description": (
+            "Feedback on a fired recall (a `[Recall detected]` note). Call after "
+            "you acted on — or deliberately ignored — a fire. "
+            "applicable=true reinforces the match: the fired chunk is appended to "
+            "the recall's positive_examples. applicable=false records a misfire: "
+            "the chunk is appended to negative_examples, which Stage-2 uses to veto "
+            "a fire when the misfire outscores the best positive (Stage-1 is never "
+            "gated by negatives). A chunk too similar to an existing cue is not "
+            "stored — the feedback is still recorded. When an array is full the "
+            "least-recently-matched cue is evicted. "
+            "Feedback is also logged for the ambient tuning pass. "
+            "Cheap and safe — prefer calling it over silently tolerating bad fires. "
+            "For structural edits (instruction, thresholds, full cue arrays) use "
+            "learn_recall instead."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "recall_id": {
+                    "type": "string",
+                    "description": "The fired recall's id (see get_recent_recalls if unsure).",
+                },
+                "applicable": {
+                    "type": "boolean",
+                    "description": "true = the fire was relevant to that moment; false = it should not have fired.",
+                },
+                "note": {
+                    "type": "string",
+                    "description": "Optional short reason, stored with the feedback.",
+                },
+            },
+            "required": ["recall_id", "applicable"],
         },
     },
     {
@@ -851,7 +939,7 @@ TOOL_DEFINITIONS = [
         "name": "get_recent_recalls",
         "description": (
             "Read recent recall proposals and verified fires for Stage-1/2 audit. "
-            "proposed+rejected = Stage-1 matched but Stage-2 SLM vetoed; "
+            "proposed+rejected = Stage-1 matched but Stage-2 vetoed; "
             "proposed+verified / verified = Stage-2 accepted and injected. "
             "Cue patches via learn_recall retune Stage-2 few-shots (use matched_chunk "
             "as a negative when an inject was a false positive). "
@@ -1129,7 +1217,7 @@ async def _get_recent_recalls(hours_ago: int = 24) -> str:
 
         legend = (
             "LEGEND (two-stage recall): "
-            "proposed+rejected = Stage-1 hit, Stage-2 SLM vetoed "
+            "proposed+rejected = Stage-1 hit, Stage-2 vetoed "
             "(leave if veto correct; if FN strengthen positives). "
             "proposed+verified / verified = Stage-2 accepted and injected "
             "(if FP add matched_chunk to negative_examples via learn_recall). "
@@ -1232,8 +1320,8 @@ async def _purge_recall(recall_id: str) -> str:
         res = await db["recalls"].delete_one(query)
         if res.deleted_count == 0:
             return f"[error] User recall '{rid}' not found."
-        from harness.recall import fetch_all_recalls, get_semantic_router
-        get_semantic_router(await fetch_all_recalls(), force_reload=True)
+        from harness.recall import invalidate_semantic_router
+        invalidate_semantic_router()
         return f"Purged user recall '{rid}'."
     except Exception as e:
         return f"[error] Failed to purge recall: {e}"
@@ -1289,6 +1377,14 @@ async def _execute_tool_impl(
         )
     elif name == "read_file":
         return await _read_file(inputs["path"])
+    elif name == "learn":
+        from .learn import learn as _unified_learn
+        return await _unified_learn(
+            content=inputs.get("content", ""),
+            kg_triplets=inputs.get("kg_triplets"),
+            drawer=inputs.get("drawer"),
+            recall=inputs.get("recall"),
+        )
     elif name == "learn_recall":
         return await _learn_recall(
             instruction=inputs.get("instruction"),
@@ -1299,6 +1395,12 @@ async def _execute_tool_impl(
             enabled=inputs.get("enabled"),
             positive_threshold=inputs.get("positive_threshold"),
             negative_threshold=inputs.get("negative_threshold"),
+        )
+    elif name == "tune_recall":
+        return await _tune_recall(
+            recall_id=inputs.get("recall_id", ""),
+            applicable=bool(inputs.get("applicable")),
+            note=inputs.get("note"),
         )
     elif name == "get_recall":
         return await _get_recall(recall_id=inputs.get("recall_id"))
@@ -2140,6 +2242,12 @@ def _tail_file(path: Path) -> str:
         return ""
 
 
+# Hard cap per cue array — router build cost stays bounded, and both stages
+# accept on max() over the array so unbounded growth can only loosen matching.
+# tune_recall evicts the least-recently-used cue (see recall.evict_lru_cues).
+_MAX_EXAMPLES_PER_RECALL = 100
+
+
 def _normalize_cue_list(values, *, lexical: bool = False) -> list[str]:
     from harness.recall import normalize_lexical_cue
     out = []
@@ -2154,7 +2262,7 @@ def _normalize_cue_list(values, *, lexical: bool = False) -> list[str]:
             continue
         seen.add(s)
         out.append(s)
-    return out
+    return out[-_MAX_EXAMPLES_PER_RECALL:]
 
 
 def _cue_field_or_error(values, field_name: str, *, lexical: bool = False):
@@ -2217,7 +2325,11 @@ async def _patch_system_recall_cues(
     """Replace cue arrays / thresholds on a system recall in config/system_recalls.json."""
     import json
     from pathlib import Path
-    from harness.recall import fetch_all_recalls, get_semantic_router, normalize_recall_thresholds
+    from harness.recall import (
+        invalidate_semantic_router,
+        normalize_recall_thresholds,
+        sync_cue_usage,
+    )
 
     updates = {}
     if positive_examples is not None:
@@ -2252,20 +2364,24 @@ async def _patch_system_recall_cues(
     with open(config_path, "r", encoding="utf-8") as f:
         sys_recalls = json.load(f)
 
-    found = False
+    found = None
     for r in sys_recalls:
         if r.get("recall_id") != recall_id:
             continue
-        found = True
+        found = r
         r.update(updates)
         normalize_recall_thresholds(r)
         break
 
-    if not found:
+    if found is None:
         return f"[error] System recall '{recall_id}' not found."
     with open(config_path, "w", encoding="utf-8") as f:
         json.dump(sys_recalls, f, indent=4)
-    get_semantic_router(await fetch_all_recalls(), force_reload=True)
+    invalidate_semantic_router()
+    await sync_cue_usage(
+        recall_id,
+        (found.get("positive_examples") or []) + (found.get("negative_examples") or []),
+    )
     return f"Updated cue arrays on system recall '{recall_id}'."
 
 
@@ -2284,8 +2400,8 @@ async def _learn_recall(
     from .recall import (
         DEFAULT_NEGATIVE_THRESHOLD,
         DEFAULT_POSITIVE_THRESHOLD,
-        fetch_all_recalls,
-        get_semantic_router,
+        invalidate_semantic_router,
+        sync_cue_usage,
     )
     from datetime import datetime, timezone
 
@@ -2370,7 +2486,12 @@ async def _learn_recall(
             )
         updates["updated_at"] = datetime.now(timezone.utc)
         await coll.update_one(query, {"$set": updates, "$unset": {"threshold": ""}})
-        get_semantic_router(await fetch_all_recalls(), force_reload=True)
+        invalidate_semantic_router()
+        await sync_cue_usage(
+            rid,
+            list(updates.get("positive_examples", doc.get("positive_examples") or []))
+            + list(updates.get("negative_examples", doc.get("negative_examples") or [])),
+        )
         changed = ", ".join(sorted(k for k in updates if k != "updated_at"))
         return f"Updated recall '{rid}' ({changed})."
 
@@ -2380,17 +2501,19 @@ async def _learn_recall(
 
     if positive_examples is None:
         return "[error] Create requires non-empty positive_examples."
-    if negative_examples is None:
-        return "[error] Create requires non-empty negative_examples."
     if lexical_cues is None:
         return "[error] Create requires non-empty lexical_cues."
 
     pos, err = _cue_field_or_error(positive_examples, "positive_examples")
     if err:
         return err
-    neg, err = _cue_field_or_error(negative_examples, "negative_examples")
-    if err:
-        return err
+    # Negatives are optional on create: Stage-1 is positive-only and misfires
+    # accumulate later via tune_recall.
+    neg = []
+    if negative_examples is not None:
+        neg, err = _cue_field_or_error(negative_examples, "negative_examples")
+        if err:
+            return err
     lex, err = _cue_field_or_error(lexical_cues, "lexical_cues", lexical=True)
     if err:
         return err
@@ -2424,7 +2547,8 @@ async def _learn_recall(
     }
     try:
         result = await db["recalls"].insert_one(doc)
-        get_semantic_router(await fetch_all_recalls(), force_reload=True)
+        invalidate_semantic_router()
+        await sync_cue_usage(str(result.inserted_id), pos + neg)
         return (
             f"Created new recall with ID '{result.inserted_id}' "
             f"({len(pos)} pos, {len(lex)} lexical, {len(neg)} neg, "
@@ -2432,6 +2556,112 @@ async def _learn_recall(
         )
     except Exception as e:
         return f"[error] Failed to insert new recall: {e}"
+
+
+async def _tune_recall(recall_id: str, applicable: bool, note: str | None = None) -> str:
+    """Feedback on the most recent fire of a recall.
+
+    applicable → fired chunk appended to positive_examples (reinforce);
+    not applicable → appended to negative_examples (Stage-2 counter-signal).
+    Every call also lands in the `recall_feedback` collection and marks the
+    fire doc, so the ambient tuning pass can weigh repeated verdicts.
+
+    A chunk that is a near-duplicate of an existing cue is not stored (it could
+    only be dead weight under max() scoring), and when the array is full the
+    least-recently-used cue is evicted rather than the oldest-added one.
+    """
+    from datetime import datetime, timezone
+
+    from .db_ops import get_db
+    from .recall import (
+        _strip_channel_prefix,
+        cue_is_saturated,
+        cue_key,
+        evict_lru_cues,
+        fetch_all_recalls,
+        invalidate_semantic_router,
+        load_cue_usage,
+        sync_cue_usage,
+    )
+
+    rid = (recall_id or "").strip()
+    if not rid:
+        return "[error] recall_id is required."
+    db = get_db()
+    if db is None:
+        return "[error] No DB connection available."
+
+    fire = await db["recall_fires"].find_one({"recall_id": rid}, sort=[("timestamp", -1)])
+    if not fire:
+        return f"[error] No recorded fire for recall '{rid}' — nothing to tune."
+
+    chunk = _strip_channel_prefix((fire.get("matched_chunk") or "").strip()).strip()[:300]
+    if not chunk:
+        return f"[error] Last fire of '{rid}' has no usable matched chunk."
+
+    recalls = await fetch_all_recalls()
+    recall = next((r for r in recalls if r.get("recall_id") == rid), None)
+    if recall is None:
+        return f"[error] Recall '{rid}' not found."
+
+    field = "positive_examples" if applicable else "negative_examples"
+    other_field = "negative_examples" if applicable else "positive_examples"
+    examples = [e for e in (recall.get(field) or []) if isinstance(e, str) and e.strip()]
+    others = [e for e in (recall.get(other_field) or []) if isinstance(e, str) and e.strip()]
+    duplicate = any(e.strip().casefold() == chunk.casefold() for e in examples)
+    saturated, nearest = (False, None) if duplicate else cue_is_saturated(chunk, examples)
+    if not duplicate and not saturated:
+        usage = await load_cue_usage(rid)
+        usage[cue_key(chunk)] = datetime.now(timezone.utc)  # insertion counts as a use
+        examples = evict_lru_cues(examples + [chunk], usage, _MAX_EXAMPLES_PER_RECALL)
+        if _is_system_recall_id(rid):
+            result = await _patch_system_recall_cues(rid, **{field: examples})
+            if result.startswith("[error]"):
+                return result
+        else:
+            query = _user_recall_query(rid)
+            if isinstance(query, str):
+                return query
+            updated = await db["recalls"].update_one(
+                query,
+                {"$set": {field: examples, "updated_at": datetime.now(timezone.utc)}},
+            )
+            if updated.matched_count == 0:
+                return f"[error] User recall '{rid}' not found."
+            if applicable:
+                # Positives feed the router; negatives are Stage-2-only.
+                invalidate_semantic_router()
+        await sync_cue_usage(rid, examples + others, touch=[chunk])
+
+    verdict = "applicable" if applicable else "misfire"
+    try:
+        now = datetime.now(timezone.utc)
+        await db["recall_feedback"].insert_one({
+            "recall_id": rid,
+            "applicable": bool(applicable),
+            "note": (note or "").strip()[:300],
+            "chunk": chunk,
+            "fire_id": fire.get("_id"),
+            "channel_id": fire.get("channel_id"),
+            "timestamp": now,
+        })
+        await db["recall_fires"].update_one(
+            {"_id": fire["_id"]},
+            {"$set": {"feedback": verdict, "feedback_note": (note or "").strip()[:300],
+                      "feedback_at": now}},
+        )
+    except Exception as e:
+        log.warning(f"tune_recall: feedback trail write failed: {e}")
+
+    if duplicate:
+        return f"Recorded {verdict} feedback for '{rid}' (chunk already in {field})."
+    if saturated:
+        near = f" (~{nearest:.2f} cosine)" if nearest is not None else ""
+        return (
+            f"Recorded {verdict} feedback for '{rid}' — chunk not stored: already "
+            f"covered by an existing {field} entry{near}."
+        )
+    return f"Recorded {verdict} feedback for '{rid}' — chunk added to {field} ({len(examples)} total)."
 
 
 async def _read_file(path: str) -> str:

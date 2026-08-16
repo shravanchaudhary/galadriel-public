@@ -38,7 +38,12 @@ sessionmanager-bundle/
 sessionmanager-bundle.zip
 test_db.py
 
-# Local Gemma 3 270M GGUF weights (downloaded via `python -m local_llm download`)
+# Local GGUF weights (downloaded via `python -m local_llm download [--reranker]`)
 local_llm/models/*.gguf
 local_llm/models/*.partial
 .ipynb_checkpoints/
+
+# Eval benchmark suite: model download caches are disposable (the eval CLIs
+# re-download on demand); eval/results/ stays tracked as benchmark evidence.
+eval/models/*.gguf
+eval/models/*.partial

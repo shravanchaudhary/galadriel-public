@@ -96,19 +96,26 @@ Rules of thumb:
 
 ### 1b. Semantic recalls (push, two-stage)
 
-Palace tools are **pull**. Semantic recalls are **push**: Stage-1 (embed floor
-0.6 / lexical) proposes on `matched_chunk`; Stage-2 re-scores with FastEmbed
-`max(pos) − max(neg)` plus a junk filter; only verified fires inject an
-assistant `recall_fire` suggestion.
+Palace tools are **pull**. Semantic recalls are **push**: Stage-1 (positive-only:
+embed floor 0.6 / lexical; chunks under 4 words are lexical-only) proposes on
+`matched_chunk`; Stage-2 re-scores with the Qwen3 cross-encoder reranker
+(cosine top-2 cues + instruction, P(yes) > 0.65, misfire-negative veto)
+plus a junk filter; only verified fires
+inject a user-role `[Recall detected]` note (`kind=recall_fire`). If the
+reranker is unavailable the whole recall system is disarmed (fail-closed — no
+scans, no fires). Fires are ignorable hints — never a reason for
+side-effectful actions — and you grade them with `tune_recall`.
 
 Inject windows: new user message at turn start, and mid-turn **only** on
 `tool_use` pauses (thought + tool args + tool results). Not on bare `end_turn`.
 
-Package: durable fact → palace/KG/`MEMORY.md`; when-to-recollect →
-`learn_recall` short pointer + quality cues (positives = realistic phrasings,
-lexical = anchors, negatives = near-misses for Stage-1 veto and Stage-2).
-Audit with `get_recent_recalls` (proposed vs verified). System recall
-instructions are immutable; cues may be tuned.
+Package: prefer the unified `learn` tool (one call → kg/drawer/recall mix);
+durable fact → palace/KG/`MEMORY.md`; when-to-recollect → `learn_recall`
+short pointer + quality cues (positives = realistic phrasings, dense coverage
+up to ~100; lexical = anchors; negatives = known misfires, Stage-2 only).
+Grade fires with `tune_recall(recall_id, applicable)`; audit with
+`get_recent_recalls` (proposed vs verified). System recall instructions are
+immutable; cues may be tuned.
 
 ### 2. Updating yourself — pick the right surface
 
@@ -125,7 +132,7 @@ everything into one file.
 | A new coded tool / reusable capability as code | **`personal-tools/`** (never `harness/`) | See §3 — agent-owned tools. Product tools are provider-updated and blocked from agent edits |
 | A DB read / write / state change / counter | **The `db_*` primitive tools** | See `knowledge/reference/data.md`, `state/db_index.md`. Freestyle pymongo/mongosh in `run_shell` is refused. New kind of state → author a `workflows/*.json` spec |
 | Something to remember long-term, searchable later | **Palace** — `palace_add_drawer`, `palace_kg_add`, `palace_diary_write`, or `memory_log` (hot daily index only) | See `knowledge/reference/tools.md` decision matrix. Don't duplicate |
-| When to recollect a stored fact mid-turn | **Semantic recall** — `learn_recall` (Stage-1 embed/lexical + Stage-2 embed verify) | Point at palace/file; don't essay the fact into the instruction |
+| When to recollect a stored fact mid-turn | **Semantic recall** — `learn_recall` (Stage-1 embed/lexical + Stage-2 rerank verify) | Point at palace/file; don't essay the fact into the instruction |
 | Deep expertise on a subject | **The SME workflow** (section 4) | Curate `.md` files under `sme/`; durable learned facts → palace `room=knowledge` |
 
 ### 3. Two tool sections — developer tools vs personal tools

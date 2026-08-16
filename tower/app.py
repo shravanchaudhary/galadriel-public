@@ -904,7 +904,8 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
             result = _run_async(_learn_recall(
                 instruction=instruction,
                 positive_examples=data.get("positive_examples"),
-                negative_examples=data.get("negative_examples"),
+                # Negatives are optional on create — treat [] as omitted.
+                negative_examples=data.get("negative_examples") or None,
                 lexical_cues=data.get("lexical_cues") or data.get("regex_tags"),
                 positive_threshold=data.get("positive_threshold"),
                 negative_threshold=data.get("negative_threshold"),
@@ -956,8 +957,8 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
                     return jsonify({"error": "Recall not found"}), 404
                 new_state = not doc.get("enabled", True)
                 await coll.update_one({"_id": ObjectId(recall_id)}, {"$set": {"enabled": new_state}})
-                from harness.recall import fetch_all_recalls, get_semantic_router
-                get_semantic_router(await fetch_all_recalls(), force_reload=True)
+                from harness.recall import invalidate_semantic_router
+                invalidate_semantic_router()
                 return jsonify({"status": "ok", "enabled": new_state})
             except Exception as e:
                 return jsonify({"error": str(e)}), 500
@@ -1026,8 +1027,8 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
                     with open(config_path, "w", encoding="utf-8") as f:
                         json.dump(sys_recalls, f, indent=4)
                     
-                    from harness.recall import fetch_all_recalls, get_semantic_router
-                    get_semantic_router(await fetch_all_recalls(), force_reload=True)
+                    from harness.recall import invalidate_semantic_router
+                    invalidate_semantic_router()
                     return jsonify({"status": "ok", "source": "system"})
             
             db = get_db()
@@ -1063,8 +1064,8 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
                     },
                 )
                 
-                from harness.recall import fetch_all_recalls, get_semantic_router
-                get_semantic_router(await fetch_all_recalls(), force_reload=True)
+                from harness.recall import invalidate_semantic_router
+                invalidate_semantic_router()
                 return jsonify({"status": "ok", "source": "user"})
             except Exception as e:
                 return jsonify({"error": str(e)}), 500
@@ -1087,8 +1088,8 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
                 res = await coll.delete_one({"_id": ObjectId(recall_id)})
                 if res.deleted_count == 0:
                     return jsonify({"error": "Recall not found"}), 404
-                from harness.recall import fetch_all_recalls, get_semantic_router
-                get_semantic_router(await fetch_all_recalls(), force_reload=True)
+                from harness.recall import invalidate_semantic_router
+                invalidate_semantic_router()
                 return jsonify({"status": "ok"})
             except Exception as e:
                 return jsonify({"error": str(e)}), 500

@@ -72,7 +72,15 @@ window.ChatLive = (function () {
 
     function appendThought(delta, turn, opts) {
         const isRecallFire = opts && opts.kind === 'recall_fire';
-        if (!turn.thoughtEl || isRecallFire) {
+        if (isRecallFire) {
+            // Recall fires are learned-behavior notes, not model thoughts —
+            // self-contained collapsed block; later thoughts stream fresh.
+            turn.bodyEl.appendChild(ChatRender.createLearnedBlock(delta));
+            turn.thoughtEl = null;
+            ensureTyping(turn);
+            return;
+        }
+        if (!turn.thoughtEl) {
             const d = document.createElement('details');
             d.className = 'thought';
             d.innerHTML = '<summary>Thinking</summary>';
@@ -82,10 +90,6 @@ window.ChatLive = (function () {
             turn.bodyEl.appendChild(d);
         }
         turn.thoughtEl.textContent += delta;
-        if (isRecallFire) {
-            // Close the recall-fire thought so later model thoughts stream into a fresh block.
-            turn.thoughtEl = null;
-        }
         ensureTyping(turn);
     }
 

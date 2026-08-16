@@ -1,0 +1,20 @@
+# Benchmark-only dependencies. Do NOT merge into the runtime requirements.
+# Install into the repo venv:  venv/bin/pip install -r eval/requirements-eval.txt
+
+# GGUF inference (already in the repo venv; pinned here for reproducibility)
+llama-cpp-python>=0.3.0
+numpy
+
+# memory measurement
+psutil>=5.9
+
+# baseline scorer only (imports harness/recall.py, which pulls these in;
+# versions mirror the runtime requirements.txt pins)
+semantic-router>=0.1.16
+fastembed>=0.8.0
+pymongo[aws]>=4.9
+
+# qwen3-reranker transformers CPU fallback only (skip if you always use the
+# GGUF backend; ~800 MB of wheels, and the model runs at ~2.4 GB RSS fp32)
+torch>=2.3
+transformers>=4.51

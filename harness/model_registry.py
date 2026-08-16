@@ -34,6 +34,8 @@ TASKS: dict[str, tuple[str, str]] = {
     "slack_reply_gate": (GEMINI, "gemini-2.5-flash"),
     # One-shot short title for a new conversation run.
     "chat_title": (GEMINI, "gemini-2.5-flash"),
+    # Decomposes freeform `learn` content into kg/drawer/recall artifacts.
+    "learn_packaging": (GEMINI, "gemini-2.5-flash"),
 }
 
 # Previous Anthropic defaults — drop any of these back into TASKS to switch a

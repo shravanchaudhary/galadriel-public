@@ -57,6 +57,7 @@
         "negative_examples": [
             "how do I center a div in CSS?",
             "can you write a sorting algorithm in Python?",
+            "write a unit test for the login form",
             "what is the weather like today?",
             "please translate this text to Spanish"
         ],
@@ -327,24 +328,28 @@
     },
     {
         "recall_id": "sys_learn_recall",
-        "instruction": "The user is teaching something durable to reuse later. Dig deep: link to existing palace/KG neighbors, then store durable detail via palace_add_drawer / palace_kg_add (or MEMORY.md / knowledge file); create/patch a short when-to-recollect recall via `learn_recall` pointing at that store — do not essay the fact into the instruction. Cue quality: positive_examples = 3–5 realistic phrasings (not instruction paraphrases); lexical_cues = high-precision anchors; negative_examples = near-misses; instruction = one-liner pointer. Use `get_recall` first if updating; `purge_recall` only for bad user recalls. System recall instructions stay immutable.",
+        "instruction": "The user is teaching something durable to reuse later. Prefer the unified `learn` tool: one call with `content` packages it into KG / palace drawer / semantic recall automatically (pass explicit artifacts to control packaging). Dig deep: link to existing palace/KG neighbors \u2014 do not essay the fact into a recall instruction. If tuning cues by hand: positive_examples = realistic phrasings (dense coverage helps, up to ~100); lexical_cues = high-precision anchors; negative_examples = known misfires (Stage-2 only); instruction = one-liner pointer. Grade fires with `tune_recall`. Use `get_recall` first if updating; `purge_recall` only for bad user recalls. System recall instructions stay immutable.",
         "positive_examples": [
-            "remember i like to",
-            "please remember that",
-            "don't forget",
-            "note this preference",
-            "keep this in mind for later",
-            "you should recall that",
-            "from now on always do it this way",
-            "save this as a rule for next time"
+            "please remember that I prefer dark mode",
+            "can you remember my favorite fruit is mango",
+            "can you remember bill gates stepped down as CEO",
+            "can you remember i like mangoes",
+            "remember i like to eat spicy food",
+            "don't forget I take oat milk",
+            "note this preference for later",
+            "from now on always use type hints",
+            "save this as a rule: no force-push to main"
         ],
         "negative_examples": [
-            "do you remember when",
-            "what did we agree on",
-            "can you remind me what",
+            "do you remember when we switched to MongoDB?",
+            "can you remind me what we decided?",
+            "what did we agree on yesterday?",
             "hello how are you today",
             "write a script to scrape this website",
-            "what was the name of the person who emailed us"
+            "what was the name of the person who emailed us",
+            "why are you not creating semantic recall as well",
+            "read_file",
+            "<!doctype html>"
         ],
         "lexical_cues": [
             "remember that",

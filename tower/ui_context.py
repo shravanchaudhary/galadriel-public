@@ -133,6 +133,15 @@ def _serialize_assistant_turn(messages: list, start: int) -> tuple[list[dict], i
         role = msg.get("role")
         content = msg.get("content")
 
+        # Recall fires are harness-injected (user-role now; assistant-role in
+        # older stored runs). Render as "Learned behavior", never as a user
+        # message or model thought — check before the user-turn break.
+        if msg.get("kind") == "recall_fire":
+            if isinstance(content, str) and content:
+                blocks.append({"type": "learned", "text": content})
+            i += 1
+            continue
+
         if role == "user" and (
             isinstance(content, str)
             or (isinstance(content, list) and not _is_tool_results(content))
@@ -144,27 +153,18 @@ def _serialize_assistant_turn(messages: list, start: int) -> tuple[list[dict], i
             if thought:
                 blocks.append({"type": "thought", "text": thought})
 
-            # Recall fires stay assistant messages for the model/API; render as thoughts in Tower.
-            is_recall_fire = msg.get("kind") == "recall_fire"
-
             if isinstance(content, list):
                 for block in content:
                     btype = _block_type(block)
                     if btype == "text":
                         text = _block_text(block)
                         if text:
-                            blocks.append({
-                                "type": "thought" if is_recall_fire else "text",
-                                "text": text,
-                            })
+                            blocks.append({"type": "text", "text": text})
                     elif btype == "tool_use":
                         uid, name, inp = _tool_use_fields(block)
                         pending_tools.append({"id": uid, "name": name, "input": inp})
             elif isinstance(content, str) and content:
-                blocks.append({
-                    "type": "thought" if is_recall_fire else "text",
-                    "text": content,
-                })
+                blocks.append({"type": "text", "text": content})
             i += 1
 
         elif role == "user" and isinstance(content, list) and _is_tool_results(content):
@@ -195,6 +195,17 @@ def serialize_chat_history(messages: list) -> list[dict]:
         msg = messages[i]
         role = msg.get("role")
         content = msg.get("content")
+        if msg.get("kind") == "recall_fire":
+            # User-role injected note — group under the surrounding assistant
+            # turn as a "Learned behavior" block, never as a user message.
+            if isinstance(content, str) and content:
+                block = {"type": "learned", "text": content}
+                if history and history[-1]["role"] == "assistant":
+                    history[-1]["blocks"].append(block)
+                else:
+                    history.append({"role": "assistant", "blocks": [block]})
+            i += 1
+            continue
         if role == "user" and isinstance(content, str):
             disp = display_user_text(content)
             if disp:

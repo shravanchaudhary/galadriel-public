@@ -46,3 +46,7 @@ local_llm/models/*.partial
 local_llm/experimental_gemma1b.ipynb
 local_llm/experimental_gemma270m.ipynb
 .ipynb_checkpoints/
+
+# Offline benchmark suite — never runtime code, and eval/models/ can hold GBs
+# of downloaded GGUFs that must not enter the build context.
+eval/

@@ -1264,6 +1264,20 @@ h3 {
 
 .thought > summary::-webkit-details-marker { display: none; }
 
+/* Harness-injected recall fires — learned behavior, not model thought. */
+.thought.learned {
+    border-left-color: #7c6df2;
+}
+
+.thought.learned > summary {
+    color: #7c6df2;
+}
+
+.thought.learned > summary::before {
+    content: '◆ ';
+    font-size: 0.7em;
+}
+
 .thought-body {
     margin-top: 0.4rem;
     color: var(--text-secondary);

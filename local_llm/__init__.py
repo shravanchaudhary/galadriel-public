@@ -16,7 +16,12 @@ from .config import (
     model_path_for,
     resolve_model_profile,
 )
-from .download import ensure_all_profile_models, ensure_model, ensure_profile_model
+from .download import (
+    ensure_all_profile_models,
+    ensure_model,
+    ensure_profile_model,
+    ensure_reranker,
+)
 from .engine import LocalGemma
 
 __all__ = [
@@ -34,4 +39,5 @@ __all__ = [
     "ensure_model",
     "ensure_profile_model",
     "ensure_all_profile_models",
+    "ensure_reranker",
 ]

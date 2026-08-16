@@ -11,6 +11,8 @@ from .config import (
     MODELS_DIR,
     MODEL_FILENAME,
     RECALL_SLM_MODEL_OPTIONS,
+    RERANKER_FILENAME,
+    RERANKER_HF_REPO,
     default_model_path,
     hf_file_url,
     resolve_model_profile,
@@ -86,6 +88,11 @@ def ensure_profile_model(key: str, *, force: bool = False) -> Path:
 def ensure_all_profile_models(*, force: bool = False) -> list[Path]:
     """Download every selectable Stage-2 profile GGUF (used by Docker bake)."""
     return [ensure_profile_model(key, force=force) for key in RECALL_SLM_MODEL_OPTIONS]
+
+
+def ensure_reranker(*, force: bool = False) -> Path:
+    """Ensure the Stage-2 cross-encoder GGUF is on disk."""
+    return ensure_model(filename=RERANKER_FILENAME, repo=RERANKER_HF_REPO, force=force)
 
 
 def model_sha256(path: Path | None = None) -> str:

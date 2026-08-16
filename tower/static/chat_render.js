@@ -66,6 +66,18 @@ window.ChatRender = (function () {
         return d;
     }
 
+    function createLearnedBlock(text) {
+        // Harness-injected recall fire — learned behavior, not a model thought.
+        const d = document.createElement('details');
+        d.className = 'thought learned';
+        d.innerHTML = '<summary>Learned behavior</summary>';
+        const body = document.createElement('div');
+        body.className = 'thought-body';
+        body.textContent = text;
+        d.appendChild(body);
+        return d;
+    }
+
     function createToolCard(name, input, output) {
         const card = document.createElement('details');
         card.className = 'tool-card done';
@@ -111,6 +123,8 @@ window.ChatRender = (function () {
         for (const block of blocks || []) {
             if (block.type === 'thought') {
                 body.appendChild(createThoughtBlock(block.text, false));
+            } else if (block.type === 'learned') {
+                body.appendChild(createLearnedBlock(block.text));
             } else if (block.type === 'tool_call') {
                 body.appendChild(createToolCard(block.name, block.input, block.output));
             } else if (block.type === 'text') {
@@ -152,6 +166,7 @@ window.ChatRender = (function () {
         setMarkdown,
         appendMarkdown,
         createThoughtBlock,
+        createLearnedBlock,
         createToolCard,
         createTextBlock,
         appendUserMessage,

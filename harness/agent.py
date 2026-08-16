@@ -77,7 +77,13 @@ LOOP_TICK_CHANNELS = frozenset({
 
 EPHEMERAL_RECALL_TOOLS = frozenset({
     "get_recall", "get_recent_recalls", "learn_recall", "purge_recall",
+    "tune_recall",
 })
+
+# Tools whose args/results are recall/learning meta-content (example phrases,
+# feedback notes, instructions). Scanning them makes the matcher fire on its
+# own bookkeeping, so they are excluded from the mid-turn recall scan corpus.
+RECALL_SCAN_EXCLUDED_TOOLS = EPHEMERAL_RECALL_TOOLS | frozenset({"learn"})
 
 _STOPPED_ASSISTANT_NOTE = "(Stopped — turn cancelled.)"
 
@@ -147,21 +153,28 @@ async def _verify_and_select_recalls(
     matches: list[dict],
     text_scanned: str,
 ) -> list[dict]:
-    """Stage-2 SLM filter: log all proposals; return only verified (fail-open) matches."""
+    """Stage-2 filter: log all proposals; return only verified (fail-open) matches."""
     if not matches:
         return []
-    from .recall import filter_matches_with_slm
+    from .recall import filter_matches_with_slm, touch_cue_usage
     verified, rejected = filter_matches_with_slm(matches)
     for m in rejected:
         await _log_proposed_recall(channel_id, m, text_scanned, injected=False)
     for m in verified:
         await _log_proposed_recall(channel_id, m, text_scanned, injected=True)
+        # Mark the cue that won Stage-2 as used so LRU eviction keeps it.
+        if m.get("matched_example"):
+            await touch_cue_usage(m.get("recall_id"), [m["matched_example"]])
     return verified
 
 
 def _recall_fire_message(matches: list[dict], fire_text: str) -> dict:
+    # User-role on purpose: assistant-role injection made models treat the
+    # nudge as their own prior reasoning/decisions (observed: a model "found"
+    # it had decided to pause the worker). The stable block explains the
+    # `[Recall detected]` contract; this message stays minimal.
     return {
-        "role": "assistant",
+        "role": "user",
         "content": fire_text,
         "kind": "recall_fire",
         "matched_recall_ids": [m.get("recall_id") for m in matches if m.get("recall_id")],
@@ -344,10 +357,18 @@ def _build_tool_use_recall_scan_text(
                 if text:
                     parts.append(text)
 
+    excluded_ids: set = set()
     for block in tool_blocks:
         name = getattr(block, "name", None) or (
             block.get("name") if isinstance(block, dict) else ""
         )
+        if name in RECALL_SCAN_EXCLUDED_TOOLS:
+            block_id = getattr(block, "id", None) or (
+                block.get("id") if isinstance(block, dict) else None
+            )
+            if block_id:
+                excluded_ids.add(block_id)
+            continue
         raw_input = getattr(block, "input", None)
         if raw_input is None and isinstance(block, dict):
             raw_input = block.get("input")
@@ -359,6 +380,8 @@ def _build_tool_use_recall_scan_text(
 
     for result in tool_results:
         if not isinstance(result, dict):
+            continue
+        if result.get("tool_use_id") in excluded_ids:
             continue
         text = _tool_result_scan_text(result.get("content")).strip()
         if text:
@@ -1909,11 +1932,7 @@ class GaladrielAgent:
             
             fire_text = generate_recall_fire_text(new_user_matches)
             log.info(f"User-message recall fire triggered: {fire_text!r}")
-            fire_prompt = (
-                f"<<thought>>I may check these suggestions for better answering. If irrelevant, I will ignore.\n"
-                f"{fire_text}\n\n"
-                f"If I already satisfied them, I may continue my normal flow.\n<</thought>>"
-            )
+            fire_prompt = f"[Recall detected]\n{fire_text}"
             messages.append(_recall_fire_message(new_user_matches, fire_prompt))
             if tick_recorder is not None:
                 await tick_recorder.record_message(messages[-1])
@@ -2605,12 +2624,7 @@ class GaladrielAgent:
 
                         fire_text = generate_recall_fire_text(new_matches)
                         log.info(f"Tool-use recall fire triggered: {fire_text!r}")
-                        fire_prompt = (
-                            f"<<thought>>I may check these suggestions for better answering. "
-                            f"If irrelevant, I will ignore.\n"
-                            f"{fire_text}\n\n"
-                            f"If I already satisfied them, I may continue my normal flow.\n<</thought>>"
-                        )
+                        fire_prompt = f"[Recall detected]\n{fire_text}"
                         messages.append(_recall_fire_message(new_matches, fire_prompt))
                         if tick_recorder is not None:
                             await tick_recorder.record_message(messages[-1])

@@ -508,12 +508,12 @@ mempalace.yaml.example    Agent-wing room template for `mempalace init` (copy to
 
 ### Semantic recalls — reactive mid-turn pointers
 
-Palace search is **pull** (the model decides to look something up). Semantic recalls are **push**: when conversation text matches a recall's cues, the harness injects a short assistant `recall_fire` suggestion so the main model can act on a one-liner pointer (usually to a palace room, knowledge file, or board path).
+Palace search is **pull** (the model decides to look something up). Semantic recalls are **push**: when conversation text matches a recall's cues, the harness injects a short user-role `[Recall detected]` note (`kind=recall_fire`) so the main model can act on a one-liner pointer (usually to a palace room, knowledge file, or board path). The stable prompt block documents the contract: fires are ignorable hints, never justify side-effectful actions on their own, and the agent grades them with `tune_recall`.
 
 | Stage | What runs | Role |
 |---|---|---|
-| **1 — propose** | FastEmbed / lexical cues (`harness/recall.py`) | Positive score floor **0.6**, negative veto, exact lexical hard-hits. Emits `matched_chunk`. |
-| **2 — verify** | Local Gemma 3 1B YES/NO logit margin (`local_llm/`) | Few-shots from that recall's positive/negative examples (+ global hard-negatives for HTML/tool junk). Only verified matches inject. |
+| **1 — propose** | FastEmbed / lexical cues (`harness/recall.py`) | Positive-only: score floor **0.6** + exact lexical hard-hits (chunks under 4 words are lexical-only; negatives never gate). Emits `matched_chunk`. |
+| **2 — verify** | FastEmbed pos−neg margin (+ junk filter) | Re-score `max(pos)−max(neg)` (default margin 0). Tiny IT YES/NO latches and is not used. Optional experimental `RECALL_STAGE2_MODE=logit`. |
 
 **When inject happens**
 - Start of turn: scan the new user message.
@@ -522,7 +522,7 @@ Palace search is **pull** (the model decides to look something up). Semantic rec
 
 **Tools:** `learn_recall` (create/patch; cue arrays are full replacements), `get_recall`, `get_recent_recalls` (proposed vs verified), `purge_recall` (user recalls only). System recall **instructions** are immutable; cues may be tuned.
 
-**Package rule:** durable content → palace / KG / `MEMORY.md`; when-to-recollect → `learn_recall` pointing at that store. Cue quality: positives = 3–5 realistic phrasings; lexical = high-precision anchors; negatives = near-misses (Stage-1 veto **and** Stage-2 NO few-shots). False-positive inject → add the short `matched_chunk` to negatives.
+**Package rule:** durable content → palace / KG / `MEMORY.md`; when-to-recollect → `learn_recall` pointing at that store (or the unified `learn` tool, which packages kg/drawer/recall in one call). Cue quality: positives = realistic phrasings (dense coverage up to ~100); lexical = high-precision anchors; negatives = known misfires (Stage-2 counter-signal only). Fire feedback → `tune_recall(recall_id, applicable)` appends the fired chunk to positives or negatives automatically.
 
 **Learn passes:** silent learn+audit after main compact / `/new` and after worker ticks that reported `worked` (mid-loop compact skips learn). Ambient reflection also tunes cues from recent proposed/verified events.
 
@@ -531,7 +531,9 @@ Palace search is **pull** (the model decides to look something up). Semantic rec
 | Variable | Default | Purpose |
 |---|---|---|
 | `RECALL_SLM_VERIFY` | `1` | Set `0` to disable Stage-2 (Stage-1 only; more false injects). |
-| `RECALL_SLM_MARGIN` | `2.0` | Required YES−NO logit margin (tiny models are YES-biased). |
+| `RECALL_STAGE2_MODE` | `embed` | `embed` (default) or experimental `logit` YES/NO. |
+| `RECALL_STAGE2_MARGIN` | `0.0` | Required embedding pos−neg margin for Stage-2. |
+| `RECALL_SLM_MARGIN` | `2.0` | Only for `RECALL_STAGE2_MODE=logit`. |
 | `LOCAL_LLM_FORCE_CPU` | unset (staging image sets `1`) | Force CPU backend for Fargate. |
 | `LOCAL_LLM_MODELS_DIR` | `local_llm/models` | GGUF location (gitignored `*.gguf`). |
 

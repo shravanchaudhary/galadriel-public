@@ -13,12 +13,12 @@
 <section class="settings-section">
     <div class="settings-section-head">
         <h2 class="settings-section-title">Semantic Recalls</h2>
-        <p class="settings-section-desc">Nudges fire when semantic score ≥ that recall's positive_threshold (default 0.6) or a lexical cue hits. Semantic negatives veto when score ≥ negative_threshold (default 0.6; absolute). Lexical hard-hits skip the neg threshold. Tune cues and thresholds per recall.</p>
+        <p class="settings-section-desc">Recalls fire when semantic score ≥ that recall's positive_threshold (default 0.6) or a lexical cue hits — Stage-1 is positive-only (chunks under 4 words are lexical-only). Negatives are Stage-2 counter-signal and misfire feedback from tune_recall; they never gate Stage-1. Tune cues and positive_threshold per recall.</p>
     </div>
     
     <div class="settings-rows" style="margin-bottom: 1rem; border: 1px solid var(--border-subtle); border-radius: 6px; padding: 1rem;">
         <h3 style="margin-top: 0; margin-bottom: 0.5rem; font-size: 0.9rem; color: var(--text-main);">Create New Recall</h3>
-        <p class="settings-row-hint" style="margin-bottom: 0.75rem;">Supply the instruction plus non-empty positives, negatives, and lexical cues. One cue per line.</p>
+        <p class="settings-row-hint" style="margin-bottom: 0.75rem;">Supply the instruction plus non-empty positives and lexical cues (negatives optional — misfires accumulate via tune_recall). One cue per line.</p>
         <div style="display: flex; flex-direction: column; gap: 0.6rem;">
             <input type="text" id="new-recall-instruction" placeholder="Instruction — e.g. Whenever I ask for daily updates, create a recurring job" autocomplete="off">
             <div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
@@ -27,7 +27,7 @@
                     <textarea id="new-recall-positives" rows="3" style="font-weight: 400; text-transform: none; width: 100%; padding: 0.4rem 0.5rem; font-size: 0.85rem; background: var(--bg-primary); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px;" placeholder="One phrase per line"></textarea>
                 </label>
                 <label style="flex: 1; min-width: 180px; display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.75rem; font-weight: 600; color: var(--danger); text-transform: uppercase;">
-                    Negatives (veto)
+                    Negatives (Stage-2 only)
                     <textarea id="new-recall-negatives" rows="3" style="font-weight: 400; text-transform: none; width: 100%; padding: 0.4rem 0.5rem; font-size: 0.85rem; background: var(--bg-primary); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px;" placeholder="One near-miss per line"></textarea>
                 </label>
                 <label style="flex: 1; min-width: 180px; display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.75rem; font-weight: 600; color: var(--text-main); text-transform: uppercase;">
@@ -42,7 +42,7 @@
                            style="width: 6rem; padding: 0.35rem 0.5rem; font-size: 0.85rem; background: var(--bg-primary); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px;">
                 </label>
                 <label style="display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.75rem; font-weight: 600; color: var(--text-main);">
-                    Negative threshold
+                    Negative threshold (legacy; never gates)
                     <input type="number" id="new-recall-neg-thr" min="0" max="1" step="0.01" value="0.6"
                            style="width: 6rem; padding: 0.35rem 0.5rem; font-size: 0.85rem; background: var(--bg-primary); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px;">
                 </label>
@@ -65,7 +65,7 @@
 <section class="settings-section" style="margin-top: 2rem;">
     <div class="settings-section-head">
         <h2 class="settings-section-title">Test Semantic Recalls</h2>
-        <p class="settings-section-desc">Test Stage-1 only (per-recall pos/neg thresholds). Stage-2 SLM is not run here.</p>
+        <p class="settings-section-desc">Test Stage-1 only (positive-only: positive_threshold + lexical; min 4 words for semantic). Stage-2 is not run here.</p>
     </div>
     
     <div class="settings-row" style="flex-direction: column; align-items: flex-start; gap: 0.5rem; margin-bottom: 1rem;">
@@ -138,7 +138,7 @@ async function loadRecalls() {
             }
             const posThr = recall.positive_threshold != null ? recall.positive_threshold : 0.6;
             const negThr = recall.negative_threshold != null ? recall.negative_threshold : 0.6;
-            const thrHtml = `<div style="margin-top: 0.35rem; line-height: 1.4;" class="muted">pos ≥ ${posThr} · neg &lt; ${negThr}</div>`;
+            const thrHtml = `<div style="margin-top: 0.35rem; line-height: 1.4;" class="muted">pos ≥ ${posThr} · positive-only Stage-1</div>`;
             
             examplesDiv.innerHTML = posHtml + lexHtml + negHtml + thrHtml;
             content.appendChild(examplesDiv);
@@ -224,7 +224,7 @@ async function loadRecalls() {
             
             const posEditor = buildEditor('Semantic positives', 'var(--success)', recall.positive_examples || []);
             const lexEditor = buildEditor('Lexical cues', 'var(--text-main)', recall.lexical_cues || []);
-            const negEditor = buildEditor('Negatives (veto)', 'var(--danger)', recall.negative_examples || []);
+            const negEditor = buildEditor('Negatives (Stage-2 only)', 'var(--danger)', recall.negative_examples || []);
             
             cols.appendChild(posEditor.el);
             cols.appendChild(lexEditor.el);
@@ -261,7 +261,7 @@ async function loadRecalls() {
                 return { el: wrap, input };
             }
             const posThrInput = thrInput('Positive threshold', posThr);
-            const negThrInput = thrInput('Negative threshold', negThr);
+            const negThrInput = thrInput('Negative threshold (legacy; never gates)', negThr);
             thrRow.appendChild(posThrInput.el);
             thrRow.appendChild(negThrInput.el);
             editForm.appendChild(thrRow);
@@ -390,10 +390,10 @@ async function createRecall() {
         status.textContent = 'Instruction is required.';
         return;
     }
-    if (!positive_examples.length || !negative_examples.length || !lexical_cues.length) {
+    if (!positive_examples.length || !lexical_cues.length) {
         status.style.display = 'block';
         status.style.color = 'var(--danger)';
-        status.textContent = 'Positive, negative, and lexical cues each need at least one non-empty line.';
+        status.textContent = 'Positive and lexical cues each need at least one non-empty line (negatives optional).';
         return;
     }
 

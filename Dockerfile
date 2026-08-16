@@ -65,13 +65,15 @@ RUN pip install --no-cache-dir --no-index --find-links=/wheels \
         -r requirements-local-llm.txt \
     && rm -rf /wheels
 
-# Bake both Stage-2 recall SLM GGUFs (270M + 1B) so UI hot-swap never downloads
-# at runtime. Stub package init avoids importing llama.cpp here; the full COPY
-# below replaces the stub. Weights stay in place (.gguf is dockerignored).
+# Bake the Stage-2 weights so neither the default path nor UI hot-swap downloads
+# at runtime: the Qwen3 cross-encoder (default backend) plus both generative SLM
+# GGUFs (270M + 1B) kept for the legacy embed/logit modes. Stub package init
+# avoids importing llama.cpp here; the full COPY below replaces the stub.
+# Weights stay in place (.gguf is dockerignored).
 RUN mkdir -p local_llm && touch local_llm/__init__.py
 COPY local_llm/config.py local_llm/download.py local_llm/
 RUN mkdir -p local_llm/models \
-    && python -c "from local_llm.download import ensure_all_profile_models; print(ensure_all_profile_models())"
+    && python -c "from local_llm.download import ensure_all_profile_models, ensure_reranker; print(ensure_all_profile_models()); print(ensure_reranker())"
 
 # Application code. .dockerignore keeps keys/, .env, memory logs and bloat out.
 COPY . .
