@@ -52,6 +52,18 @@ _LEXICAL_POSITIVE_SCORE = 1.0
 # Chunks shorter than this many words never reach the embedding router —
 # lexical cues only. Bare tool names / tiny args carry no semantic intent.
 _MIN_SEMANTIC_SCAN_WORDS = 4
+# Structured tool output is not prose: JSON fragments ('"key": value', '{...')
+# and ls -l rows embed close to everything and were the dominant mid-turn
+# false-positive source (2026-08-16: 11 Stage-1 hits on trade JSON / directory
+# listings, 11 Stage-2 rejects at ~0.50, ~72s of blocked turn). These skip the
+# semantic router; lexical cues still run — same contract as the min-words gate.
+_STRUCTURED_CHUNK_RE = re.compile(
+    r"^(?:"
+    r"[\{\}\]\"']"                        # JSON/dict fragment starts
+    r"|\[[\{\[\"\d]"                      # array-of-structure; NOT [Tower]: prefixes
+    r"|[-bcdlps][rwxsStT-]{9}[.+@]?\s"    # ls -l permission column
+    r")"
+)
 
 # Legacy logit-margin default (experimental RECALL_STAGE2_MODE=logit only).
 _SLM_LOGIT_MARGIN_DEFAULT = 2.0
@@ -73,6 +85,12 @@ _STAGE2_NEG_DELTA_DEFAULT = 0.0
 # weight) or a marginal region extension. Skipping it keeps the LRU window for
 # cues that actually differ.
 _CUE_SATURATION_DEFAULT = 0.9
+# Max candidates verified per Stage-2 pass, best Stage-1 positive first.
+# Each candidate costs seconds on CPU Fargate, so an unbounded Stage-1 burst
+# (11 candidates on one tool result, 2026-08-16) makes the turn latency
+# unbounded too. Overflow is logged as rejected with reason
+# stage2_candidate_cap. Lexical hits score 1.0 and always survive the cut.
+_STAGE2_MAX_CANDIDATES_DEFAULT = 3
 # How many cues the cross-encoder sees per candidate, chosen by cheap cosine
 # pre-rank. Each pair is a full forward pass (~52ms), so scoring every cue makes
 # Stage-2 linear in cue count: 337ms at today's 5-9 cues but 5.7s at the
@@ -514,7 +532,11 @@ def scan_text_for_recalls(
     ]
 
     for chunk in chunks:
-        if router is not None and len(chunk.split()) >= _MIN_SEMANTIC_SCAN_WORDS:
+        if (
+            router is not None
+            and len(chunk.split()) >= _MIN_SEMANTIC_SCAN_WORDS
+            and not _STRUCTURED_CHUNK_RE.match(chunk)
+        ):
             decisions = router(chunk, limit=5)
             if decisions and not isinstance(decisions, list):
                 decisions = [decisions]
@@ -852,6 +874,16 @@ def _stage2_neg_delta() -> float:
         return float(raw)
     except ValueError:
         return _STAGE2_NEG_DELTA_DEFAULT
+
+
+def _stage2_max_candidates() -> int:
+    raw = (os.environ.get("RECALL_STAGE2_MAX_CANDIDATES") or "").strip()
+    if not raw:
+        return _STAGE2_MAX_CANDIDATES_DEFAULT
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return _STAGE2_MAX_CANDIDATES_DEFAULT
 
 
 def _reranker_present() -> bool:
@@ -1264,10 +1296,31 @@ def verify_recall_candidate_slm(
 
 
 def filter_matches_with_slm(matches: list[dict], *, client=None) -> tuple[list[dict], list[dict]]:
-    """Verify Stage-1 matches. Returns (verified, rejected). Fail-open keeps match."""
+    """Verify Stage-1 matches. Returns (verified, rejected). Fail-open keeps match.
+
+    Verification is capped at _STAGE2_MAX_CANDIDATES (best Stage-1 positive
+    first) so one noisy scan cannot buy an unbounded number of cross-encoder
+    passes; overflow is rejected unverified with reason stage2_candidate_cap.
+    """
     verified: list[dict] = []
     rejected: list[dict] = []
-    for match in matches:
+    cap = _stage2_max_candidates()
+    ordered = sorted(
+        matches,
+        key=lambda m: _as_float_score(m.get("positive_score")) or 0.0,
+        reverse=True,
+    )
+    for match in ordered[cap:]:
+        enriched = dict(match)
+        enriched["slm_verified"] = False
+        enriched["slm_reason"] = f"stage2_candidate_cap:{cap}"
+        rejected.append(enriched)
+        log.info(
+            "[Stage2 Skip] route=%r reason=candidate_cap(%d) pos=%s chunk=%r",
+            match.get("recall_id"), cap, match.get("positive_score"),
+            (match.get("matched_chunk") or "")[:100],
+        )
+    for match in ordered[:cap]:
         chunk = match.get("matched_chunk") or ""
         enriched = dict(match)
         ok, reason = verify_recall_candidate_slm(

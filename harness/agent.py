@@ -157,7 +157,9 @@ async def _verify_and_select_recalls(
     if not matches:
         return []
     from .recall import filter_matches_with_slm, touch_cue_usage
-    verified, rejected = filter_matches_with_slm(matches)
+    # Cross-encoder passes are seconds of CPU on Fargate; run them off the
+    # event loop so SSE streaming and the scheduler keep breathing.
+    verified, rejected = await asyncio.to_thread(filter_matches_with_slm, matches)
     for m in rejected:
         await _log_proposed_recall(channel_id, m, text_scanned, injected=False)
     for m in verified:
