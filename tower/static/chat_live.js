@@ -318,32 +318,117 @@ window.ChatLive = (function () {
         return data;
     }
 
-    /** Populate one or more <select> elements from /api/model and keep them in sync. */
+    const CONTEXT_LABELS = { '300000': '300K', '1000000': '1M' };
+    const EFFORT_LABELS = {
+        off: 'Off',
+        minimal: 'Minimal',
+        low: 'Low',
+        medium: 'Medium',
+        high: 'High',
+        dynamic: 'Dynamic',
+    };
+
+    function fillSelect(el, items, current, title) {
+        if (!el) return;
+        el.innerHTML = '';
+        let selected = current == null ? '' : String(current);
+        const availableValues = items
+            .filter((item) => item && item.available !== false)
+            .map((item) => String(item.value != null ? item.value : item));
+        if (selected && availableValues.length && !availableValues.includes(selected)) {
+            selected = availableValues[availableValues.length - 1] || '';
+        }
+        for (const item of items) {
+            const value = String(item.value != null ? item.value : item);
+            const label = item.label || CONTEXT_LABELS[value] || EFFORT_LABELS[value] || value;
+            const available = item.available !== false;
+            const opt = document.createElement('option');
+            opt.value = value;
+            opt.textContent = available ? label : label + ' (n/a)';
+            opt.disabled = !available;
+            if (!available) opt.className = 'is-unavailable';
+            if (available && value === selected) opt.selected = true;
+            el.appendChild(opt);
+        }
+        el.dataset.current = selected;
+        el.hidden = availableValues.length === 0;
+        if (title) el.title = title;
+    }
+
+    function effortItemsFor(data, model) {
+        const rows = (data.effort_by_model && data.effort_by_model[model])
+            || data.effort_catalog
+            || data.effort_options
+            || [];
+        return rows.map((row) => {
+            if (row && typeof row === 'object') {
+                const value = row.value;
+                return {
+                    value,
+                    label: row.label || EFFORT_LABELS[value] || value,
+                    available: row.available !== false,
+                };
+            }
+            return { value: row, label: EFFORT_LABELS[row] || row, available: true };
+        });
+    }
+
+    function persistHint(data, ready, missing) {
+        return data && data.persisted ? ready : missing;
+    }
+
+    function applyRuntime(data, groups) {
+        if (!data || !groups) return data;
+        const modelTitle = persistHint(
+            data,
+            'Agent model',
+            'Model resets on restart — set MONGO_URI / MONGO_DB to persist',
+        );
+        for (const el of groups.models) {
+            fillSelect(
+                el,
+                (data.options || []).map((m) => ({ value: m, label: m })),
+                data.model,
+                modelTitle,
+            );
+        }
+        const contextTitle = persistHint(data, 'Context before compaction', 'Context resets on restart');
+        for (const el of groups.contexts) {
+            fillSelect(el, data.context_options || [], data.context, contextTitle);
+        }
+        const effortTitle = persistHint(data, 'Thinking effort', 'Effort resets on restart');
+        const effortItems = effortItemsFor(data, data.model);
+        for (const el of groups.efforts) {
+            fillSelect(el, effortItems, data.effort, effortTitle);
+        }
+        return data;
+    }
+
+    function runtimeGroups(selects) {
+        if (selects && !Array.isArray(selects) && (selects.models || selects.contexts || selects.efforts)) {
+            return {
+                models: (selects.models || []).filter(Boolean),
+                contexts: (selects.contexts || []).filter(Boolean),
+                efforts: (selects.efforts || []).filter(Boolean),
+            };
+        }
+        return {
+            models: (Array.isArray(selects) ? selects : [selects]).filter(Boolean),
+            contexts: [],
+            efforts: [],
+        };
+    }
+
+    /** Populate composer selects from /api/model and keep them in sync. */
     async function loadModelSelects(selects) {
-        const nodes = (Array.isArray(selects) ? selects : [selects]).filter(Boolean);
+        const groups = runtimeGroups(selects);
+        const nodes = [...groups.models, ...groups.contexts, ...groups.efforts];
         if (!nodes.length) return null;
         try {
             const res = await fetch('/api/model?channel=main');
             const data = await res.json();
             if (!res.ok) throw new Error(data.error || 'Failed to load model');
-            for (const el of nodes) {
-                el.innerHTML = '';
-                for (const m of data.options || []) {
-                    const opt = document.createElement('option');
-                    opt.value = m;
-                    opt.textContent = m;
-                    if (m === data.model) opt.selected = true;
-                    el.appendChild(opt);
-                }
-                el.dataset.current = data.model || '';
-                el.hidden = !(data.options || []).length;
-                if (!data.persisted) {
-                    el.title = 'Model resets on restart — set MONGO_URI / MONGO_DB to persist';
-                } else {
-                    el.title = 'Agent model';
-                }
-            }
-            return data;
+            return applyRuntime(data, groups);
         } catch (e) {
             for (const el of nodes) el.hidden = true;
             return null;
@@ -386,31 +471,60 @@ window.ChatLive = (function () {
     }
 
     function bindModelSelects(selects) {
-        const nodes = (Array.isArray(selects) ? selects : [selects]).filter(Boolean);
+        const groups = runtimeGroups(selects);
+        async function postRuntime(url, body, label) {
+            const res = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || `Failed to set ${label}`);
+            applyRuntime(data, groups);
+            if (data.model) {
+                const dash = document.getElementById('model-select');
+                if (dash) dash.value = data.model;
+            }
+            return data;
+        }
         async function changeModel(source) {
             const model = source.value;
             const prev = source.dataset.current || model;
             try {
-                const res = await fetch('/api/model', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ model, channel: 'main' }),
-                });
-                const data = await res.json();
-                if (!res.ok) throw new Error(data.error || 'Failed to set model');
-                for (const el of nodes) {
-                    el.value = data.model;
-                    el.dataset.current = data.model;
-                }
-                const dash = document.getElementById('model-select');
-                if (dash) dash.value = data.model;
+                await postRuntime('/api/model', { model, channel: 'main' }, 'model');
             } catch (err) {
                 source.value = prev;
                 if (window.towerToast) window.towerToast(err.message || 'Failed to set model', { type: 'error' }); else alert(err.message || 'Failed to set model');
             }
         }
-        for (const el of nodes) {
+        async function changeContext(source) {
+            const context = parseInt(source.value, 10);
+            const prev = source.dataset.current || source.value;
+            try {
+                await postRuntime('/api/context', { context }, 'context');
+            } catch (err) {
+                source.value = prev;
+                if (window.towerToast) window.towerToast(err.message || 'Failed to set context', { type: 'error' }); else alert(err.message || 'Failed to set context');
+            }
+        }
+        async function changeEffort(source) {
+            const effort = source.value;
+            const prev = source.dataset.current || effort;
+            try {
+                await postRuntime('/api/effort', { effort }, 'effort');
+            } catch (err) {
+                source.value = prev;
+                if (window.towerToast) window.towerToast(err.message || 'Failed to set effort', { type: 'error' }); else alert(err.message || 'Failed to set effort');
+            }
+        }
+        for (const el of groups.models) {
             el.addEventListener('change', () => changeModel(el));
+        }
+        for (const el of groups.contexts) {
+            el.addEventListener('change', () => changeContext(el));
+        }
+        for (const el of groups.efforts) {
+            el.addEventListener('change', () => changeEffort(el));
         }
     }
 

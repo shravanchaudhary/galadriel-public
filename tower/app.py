@@ -695,6 +695,52 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
 
     # ── Agent model API ──────────────────────────────────────────
 
+    def _context_options(current) -> list[dict]:
+        options = [
+            {"value": tokens, "label": label}
+            for tokens, label in tower_settings.CONTEXT_LABELS.items()
+        ]
+        try:
+            tokens = int(current)
+        except (TypeError, ValueError):
+            return options
+        if tokens not in tower_settings.CONTEXT_LABELS:
+            options.append({"value": tokens, "label": f"{tokens:,}"})
+        return options
+
+    def _runtime_payload(channel: str | None = None) -> dict:
+        model = (
+            agent.model_for_channel(channel)
+            if channel
+            else getattr(agent, "model", None)
+        )
+        return {
+            "model": model,
+            "options": list(tower_settings.AGENT_MODEL_OPTIONS),
+            "context": int(
+                getattr(
+                    agent,
+                    "compact_threshold",
+                    tower_settings.DEFAULT_COMPACT_THRESHOLD,
+                )
+            ),
+            "context_options": _context_options(
+                getattr(agent, "compact_threshold", tower_settings.DEFAULT_COMPACT_THRESHOLD)
+            ),
+            "effort": tower_settings.clamp_effort_for_model(
+                model,
+                getattr(
+                    agent, "thinking_effort", tower_settings.DEFAULT_THINKING_EFFORT
+                ),
+            ),
+            "effort_options": list(tower_settings.effort_options_for_model(model)),
+            "effort_catalog": tower_settings.effort_catalog_for_model(model),
+            "effort_by_model": {
+                name: tower_settings.effort_catalog_for_model(name)
+                for name in tower_settings.AGENT_MODEL_OPTIONS
+            },
+        }
+
     @app.route("/api/model", methods=["GET"])
     def api_model_get():
         channel = (request.args.get("channel") or "").strip()
@@ -706,6 +752,7 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
                 "model": agent.model_for_channel(channel),
                 "options": list(tower_settings.AGENT_MODEL_OPTIONS),
                 "persisted": tower_settings.is_configured(),
+                **_runtime_payload(channel),
             })
         return jsonify({
             "model": agent.model,
@@ -715,6 +762,7 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
             },
             "options": list(tower_settings.AGENT_MODEL_OPTIONS),
             "persisted": tower_settings.is_configured(),
+            **_runtime_payload(),
         })
 
     @app.route("/api/model", methods=["POST"])
@@ -738,6 +786,47 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
                 for ch in tower_settings.CONFIGURABLE_CHANNELS
             },
             "persisted": tower_settings.is_configured(),
+            **_runtime_payload(channel),
+        })
+
+    @app.route("/api/context", methods=["POST"])
+    def api_context_set():
+        data = request.json or {}
+        tokens = tower_settings.normalize_compact_threshold(
+            data.get("context", data.get("tokens"))
+        )
+        if tokens is None:
+            return jsonify({"error": "Invalid context"}), 400
+        try:
+            agent.set_compact_threshold(tokens)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+        return jsonify({
+            "context": int(agent.compact_threshold),
+            "persisted": tower_settings.is_configured(),
+            **_runtime_payload(),
+        })
+
+    @app.route("/api/effort", methods=["POST"])
+    def api_effort_set():
+        data = request.json or {}
+        effort = tower_settings.normalize_thinking_effort(data.get("effort"))
+        model = getattr(agent, "model", None)
+        allowed = tower_settings.effort_options_for_model(model)
+        if effort is None or (allowed and effort not in allowed):
+            return jsonify({"error": "Invalid effort"}), 400
+        try:
+            agent.set_thinking_effort(effort)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+        return jsonify({
+            "effort": agent.thinking_effort,
+            "persisted": tower_settings.is_configured(),
+            **_runtime_payload(),
         })
 
     @app.route("/api/provider-keys", methods=["GET"])

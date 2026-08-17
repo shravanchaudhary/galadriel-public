@@ -401,8 +401,9 @@ class OllamaProvider(BaseModelProvider):
 
     async def create_message(
         self, *, model, max_tokens, messages, system=None, tools=None, thinking=True,
-        temperature=None,
+        temperature=None, effort=None,
     ):
+        del effort
         response = await self.client.chat(
             model=model,
             messages=_messages_to_ollama(messages, system=system),
@@ -414,13 +415,15 @@ class OllamaProvider(BaseModelProvider):
         return _response_to_message(response)
 
     async def stream_message(
-        self, *, model, max_tokens, messages, system=None, tools=None, thinking=True
+        self, *, model, max_tokens, messages, system=None, tools=None, thinking=True,
+        effort=None,
     ):
         """True chunk streaming. Yields ("thought"|"text", delta) as Ollama
         emits thinking/content, then ("message", _Message) assembled from the
         accumulated fields so the agent loop sees the same response shape as
         `create_message`.
         """
+        del effort
         stream = await self.client.chat(
             model=model,
             messages=_messages_to_ollama(messages, system=system),

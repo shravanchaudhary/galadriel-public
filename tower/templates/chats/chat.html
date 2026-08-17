@@ -58,7 +58,11 @@
                             <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M16.5 6.5v9.25a4.25 4.25 0 1 1-8.5 0V7.75a2.75 2.75 0 0 1 5.5 0v7.5a1.25 1.25 0 1 1-2.5 0V8.5h-1.5v6.75a2.75 2.75 0 1 0 5.5 0v-7.5a4.25 4.25 0 1 0-8.5 0v8a5.75 5.75 0 1 0 11.5 0V6.5h-1.5z"/></svg>
                         </button>
                         <input type="file" id="new-chat-file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
-                        <select id="new-chat-model-select" class="composer-model-select interval-select" title="Agent model"></select>
+                        <span class="composer-runtime">
+                            <select id="new-chat-context-select" class="composer-model-select composer-context-select interval-select" title="Context"></select>
+                            <select id="new-chat-effort-select" class="composer-model-select composer-effort-select interval-select" title="Effort"></select>
+                            <select id="new-chat-model-select" class="composer-model-select interval-select" title="Agent model"></select>
+                        </span>
                         <span class="composer-spacer"></span>
                         <button type="button" class="composer-icon-btn voice-dictation-btn" id="new-chat-mic"
                                 title="Start voice dictation" aria-label="Start voice dictation"></button>
@@ -81,7 +85,11 @@
                             <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M16.5 6.5v9.25a4.25 4.25 0 1 1-8.5 0V7.75a2.75 2.75 0 0 1 5.5 0v7.5a1.25 1.25 0 1 1-2.5 0V8.5h-1.5v6.75a2.75 2.75 0 1 0 5.5 0v-7.5a4.25 4.25 0 1 0-8.5 0v8a5.75 5.75 0 1 0 11.5 0V6.5h-1.5z"/></svg>
                         </button>
                         <input type="file" id="runs-file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
-                        <select id="runs-model-select" class="composer-model-select interval-select" title="Agent model"></select>
+                        <span class="composer-runtime">
+                            <select id="runs-context-select" class="composer-model-select composer-context-select interval-select" title="Context"></select>
+                            <select id="runs-effort-select" class="composer-model-select composer-effort-select interval-select" title="Effort"></select>
+                            <select id="runs-model-select" class="composer-model-select interval-select" title="Agent model"></select>
+                        </span>
                         <span class="composer-spacer"></span>
                         <span class="composer-meta" id="runs-composer-meta" hidden aria-live="polite"></span>
                         <button type="button" class="composer-icon-btn voice-dictation-btn" id="runs-mic"
@@ -134,6 +142,17 @@
     const newChatPreviews = document.getElementById('new-chat-previews');
     const runsModelSelect = document.getElementById('runs-model-select');
     const newChatModelSelect = document.getElementById('new-chat-model-select');
+    const runtimeSelects = {
+        models: [runsModelSelect, newChatModelSelect],
+        contexts: [
+            document.getElementById('runs-context-select'),
+            document.getElementById('new-chat-context-select'),
+        ],
+        efforts: [
+            document.getElementById('runs-effort-select'),
+            document.getElementById('new-chat-effort-select'),
+        ],
+    };
     if (!list) return;
 
     const kind = list.dataset.kind || 'chat';
@@ -149,9 +168,8 @@
     let pendingNewImages = [];
     const MAX_IMAGES = 5;
     const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
-    const modelSelects = [runsModelSelect, newChatModelSelect].filter(Boolean);
-    ChatLive.bindModelSelects(modelSelects);
-    ChatLive.loadModelSelects(modelSelects);
+    ChatLive.bindModelSelects(runtimeSelects);
+    ChatLive.loadModelSelects(runtimeSelects);
     VoiceDictation.bind({ input, button: micBtn });
     VoiceDictation.bind({ input: newChatInput, button: newChatMic });
     ChatLive.bindAutoGrowInputs([input, newChatInput]);

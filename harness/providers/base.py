@@ -24,6 +24,7 @@ class BaseModelProvider(ABC):
         tools: list | None = None,
         thinking: bool = True,
         temperature: float | None = None,
+        effort: str | None = None,
     ) -> Any:
         """Single-shot completion. Returns the provider's message response.
 
@@ -47,6 +48,7 @@ class BaseModelProvider(ABC):
         system: Any = None,
         tools: list | None = None,
         thinking: bool = True,
+        effort: str | None = None,
     ):
         """Streaming variant. Async-yields ("text"|"thought", str) deltas as
         they arrive, then a final ("message", response) carrying the assembled
@@ -63,6 +65,7 @@ class BaseModelProvider(ABC):
             system=system,
             tools=tools,
             thinking=thinking,
+            effort=effort,
         )
         for block in getattr(msg, "content", None) or []:
             if getattr(block, "type", None) == "text":

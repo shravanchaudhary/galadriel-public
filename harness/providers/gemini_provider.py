@@ -40,6 +40,7 @@ from google.genai import types
 
 from .base import BaseModelProvider
 from .llm_retry import stream_with_llm_retry, with_llm_retry
+from ..thinking_effort import thinking_kwargs as _thinking_kwargs
 
 
 # ─── Anthropic-shaped response objects ───────────────────────────────
@@ -468,33 +469,38 @@ class GeminiProvider(BaseModelProvider):
         # stream_with_llm_retry so Retry-After is honoured in one place.
         self.client = genai.Client(api_key=key)
 
+    @staticmethod
+    def _coerce_thinking_level(name: str):
+        enum = getattr(types, "ThinkingLevel", None)
+        if enum is None:
+            return name
+        return getattr(enum, name.upper(), None) or getattr(enum, name, name)
+
     def _thinking_config(
-        self, model: str, *, thinking: bool = True
+        self, model: str, *, thinking: bool = True, effort: str | None = None
     ) -> types.ThinkingConfig | None:
-        """Gemini 3.x Pro models always think; pin HIGH for the agent.
+        """Map Tower effort onto Gemini thinking_level / thinking_budget.
 
-        `include_thoughts=True` surfaces thought summaries as `thought` parts,
-        which the streaming path relays live to the UI. They're already billed
-        (thoughts_token_count folds into output) and are dropped from final
-        content by `_parts_to_blocks`, so this is free on the non-stream path.
+        Gemini 3 gets `thinking_level` only. Gemini 2.5 gets `thinking_budget`
+        (`0` off, `-1` dynamic). Never both — Gemini 3 Pro misbehaves if a
+        budget is sent.
 
-        Flash models also think by default and bill those tokens against
-        ``max_output_tokens`` — pass ``thinking=False`` to set
-        ``thinking_budget=0`` for cheap one-shot calls (titles, gates).
+        `include_thoughts=True` surfaces thought summaries as `thought` parts
+        on real agent turns. ``thinking=False`` (titles, gates) uses the
+        cheapest legal setting for that model and skips thought summaries.
         """
-        if not thinking:
-            return types.ThinkingConfig(thinking_budget=0)
-        m = model.lower()
-        if "3.1-pro" in m or "3-pro" in m:
-            return types.ThinkingConfig(
-                thinking_level=types.ThinkingLevel.HIGH,
-                include_thoughts=True,
-            )
-        return None
+        raw = _thinking_kwargs(model, thinking=thinking, effort=effort)
+        if raw is None:
+            return None
+        kwargs = dict(raw)
+        level = kwargs.get("thinking_level")
+        if isinstance(level, str):
+            kwargs["thinking_level"] = self._coerce_thinking_level(level)
+        return types.ThinkingConfig(**kwargs)
 
     def _build_config(
         self, model, stable_system, tools, max_tokens, *, thinking=True,
-        temperature=None,
+        temperature=None, effort=None,
     ):
         kwargs = dict(
             system_instruction=stable_system,
@@ -504,7 +510,7 @@ class GeminiProvider(BaseModelProvider):
             # the SDK auto-invoke anything.
             automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
         )
-        thinking_cfg = self._thinking_config(model, thinking=thinking)
+        thinking_cfg = self._thinking_config(model, thinking=thinking, effort=effort)
         if thinking_cfg is not None:
             kwargs["thinking_config"] = thinking_cfg
         if temperature is not None:
@@ -513,13 +519,13 @@ class GeminiProvider(BaseModelProvider):
 
     async def create_message(
         self, *, model, max_tokens, messages, system=None, tools=None, thinking=True,
-        temperature=None,
+        temperature=None, effort=None,
     ):
         stable, dynamic = _split_system(system)
         contents = _messages_to_contents(messages, trailing_text=dynamic)
         config = self._build_config(
             model, stable, tools, max_tokens, thinking=thinking,
-            temperature=temperature,
+            temperature=temperature, effort=effort,
         )
 
         async def _once():
@@ -533,7 +539,8 @@ class GeminiProvider(BaseModelProvider):
         return await with_llm_retry(_once)
 
     async def stream_message(
-        self, *, model, max_tokens, messages, system=None, tools=None, thinking=True
+        self, *, model, max_tokens, messages, system=None, tools=None, thinking=True,
+        effort=None,
     ):
         """True chunk streaming. Yields ("thought"|"text", delta) as Gemini
         emits parts, then ("message", _Message) assembled from every part so
@@ -542,7 +549,7 @@ class GeminiProvider(BaseModelProvider):
         stable, dynamic = _split_system(system)
         contents = _messages_to_contents(messages, trailing_text=dynamic)
         config = self._build_config(
-            model, stable, tools, max_tokens, thinking=thinking
+            model, stable, tools, max_tokens, thinking=thinking, effort=effort
         )
 
         async def _stream_once():

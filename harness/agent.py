@@ -248,6 +248,7 @@ MODEL_CAPS: dict[str, tuple[int, int]] = {
     "gemini-3.5-flash-lite": (1_048_576, 65_536),
     "gemini-3.1-pro-preview": (1_048_576, 65_536),
     "gemini-3.1-flash-lite": (1_048_576, 65_536),
+    "gemini-3-flash-preview": (1_048_576, 65_536),
     "gemini-2.5-pro": (1_048_576, 65_536),
     "gemini-2.5-flash": (1_048_576, 65_536),
     "gemini-2.5-flash-lite": (1_048_576, 65_536),
@@ -307,10 +308,13 @@ def _resolve_max_output(model: str) -> int:
 CACHE_MINIMUM_DEFAULT = 4096
 CACHE_MINIMUM_OVERRIDES = {
     # Gemini (per-tier; 3.x preview values track this project's docs)
+    "gemini-3.7-flash": 4096,
     "gemini-3.6-flash": 4096,
     "gemini-3.5-flash": 4096,
     "gemini-3.5-flash-lite": 4096,
     "gemini-3.1-pro-preview": 4096,
+    "gemini-3.1-flash-lite": 4096,
+    "gemini-3-flash-preview": 4096,
     "gemini-2.5-pro": 2048,
     "gemini-2.5-flash": 2048,
     "gemini-2.5-flash-lite": 2048,
@@ -722,7 +726,10 @@ class GaladrielAgent:
         # its own non-cached system block (after stable+dynamic, ahead of the
         # surviving messages) and re-injected each turn until the next compaction
         # folds it in.
-        self.compact_threshold = int(os.environ.get("AGENT_COMPACT_THRESHOLD", "300000"))
+        self._model_runtime: dict[str, dict] = tower_settings.get_model_runtime_map()
+        boot = self._runtime_for(self.model)
+        self.compact_threshold = boot["context"]
+        self.thinking_effort = boot["effort"]
         self._last_input_tokens: dict[str, int] = {}  # channel_id -> last measured input tokens
         self._compaction_summary: dict[str, str] = {}  # channel_id -> latest snapshot (folds cumulatively)
         # Recalls already injected into the live buffer. Lives across turns; cleared
@@ -1038,6 +1045,7 @@ class GaladrielAgent:
             self.max_tokens = self.max_output_for_channel(MAIN_CHANNEL_ID)
             self.provider = self._provider_for(model)
             self.provider_name = model_registry.provider_for_model(model)
+            self._apply_runtime(model)
         try:
             tower_settings.set_channel_model(channel, model)
         except RuntimeError:
@@ -1048,6 +1056,79 @@ class GaladrielAgent:
             f"Channel {channel} model set to {model} "
             f"(provider={model_registry.provider_for_model(model)})"
         )
+
+    def _runtime_for(self, model: str) -> dict:
+        """Last context/effort for `model`, falling back to that model's defaults."""
+        saved = getattr(self, "_model_runtime", None)
+        if saved is None:
+            return {
+                "context": int(
+                    getattr(
+                        self,
+                        "compact_threshold",
+                        tower_settings.DEFAULT_COMPACT_THRESHOLD,
+                    )
+                ),
+                "effort": getattr(
+                    self, "thinking_effort", tower_settings.DEFAULT_THINKING_EFFORT
+                ),
+            }
+        return tower_settings.resolve_model_runtime(model, saved)
+
+    def _apply_runtime(self, model: str) -> None:
+        cfg = self._runtime_for(model)
+        self.compact_threshold = cfg["context"]
+        self.thinking_effort = cfg["effort"]
+
+    def _remember_runtime(
+        self, model: str, *, context: int | None = None, effort: str | None = None
+    ) -> None:
+        entry = dict(self._model_runtime.get(model) or {})
+        if context is not None:
+            entry["context"] = context
+        if effort is not None:
+            entry["effort"] = effort
+        if entry:
+            self._model_runtime[model] = entry
+        try:
+            tower_settings.set_model_runtime(model, context=context, effort=effort)
+        except RuntimeError:
+            log.warning(
+                "Model runtime changed but not persisted — MongoDB not configured"
+            )
+
+    def set_compact_threshold(self, tokens: int) -> None:
+        """Set the auto-compaction trigger (300K or 1M) for the current model."""
+        value = tower_settings.normalize_compact_threshold(tokens)
+        if value is None:
+            raise ValueError(
+                f"Unsupported context: {tokens}; "
+                f"expected one of {list(tower_settings.CONTEXT_OPTIONS)}"
+            )
+        self.compact_threshold = value
+        self._remember_runtime(self.model, context=value)
+        try:
+            tower_settings.set_compact_threshold(value)
+        except RuntimeError:
+            pass
+        log.info(f"Compaction threshold for {self.model} set to {value:,} tokens")
+
+    def set_thinking_effort(self, effort: str) -> None:
+        """Set Gemini thinking effort for the current model and persist it."""
+        value = tower_settings.normalize_thinking_effort(effort)
+        allowed = tower_settings.effort_options_for_model(self.model)
+        if value is None or (allowed and value not in allowed):
+            raise ValueError(
+                f"Unsupported effort: {effort}; "
+                f"expected one of {list(allowed or tower_settings.EFFORT_OPTIONS)}"
+            )
+        self.thinking_effort = value
+        self._remember_runtime(self.model, effort=value)
+        try:
+            tower_settings.set_thinking_effort(value)
+        except RuntimeError:
+            pass
+        log.info(f"Thinking effort for {self.model} set to {value}")
 
     def set_headroom_enabled(self, enabled: bool) -> None:
         """Enable/disable in-process Headroom compression and persist in MongoDB.
@@ -1215,8 +1296,9 @@ class GaladrielAgent:
         if not messages:
             return {"compacted": False, "messages_before": 0}
 
+        threshold = self._runtime_for(self.model_for_channel(channel_id))["context"]
         head, tail = partition(
-            messages, full=full, tail_max_tokens=self.compact_threshold // 4,
+            messages, full=full, tail_max_tokens=threshold // 4,
         )
         if not head:
             log.info(
@@ -2019,6 +2101,8 @@ class GaladrielAgent:
 
         while True:
             self._check_cancelled(channel_id)
+            channel_model = self.model_for_channel(channel_id)
+            runtime = self._runtime_for(channel_model)
             if pending_tool_results_holder is not None:
                 pending_tool_results_holder["blocks"] = None
                 pending_tool_results_holder["results"] = []
@@ -2033,7 +2117,7 @@ class GaladrielAgent:
             # intact and the turn proceeds on the full context.
             if (
                 (not ephemeral)
-                and self._last_input_tokens.get(channel_id, 0) > self.compact_threshold
+                and self._last_input_tokens.get(channel_id, 0) > runtime["context"]
             ):
                 try:
                     compacted = await self.compact_channel(
@@ -2063,7 +2147,6 @@ class GaladrielAgent:
                 f"API call with {len(messages)} messages, "
                 f"last role: {messages[-1]['role']}{eph}"
             )
-            channel_model = self.model_for_channel(channel_id)
             provider = self._provider_for(channel_model)
             turn_max_tokens = self.max_output_for_channel(channel_id)
 
@@ -2139,6 +2222,7 @@ class GaladrielAgent:
                     tools=turn_tools,
                     messages=messages_for_api,
                     thinking=True,
+                    effort=runtime["effort"],
                 ):
                     self._check_cancelled(channel_id)
                     if kind == "thought":
@@ -2156,6 +2240,7 @@ class GaladrielAgent:
                     tools=turn_tools,
                     messages=messages_for_api,
                     thinking=not is_silent_turn,
+                    effort=runtime["effort"],
                 )
                 
                 # Extract turn_thought if available on the response blocks

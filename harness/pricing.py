@@ -15,10 +15,15 @@ this for a real invoice — model names/rates change.
 # model name -> {"input": $/MTok, "output": $/MTok, "cache_read": $/MTok, "cache_write": $/MTok}
 RATES: dict[str, dict[str, float]] = {
     # Gemini — cache_write always 0 (implicit caching, no write surcharge).
+    # gemini-3.7-flash is introductory pricing through 2026-12-31; standard
+    # rate ($1.50/$7.50) applies from 2027-01-01 — revisit this row then.
+    "gemini-3.7-flash": {"input": 0.75, "output": 3.75, "cache_read": 0.075, "cache_write": 0.0},
     "gemini-3.6-flash": {"input": 1.50, "output": 7.50, "cache_read": 0.15, "cache_write": 0.0},
     "gemini-3.5-flash": {"input": 0.30, "output": 2.50, "cache_read": 0.03, "cache_write": 0.0},
     "gemini-3.5-flash-lite": {"input": 0.30, "output": 2.50, "cache_read": 0.03, "cache_write": 0.0},
     "gemini-3.1-pro-preview": {"input": 2.00, "output": 12.00, "cache_read": 0.20, "cache_write": 0.0},
+    "gemini-3.1-flash-lite": {"input": 0.25, "output": 1.50, "cache_read": 0.025, "cache_write": 0.0},
+    "gemini-3-flash-preview": {"input": 0.50, "output": 3.00, "cache_read": 0.05, "cache_write": 0.0},
     "gemini-2.5-pro": {"input": 1.25, "output": 10.00, "cache_read": 0.125, "cache_write": 0.0},
     "gemini-2.5-flash": {"input": 0.30, "output": 2.50, "cache_read": 0.03, "cache_write": 0.0},
     "gemini-2.5-flash-lite": {"input": 0.10, "output": 0.40, "cache_read": 0.01, "cache_write": 0.0},

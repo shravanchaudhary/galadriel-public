@@ -10,6 +10,17 @@ from zoneinfo import ZoneInfo, available_timezones
 
 from pymongo import MongoClient
 
+from .thinking_effort import (  # noqa: F401 — re-exported for Tower routes
+    DEFAULT_EFFORT as DEFAULT_THINKING_EFFORT,
+    EFFORT_LABELS,
+    EFFORT_OPTIONS,
+    clamp_effort_for_model,
+    default_effort_for_model,
+    effort_catalog_for_model,
+    effort_options_for_model,
+    normalize_effort as normalize_thinking_effort,
+)
+
 COLLECTION = "tower_settings"
 AGENT_MODEL_DOC_ID = "agent_model"  # legacy — migrated to main_model on read
 MAIN_MODEL_DOC_ID = "main_model"
@@ -22,6 +33,9 @@ RECALL_SLM_MODEL_DOC_ID = "recall_slm_model"
 RECALL_ENABLED_DOC_ID = "recall_enabled"
 RECALL_STAGE2_TIER_DOC_ID = "recall_stage2_tier"
 RECALL_JUDGE_MODEL_DOC_ID = "recall_judge_model"
+COMPACT_THRESHOLD_DOC_ID = "compact_threshold"
+THINKING_EFFORT_DOC_ID = "thinking_effort"
+MODEL_RUNTIME_DOC_ID = "model_runtime"
 # Matches scheduler defaults until the user sets Agent time in Configuration.
 DEFAULT_AGENT_TIMEZONE = "Europe/Stockholm"
 _AVAILABLE_TIMEZONES = available_timezones()
@@ -43,6 +57,12 @@ DEFAULT_RECALL_JUDGE_MODEL = "gemini-2.5-flash-lite"
 # Idle-poll minutes when the worker has nothing to do (default 10).
 VALID_WORKER_IDLE_MINUTES: tuple[int, ...] = (5, 10, 15, 20, 30, 60)
 DEFAULT_WORKER_IDLE_MINUTES = 10
+
+# Compaction trigger (input tokens). Gemini's window is ~1M; 300K is the
+# historical default so long chats fold before they get expensive.
+CONTEXT_OPTIONS: tuple[int, ...] = (300_000, 1_000_000)
+DEFAULT_COMPACT_THRESHOLD = 300_000
+CONTEXT_LABELS: dict[int, str] = {300_000: "300K", 1_000_000: "1M"}
 
 # Channels with a user-selectable model in Tower (main chat + autonomous loops).
 CONFIGURABLE_CHANNELS: tuple[str, ...] = (
@@ -69,18 +89,20 @@ def _channel_setting_id(channel: str) -> str:
 
 # Selectable agent models in Tower. Provider is resolved from the model name
 # via model_registry.provider_for_model (gemini-* → Gemini).
+# Kept in sync with https://ai.google.dev/gemini-api/docs/models — only
+# current (non-shut-down) Gemini text/agentic models are listed here. Gemini
+# 2.0 and 1.5 have been shut down upstream / delisted; do not add them back.
 AGENT_MODEL_OPTIONS: tuple[str, ...] = (
+    "gemini-3.7-flash",
     "gemini-3.6-flash",
     "gemini-3.5-flash",
     "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
     "gemini-3.1-pro-preview",
+    "gemini-3-flash-preview",
     "gemini-2.5-pro",
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
-    "gemini-2.0-flash",
-    "gemini-2.0-flash-lite",
-    "gemini-1.5-pro",
-    "gemini-1.5-flash",
 )
 
 _sync_db = None
@@ -505,3 +527,191 @@ def set_recall_stage2_tier(key: str) -> str:
         upsert=True,
     )
     return tier
+
+
+def normalize_compact_threshold(value) -> int | None:
+    try:
+        tokens = int(value)
+    except (TypeError, ValueError):
+        return None
+    return tokens if tokens in CONTEXT_OPTIONS else None
+
+
+def get_compact_threshold() -> int | None:
+    """Persisted compaction threshold, or None if unset / Mongo unavailable."""
+    db = _db()
+    if db is None:
+        return None
+    doc = db[COLLECTION].find_one(
+        {"_id": _doc_id(COMPACT_THRESHOLD_DOC_ID), "tenant_id": _tenant_id()}
+    )
+    return normalize_compact_threshold((doc or {}).get("tokens"))
+
+
+def resolve_compact_threshold() -> int:
+    """Mongo, then AGENT_COMPACT_THRESHOLD, then 300K."""
+    saved = get_compact_threshold()
+    if saved is not None:
+        return saved
+    env = (os.environ.get("AGENT_COMPACT_THRESHOLD") or "").strip()
+    if env.isdigit() and int(env) > 0:
+        return int(env)
+    return DEFAULT_COMPACT_THRESHOLD
+
+
+def set_compact_threshold(tokens: int) -> int:
+    """Persist 300K or 1M. Returns the stored value."""
+    value = normalize_compact_threshold(tokens)
+    if value is None:
+        raise ValueError(
+            f"Unsupported context: {tokens}; expected one of {list(CONTEXT_OPTIONS)}"
+        )
+    db = _db()
+    if db is None:
+        raise RuntimeError("MONGO_URI / MONGO_DB not configured")
+    db[COLLECTION].replace_one(
+        {"_id": _doc_id(COMPACT_THRESHOLD_DOC_ID)},
+        {
+            "_id": _doc_id(COMPACT_THRESHOLD_DOC_ID),
+            "tenant_id": _tenant_id(),
+            "tokens": value,
+            "updated_at": datetime.now(timezone.utc),
+        },
+        upsert=True,
+    )
+    return value
+
+
+def get_thinking_effort() -> str:
+    """Persisted Gemini thinking effort (default high)."""
+    db = _db()
+    if db is None:
+        return DEFAULT_THINKING_EFFORT
+    doc = db[COLLECTION].find_one(
+        {"_id": _doc_id(THINKING_EFFORT_DOC_ID), "tenant_id": _tenant_id()}
+    )
+    return (
+        normalize_thinking_effort((doc or {}).get("effort"))
+        or DEFAULT_THINKING_EFFORT
+    )
+
+
+def set_thinking_effort(effort: str) -> str:
+    """Persist a Gemini thinking effort. Returns the normalized key."""
+    value = normalize_thinking_effort(effort)
+    if value is None:
+        raise ValueError(
+            f"Unsupported effort: {effort}; expected one of {list(EFFORT_OPTIONS)}"
+        )
+    db = _db()
+    if db is None:
+        raise RuntimeError("MONGO_URI / MONGO_DB not configured")
+    db[COLLECTION].replace_one(
+        {"_id": _doc_id(THINKING_EFFORT_DOC_ID)},
+        {
+            "_id": _doc_id(THINKING_EFFORT_DOC_ID),
+            "tenant_id": _tenant_id(),
+            "effort": value,
+            "updated_at": datetime.now(timezone.utc),
+        },
+        upsert=True,
+    )
+    return value
+
+
+def _runtime_entry(model: str, cfg) -> dict:
+    if not isinstance(cfg, dict):
+        return {}
+    entry: dict = {}
+    context = normalize_compact_threshold(cfg.get("context"))
+    if context is not None:
+        entry["context"] = context
+    effort = normalize_thinking_effort(cfg.get("effort"))
+    if effort is not None:
+        entry["effort"] = clamp_effort_for_model(model, effort)
+    return entry
+
+
+def get_model_runtime_map() -> dict[str, dict]:
+    """Per-model context/effort map. Empty if unset or Mongo is unavailable."""
+    db = _db()
+    if db is None:
+        return {}
+    doc = db[COLLECTION].find_one(
+        {"_id": _doc_id(MODEL_RUNTIME_DOC_ID), "tenant_id": _tenant_id()}
+    )
+    raw = (doc or {}).get("configs") or {}
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, dict] = {}
+    for model, cfg in raw.items():
+        if model not in AGENT_MODEL_OPTIONS:
+            continue
+        entry = _runtime_entry(model, cfg)
+        if entry:
+            out[model] = entry
+    return out
+
+
+def resolve_model_runtime(model: str, saved_map: dict[str, dict] | None = None) -> dict:
+    """Last context/effort for `model`, or that model's defaults.
+
+    An empty map falls back to the legacy global compact threshold so an
+    existing 1M choice is not reset on first deploy. After any per-model
+    row exists, unseen models start at 300K + the model's default effort.
+    """
+    configs = get_model_runtime_map() if saved_map is None else saved_map
+    saved = configs.get(model) or {}
+    if saved.get("context") is not None:
+        context = saved["context"]
+    elif not configs:
+        context = resolve_compact_threshold()
+    else:
+        context = DEFAULT_COMPACT_THRESHOLD
+    if saved.get("effort") is not None:
+        effort = clamp_effort_for_model(model, saved["effort"])
+    else:
+        effort = default_effort_for_model(model)
+    return {"context": int(context), "effort": effort}
+
+
+def set_model_runtime(
+    model: str, *, context: int | None = None, effort: str | None = None
+) -> dict:
+    """Merge and persist one model's context/effort. Returns the resolved pair."""
+    if model not in AGENT_MODEL_OPTIONS:
+        raise ValueError(f"Unsupported model: {model}")
+    entry: dict = {}
+    if context is not None:
+        tokens = normalize_compact_threshold(context)
+        if tokens is None:
+            raise ValueError(
+                f"Unsupported context: {context}; expected one of {list(CONTEXT_OPTIONS)}"
+            )
+        entry["context"] = tokens
+    if effort is not None:
+        value = normalize_thinking_effort(effort)
+        allowed = effort_options_for_model(model)
+        if value is None or (allowed and value not in allowed):
+            raise ValueError(
+                f"Unsupported effort: {effort}; expected one of {list(allowed or EFFORT_OPTIONS)}"
+            )
+        entry["effort"] = value
+    if not entry:
+        return resolve_model_runtime(model)
+    db = _db()
+    if db is None:
+        raise RuntimeError("MONGO_URI / MONGO_DB not configured")
+    merged = {**(get_model_runtime_map().get(model) or {}), **entry}
+    db[COLLECTION].update_one(
+        {"_id": _doc_id(MODEL_RUNTIME_DOC_ID)},
+        {
+            "$set": {
+                f"configs.{model}": merged,
+                "tenant_id": _tenant_id(),
+                "updated_at": datetime.now(timezone.utc),
+            }
+        },
+        upsert=True,
+    )
+    return resolve_model_runtime(model)

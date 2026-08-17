@@ -36,9 +36,9 @@ class AnthropicProvider(BaseModelProvider):
 
     async def create_message(
         self, *, model, max_tokens, messages, system=None, tools=None, thinking=True,
-        temperature=None,
+        temperature=None, effort=None,
     ):
-        del thinking  # Anthropic Messages API has no thinking toggle here.
+        del thinking, effort  # Anthropic Messages API has no thinking toggle here.
         kwargs = self._build_kwargs(
             model, max_tokens, messages, system, tools, temperature
         )

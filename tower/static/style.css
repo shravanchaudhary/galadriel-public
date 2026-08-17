@@ -2213,6 +2213,14 @@ body.wfc-resizing * { cursor: inherit !important; }
     border: 0;
 }
 
+.composer-runtime {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    min-width: 0;
+    flex: 1 1 auto;
+}
+
 .composer-model-select {
     max-width: 11rem;
     min-width: 0;
@@ -2223,6 +2231,22 @@ body.wfc-resizing * { cursor: inherit !important; }
     background: var(--bg-subtle);
     border: 1px solid transparent;
     color: var(--text-secondary);
+}
+
+.composer-context-select {
+    max-width: 4.6rem;
+    flex: 0 1 auto;
+}
+
+.composer-effort-select {
+    max-width: 6.4rem;
+    flex: 0 1 auto;
+}
+
+.composer-effort-select option.is-unavailable,
+.composer-effort-select option:disabled {
+    color: var(--muted);
+    opacity: 0.45;
 }
 
 .composer-model-select:hover,
@@ -2730,6 +2754,12 @@ body.wfc-resizing * { cursor: inherit !important; }
 
     .composer-model-select {
         max-width: min(11rem, 42vw);
+    }
+    .composer-context-select {
+        max-width: 4.6rem;
+    }
+    .composer-effort-select {
+        max-width: 6.4rem;
     }
 }
 
