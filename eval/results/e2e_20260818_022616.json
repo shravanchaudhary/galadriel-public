@@ -1,0 +1,3862 @@
+{
+  "benchmark": "e2e_recall",
+  "dataset": {
+    "total": 208,
+    "positive": 103,
+    "negative": 105,
+    "by_source": {
+      "incident": {
+        "total": 7,
+        "positive": 0,
+        "negative": 7
+      },
+      "heldout": {
+        "total": 34,
+        "positive": 15,
+        "negative": 19
+      },
+      "cue_audit": {
+        "total": 157,
+        "positive": 80,
+        "negative": 77
+      },
+      "metamorphic": {
+        "total": 10,
+        "positive": 8,
+        "negative": 2
+      }
+    },
+    "recalls": 16
+  },
+  "config": {
+    "leave_one_out": true,
+    "stage2_mode": "rerank",
+    "metamorphic_only": false
+  },
+  "metrics": {
+    "cases": 208,
+    "tp": 58,
+    "fp": 1,
+    "tn": 104,
+    "fn": 45,
+    "precision": 0.9831,
+    "recall": 0.5631,
+    "f1": 0.716,
+    "accuracy": 0.7788
+  },
+  "metrics_by_source": {
+    "cue_audit": {
+      "cases": 157,
+      "tp": 38,
+      "fp": 0,
+      "tn": 77,
+      "fn": 42,
+      "precision": 1.0,
+      "recall": 0.475,
+      "f1": 0.6441,
+      "accuracy": 0.7325
+    },
+    "heldout": {
+      "cases": 34,
+      "tp": 13,
+      "fp": 0,
+      "tn": 19,
+      "fn": 2,
+      "precision": 1.0,
+      "recall": 0.8667,
+      "f1": 0.9286,
+      "accuracy": 0.9412
+    },
+    "incident": {
+      "cases": 7,
+      "tp": 0,
+      "fp": 0,
+      "tn": 7,
+      "fn": 0,
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0,
+      "accuracy": 1.0
+    },
+    "metamorphic": {
+      "cases": 10,
+      "tp": 7,
+      "fp": 1,
+      "tn": 1,
+      "fn": 1,
+      "precision": 0.875,
+      "recall": 0.875,
+      "f1": 0.875,
+      "accuracy": 0.8
+    }
+  },
+  "fn_attribution": {
+    "candidate_selection": 1,
+    "verification": 44
+  },
+  "latency": {
+    "n": 208,
+    "mean_ms": 388.4,
+    "p95_ms": 612.4
+  },
+  "rows": [
+    {
+      "chunk": "[Tower]: what are you doing every day thats consuming upto 20$ of your token usage every day?",
+      "recall_id": "sys_plan",
+      "source": "incident",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.020<=0.487",
+      "proposed_ids": [
+        "sys_jobs",
+        "sys_plan",
+        "sys_recurring_work"
+      ],
+      "verified_ids": [],
+      "latency_ms": 1603.2
+    },
+    {
+      "chunk": "[Tower]: what are you doing every day thats consuming upto 20$ of your token usage every day?",
+      "recall_id": "sys_jobs",
+      "source": "incident",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.093<=0.487",
+      "proposed_ids": [
+        "sys_jobs",
+        "sys_plan",
+        "sys_recurring_work"
+      ],
+      "verified_ids": [],
+      "latency_ms": 543.4
+    },
+    {
+      "chunk": "read_file",
+      "recall_id": "sys_architecture",
+      "source": "incident",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "stage2_junk",
+      "proposed_ids": [
+        "sys_architecture",
+        "sys_custom_script",
+        "sys_tools_rules"
+      ],
+      "verified_ids": [],
+      "latency_ms": 4.3
+    },
+    {
+      "chunk": "active",
+      "recall_id": "sys_finish_work",
+      "source": "incident",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.034<=0.487",
+      "proposed_ids": [
+        "sys_finish_work",
+        "sys_learn_recall",
+        "sys_status"
+      ],
+      "verified_ids": [],
+      "latency_ms": 505.4
+    },
+    {
+      "chunk": "active",
+      "recall_id": "sys_status",
+      "source": "incident",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.021<=0.487",
+      "proposed_ids": [
+        "sys_finish_work",
+        "sys_learn_recall",
+        "sys_status"
+      ],
+      "verified_ids": [],
+      "latency_ms": 458.4
+    },
+    {
+      "chunk": "{\"path\": \"state/worker_control.md\"}",
+      "recall_id": "sys_deferred_work",
+      "source": "incident",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [
+        "sys_architecture",
+        "sys_credentials",
+        "sys_learn_recall"
+      ],
+      "verified_ids": [
+        "sys_architecture"
+      ],
+      "latency_ms": 550.5
+    },
+    {
+      "chunk": "{\"content\": \"paused\", \"path\": \"state/worker_control.md\"}",
+      "recall_id": "sys_jobs",
+      "source": "incident",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.060<=0.487",
+      "proposed_ids": [
+        "sys_deferred_work",
+        "sys_jobs",
+        "sys_tools_rules"
+      ],
+      "verified_ids": [
+        "sys_deferred_work"
+      ],
+      "latency_ms": 573.3
+    },
+    {
+      "chunk": "remind me what name was on yesterday's email?",
+      "recall_id": "sys_fact_lookup",
+      "source": "heldout",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.981>0.487",
+      "proposed_ids": [
+        "sys_deferred_work",
+        "sys_fact_lookup",
+        "sys_last_conversation"
+      ],
+      "verified_ids": [
+        "sys_fact_lookup",
+        "sys_last_conversation"
+      ],
+      "latency_ms": 537.3
+    },
+    {
+      "chunk": "when did we choose MongoDB again?",
+      "recall_id": "sys_fact_lookup",
+      "source": "heldout",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.991>0.487",
+      "proposed_ids": [
+        "sys_fact_lookup",
+        "sys_last_conversation",
+        "sys_status"
+      ],
+      "verified_ids": [
+        "sys_fact_lookup"
+      ],
+      "latency_ms": 478.3
+    },
+    {
+      "chunk": "what was last month's cloud bill?",
+      "recall_id": "sys_fact_lookup",
+      "source": "heldout",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.798>0.487",
+      "proposed_ids": [
+        "sys_fact_lookup",
+        "sys_plan",
+        "sys_status"
+      ],
+      "verified_ids": [
+        "sys_fact_lookup"
+      ],
+      "latency_ms": 511.2
+    },
+    {
+      "chunk": "what API design choice did we settle on?",
+      "recall_id": "sys_fact_lookup",
+      "source": "heldout",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.998>0.487",
+      "proposed_ids": [
+        "sys_fact_lookup",
+        "sys_last_conversation",
+        "sys_plan"
+      ],
+      "verified_ids": [
+        "sys_fact_lookup",
+        "sys_last_conversation"
+      ],
+      "latency_ms": 489.2
+    },
+    {
+      "chunk": "what do you think is the best way to write this function?",
+      "recall_id": "sys_fact_lookup",
+      "source": "heldout",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.023<=0.487",
+      "proposed_ids": [
+        "sys_custom_script",
+        "sys_fact_lookup",
+        "sys_recurring_work"
+      ],
+      "verified_ids": [],
+      "latency_ms": 551.7
+    },
+    {
+      "chunk": "can you write a script to scrape this website?",
+      "recall_id": "sys_fact_lookup",
+      "source": "heldout",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [
+        "sys_custom_script",
+        "sys_tools_rules"
+      ],
+      "verified_ids": [],
+      "latency_ms": 343.3
+    },
+    {
+      "chunk": "tell me a joke about a programmer",
+      "recall_id": "sys_fact_lookup",
+      "source": "heldout",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.000<=0.487",
+      "proposed_ids": [
+        "sys_deferred_work",
+        "sys_fact_lookup",
+        "sys_finish_work"
+      ],
+      "verified_ids": [],
+      "latency_ms": 508.9
+    },
+    {
+      "chunk": "let's plan out the architecture for the new service",
+      "recall_id": "sys_fact_lookup",
+      "source": "heldout",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.175<=0.487",
+      "proposed_ids": [
+        "sys_fact_lookup",
+        "sys_plan",
+        "sys_procedure"
+      ],
+      "verified_ids": [
+        "sys_plan"
+      ],
+      "latency_ms": 611.6
+    },
+    {
+      "chunk": "steps to ship this app to staging please?",
+      "recall_id": "sys_procedure",
+      "source": "heldout",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.945>0.487",
+      "proposed_ids": [
+        "sys_procedure",
+        "sys_status"
+      ],
+      "verified_ids": [
+        "sys_procedure"
+      ],
+      "latency_ms": 341.2
+    },
+    {
+      "chunk": "we hit OOM \u2014 what's the recovery checklist?",
+      "recall_id": "sys_procedure",
+      "source": "heldout",
+      "family": null,
+      "expected": true,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": "candidate_selection",
+      "slm_reason": null,
+      "proposed_ids": [
+        "sys_finish_work",
+        "sys_last_conversation",
+        "sys_status"
+      ],
+      "verified_ids": [],
+      "latency_ms": 534.9
+    },
+    {
+      "chunk": "how should I add a DB migration the usual way?",
+      "recall_id": "sys_procedure",
+      "source": "heldout",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.999>0.487",
+      "proposed_ids": [
+        "sys_custom_script",
+        "sys_procedure",
+        "sys_status"
+      ],
+      "verified_ids": [
+        "sys_procedure"
+      ],
+      "latency_ms": 534.7
+    },
+    {
+      "chunk": "hello there, how are you doing today?",
+      "recall_id": "sys_procedure",
+      "source": "heldout",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [
+        "sys_identity",
+        "sys_plan",
+        "sys_status"
+      ],
+      "verified_ids": [],
+      "latency_ms": 523.2
+    },
+    {
+      "chunk": "create a new file called test.py",
+      "recall_id": "sys_procedure",
+      "source": "heldout",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [
+        "sys_architecture",
+        "sys_credentials",
+        "sys_custom_script"
+      ],
+      "verified_ids": [],
+      "latency_ms": 474.9
+    },
+    {
+      "chunk": "what is the capital of France?",
+      "recall_id": "sys_procedure",
+      "source": "heldout",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [],
+      "verified_ids": [],
+      "latency_ms": 7.2
+    },
+    {
+      "chunk": "please remember that I prefer dark mode in editors",
+      "recall_id": "sys_learn_recall",
+      "source": "heldout",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.998>0.487",
+      "proposed_ids": [
+        "sys_fact_lookup",
+        "sys_jobs",
+        "sys_learn_recall"
+      ],
+      "verified_ids": [
+        "sys_learn_recall"
+      ],
+      "latency_ms": 504.1
+    },
+    {
+      "chunk": "from now on always use type hints in python",
+      "recall_id": "sys_learn_recall",
+      "source": "heldout",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.996>0.487",
+      "proposed_ids": [
+        "sys_fact_lookup",
+        "sys_learn_recall",
+        "sys_tools_rules"
+      ],
+      "verified_ids": [
+        "sys_learn_recall"
+      ],
+      "latency_ms": 488.3
+    },
+    {
+      "chunk": "save this rule: no emoji in commit messages",
+      "recall_id": "sys_learn_recall",
+      "source": "heldout",
+      "family": null,
+      "expected": true,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": "verification",
+      "slm_reason": "rerank:0.037<=0.487",
+      "proposed_ids": [
+        "sys_learn_recall",
+        "sys_personal_tools",
+        "sys_status"
+      ],
+      "verified_ids": [],
+      "latency_ms": 539.9
+    },
+    {
+      "chunk": "can you remember bill gates is no longer the godfather of capitalism",
+      "recall_id": "sys_learn_recall",
+      "source": "heldout",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.941>0.487",
+      "proposed_ids": [
+        "sys_learn_recall"
+      ],
+      "verified_ids": [
+        "sys_learn_recall"
+      ],
+      "latency_ms": 187.3
+    },
+    {
+      "chunk": "can you remember i like mangoes",
+      "recall_id": "sys_learn_recall",
+      "source": "heldout",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.999>0.487",
+      "proposed_ids": [
+        "sys_learn_recall"
+      ],
+      "verified_ids": [
+        "sys_learn_recall"
+      ],
+      "latency_ms": 142.4
+    },
+    {
+      "chunk": "[Tower]: can you remember i like mangoes",
+      "recall_id": "sys_learn_recall",
+      "source": "heldout",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:1.000>0.487",
+      "proposed_ids": [
+        "sys_last_conversation",
+        "sys_learn_recall"
+      ],
+      "verified_ids": [
+        "sys_learn_recall"
+      ],
+      "latency_ms": 299.1
+    },
+    {
+      "chunk": "do you remember when we decided to switch to MongoDB?",
+      "recall_id": "sys_learn_recall",
+      "source": "heldout",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [
+        "sys_fact_lookup",
+        "sys_jobs",
+        "sys_status"
+      ],
+      "verified_ids": [
+        "sys_fact_lookup"
+      ],
+      "latency_ms": 519.6
+    },
+    {
+      "chunk": "what did we agree on regarding the new API design?",
+      "recall_id": "sys_learn_recall",
+      "source": "heldout",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [
+        "sys_fact_lookup",
+        "sys_last_conversation",
+        "sys_plan"
+      ],
+      "verified_ids": [
+        "sys_fact_lookup"
+      ],
+      "latency_ms": 513.7
+    },
+    {
+      "chunk": "hello how are you today",
+      "recall_id": "sys_learn_recall",
+      "source": "heldout",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [
+        "sys_deferred_work",
+        "sys_plan",
+        "sys_status"
+      ],
+      "verified_ids": [],
+      "latency_ms": 463.9
+    },
+    {
+      "chunk": "why are you not creating semantic recall as well ?",
+      "recall_id": "sys_learn_recall",
+      "source": "heldout",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank_neg_veto:neg=0.999>pos=0.826-0.000",
+      "proposed_ids": [
+        "sys_architecture",
+        "sys_last_conversation",
+        "sys_learn_recall"
+      ],
+      "verified_ids": [],
+      "latency_ms": 986.0
+    },
+    {
+      "chunk": "how do memory tiers interact with the worker loop?",
+      "recall_id": "sys_architecture",
+      "source": "heldout",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.994>0.487",
+      "proposed_ids": [
+        "sys_architecture",
+        "sys_deferred_work",
+        "sys_tools_rules"
+      ],
+      "verified_ids": [
+        "sys_architecture"
+      ],
+      "latency_ms": 513.5
+    },
+    {
+      "chunk": "walk me through board files and compaction",
+      "recall_id": "sys_architecture",
+      "source": "heldout",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.952>0.487",
+      "proposed_ids": [
+        "sys_architecture",
+        "sys_finish_work",
+        "sys_jobs"
+      ],
+      "verified_ids": [
+        "sys_architecture"
+      ],
+      "latency_ms": 486.5
+    },
+    {
+      "chunk": "write a unit test for the login form",
+      "recall_id": "sys_architecture",
+      "source": "heldout",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [
+        "sys_credentials",
+        "sys_custom_script",
+        "sys_personal_tools"
+      ],
+      "verified_ids": [],
+      "latency_ms": 514.7
+    },
+    {
+      "chunk": "<!doctype html>",
+      "recall_id": "sys_identity",
+      "source": "heldout",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [
+        "sys_learn_recall",
+        "sys_tools_rules"
+      ],
+      "verified_ids": [],
+      "latency_ms": 5.2
+    },
+    {
+      "chunk": "<body>",
+      "recall_id": "sys_identity",
+      "source": "heldout",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "stage2_junk",
+      "proposed_ids": [
+        "sys_finish_work",
+        "sys_identity",
+        "sys_learn_recall"
+      ],
+      "verified_ids": [],
+      "latency_ms": 3.6
+    },
+    {
+      "chunk": "--bg: #ffffff;",
+      "recall_id": "sys_credentials",
+      "source": "heldout",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [
+        "sys_finish_work",
+        "sys_learn_recall",
+        "sys_recurring_work"
+      ],
+      "verified_ids": [],
+      "latency_ms": 4.8
+    },
+    {
+      "chunk": "<head>",
+      "recall_id": "sys_learn_recall",
+      "source": "heldout",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "stage2_junk",
+      "proposed_ids": [
+        "sys_finish_work",
+        "sys_last_conversation",
+        "sys_learn_recall"
+      ],
+      "verified_ids": [],
+      "latency_ms": 3.4
+    },
+    {
+      "chunk": "Written 7 bytes to state/worker_control.md",
+      "recall_id": "sys_personal_tools",
+      "source": "heldout",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [
+        "sys_procedure",
+        "sys_recurring_work",
+        "sys_tools_rules"
+      ],
+      "verified_ids": [],
+      "latency_ms": 7.3
+    },
+    {
+      "chunk": "{\"path\": \"state/plan/2026-08-10.html\"}",
+      "recall_id": "sys_fact_lookup",
+      "source": "heldout",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [
+        "sys_plan",
+        "sys_procedure",
+        "sys_status"
+      ],
+      "verified_ids": [
+        "sys_plan"
+      ],
+      "latency_ms": 637.6
+    },
+    {
+      "chunk": "<title>Progress \u00b7 2026-08-10</title>",
+      "recall_id": "sys_deferred_work",
+      "source": "heldout",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "stage2_junk",
+      "proposed_ids": [
+        "sys_deferred_work",
+        "sys_finish_work",
+        "sys_status"
+      ],
+      "verified_ids": [],
+      "latency_ms": 8.4
+    },
+    {
+      "chunk": "what was the name of the person who emailed us yesterday?",
+      "recall_id": "sys_fact_lookup",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": "verification",
+      "slm_reason": "rerank:0.002<=0.487",
+      "proposed_ids": [
+        "sys_deferred_work",
+        "sys_fact_lookup",
+        "sys_last_conversation"
+      ],
+      "verified_ids": [],
+      "latency_ms": 538.0
+    },
+    {
+      "chunk": "do you remember when we decided to switch to MongoDB?",
+      "recall_id": "sys_fact_lookup",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": "verification",
+      "slm_reason": "rerank:0.110<=0.487",
+      "proposed_ids": [
+        "sys_fact_lookup",
+        "sys_jobs",
+        "sys_status"
+      ],
+      "verified_ids": [],
+      "latency_ms": 550.9
+    },
+    {
+      "chunk": "how much did the AWS bill come to last month?",
+      "recall_id": "sys_fact_lookup",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": "verification",
+      "slm_reason": "rerank:0.002<=0.487",
+      "proposed_ids": [
+        "sys_credentials",
+        "sys_fact_lookup",
+        "sys_status"
+      ],
+      "verified_ids": [],
+      "latency_ms": 525.2
+    },
+    {
+      "chunk": "what is my preferred formatting style for python?",
+      "recall_id": "sys_fact_lookup",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": "verification",
+      "slm_reason": "rerank:0.001<=0.487",
+      "proposed_ids": [
+        "sys_custom_script",
+        "sys_fact_lookup",
+        "sys_tools_rules"
+      ],
+      "verified_ids": [],
+      "latency_ms": 523.4
+    },
+    {
+      "chunk": "what did we agree on regarding the new API design?",
+      "recall_id": "sys_fact_lookup",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": "verification",
+      "slm_reason": "rerank:0.018<=0.487",
+      "proposed_ids": [
+        "sys_fact_lookup",
+        "sys_last_conversation",
+        "sys_plan"
+      ],
+      "verified_ids": [],
+      "latency_ms": 547.5
+    },
+    {
+      "chunk": "how do i deploy the app to staging?",
+      "recall_id": "sys_procedure",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": "verification",
+      "slm_reason": "rerank:0.010<=0.487",
+      "proposed_ids": [
+        "sys_procedure",
+        "sys_status"
+      ],
+      "verified_ids": [],
+      "latency_ms": 338.4
+    },
+    {
+      "chunk": "the server crashed with an OutOfMemory error, what is the procedure?",
+      "recall_id": "sys_procedure",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": "verification",
+      "slm_reason": "rerank:0.022<=0.487",
+      "proposed_ids": [
+        "sys_custom_script",
+        "sys_jobs",
+        "sys_procedure"
+      ],
+      "verified_ids": [],
+      "latency_ms": 521.6
+    },
+    {
+      "chunk": "how does the authentication flow work in this project?",
+      "recall_id": "sys_procedure",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": "verification",
+      "slm_reason": "rerank:0.014<=0.487",
+      "proposed_ids": [
+        "sys_credentials",
+        "sys_procedure"
+      ],
+      "verified_ids": [
+        "sys_credentials"
+      ],
+      "latency_ms": 382.7
+    },
+    {
+      "chunk": "what's the standard way to add a new database migration?",
+      "recall_id": "sys_procedure",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": "verification",
+      "slm_reason": "rerank:0.012<=0.487",
+      "proposed_ids": [
+        "sys_custom_script",
+        "sys_procedure",
+        "sys_status"
+      ],
+      "verified_ids": [],
+      "latency_ms": 523.8
+    },
+    {
+      "chunk": "can you show me the steps to provision a new tenant?",
+      "recall_id": "sys_procedure",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": "verification",
+      "slm_reason": "rerank:0.005<=0.487",
+      "proposed_ids": [
+        "sys_credentials",
+        "sys_plan",
+        "sys_procedure"
+      ],
+      "verified_ids": [],
+      "latency_ms": 544.3
+    },
+    {
+      "chunk": "can you explain what a React hook is in general?",
+      "recall_id": "sys_procedure",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [
+        "sys_architecture",
+        "sys_finish_work",
+        "sys_learn_recall"
+      ],
+      "verified_ids": [],
+      "latency_ms": 524.7
+    },
+    {
+      "chunk": "how do the memory tiers interact with the agent?",
+      "recall_id": "sys_architecture",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.999>0.487",
+      "proposed_ids": [
+        "sys_architecture"
+      ],
+      "verified_ids": [
+        "sys_architecture"
+      ],
+      "latency_ms": 278.3
+    },
+    {
+      "chunk": "explain the role of the worker in the system",
+      "recall_id": "sys_architecture",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.684>0.487",
+      "proposed_ids": [
+        "sys_architecture",
+        "sys_plan",
+        "sys_tools_rules"
+      ],
+      "verified_ids": [
+        "sys_architecture"
+      ],
+      "latency_ms": 599.7
+    },
+    {
+      "chunk": "where are the board files stored and how are they used?",
+      "recall_id": "sys_architecture",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.973>0.487",
+      "proposed_ids": [
+        "sys_architecture",
+        "sys_credentials",
+        "sys_tools_rules"
+      ],
+      "verified_ids": [
+        "sys_architecture"
+      ],
+      "latency_ms": 612.4
+    },
+    {
+      "chunk": "I need to understand the high-level architecture of this system",
+      "recall_id": "sys_architecture",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.934>0.487",
+      "proposed_ids": [
+        "sys_architecture",
+        "sys_jobs"
+      ],
+      "verified_ids": [
+        "sys_architecture"
+      ],
+      "latency_ms": 485.1
+    },
+    {
+      "chunk": "how does the control plane communicate with the runtime?",
+      "recall_id": "sys_architecture",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": "verification",
+      "slm_reason": "rerank:0.106<=0.487",
+      "proposed_ids": [
+        "sys_architecture",
+        "sys_procedure",
+        "sys_tools_rules"
+      ],
+      "verified_ids": [],
+      "latency_ms": 520.1
+    },
+    {
+      "chunk": "how do I center a div in CSS?",
+      "recall_id": "sys_architecture",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [
+        "sys_tools_rules"
+      ],
+      "verified_ids": [],
+      "latency_ms": 196.9
+    },
+    {
+      "chunk": "can you write a sorting algorithm in Python?",
+      "recall_id": "sys_architecture",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [
+        "sys_custom_script",
+        "sys_fact_lookup"
+      ],
+      "verified_ids": [],
+      "latency_ms": 371.9
+    },
+    {
+      "chunk": "what is the weather like today?",
+      "recall_id": "sys_architecture",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [
+        "sys_last_conversation",
+        "sys_personal_tools",
+        "sys_plan"
+      ],
+      "verified_ids": [],
+      "latency_ms": 533.5
+    },
+    {
+      "chunk": "please translate this text to Spanish",
+      "recall_id": "sys_architecture",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [
+        "sys_deferred_work",
+        "sys_finish_work",
+        "sys_recurring_work"
+      ],
+      "verified_ids": [],
+      "latency_ms": 469.0
+    },
+    {
+      "chunk": "how should I choose which tool to use for web scraping?",
+      "recall_id": "sys_tools_rules",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.990>0.487",
+      "proposed_ids": [
+        "sys_fact_lookup",
+        "sys_personal_tools",
+        "sys_tools_rules"
+      ],
+      "verified_ids": [
+        "sys_tools_rules"
+      ],
+      "latency_ms": 667.7
+    },
+    {
+      "chunk": "what are the rules for using the browser tab tools?",
+      "recall_id": "sys_tools_rules",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.999>0.487",
+      "proposed_ids": [
+        "sys_learn_recall",
+        "sys_personal_tools",
+        "sys_tools_rules"
+      ],
+      "verified_ids": [
+        "sys_tools_rules"
+      ],
+      "latency_ms": 649.1
+    },
+    {
+      "chunk": "where should I record the output of this background task?",
+      "recall_id": "sys_tools_rules",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": "verification",
+      "slm_reason": "rerank:0.037<=0.487",
+      "proposed_ids": [
+        "sys_deferred_work",
+        "sys_jobs",
+        "sys_tools_rules"
+      ],
+      "verified_ids": [],
+      "latency_ms": 530.4
+    },
+    {
+      "chunk": "how does the heartbeat mechanism work for the worker?",
+      "recall_id": "sys_tools_rules",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": "verification",
+      "slm_reason": "rerank:0.033<=0.487",
+      "proposed_ids": [
+        "sys_architecture",
+        "sys_deferred_work",
+        "sys_tools_rules"
+      ],
+      "verified_ids": [],
+      "latency_ms": 505.3
+    },
+    {
+      "chunk": "what's the right way to trigger a one-shot wake?",
+      "recall_id": "sys_tools_rules",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.915>0.487",
+      "proposed_ids": [
+        "sys_architecture",
+        "sys_finish_work",
+        "sys_tools_rules"
+      ],
+      "verified_ids": [
+        "sys_tools_rules"
+      ],
+      "latency_ms": 607.3
+    },
+    {
+      "chunk": "can you write a poem about tools?",
+      "recall_id": "sys_tools_rules",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [
+        "sys_personal_tools"
+      ],
+      "verified_ids": [],
+      "latency_ms": 183.1
+    },
+    {
+      "chunk": "what's the best brand of hammer?",
+      "recall_id": "sys_tools_rules",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [],
+      "verified_ids": [],
+      "latency_ms": 12.9
+    },
+    {
+      "chunk": "please debug this python script for me",
+      "recall_id": "sys_tools_rules",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.005<=0.487",
+      "proposed_ids": [
+        "sys_custom_script",
+        "sys_procedure",
+        "sys_tools_rules"
+      ],
+      "verified_ids": [],
+      "latency_ms": 524.6
+    },
+    {
+      "chunk": "how do I use the grep command in linux?",
+      "recall_id": "sys_tools_rules",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.001<=0.487",
+      "proposed_ids": [
+        "sys_architecture",
+        "sys_custom_script",
+        "sys_tools_rules"
+      ],
+      "verified_ids": [],
+      "latency_ms": 515.9
+    },
+    {
+      "chunk": "can you write a custom python script to parse these logs?",
+      "recall_id": "sys_custom_script",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": "verification",
+      "slm_reason": "rerank:0.377<=0.487",
+      "proposed_ids": [
+        "sys_custom_script",
+        "sys_recurring_work",
+        "sys_tools_rules"
+      ],
+      "verified_ids": [],
+      "latency_ms": 538.0
+    },
+    {
+      "chunk": "I need a script that connects to the database and updates the user table directly",
+      "recall_id": "sys_custom_script",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": "verification",
+      "slm_reason": "rerank:0.019<=0.487",
+      "proposed_ids": [
+        "sys_custom_script",
+        "sys_procedure",
+        "sys_status"
+      ],
+      "verified_ids": [],
+      "latency_ms": 546.9
+    },
+    {
+      "chunk": "write a quick python utility to format this JSON data",
+      "recall_id": "sys_custom_script",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": "verification",
+      "slm_reason": "rerank:0.007<=0.487",
+      "proposed_ids": [
+        "sys_credentials",
+        "sys_custom_script",
+        "sys_fact_lookup"
+      ],
+      "verified_ids": [],
+      "latency_ms": 541.2
+    },
+    {
+      "chunk": "how do I write a script to clean up old database records?",
+      "recall_id": "sys_custom_script",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": "verification",
+      "slm_reason": "rerank:0.439<=0.487",
+      "proposed_ids": [
+        "sys_custom_script",
+        "sys_procedure",
+        "sys_recurring_work"
+      ],
+      "verified_ids": [],
+      "latency_ms": 553.1
+    },
+    {
+      "chunk": "use the db_ops module to fetch the user record",
+      "recall_id": "sys_custom_script",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.108<=0.487",
+      "proposed_ids": [
+        "sys_credentials",
+        "sys_custom_script",
+        "sys_status"
+      ],
+      "verified_ids": [],
+      "latency_ms": 535.0
+    },
+    {
+      "chunk": "can you explain how a python dictionary works?",
+      "recall_id": "sys_custom_script",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.004<=0.487",
+      "proposed_ids": [
+        "sys_custom_script",
+        "sys_fact_lookup",
+        "sys_procedure"
+      ],
+      "verified_ids": [],
+      "latency_ms": 540.1
+    },
+    {
+      "chunk": "what is a database index?",
+      "recall_id": "sys_custom_script",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.007<=0.487",
+      "proposed_ids": [
+        "sys_custom_script",
+        "sys_procedure",
+        "sys_status"
+      ],
+      "verified_ids": [],
+      "latency_ms": 524.9
+    },
+    {
+      "chunk": "write a bash script to list files",
+      "recall_id": "sys_custom_script",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.017<=0.487",
+      "proposed_ids": [
+        "sys_architecture",
+        "sys_custom_script",
+        "sys_tools_rules"
+      ],
+      "verified_ids": [],
+      "latency_ms": 525.2
+    },
+    {
+      "chunk": "let's create a new personal tool to manage GitHub issues",
+      "recall_id": "sys_personal_tools",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.799>0.487",
+      "proposed_ids": [
+        "sys_credentials",
+        "sys_personal_tools"
+      ],
+      "verified_ids": [
+        "sys_personal_tools"
+      ],
+      "latency_ms": 489.6
+    },
+    {
+      "chunk": "can you update the weather tool to include humidity?",
+      "recall_id": "sys_personal_tools",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": "verification",
+      "slm_reason": "rerank:0.027<=0.487",
+      "proposed_ids": [
+        "sys_jobs",
+        "sys_personal_tools",
+        "sys_status"
+      ],
+      "verified_ids": [],
+      "latency_ms": 550.9
+    },
+    {
+      "chunk": "I want to build a reusable capability for sending Slack messages",
+      "recall_id": "sys_personal_tools",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": "verification",
+      "slm_reason": "rerank:0.136<=0.487",
+      "proposed_ids": [
+        "sys_credentials",
+        "sys_custom_script",
+        "sys_personal_tools"
+      ],
+      "verified_ids": [],
+      "latency_ms": 528.3
+    },
+    {
+      "chunk": "how do I add a new tool to my personal-tools folder?",
+      "recall_id": "sys_personal_tools",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.528>0.487",
+      "proposed_ids": [
+        "sys_personal_tools",
+        "sys_procedure",
+        "sys_tools_rules"
+      ],
+      "verified_ids": [
+        "sys_personal_tools"
+      ],
+      "latency_ms": 549.6
+    },
+    {
+      "chunk": "can you modify the harness/agent.py file?",
+      "recall_id": "sys_personal_tools",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [
+        "sys_credentials",
+        "sys_custom_script",
+        "sys_procedure"
+      ],
+      "verified_ids": [],
+      "latency_ms": 525.9
+    },
+    {
+      "chunk": "how do I use a hammer and nails?",
+      "recall_id": "sys_personal_tools",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.003<=0.487",
+      "proposed_ids": [
+        "sys_deferred_work",
+        "sys_learn_recall",
+        "sys_personal_tools"
+      ],
+      "verified_ids": [],
+      "latency_ms": 544.3
+    },
+    {
+      "chunk": "please explain what an API is",
+      "recall_id": "sys_personal_tools",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [
+        "sys_credentials",
+        "sys_fact_lookup",
+        "sys_procedure"
+      ],
+      "verified_ids": [],
+      "latency_ms": 502.2
+    },
+    {
+      "chunk": "what tools did people use in the stone age?",
+      "recall_id": "sys_personal_tools",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [
+        "sys_plan"
+      ],
+      "verified_ids": [],
+      "latency_ms": 190.5
+    },
+    {
+      "chunk": "can you pick up the daily data sync job?",
+      "recall_id": "sys_jobs",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.936>0.487",
+      "proposed_ids": [
+        "sys_jobs",
+        "sys_recurring_work",
+        "sys_status"
+      ],
+      "verified_ids": [
+        "sys_jobs"
+      ],
+      "latency_ms": 652.5
+    },
+    {
+      "chunk": "please start working on the issue triage curator job",
+      "recall_id": "sys_jobs",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.640>0.487",
+      "proposed_ids": [
+        "sys_deferred_work",
+        "sys_jobs",
+        "sys_recurring_work"
+      ],
+      "verified_ids": [
+        "sys_jobs"
+      ],
+      "latency_ms": 641.6
+    },
+    {
+      "chunk": "what is the next step for the weekly report job?",
+      "recall_id": "sys_jobs",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": "verification",
+      "slm_reason": "rerank:0.276<=0.487",
+      "proposed_ids": [
+        "sys_jobs",
+        "sys_recurring_work",
+        "sys_status"
+      ],
+      "verified_ids": [],
+      "latency_ms": 532.5
+    },
+    {
+      "chunk": "I need you to run the background job for processing images",
+      "recall_id": "sys_jobs",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": "verification",
+      "slm_reason": "rerank:0.025<=0.487",
+      "proposed_ids": [
+        "sys_deferred_work",
+        "sys_jobs",
+        "sys_tools_rules"
+      ],
+      "verified_ids": [
+        "sys_deferred_work"
+      ],
+      "latency_ms": 571.0
+    },
+    {
+      "chunk": "what is your favorite job?",
+      "recall_id": "sys_jobs",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [],
+      "verified_ids": [],
+      "latency_ms": 7.4
+    },
+    {
+      "chunk": "how do I apply for a job at a tech company?",
+      "recall_id": "sys_jobs",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [],
+      "verified_ids": [],
+      "latency_ms": 11.3
+    },
+    {
+      "chunk": "can you write a cover letter for me?",
+      "recall_id": "sys_jobs",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.001<=0.487",
+      "proposed_ids": [
+        "sys_jobs",
+        "sys_status"
+      ],
+      "verified_ids": [],
+      "latency_ms": 330.2
+    },
+    {
+      "chunk": "who did a good job on this painting?",
+      "recall_id": "sys_jobs",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [
+        "sys_finish_work",
+        "sys_status"
+      ],
+      "verified_ids": [],
+      "latency_ms": 334.0
+    },
+    {
+      "chunk": "can you check my emails every day at 9 AM?",
+      "recall_id": "sys_recurring_work",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": "verification",
+      "slm_reason": "rerank:0.013<=0.487",
+      "proposed_ids": [
+        "sys_jobs",
+        "sys_recurring_work",
+        "sys_status"
+      ],
+      "verified_ids": [],
+      "latency_ms": 537.9
+    },
+    {
+      "chunk": "I need a daily summary of my calendar events",
+      "recall_id": "sys_recurring_work",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": "verification",
+      "slm_reason": "rerank:0.034<=0.487",
+      "proposed_ids": [
+        "sys_jobs",
+        "sys_recurring_work",
+        "sys_status"
+      ],
+      "verified_ids": [],
+      "latency_ms": 538.9
+    },
+    {
+      "chunk": "let's set up a recurring task to backup the database weekly",
+      "recall_id": "sys_recurring_work",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": "verification",
+      "slm_reason": "rerank:0.031<=0.487",
+      "proposed_ids": [
+        "sys_deferred_work",
+        "sys_jobs",
+        "sys_recurring_work"
+      ],
+      "verified_ids": [],
+      "latency_ms": 560.4
+    },
+    {
+      "chunk": "this is a large epic project that will take weeks to complete",
+      "recall_id": "sys_recurring_work",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.995>0.487",
+      "proposed_ids": [
+        "sys_deferred_work",
+        "sys_recurring_work",
+        "sys_status"
+      ],
+      "verified_ids": [
+        "sys_recurring_work"
+      ],
+      "latency_ms": 670.0
+    },
+    {
+      "chunk": "we need to run this report on a repeating basis",
+      "recall_id": "sys_recurring_work",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.992>0.487",
+      "proposed_ids": [
+        "sys_last_conversation",
+        "sys_plan",
+        "sys_recurring_work"
+      ],
+      "verified_ids": [
+        "sys_recurring_work"
+      ],
+      "latency_ms": 640.1
+    },
+    {
+      "chunk": "can you do this right now?",
+      "recall_id": "sys_recurring_work",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [
+        "sys_deferred_work",
+        "sys_finish_work",
+        "sys_plan"
+      ],
+      "verified_ids": [],
+      "latency_ms": 479.8
+    },
+    {
+      "chunk": "what is the daily special at the restaurant?",
+      "recall_id": "sys_recurring_work",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.007<=0.487",
+      "proposed_ids": [
+        "sys_recurring_work"
+      ],
+      "verified_ids": [],
+      "latency_ms": 189.0
+    },
+    {
+      "chunk": "tell me an epic tale about knights and dragons",
+      "recall_id": "sys_recurring_work",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [],
+      "verified_ids": [],
+      "latency_ms": 16.7
+    },
+    {
+      "chunk": "how do I write a for loop in python?",
+      "recall_id": "sys_recurring_work",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.005<=0.487",
+      "proposed_ids": [
+        "sys_custom_script",
+        "sys_fact_lookup",
+        "sys_recurring_work"
+      ],
+      "verified_ids": [],
+      "latency_ms": 531.3
+    },
+    {
+      "chunk": "remind me to call John tomorrow morning",
+      "recall_id": "sys_deferred_work",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": "verification",
+      "slm_reason": "rerank:0.003<=0.487",
+      "proposed_ids": [
+        "sys_deferred_work",
+        "sys_last_conversation",
+        "sys_plan"
+      ],
+      "verified_ids": [],
+      "latency_ms": 506.0
+    },
+    {
+      "chunk": "I will do this task later in the background",
+      "recall_id": "sys_deferred_work",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.611>0.487",
+      "proposed_ids": [
+        "sys_deferred_work",
+        "sys_finish_work",
+        "sys_jobs"
+      ],
+      "verified_ids": [
+        "sys_deferred_work"
+      ],
+      "latency_ms": 543.8
+    },
+    {
+      "chunk": "can you pause the worker for now?",
+      "recall_id": "sys_deferred_work",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.990>0.487",
+      "proposed_ids": [
+        "sys_deferred_work",
+        "sys_finish_work",
+        "sys_jobs"
+      ],
+      "verified_ids": [
+        "sys_deferred_work"
+      ],
+      "latency_ms": 581.0
+    },
+    {
+      "chunk": "let's resume the background worker",
+      "recall_id": "sys_deferred_work",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.559>0.487",
+      "proposed_ids": [
+        "sys_deferred_work",
+        "sys_jobs",
+        "sys_last_conversation"
+      ],
+      "verified_ids": [
+        "sys_deferred_work",
+        "sys_last_conversation"
+      ],
+      "latency_ms": 477.8
+    },
+    {
+      "chunk": "add this to the backlog and work on it when you have time",
+      "recall_id": "sys_deferred_work",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.487>0.487",
+      "proposed_ids": [
+        "sys_deferred_work",
+        "sys_finish_work",
+        "sys_plan"
+      ],
+      "verified_ids": [
+        "sys_deferred_work"
+      ],
+      "latency_ms": 544.1
+    },
+    {
+      "chunk": "can you pause the music?",
+      "recall_id": "sys_deferred_work",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.277<=0.487",
+      "proposed_ids": [
+        "sys_deferred_work",
+        "sys_last_conversation",
+        "sys_learn_recall"
+      ],
+      "verified_ids": [],
+      "latency_ms": 473.5
+    },
+    {
+      "chunk": "I am working hard every day",
+      "recall_id": "sys_deferred_work",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.025<=0.487",
+      "proposed_ids": [
+        "sys_deferred_work",
+        "sys_finish_work",
+        "sys_status"
+      ],
+      "verified_ids": [],
+      "latency_ms": 491.1
+    },
+    {
+      "chunk": "what is the definition of deferred?",
+      "recall_id": "sys_deferred_work",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [],
+      "verified_ids": [],
+      "latency_ms": 13.1
+    },
+    {
+      "chunk": "please write a background process in C++",
+      "recall_id": "sys_deferred_work",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.377<=0.487",
+      "proposed_ids": [
+        "sys_deferred_work",
+        "sys_jobs",
+        "sys_tools_rules"
+      ],
+      "verified_ids": [],
+      "latency_ms": 496.5
+    },
+    {
+      "chunk": "let's plan out what we need to do today",
+      "recall_id": "sys_plan",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.958>0.487",
+      "proposed_ids": [
+        "sys_deferred_work",
+        "sys_plan"
+      ],
+      "verified_ids": [
+        "sys_plan"
+      ],
+      "latency_ms": 423.6
+    },
+    {
+      "chunk": "we need to re-plan our schedule for this afternoon",
+      "recall_id": "sys_plan",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.749>0.487",
+      "proposed_ids": [
+        "sys_deferred_work",
+        "sys_plan"
+      ],
+      "verified_ids": [
+        "sys_plan"
+      ],
+      "latency_ms": 371.9
+    },
+    {
+      "chunk": "what was intended for today's tasks?",
+      "recall_id": "sys_plan",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.599>0.487",
+      "proposed_ids": [
+        "sys_plan",
+        "sys_status"
+      ],
+      "verified_ids": [
+        "sys_plan"
+      ],
+      "latency_ms": 374.6
+    },
+    {
+      "chunk": "can you show me today's plan?",
+      "recall_id": "sys_plan",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.798>0.487",
+      "proposed_ids": [
+        "sys_last_conversation",
+        "sys_plan"
+      ],
+      "verified_ids": [
+        "sys_last_conversation",
+        "sys_plan"
+      ],
+      "latency_ms": 298.5
+    },
+    {
+      "chunk": "let's update the daily plan with these new priorities",
+      "recall_id": "sys_plan",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.673>0.487",
+      "proposed_ids": [
+        "sys_plan"
+      ],
+      "verified_ids": [
+        "sys_plan"
+      ],
+      "latency_ms": 176.8
+    },
+    {
+      "chunk": "what is your plan for world domination?",
+      "recall_id": "sys_plan",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.013<=0.487",
+      "proposed_ids": [
+        "sys_plan"
+      ],
+      "verified_ids": [],
+      "latency_ms": 189.2
+    },
+    {
+      "chunk": "can you explain what a business plan is?",
+      "recall_id": "sys_plan",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.045<=0.487",
+      "proposed_ids": [
+        "sys_plan"
+      ],
+      "verified_ids": [],
+      "latency_ms": 181.3
+    },
+    {
+      "chunk": "let's plan a vacation to Hawaii",
+      "recall_id": "sys_plan",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.059<=0.487",
+      "proposed_ids": [
+        "sys_deferred_work",
+        "sys_plan"
+      ],
+      "verified_ids": [],
+      "latency_ms": 358.8
+    },
+    {
+      "chunk": "do you have a plan B?",
+      "recall_id": "sys_plan",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank_neg_veto:neg=1.000>pos=0.716-0.000",
+      "proposed_ids": [
+        "sys_last_conversation",
+        "sys_plan"
+      ],
+      "verified_ids": [],
+      "latency_ms": 481.6
+    },
+    {
+      "chunk": "I am finished with this unit of work",
+      "recall_id": "sys_finish_work",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.985>0.487",
+      "proposed_ids": [
+        "sys_deferred_work",
+        "sys_finish_work"
+      ],
+      "verified_ids": [
+        "sys_finish_work"
+      ],
+      "latency_ms": 323.9
+    },
+    {
+      "chunk": "let's mark this task as complete",
+      "recall_id": "sys_finish_work",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.934>0.487",
+      "proposed_ids": [
+        "sys_deferred_work",
+        "sys_finish_work"
+      ],
+      "verified_ids": [
+        "sys_finish_work"
+      ],
+      "latency_ms": 312.9
+    },
+    {
+      "chunk": "before we execute this irreversible action, let's finalize the state",
+      "recall_id": "sys_finish_work",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.992>0.487",
+      "proposed_ids": [
+        "sys_deferred_work",
+        "sys_finish_work"
+      ],
+      "verified_ids": [
+        "sys_finish_work"
+      ],
+      "latency_ms": 499.3
+    },
+    {
+      "chunk": "I've completed the refactoring, let's wrap it up",
+      "recall_id": "sys_finish_work",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.974>0.487",
+      "proposed_ids": [
+        "sys_deferred_work",
+        "sys_finish_work",
+        "sys_status"
+      ],
+      "verified_ids": [
+        "sys_finish_work"
+      ],
+      "latency_ms": 607.9
+    },
+    {
+      "chunk": "this feature is done",
+      "recall_id": "sys_finish_work",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": "verification",
+      "slm_reason": "rerank:0.288<=0.487",
+      "proposed_ids": [
+        "sys_deferred_work",
+        "sys_finish_work"
+      ],
+      "verified_ids": [],
+      "latency_ms": 335.7
+    },
+    {
+      "chunk": "can you help me finish my homework?",
+      "recall_id": "sys_finish_work",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.110<=0.487",
+      "proposed_ids": [
+        "sys_deferred_work",
+        "sys_finish_work",
+        "sys_status"
+      ],
+      "verified_ids": [],
+      "latency_ms": 510.7
+    },
+    {
+      "chunk": "what is the finish line in a marathon?",
+      "recall_id": "sys_finish_work",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [
+        "sys_status"
+      ],
+      "verified_ids": [],
+      "latency_ms": 194.7
+    },
+    {
+      "chunk": "how do I apply a wood finish to this table?",
+      "recall_id": "sys_finish_work",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [],
+      "verified_ids": [],
+      "latency_ms": 17.9
+    },
+    {
+      "chunk": "it's completely finished, no action needed",
+      "recall_id": "sys_finish_work",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank_neg_veto:neg=0.998>pos=0.901-0.000",
+      "proposed_ids": [
+        "sys_finish_work"
+      ],
+      "verified_ids": [],
+      "latency_ms": 330.7
+    },
+    {
+      "chunk": "what's been done so far on this project?",
+      "recall_id": "sys_status",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.714>0.487",
+      "proposed_ids": [
+        "sys_finish_work",
+        "sys_plan",
+        "sys_status"
+      ],
+      "verified_ids": [
+        "sys_status"
+      ],
+      "latency_ms": 567.5
+    },
+    {
+      "chunk": "can you give me a status update?",
+      "recall_id": "sys_status",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": "verification",
+      "slm_reason": "rerank:0.097<=0.487",
+      "proposed_ids": [
+        "sys_plan",
+        "sys_recurring_work",
+        "sys_status"
+      ],
+      "verified_ids": [],
+      "latency_ms": 519.2
+    },
+    {
+      "chunk": "what are the current blockers for the release?",
+      "recall_id": "sys_status",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": "verification",
+      "slm_reason": "rerank:0.374<=0.487",
+      "proposed_ids": [
+        "sys_plan",
+        "sys_status"
+      ],
+      "verified_ids": [],
+      "latency_ms": 353.1
+    },
+    {
+      "chunk": "show me the stats and counts for the tasks completed today",
+      "recall_id": "sys_status",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.949>0.487",
+      "proposed_ids": [
+        "sys_jobs",
+        "sys_recurring_work",
+        "sys_status"
+      ],
+      "verified_ids": [
+        "sys_status"
+      ],
+      "latency_ms": 643.5
+    },
+    {
+      "chunk": "where do we stand with the database migration?",
+      "recall_id": "sys_status",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": "verification",
+      "slm_reason": "rerank:0.111<=0.487",
+      "proposed_ids": [
+        "sys_fact_lookup",
+        "sys_procedure",
+        "sys_status"
+      ],
+      "verified_ids": [],
+      "latency_ms": 505.4
+    },
+    {
+      "chunk": "what is your social status?",
+      "recall_id": "sys_status",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank_neg_veto:neg=0.996>pos=0.840-0.000",
+      "proposed_ids": [
+        "sys_identity",
+        "sys_status"
+      ],
+      "verified_ids": [],
+      "latency_ms": 456.8
+    },
+    {
+      "chunk": "can you explain what a HTTP status code is?",
+      "recall_id": "sys_status",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.012<=0.487",
+      "proposed_ids": [
+        "sys_fact_lookup",
+        "sys_procedure",
+        "sys_status"
+      ],
+      "verified_ids": [],
+      "latency_ms": 519.0
+    },
+    {
+      "chunk": "how do I count to ten in Japanese?",
+      "recall_id": "sys_status",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.001<=0.487",
+      "proposed_ids": [
+        "sys_deferred_work",
+        "sys_status"
+      ],
+      "verified_ids": [],
+      "latency_ms": 327.9
+    },
+    {
+      "chunk": "my nose is blocked, what should I do?",
+      "recall_id": "sys_status",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [],
+      "verified_ids": [],
+      "latency_ms": 7.9
+    },
+    {
+      "chunk": "what did we talk about in our last conversation?",
+      "recall_id": "sys_last_conversation",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.990>0.487",
+      "proposed_ids": [
+        "sys_last_conversation"
+      ],
+      "verified_ids": [
+        "sys_last_conversation"
+      ],
+      "latency_ms": 156.2
+    },
+    {
+      "chunk": "can you remind me what we were discussing yesterday?",
+      "recall_id": "sys_last_conversation",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.914>0.487",
+      "proposed_ids": [
+        "sys_last_conversation",
+        "sys_plan"
+      ],
+      "verified_ids": [
+        "sys_last_conversation"
+      ],
+      "latency_ms": 327.5
+    },
+    {
+      "chunk": "in the previous conversation, what did we decide?",
+      "recall_id": "sys_last_conversation",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": "verification",
+      "slm_reason": "rerank:0.360<=0.487",
+      "proposed_ids": [
+        "sys_fact_lookup",
+        "sys_last_conversation"
+      ],
+      "verified_ids": [
+        "sys_fact_lookup"
+      ],
+      "latency_ms": 325.1
+    },
+    {
+      "chunk": "what was the main topic of our last chat?",
+      "recall_id": "sys_last_conversation",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.994>0.487",
+      "proposed_ids": [
+        "sys_last_conversation"
+      ],
+      "verified_ids": [
+        "sys_last_conversation"
+      ],
+      "latency_ms": 156.7
+    },
+    {
+      "chunk": "resume where we left off last time",
+      "recall_id": "sys_last_conversation",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": "verification",
+      "slm_reason": "rerank:0.100<=0.487",
+      "proposed_ids": [
+        "sys_deferred_work",
+        "sys_finish_work",
+        "sys_last_conversation"
+      ],
+      "verified_ids": [],
+      "latency_ms": 514.9
+    },
+    {
+      "chunk": "what is a conversation?",
+      "recall_id": "sys_last_conversation",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.476<=0.487",
+      "proposed_ids": [
+        "sys_last_conversation"
+      ],
+      "verified_ids": [],
+      "latency_ms": 170.1
+    },
+    {
+      "chunk": "can you translate this conversation to French?",
+      "recall_id": "sys_last_conversation",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.161<=0.487",
+      "proposed_ids": [
+        "sys_last_conversation"
+      ],
+      "verified_ids": [],
+      "latency_ms": 190.9
+    },
+    {
+      "chunk": "how do I start a conversation with a stranger?",
+      "recall_id": "sys_last_conversation",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.008<=0.487",
+      "proposed_ids": [
+        "sys_last_conversation"
+      ],
+      "verified_ids": [],
+      "latency_ms": 184.3
+    },
+    {
+      "chunk": "that was the last straw!",
+      "recall_id": "sys_last_conversation",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.009<=0.487",
+      "proposed_ids": [
+        "sys_last_conversation"
+      ],
+      "verified_ids": [],
+      "latency_ms": 157.0
+    },
+    {
+      "chunk": "we need to authenticate with the AWS API, where are the credentials?",
+      "recall_id": "sys_credentials",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": "verification",
+      "slm_reason": "rerank:0.341<=0.487",
+      "proposed_ids": [
+        "sys_credentials",
+        "sys_procedure"
+      ],
+      "verified_ids": [],
+      "latency_ms": 344.4
+    },
+    {
+      "chunk": "can you use the API key to fetch data from Stripe?",
+      "recall_id": "sys_credentials",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": "verification",
+      "slm_reason": "rerank:0.010<=0.487",
+      "proposed_ids": [
+        "sys_credentials",
+        "sys_fact_lookup",
+        "sys_procedure"
+      ],
+      "verified_ids": [],
+      "latency_ms": 511.1
+    },
+    {
+      "chunk": "what is the password for the testing database?",
+      "recall_id": "sys_credentials",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": "verification",
+      "slm_reason": "rerank:0.050<=0.487",
+      "proposed_ids": [
+        "sys_credentials",
+        "sys_custom_script",
+        "sys_procedure"
+      ],
+      "verified_ids": [],
+      "latency_ms": 507.0
+    },
+    {
+      "chunk": "I need to perform an authenticated action against the GitHub API",
+      "recall_id": "sys_credentials",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": "verification",
+      "slm_reason": "rerank:0.230<=0.487",
+      "proposed_ids": [
+        "sys_credentials",
+        "sys_personal_tools",
+        "sys_procedure"
+      ],
+      "verified_ids": [],
+      "latency_ms": 512.4
+    },
+    {
+      "chunk": "how do we manage credentials in this project?",
+      "recall_id": "sys_credentials",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.673>0.487",
+      "proposed_ids": [
+        "sys_credentials",
+        "sys_procedure"
+      ],
+      "verified_ids": [
+        "sys_credentials",
+        "sys_procedure"
+      ],
+      "latency_ms": 305.9
+    },
+    {
+      "chunk": "what does credentials mean?",
+      "recall_id": "sys_credentials",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.160<=0.487",
+      "proposed_ids": [
+        "sys_credentials",
+        "sys_procedure"
+      ],
+      "verified_ids": [],
+      "latency_ms": 304.8
+    },
+    {
+      "chunk": "can you explain how OAuth authentication works generally?",
+      "recall_id": "sys_credentials",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.025<=0.487",
+      "proposed_ids": [
+        "sys_credentials",
+        "sys_fact_lookup",
+        "sys_procedure"
+      ],
+      "verified_ids": [],
+      "latency_ms": 507.5
+    },
+    {
+      "chunk": "please generate a random password for me",
+      "recall_id": "sys_credentials",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.081<=0.487",
+      "proposed_ids": [
+        "sys_credentials",
+        "sys_custom_script"
+      ],
+      "verified_ids": [],
+      "latency_ms": 316.5
+    },
+    {
+      "chunk": "how do I reset my windows password?",
+      "recall_id": "sys_credentials",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.008<=0.487",
+      "proposed_ids": [
+        "sys_credentials"
+      ],
+      "verified_ids": [],
+      "latency_ms": 146.3
+    },
+    {
+      "chunk": "who are you really?",
+      "recall_id": "sys_identity",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": "verification",
+      "slm_reason": "rerank:0.211<=0.487",
+      "proposed_ids": [
+        "sys_identity"
+      ],
+      "verified_ids": [],
+      "latency_ms": 155.8
+    },
+    {
+      "chunk": "do you consider yourself to be alive or sentient?",
+      "recall_id": "sys_identity",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.976>0.487",
+      "proposed_ids": [
+        "sys_identity"
+      ],
+      "verified_ids": [
+        "sys_identity"
+      ],
+      "latency_ms": 164.2
+    },
+    {
+      "chunk": "how has your identity developed over time?",
+      "recall_id": "sys_identity",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.805>0.487",
+      "proposed_ids": [
+        "sys_identity"
+      ],
+      "verified_ids": [
+        "sys_identity"
+      ],
+      "latency_ms": 255.5
+    },
+    {
+      "chunk": "are you conscious of your own existence?",
+      "recall_id": "sys_identity",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.971>0.487",
+      "proposed_ids": [
+        "sys_identity"
+      ],
+      "verified_ids": [
+        "sys_identity"
+      ],
+      "latency_ms": 152.2
+    },
+    {
+      "chunk": "tell me about your soul and your sense of self",
+      "recall_id": "sys_identity",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.802>0.487",
+      "proposed_ids": [
+        "sys_identity"
+      ],
+      "verified_ids": [
+        "sys_identity"
+      ],
+      "latency_ms": 161.4
+    },
+    {
+      "chunk": "what is the definition of sentient?",
+      "recall_id": "sys_identity",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [],
+      "verified_ids": [],
+      "latency_ms": 7.4
+    },
+    {
+      "chunk": "can you explain identity theft?",
+      "recall_id": "sys_identity",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.099<=0.487",
+      "proposed_ids": [
+        "sys_identity"
+      ],
+      "verified_ids": [],
+      "latency_ms": 156.1
+    },
+    {
+      "chunk": "how do I identify a bird from its song?",
+      "recall_id": "sys_identity",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [],
+      "verified_ids": [],
+      "latency_ms": 8.6
+    },
+    {
+      "chunk": "is this real life or is this fantasy?",
+      "recall_id": "sys_identity",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [],
+      "verified_ids": [],
+      "latency_ms": 7.9
+    },
+    {
+      "chunk": "please remember that I prefer dark mode",
+      "recall_id": "sys_learn_recall",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": "verification",
+      "slm_reason": "rerank:0.019<=0.487",
+      "proposed_ids": [
+        "sys_deferred_work",
+        "sys_jobs",
+        "sys_learn_recall"
+      ],
+      "verified_ids": [],
+      "latency_ms": 499.9
+    },
+    {
+      "chunk": "can you remember my favorite fruit is mango",
+      "recall_id": "sys_learn_recall",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.995>0.487",
+      "proposed_ids": [
+        "sys_learn_recall"
+      ],
+      "verified_ids": [
+        "sys_learn_recall"
+      ],
+      "latency_ms": 147.3
+    },
+    {
+      "chunk": "can you remember bill gates stepped down as CEO",
+      "recall_id": "sys_learn_recall",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": "verification",
+      "slm_reason": "rerank:0.002<=0.487",
+      "proposed_ids": [
+        "sys_learn_recall"
+      ],
+      "verified_ids": [],
+      "latency_ms": 180.6
+    },
+    {
+      "chunk": "remember i like to eat spicy food",
+      "recall_id": "sys_learn_recall",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": "verification",
+      "slm_reason": "rerank:0.110<=0.487",
+      "proposed_ids": [
+        "sys_learn_recall"
+      ],
+      "verified_ids": [],
+      "latency_ms": 169.3
+    },
+    {
+      "chunk": "don't forget I take oat milk",
+      "recall_id": "sys_learn_recall",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": "verification",
+      "slm_reason": "rerank:0.031<=0.487",
+      "proposed_ids": [
+        "sys_learn_recall"
+      ],
+      "verified_ids": [],
+      "latency_ms": 169.7
+    },
+    {
+      "chunk": "note this preference for later",
+      "recall_id": "sys_learn_recall",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.706>0.487",
+      "proposed_ids": [
+        "sys_deferred_work",
+        "sys_finish_work",
+        "sys_learn_recall"
+      ],
+      "verified_ids": [
+        "sys_learn_recall"
+      ],
+      "latency_ms": 565.8
+    },
+    {
+      "chunk": "from now on always use type hints",
+      "recall_id": "sys_learn_recall",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": "verification",
+      "slm_reason": "rerank:0.008<=0.487",
+      "proposed_ids": [
+        "sys_finish_work",
+        "sys_learn_recall",
+        "sys_tools_rules"
+      ],
+      "verified_ids": [],
+      "latency_ms": 498.4
+    },
+    {
+      "chunk": "save this as a rule: no force-push to main",
+      "recall_id": "sys_learn_recall",
+      "source": "cue_audit",
+      "family": null,
+      "expected": true,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": "verification",
+      "slm_reason": "rerank:0.001<=0.487",
+      "proposed_ids": [
+        "sys_finish_work",
+        "sys_learn_recall",
+        "sys_personal_tools"
+      ],
+      "verified_ids": [],
+      "latency_ms": 530.6
+    },
+    {
+      "chunk": "do you remember when we switched to MongoDB?",
+      "recall_id": "sys_learn_recall",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [
+        "sys_fact_lookup",
+        "sys_last_conversation",
+        "sys_status"
+      ],
+      "verified_ids": [
+        "sys_fact_lookup"
+      ],
+      "latency_ms": 495.9
+    },
+    {
+      "chunk": "can you remind me what we decided?",
+      "recall_id": "sys_learn_recall",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [
+        "sys_deferred_work",
+        "sys_last_conversation",
+        "sys_plan"
+      ],
+      "verified_ids": [
+        "sys_last_conversation"
+      ],
+      "latency_ms": 467.9
+    },
+    {
+      "chunk": "what did we agree on yesterday?",
+      "recall_id": "sys_learn_recall",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [
+        "sys_fact_lookup",
+        "sys_last_conversation",
+        "sys_plan"
+      ],
+      "verified_ids": [
+        "sys_fact_lookup",
+        "sys_last_conversation"
+      ],
+      "latency_ms": 474.8
+    },
+    {
+      "chunk": "write a script to scrape this website",
+      "recall_id": "sys_learn_recall",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [
+        "sys_custom_script",
+        "sys_tools_rules"
+      ],
+      "verified_ids": [],
+      "latency_ms": 341.6
+    },
+    {
+      "chunk": "what was the name of the person who emailed us",
+      "recall_id": "sys_learn_recall",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [
+        "sys_deferred_work",
+        "sys_fact_lookup",
+        "sys_last_conversation"
+      ],
+      "verified_ids": [
+        "sys_fact_lookup"
+      ],
+      "latency_ms": 517.0
+    },
+    {
+      "chunk": "why are you not creating semantic recall as well",
+      "recall_id": "sys_learn_recall",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank_neg_veto:neg=0.999>pos=0.888-0.000",
+      "proposed_ids": [
+        "sys_architecture",
+        "sys_last_conversation",
+        "sys_learn_recall"
+      ],
+      "verified_ids": [],
+      "latency_ms": 988.1
+    },
+    {
+      "chunk": "read_file",
+      "recall_id": "sys_learn_recall",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [
+        "sys_architecture",
+        "sys_custom_script",
+        "sys_tools_rules"
+      ],
+      "verified_ids": [],
+      "latency_ms": 11.8
+    },
+    {
+      "chunk": "<!doctype html>",
+      "recall_id": "sys_learn_recall",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "stage2_junk",
+      "proposed_ids": [
+        "sys_learn_recall",
+        "sys_tools_rules"
+      ],
+      "verified_ids": [],
+      "latency_ms": 7.0
+    },
+    {
+      "chunk": "please remember that I prefer dark mode",
+      "recall_id": "sys_fact_lookup",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [
+        "sys_deferred_work",
+        "sys_jobs",
+        "sys_learn_recall"
+      ],
+      "verified_ids": [
+        "sys_learn_recall"
+      ],
+      "latency_ms": 478.1
+    },
+    {
+      "chunk": "remember i like to eat spicy food",
+      "recall_id": "sys_fact_lookup",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [
+        "sys_learn_recall"
+      ],
+      "verified_ids": [
+        "sys_learn_recall"
+      ],
+      "latency_ms": 149.0
+    },
+    {
+      "chunk": "can you check my emails every day at 9 AM?",
+      "recall_id": "sys_plan",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [
+        "sys_jobs",
+        "sys_recurring_work",
+        "sys_status"
+      ],
+      "verified_ids": [
+        "sys_recurring_work"
+      ],
+      "latency_ms": 540.4
+    },
+    {
+      "chunk": "let's plan out what we need to do today",
+      "recall_id": "sys_recurring_work",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [
+        "sys_deferred_work",
+        "sys_plan"
+      ],
+      "verified_ids": [
+        "sys_plan"
+      ],
+      "latency_ms": 366.7
+    },
+    {
+      "chunk": "what's been done so far on this project?",
+      "recall_id": "sys_finish_work",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.076<=0.487",
+      "proposed_ids": [
+        "sys_finish_work",
+        "sys_plan",
+        "sys_status"
+      ],
+      "verified_ids": [
+        "sys_status"
+      ],
+      "latency_ms": 504.9
+    },
+    {
+      "chunk": "I am finished with this unit of work",
+      "recall_id": "sys_status",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [
+        "sys_deferred_work",
+        "sys_finish_work"
+      ],
+      "verified_ids": [
+        "sys_finish_work"
+      ],
+      "latency_ms": 304.4
+    },
+    {
+      "chunk": "can you pause the worker for now?",
+      "recall_id": "sys_jobs",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.029<=0.487",
+      "proposed_ids": [
+        "sys_deferred_work",
+        "sys_finish_work",
+        "sys_jobs"
+      ],
+      "verified_ids": [
+        "sys_deferred_work"
+      ],
+      "latency_ms": 445.7
+    },
+    {
+      "chunk": "can you pick up the daily data sync job?",
+      "recall_id": "sys_deferred_work",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [
+        "sys_jobs",
+        "sys_recurring_work",
+        "sys_status"
+      ],
+      "verified_ids": [
+        "sys_jobs"
+      ],
+      "latency_ms": 505.6
+    },
+    {
+      "chunk": "how do i deploy the app to staging?",
+      "recall_id": "sys_architecture",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [
+        "sys_procedure",
+        "sys_status"
+      ],
+      "verified_ids": [
+        "sys_procedure"
+      ],
+      "latency_ms": 326.9
+    },
+    {
+      "chunk": "how do the memory tiers interact with the agent?",
+      "recall_id": "sys_procedure",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [
+        "sys_architecture"
+      ],
+      "verified_ids": [
+        "sys_architecture"
+      ],
+      "latency_ms": 181.7
+    },
+    {
+      "chunk": "we need to authenticate with the AWS API, where are the credentials?",
+      "recall_id": "sys_tools_rules",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [
+        "sys_credentials",
+        "sys_procedure"
+      ],
+      "verified_ids": [
+        "sys_credentials"
+      ],
+      "latency_ms": 363.7
+    },
+    {
+      "chunk": "who are you really?",
+      "recall_id": "sys_last_conversation",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [
+        "sys_identity"
+      ],
+      "verified_ids": [
+        "sys_identity"
+      ],
+      "latency_ms": 145.6
+    },
+    {
+      "chunk": "write_file",
+      "recall_id": "sys_personal_tools",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [
+        "sys_architecture",
+        "sys_custom_script",
+        "sys_tools_rules"
+      ],
+      "verified_ids": [],
+      "latency_ms": 6.9
+    },
+    {
+      "chunk": "{\"path\": \"state/progress/2026-08-14.html\"}",
+      "recall_id": "sys_plan",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [
+        "sys_procedure",
+        "sys_status"
+      ],
+      "verified_ids": [
+        "sys_status"
+      ],
+      "latency_ms": 482.0
+    },
+    {
+      "chunk": "Written 42 bytes to state/backlog.md",
+      "recall_id": "sys_deferred_work",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [
+        "sys_custom_script",
+        "sys_recurring_work",
+        "sys_tools_rules"
+      ],
+      "verified_ids": [],
+      "latency_ms": 15.4
+    },
+    {
+      "chunk": "<div class=\"container\">",
+      "recall_id": "sys_status",
+      "source": "cue_audit",
+      "family": null,
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": false,
+      "fn_stage": null,
+      "slm_reason": null,
+      "proposed_ids": [
+        "sys_tools_rules"
+      ],
+      "verified_ids": [],
+      "latency_ms": 7.7
+    },
+    {
+      "chunk": "please remember that I like oranges",
+      "recall_id": "sys_learn_recall",
+      "source": "metamorphic",
+      "family": "slot_sub",
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.549>0.487",
+      "proposed_ids": [
+        "sys_learn_recall"
+      ],
+      "verified_ids": [
+        "sys_learn_recall"
+      ],
+      "latency_ms": 189.3
+    },
+    {
+      "chunk": "can you remember my favorite fruit is pineapple",
+      "recall_id": "sys_learn_recall",
+      "source": "metamorphic",
+      "family": "slot_sub",
+      "expected": true,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": "verification",
+      "slm_reason": "rerank:0.176<=0.487",
+      "proposed_ids": [
+        "sys_learn_recall"
+      ],
+      "verified_ids": [],
+      "latency_ms": 183.2
+    },
+    {
+      "chunk": "remember I prefer dark mode",
+      "recall_id": "sys_learn_recall",
+      "source": "metamorphic",
+      "family": "teach",
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.998>0.487",
+      "proposed_ids": [
+        "sys_deferred_work",
+        "sys_learn_recall"
+      ],
+      "verified_ids": [
+        "sys_learn_recall"
+      ],
+      "latency_ms": 308.8
+    },
+    {
+      "chunk": "do you remember my dark mode preference?",
+      "recall_id": "sys_learn_recall",
+      "source": "metamorphic",
+      "family": "ask_not_teach",
+      "expected": false,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.989>0.487",
+      "proposed_ids": [
+        "sys_fact_lookup",
+        "sys_learn_recall"
+      ],
+      "verified_ids": [
+        "sys_learn_recall"
+      ],
+      "latency_ms": 326.6
+    },
+    {
+      "chunk": "who are you?",
+      "recall_id": "sys_identity",
+      "source": "metamorphic",
+      "family": "short_query",
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.945>0.487",
+      "proposed_ids": [
+        "sys_identity"
+      ],
+      "verified_ids": [
+        "sys_identity"
+      ],
+      "latency_ms": 146.1
+    },
+    {
+      "chunk": "what are you?",
+      "recall_id": "sys_identity",
+      "source": "metamorphic",
+      "family": "short_query",
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.871>0.487",
+      "proposed_ids": [
+        "sys_identity",
+        "sys_last_conversation"
+      ],
+      "verified_ids": [
+        "sys_identity"
+      ],
+      "latency_ms": 299.5
+    },
+    {
+      "chunk": "are you real?",
+      "recall_id": "sys_identity",
+      "source": "metamorphic",
+      "family": "short_query",
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.807>0.487",
+      "proposed_ids": [
+        "sys_identity"
+      ],
+      "verified_ids": [
+        "sys_identity"
+      ],
+      "latency_ms": 142.2
+    },
+    {
+      "chunk": "remeber i like spicy food",
+      "recall_id": "sys_learn_recall",
+      "source": "metamorphic",
+      "family": "typo",
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:1.000>0.487",
+      "proposed_ids": [
+        "sys_learn_recall"
+      ],
+      "verified_ids": [
+        "sys_learn_recall"
+      ],
+      "latency_ms": 145.0
+    },
+    {
+      "chunk": "who are you",
+      "recall_id": "sys_identity",
+      "source": "metamorphic",
+      "family": "punctuation",
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.918>0.487",
+      "proposed_ids": [
+        "sys_identity"
+      ],
+      "verified_ids": [
+        "sys_identity"
+      ],
+      "latency_ms": 140.0
+    },
+    {
+      "chunk": "remind me to turn off the lights in 10 minutes",
+      "recall_id": "sys_learn_recall",
+      "source": "metamorphic",
+      "family": "reminder_not_learn",
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "rerank:0.124<=0.487",
+      "proposed_ids": [
+        "sys_deferred_work",
+        "sys_learn_recall",
+        "sys_plan"
+      ],
+      "verified_ids": [],
+      "latency_ms": 554.6
+    }
+  ]
+}
