@@ -108,8 +108,8 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
 
     @app.before_request
     def _require_tower_auth():
-        # This route performs its own per-tenant HMAC authentication.
-        if request.path == "/internal/slack/ingress":
+        # These routes perform their own per-tenant HMAC authentication.
+        if request.path in {"/internal/slack/ingress", "/internal/config/reset"}:
             return None
         if os.environ.get("REPLIKA_CONTROL_PLANE_ONLY", "").lower() in {
             "1", "true", "yes",
@@ -222,6 +222,8 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
     register_replika_control_plane(app)
     from .slack_runtime import register_slack_runtime
     register_slack_runtime(app, agent, scheduler, MAIN_CHANNEL_ID)
+    from .config_reset import register_config_reset
+    register_config_reset(app)
     from .phone_bridge import register_phone_bridge
     register_phone_bridge(app)
     from .devices_board import register_devices_board

@@ -289,13 +289,6 @@ class Provisioner:
     def restart(self, replika: dict[str, Any]) -> None:
         self._invoke(replika, "restart")
 
-    def reset_config(self, replika: dict[str, Any]) -> dict[str, Any]:
-        """Force-overwrite this Replika's persisted config/ files with the
-        latest defaults baked into its currently deployed image. Not a
-        lifecycle transition, so this waits for the result instead of firing
-        an async request like start()/delete()."""
-        return self._invoke_sync(replika, "reset_config")
-
     def _invoke(self, replika: dict[str, Any], operation: str) -> None:
         if not self.function_arn:
             if (
@@ -316,31 +309,6 @@ class Provisioner:
         )
         if response.get("StatusCode") != 202:
             raise RuntimeError("provider provisioner rejected the request")
-
-    def _invoke_sync(self, replika: dict[str, Any], operation: str) -> dict[str, Any]:
-        if not self.function_arn:
-            if (
-                os.environ.get("REPLIKA_PROVISIONING_MODE", "local") == "local"
-                and local_provisioning_allowed()
-            ):
-                return {"status": "skipped"}
-            raise RuntimeError("provider provisioner is not configured")
-        client = self._lambda_client
-        if client is None:
-            import boto3
-
-            client = boto3.client("lambda")
-        response = client.invoke(
-            FunctionName=self.function_arn,
-            InvocationType="RequestResponse",
-            Payload=json.dumps(self._payload(replika, operation)).encode("utf-8"),
-        )
-        payload = json.loads(response["Payload"].read() or b"{}")
-        if response.get("FunctionError"):
-            raise RuntimeError(
-                payload.get("errorMessage") or "provider provisioner reported an error"
-            )
-        return payload
 
 
 _sync_db = None
@@ -419,6 +387,33 @@ def _callback_authenticated() -> bool:
     expected = os.environ.get("REPLIKA_PROVISIONER_CALLBACK_TOKEN", "")
     supplied = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
     return bool(expected) and hmac.compare_digest(expected, supplied)
+
+
+def _reset_tenant_config(document: dict[str, Any]) -> list[str]:
+    """Ask the tenant runtime to restore its own config defaults.
+
+    Deliberately not routed through the provisioner: a one-off task can rewrite
+    the files but cannot invalidate the caches the serving process built from
+    them, and it pays a cold image pull to copy a few kilobytes.
+    """
+    from .slack_integration import (
+        TenantAuthVault,
+        TenantTransport,
+        signed_internal_headers,
+        validated_tenant_url,
+    )
+
+    replika_id = replika_id_of(document)
+    vault = current_app.config.get("SLACK_TENANT_AUTH_VAULT") or TenantAuthVault()
+    transport = current_app.config.get("SLACK_TENANT_TRANSPORT") or TenantTransport()
+    payload = {"tenant_id": replika_id}
+    body = json.dumps(payload, separators=(",", ":")).encode()
+    headers = signed_internal_headers(
+        replika_id, body, vault.get(vault.ensure(replika_id))
+    )
+    url = validated_tenant_url(document["product_url"]) + "/internal/config/reset"
+    result = transport.post(url, payload, headers) or {}
+    return list(result.get("changed_files") or [])
 
 
 def _purge_slack_for_replika(replika_id: str) -> None:
@@ -650,8 +645,8 @@ def register_replika_control_plane(app) -> None:
                 return jsonify(
                     {"error": "That Replika must be ready before resetting its config."}
                 ), 409
-            _provisioner().reset_config(document)
-            return jsonify({"status": "ok"})
+            changed = _reset_tenant_config(document)
+            return jsonify({"status": "ok", "changed_files": changed})
         except PermissionError:
             return jsonify({"error": "Unauthorized"}), 401
         except Exception:

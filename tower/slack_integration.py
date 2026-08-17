@@ -224,7 +224,9 @@ def internal_signature_valid(
 class TenantTransport:
     """Injectable authenticated HTTP transport to tenant runtimes."""
 
-    def post(self, url: str, payload: dict[str, Any], headers: dict[str, str]) -> None:
+    def post(
+        self, url: str, payload: dict[str, Any], headers: dict[str, str]
+    ) -> dict[str, Any]:
         body = json.dumps(payload, separators=(",", ":")).encode()
         req = urllib.request.Request(url, data=body, headers=headers, method="POST")
         opener = urllib.request.build_opener(_RejectRedirects())
@@ -232,8 +234,13 @@ class TenantTransport:
             with opener.open(req, timeout=10) as response:
                 if response.status not in {200, 202}:
                     raise RuntimeError(f"tenant returned HTTP {response.status}")
+                raw = response.read()
         except (urllib.error.URLError, TimeoutError) as exc:
-            raise RuntimeError("tenant Slack ingress failed") from exc
+            raise RuntimeError("tenant internal request failed") from exc
+        try:
+            return json.loads(raw or b"{}")
+        except json.JSONDecodeError:
+            return {}
 
 
 class _RejectRedirects(urllib.request.HTTPRedirectHandler):

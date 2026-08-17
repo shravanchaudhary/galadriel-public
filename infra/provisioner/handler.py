@@ -16,6 +16,11 @@ from botocore.exceptions import ClientError
 
 _callback_secret = None
 
+# Tenant paths that authenticate themselves with a per-tenant HMAC and must
+# therefore reach the runtime instead of being sent through Cognito's
+# interactive redirect.
+INTERNAL_BYPASS_PATHS = ("/internal/slack/ingress", "/internal/config/reset")
+
 # Overwrites a tenant's persisted config/ files with the image's baked-in
 # defaults (/opt/galadriel-defaults), run via a one-off ECS RunTask against
 # the tenant's own task definition and S3 Files volume. Unlike the entrypoint's
@@ -23,6 +28,10 @@ _callback_secret = None
 # replaces existing content, and only touches files present in the defaults
 # tree so tenant-only runtime files (config/scheduler_state.json,
 # config/ambient_state.json) are left alone.
+#
+# Operator fallback only: the control plane resets config over the signed
+# /internal/config/reset route so the serving process can invalidate the caches
+# it built from these files. A task-based reset cannot.
 RESET_CONFIG_PAYLOAD = r"""
 import json
 import os
@@ -409,21 +418,26 @@ def _ensure_rule(
                 if condition.get("Field") == "path-pattern"
                 for value in condition.get("Values", [])
             ]
-            if "/internal/slack/ingress" in patterns:
+            if any(path in patterns for path in INTERNAL_BYPASS_PATHS):
                 internal_rule = rule
                 break
+    internal_conditions = [
+        {"Field": "host-header", "Values": [host]},
+        {"Field": "path-pattern", "Values": list(INTERNAL_BYPASS_PATHS)},
+    ]
     if internal_rule:
+        # Conditions are re-sent so tenants created before a path was added to
+        # INTERNAL_BYPASS_PATHS pick it up instead of Cognito-redirecting it.
         elbv2.modify_rule(
-            RuleArn=internal_rule["RuleArn"], Actions=internal_actions
+            RuleArn=internal_rule["RuleArn"],
+            Conditions=internal_conditions,
+            Actions=internal_actions,
         )
     else:
         elbv2.create_rule(
             ListenerArn=listener,
             Priority=_internal_listener_priority(elbv2, listener, owner_id),
-            Conditions=[
-                {"Field": "host-header", "Values": [host]},
-                {"Field": "path-pattern", "Values": ["/internal/slack/ingress"]},
-            ],
+            Conditions=internal_conditions,
             Actions=internal_actions,
             Tags=[
                 {"Key": "ReplikaManaged", "Value": "true"},

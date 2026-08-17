@@ -22,6 +22,7 @@ os.environ.update(
         "REPLIKA_ALLOW_LOCAL_PROVISIONING": "true",
         "REPLIKA_CONTROL_PLANE_ONLY": "true",
         "REPLIKA_PROVISIONER_CALLBACK_TOKEN": "callback-token",
+        "SLACK_TENANT_PRODUCT_DOMAIN": "replika.example",
     }
 )
 os.environ.pop("MONGO_URI", None)
@@ -29,6 +30,7 @@ os.environ.pop("REDIS_URL", None)
 
 from flask import Flask  # noqa: E402
 from tower import auth as tower_auth  # noqa: E402
+from tower.slack_integration import internal_signature_valid  # noqa: E402
 from tower.replika_control_plane import (  # noqa: E402
     Provisioner,
     UsernameUnavailable,
@@ -143,23 +145,22 @@ class _Provisioner:
     def resume(self, replika):
         pass
 
-    def reset_config(self, replika):
-        return {"status": "ok"}
 
-    def stop(self, replika):
-        pass
+class _AuthVault:
+    def ensure(self, replika_id):
+        return f"vault://auth/{replika_id}"
 
-    def start_replika(self, replika):
-        pass
+    def get(self, secret_ref):
+        return "tenant-hmac-secret"
 
-    def pause(self, replika):
-        pass
 
-    def resume(self, replika):
-        pass
+class _Transport:
+    def __init__(self):
+        self.calls = []
 
-    def reset_config(self, replika):
-        return {"status": "ok"}
+    def post(self, url, payload, headers):
+        self.calls.append((url, payload, headers))
+        return {"status": "ok", "changed_files": ["SOUL.md"]}
 
 
 def _assert(condition, message):
@@ -218,9 +219,12 @@ register_replika_control_plane(app)
 store = _Store()
 provisioner = _Provisioner()
 purged = []
+transport = _Transport()
 app.config["REPLIKA_STORE"] = store
 app.config["REPLIKA_PROVISIONER"] = provisioner
 app.config["REPLIKA_SLACK_PURGE"] = purged.append
+app.config["SLACK_TENANT_AUTH_VAULT"] = _AuthVault()
+app.config["SLACK_TENANT_TRANSPORT"] = transport
 client = app.test_client()
 
 anonymous = client.get("/api/replikas")
@@ -282,6 +286,34 @@ store.update_status(second_id, "creating")
 provisioning = client.get(f"/api/replikas/{second_id}").get_json()["replika"]
 _assert(provisioning["status_label"] == "Provisioning", "creating label is Provisioning")
 _assert(provisioning["url"] is None, "URL stays hidden until provisioning completes")
+
+reset = client.post(
+    f"/api/replikas/{first_id}/reset-config",
+    headers={"Origin": "http://localhost"},
+)
+reset_body = reset.get_json()
+_assert(reset.status_code == 200, f"reset failed: {reset_body}")
+_assert(reset_body["changed_files"] == ["SOUL.md"], "reset reports what it restored")
+reset_url, reset_payload, reset_headers = transport.calls[-1]
+_assert(
+    reset_url == "https://alice.replika.example/internal/config/reset",
+    f"reset goes to the tenant runtime, not the provisioner: {reset_url}",
+)
+_assert(
+    internal_signature_valid(
+        first_id,
+        json.dumps(reset_payload, separators=(",", ":")).encode(),
+        "tenant-hmac-secret",
+        reset_headers,
+    ),
+    "reset must carry a valid per-tenant signature",
+)
+not_ready = client.post(
+    f"/api/replikas/{second_id}/reset-config",
+    headers={"Origin": "http://localhost"},
+)
+_assert(not_ready.status_code == 409, "reset requires a ready Replika")
+_assert(len(transport.calls) == 1, "a non-ready Replika is never contacted")
 
 taken = client.post(
     "/api/replikas",
