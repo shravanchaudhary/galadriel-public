@@ -622,6 +622,7 @@ class Scheduler:
         each poll so Tower UI changes take effect within ~30s without restart.
         """
         try:
+            last_logged_target: datetime | None = None
             while True:
                 now = _agent_now()
                 today_str = now.strftime("%Y-%m-%d")
@@ -658,13 +659,16 @@ class Scheduler:
                     await asyncio.sleep(30)
                     continue
 
-                # Future target: poll every 30s so mid-day time edits are picked up
+                # Future target: poll every 30s so mid-day time edits are picked up.
+                # Log once per target, not every poll — re-logs only if the target
+                # actually changes (new day, or the time was edited from Tower).
                 seconds_to_wait = (target_dt - now).total_seconds()
-                if seconds_to_wait > 55:
+                if seconds_to_wait > 55 and target_dt != last_logged_target:
                     log.info(
                         f"Cron [{name}]: waiting {seconds_to_wait:.0f}s until "
                         f"{_format_hhmm(target_time)} {_tz_label()}"
                     )
+                    last_logged_target = target_dt
                 await asyncio.sleep(min(30, max(1, seconds_to_wait)))
 
                 # Re-check after sleep (time_attr may have changed)
