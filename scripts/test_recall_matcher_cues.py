@@ -56,6 +56,50 @@ def _verified_ids(text: str, recalls: list[dict]) -> set[str]:
     return out
 
 
+def _assert_positionally_invariant(recalls: list[dict]) -> None:
+    """Reordering a message's lines must not change what Stage-1 proposes.
+
+    Guards the 2026-08-18 report: an exact cue on one line lost to a weaker
+    semantic hit on an earlier line, purely because the scan kept the first
+    proposal per recall instead of the strongest. The set of proposed ids stayed
+    the same, so only the (recall_id -> matched_chunk) binding exposes it — and
+    that binding is what Stage-2 judges.
+    """
+    lines = [
+        "walk me through the control plane routing again",
+        "the tenant isolation story is the interesting part of this design",
+        "how the memory layers and the worker fit together still confuses me",
+        "https://medium.com/platform/multi-tenant-routing-explained",
+    ]
+    orderings = [
+        lines,
+        lines[1:] + lines[:1],
+        lines[2:] + lines[:2],
+        list(reversed(lines)),
+    ]
+    baseline = None
+    for order in orderings:
+        binding = {
+            m["recall_id"]: (m.get("matched_chunk"), m.get("match_source"))
+            for m in scan_text_for_recalls("\n".join(order), recalls)
+            if m.get("recall_id")
+        }
+        if baseline is None:
+            baseline = binding
+            continue
+        _assert(
+            binding == baseline,
+            "line order changed Stage-1 binding:\n"
+            f"  first: {sorted(baseline.items())}\n"
+            f"  this:  {sorted(binding.items())}",
+        )
+    _assert(
+        (baseline or {}).get("sys_architecture", (None, None))[1] == "lexical",
+        "sys_architecture must bind to the exact cue line, not the surrounding prose: "
+        f"{(baseline or {}).get('sys_architecture')}",
+    )
+
+
 def main() -> int:
     _assert(DEFAULT_POSITIVE_THRESHOLD == 0.6, f"pos_thr={DEFAULT_POSITIVE_THRESHOLD}")
     recalls = _load_system_recalls()
@@ -92,17 +136,38 @@ def main() -> int:
             else:
                 failures.append(f"LEX miss {rid}: {cue!r} → {sorted(ids)}")
 
-    # Min-word gate: bare tool names / tiny args must not propose semantically.
+    # Min-word / structured gates apply to tool segments only (user messages
+    # like "who are you?" must still reach the router).
     for junk in ("read_file", "active", '{"path": "state/worker_control.md"}'):
         semantic_ids = {
             m.get("recall_id")
-            for m in scan_text_for_recalls(junk, recalls)
+            for m in scan_text_for_recalls(
+                junk,
+                recalls,
+                segments=[{"text": junk, "source": "tool_output"}],
+            )
             if m.get("match_source") == "semantic"
         }
         _assert(
             len(junk.split()) >= _MIN_SEMANTIC_SCAN_WORDS or not semantic_ids,
-            f"min-word gate leaked semantic matches for {junk!r}: {sorted(semantic_ids)}",
+            f"tool min-word gate leaked semantic matches for {junk!r}: {sorted(semantic_ids)}",
         )
+    # Short user identity query must still propose semantically.
+    who_ids = {
+        m.get("recall_id")
+        for m in scan_text_for_recalls(
+            "who are you?",
+            recalls,
+            segments=[{"text": "who are you?", "source": "user"}],
+        )
+        if m.get("match_source") == "semantic"
+    }
+    _assert(
+        "sys_identity" in who_ids,
+        f"short user query missed sys_identity: {sorted(who_ids)}",
+    )
+
+    _assert_positionally_invariant(recalls)
 
     # Synthetic learn_recall-shaped rule — should rematch its own positives.
     synthetic = {

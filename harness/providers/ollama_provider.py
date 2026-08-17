@@ -390,14 +390,18 @@ class OllamaProvider(BaseModelProvider):
         self.num_ctx = num_ctx if num_ctx is not None else _default_num_ctx()
         self.client = AsyncClient(host=self.host)
 
-    def _options(self, max_tokens: int) -> dict:
-        return {
+    def _options(self, max_tokens: int, temperature: float | None = None) -> dict:
+        options = {
             "num_ctx": self.num_ctx,
             "num_predict": max_tokens,
         }
+        if temperature is not None:
+            options["temperature"] = temperature
+        return options
 
     async def create_message(
-        self, *, model, max_tokens, messages, system=None, tools=None, thinking=True
+        self, *, model, max_tokens, messages, system=None, tools=None, thinking=True,
+        temperature=None,
     ):
         response = await self.client.chat(
             model=model,
@@ -405,7 +409,7 @@ class OllamaProvider(BaseModelProvider):
             tools=_tools_to_ollama(tools),
             stream=False,
             think=thinking,
-            options=self._options(max_tokens),
+            options=self._options(max_tokens, temperature),
         )
         return _response_to_message(response)
 

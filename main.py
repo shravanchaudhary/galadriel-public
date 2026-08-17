@@ -16,6 +16,10 @@ from dotenv import load_dotenv
 
 load_dotenv(override=True)
 
+# Before anything can import litellm transitively (semantic-router, headroom-ai).
+# harness/__init__.py sets the same default for non-main entry points; see there.
+os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO").upper(),
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",

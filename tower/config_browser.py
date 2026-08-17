@@ -253,6 +253,7 @@ def register_config_browser(app, agent, scheduler=None):
             "config/index.html",
             categories=categories,
             headroom_enabled=getattr(agent, "headroom_enabled", False),
+            recall_enabled=bool(getattr(agent, "recall_enabled", True)),
             experiential_enabled=bool(
                 getattr(
                     getattr(agent, "experience", None),

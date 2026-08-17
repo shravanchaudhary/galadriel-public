@@ -86,9 +86,8 @@ def _untruncated_tokenizer(hr):
 
 
 def _chunks_for(hr, doc: str) -> list[str]:
-    """Reproduce exactly the chunk list scan_text_for_recalls will embed."""
-    lines = [c.strip() for c in doc.split("\n") if c.strip()]
-    return [sub for line in lines for sub in hr._split_line_for_embedding(line)]
+    """The chunk list scan_text_for_recalls will embed, from production itself."""
+    return hr.split_scan_units(doc)
 
 
 def run_config(
@@ -126,6 +125,8 @@ def run_config(
             rows.append({
                 "name": case["name"],
                 "family": case["family"],
+                "group": case.get("group", case["name"]),
+                "variant": case.get("variant", "only"),
                 "expected_ids": sorted(expected),
                 "proposed_ids": sorted(proposed),
                 "proposals": [
@@ -133,6 +134,7 @@ def run_config(
                         "recall_id": m.get("recall_id"),
                         "score": hr._as_float_score(m.get("positive_score")),
                         "source": m.get("match_source"),
+                        "chunk": (m.get("matched_chunk") or "")[:120],
                     }
                     for m in matches
                     if m.get("recall_id")
@@ -162,6 +164,7 @@ def run_config(
         "structured_gate": gate,
         "stage1_margin": margin,
         "cap_survival": _cap_survival(rows),
+        "invariance": _invariance(rows),
         "by_family": _family_metrics(rows),
         "totals": _totals(rows, all_tokens),
         "threshold_sweep": _threshold_sweep(rows),
@@ -198,6 +201,72 @@ def _cap_survival(rows: list[dict], cap: int = 3) -> dict:
         "reached_stage2": reached,
         "dropped_by_cap": dropped,
         "dropped_ranks": sorted(dropped_ranks),
+    }
+
+
+def _invariance(rows: list[dict]) -> dict:
+    """Do permutations of one document produce the same Stage-1 answer?
+
+    Cases sharing a `group` carry identical content in a different line order,
+    so anything that differs between them is the scan reacting to position. The
+    suite generated these permutations from the start but scored them as
+    independent cases, which renders a positional flip as mediocre recall — the
+    reason the first-chunk-wins dedup in `scan_text_for_recalls` survived every
+    previous run of this benchmark.
+
+    Three properties per group, in increasing strictness: the proposed id set is
+    identical across variants; each recall binds to the same chunk wherever it
+    appears; and its Stage-1 score does not move.
+    """
+    by_group: dict[str, list[dict]] = {}
+    for r in rows:
+        by_group.setdefault(r["group"], []).append(r)
+
+    groups: list[dict] = []
+    for name, variants in sorted(by_group.items()):
+        if len(variants) < 2:
+            continue
+        answers = {frozenset(v["proposed_ids"]) for v in variants}
+        chunks: dict[str, set[str]] = {}
+        scores: dict[str, list[float]] = {}
+        for v in variants:
+            for p in v["proposals"]:
+                rid = p["recall_id"]
+                chunks.setdefault(rid, set()).add(p.get("chunk") or "")
+                if p["score"] is not None:
+                    scores.setdefault(rid, []).append(p["score"])
+        groups.append({
+            "group": name,
+            "family": variants[0]["family"],
+            "variants": len(variants),
+            "agrees": len(answers) == 1,
+            "distinct_answers": sorted(sorted(a) for a in answers),
+            "unstable_bindings": sorted(r for r, c in chunks.items() if len(c) > 1),
+            "max_score_spread": round(
+                max((max(s) - min(s) for s in scores.values() if len(s) > 1), default=0.0),
+                4,
+            ),
+        })
+
+    def _summary(subset: list[dict]) -> dict:
+        if not subset:
+            return {"groups": 0, "agreeing": 0, "agreement": None}
+        agreeing = sum(1 for g in subset if g["agrees"])
+        return {
+            "groups": len(subset),
+            "agreeing": agreeing,
+            "agreement": round(agreeing / len(subset), 4),
+            "groups_with_unstable_binding": sum(1 for g in subset if g["unstable_bindings"]),
+            "max_score_spread": max((g["max_score_spread"] for g in subset), default=0.0),
+        }
+
+    return {
+        "overall": _summary(groups),
+        "by_family": {
+            fam: _summary([g for g in groups if g["family"] == fam])
+            for fam in sorted({g["family"] for g in groups})
+        },
+        "disagreements": [g for g in groups if not g["agrees"] or g["unstable_bindings"]],
     }
 
 
@@ -288,8 +357,9 @@ def build_markdown(payload: dict) -> str:
     lines.append("")
     headers = [
         "margin", "window (tok)", "structured gate",
+        "agreement", "unstable bindings",
         "fp props (noise docs)", "fp props (all)", "docs w/ FP",
-        "buried R", "clean R", "dropped by cap",
+        "buried R", "clean R", "paragraph R", "runon R", "dropped by cap",
         "trunc chunks", "p95 tok", "mean ms",
     ]
     rows = []
@@ -298,15 +368,20 @@ def build_markdown(payload: dict) -> str:
         buried = c["by_family"].get("signal_in_noise", {})
         clean = c["by_family"].get("clean_signal", {})
         cap = c["cap_survival"]
+        inv = c["invariance"]["overall"]
         rows.append([
             c["stage1_margin"],
             c["window_tokens"],
             "on" if c["structured_gate"] else "off",
+            f"{inv['agreeing']}/{inv['groups']} ({inv['agreement']})",
+            inv["groups_with_unstable_binding"],
             t["fp_proposals_noise_only"],
             t["fp_proposals"],
             t["docs_with_fp"],
             f"{buried.get('recall')}" if buried else "-",
             f"{clean.get('recall')}" if clean else "-",
+            f"{c['by_family'].get('long_paragraph', {}).get('recall', '-')}",
+            f"{c['by_family'].get('runon_chat', {}).get('recall', '-')}",
             f"{cap['dropped_by_cap']}/{cap['reached_stage2'] + cap['dropped_by_cap']}",
             f"{t['truncated_chunks']} ({t['truncated_pct']}%)",
             t["tokens_p95"],
@@ -314,6 +389,32 @@ def build_markdown(payload: dict) -> str:
         ])
     lines.append(md_table(headers, rows))
     lines.append("")
+
+    for c in payload["configs"]:
+        inv = c["invariance"]
+        lines.append(
+            f"## Positional agreement (margin {c['stage1_margin']}, window {c['window_tokens']})"
+        )
+        lines.append("")
+        lines.append(md_table(
+            ["family", "groups", "agreeing", "agreement", "unstable bindings", "max score spread"],
+            [
+                [fam, s["groups"], s["agreeing"], s["agreement"],
+                 s["groups_with_unstable_binding"], s["max_score_spread"]]
+                for fam, s in inv["by_family"].items()
+            ],
+        ))
+        lines.append("")
+        if inv["disagreements"]:
+            lines.append("Groups whose answer or binding moved with line order:")
+            lines.append("")
+            for g in inv["disagreements"]:
+                answers = " | ".join(",".join(a) or "(none)" for a in g["distinct_answers"])
+                lines.append(
+                    f"- `{g['group']}` ({g['variants']} variants) -> {answers}"
+                    + (f" · rebound: {', '.join(g['unstable_bindings'])}" if g["unstable_bindings"] else "")
+                )
+            lines.append("")
 
     for c in payload["configs"]:
         lines.append(
@@ -400,11 +501,19 @@ def main() -> int:
                 configs.append(res)
                 t = res["totals"]
                 cap = res["cap_survival"]
+                inv = res["invariance"]["overall"]
+                fam = res["by_family"]
                 print(
-                    f"  chunks={t['chunks']} fp_noise={t['fp_proposals_noise_only']} "
+                    f"  chunks={t['chunks']} "
+                    f"agreement={inv['agreeing']}/{inv['groups']} ({inv['agreement']}) "
+                    f"unstable_bind={inv['groups_with_unstable_binding']} "
+                    f"fp_noise={t['fp_proposals_noise_only']} "
                     f"fp_all={t['fp_proposals']} "
-                    f"buried_R={res['by_family'].get('signal_in_noise', {}).get('recall')} "
-                    f"clean_R={res['by_family'].get('clean_signal', {}).get('recall')} "
+                    f"buried_R={fam.get('signal_in_noise', {}).get('recall')} "
+                    f"clean_R={fam.get('clean_signal', {}).get('recall')} "
+                    f"competing_R={fam.get('competing_signal', {}).get('recall')} "
+                    f"paragraph_R={fam.get('long_paragraph', {}).get('recall')} "
+                    f"runon_R={fam.get('runon_chat', {}).get('recall')} "
                     f"dropped_by_cap={cap['dropped_by_cap']} "
                     f"trunc={t['truncated_chunks']} mean={res['latency']['mean_ms']}ms"
                 )

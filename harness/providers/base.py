@@ -23,11 +23,18 @@ class BaseModelProvider(ABC):
         system: Any = None,
         tools: list | None = None,
         thinking: bool = True,
+        temperature: float | None = None,
     ) -> Any:
         """Single-shot completion. Returns the provider's message response.
 
         ``thinking=False`` asks the backend to skip chain-of-thought when it
         supports that (Gemini thinking_budget=0, Ollama think=False).
+
+        ``temperature=None`` leaves the backend default alone. Deterministic
+        callers — classifiers, judges, extractors, anything whose output is
+        parsed rather than read — pass ``0.0``: the same input must produce the
+        same verdict, or the eval numbers measure sampling noise as much as the
+        model.
         """
         ...
 

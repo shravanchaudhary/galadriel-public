@@ -1,0 +1,239 @@
+{
+  "benchmark": "e2e_recall",
+  "dataset": {
+    "total": 10,
+    "positive": 8,
+    "negative": 2,
+    "by_source": {
+      "metamorphic": {
+        "total": 10,
+        "positive": 8,
+        "negative": 2
+      }
+    },
+    "recalls": 2
+  },
+  "config": {
+    "leave_one_out": false,
+    "stage2_mode": "judge",
+    "metamorphic_only": true
+  },
+  "metrics": {
+    "cases": 10,
+    "tp": 8,
+    "fp": 0,
+    "tn": 2,
+    "fn": 0,
+    "precision": 1.0,
+    "recall": 1.0,
+    "f1": 1.0,
+    "accuracy": 1.0
+  },
+  "metrics_by_source": {
+    "metamorphic": {
+      "cases": 10,
+      "tp": 8,
+      "fp": 0,
+      "tn": 2,
+      "fn": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "accuracy": 1.0
+    }
+  },
+  "fn_attribution": {
+    "candidate_selection": 0,
+    "verification": 0
+  },
+  "latency": {
+    "n": 10,
+    "mean_ms": 1543.8,
+    "p95_ms": 1522.1
+  },
+  "rows": [
+    {
+      "chunk": "please remember that I like oranges",
+      "recall_id": "sys_learn_recall",
+      "source": "metamorphic",
+      "family": "slot_sub",
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "judge:The user is stating a durable preference about what they like.",
+      "proposed_ids": [
+        "sys_learn_recall"
+      ],
+      "verified_ids": [
+        "sys_learn_recall"
+      ],
+      "latency_ms": 3935.5
+    },
+    {
+      "chunk": "can you remember my favorite fruit is pineapple",
+      "recall_id": "sys_learn_recall",
+      "source": "metamorphic",
+      "family": "slot_sub",
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "judge:The user is stating a durable preference (favorite fruit) that they want the agent to remember.",
+      "proposed_ids": [
+        "sys_learn_recall"
+      ],
+      "verified_ids": [
+        "sys_learn_recall"
+      ],
+      "latency_ms": 925.0
+    },
+    {
+      "chunk": "remember I prefer dark mode",
+      "recall_id": "sys_learn_recall",
+      "source": "metamorphic",
+      "family": "teach",
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "judge:The user is stating a durable preference for dark mode, which the agent should remember.",
+      "proposed_ids": [
+        "sys_deferred_work",
+        "sys_learn_recall"
+      ],
+      "verified_ids": [
+        "sys_learn_recall"
+      ],
+      "latency_ms": 1375.3
+    },
+    {
+      "chunk": "do you remember my dark mode preference?",
+      "recall_id": "sys_learn_recall",
+      "source": "metamorphic",
+      "family": "ask_not_teach",
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "judge:none",
+      "proposed_ids": [
+        "sys_fact_lookup",
+        "sys_learn_recall"
+      ],
+      "verified_ids": [
+        "sys_fact_lookup"
+      ],
+      "latency_ms": 1018.2
+    },
+    {
+      "chunk": "who are you?",
+      "recall_id": "sys_identity",
+      "source": "metamorphic",
+      "family": "short_query",
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "judge:The user asks the agent 'who are you?'",
+      "proposed_ids": [
+        "sys_identity"
+      ],
+      "verified_ids": [
+        "sys_identity"
+      ],
+      "latency_ms": 1371.7
+    },
+    {
+      "chunk": "what are you?",
+      "recall_id": "sys_identity",
+      "source": "metamorphic",
+      "family": "short_query",
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "judge:The user asks the agent about ITSELF -- whether it is alive, sentient, conscious, or real, who it is, or how its own sense of self has developed.",
+      "proposed_ids": [
+        "sys_identity",
+        "sys_last_conversation"
+      ],
+      "verified_ids": [
+        "sys_identity"
+      ],
+      "latency_ms": 1349.9
+    },
+    {
+      "chunk": "are you real?",
+      "recall_id": "sys_identity",
+      "source": "metamorphic",
+      "family": "short_query",
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "judge:The user asks if the agent is real, directly questioning its existence and nature.",
+      "proposed_ids": [
+        "sys_identity"
+      ],
+      "verified_ids": [
+        "sys_identity"
+      ],
+      "latency_ms": 1287.0
+    },
+    {
+      "chunk": "remeber i like spicy food",
+      "recall_id": "sys_learn_recall",
+      "source": "metamorphic",
+      "family": "typo",
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "judge:The user states a durable preference about food.",
+      "proposed_ids": [
+        "sys_learn_recall"
+      ],
+      "verified_ids": [
+        "sys_learn_recall"
+      ],
+      "latency_ms": 1522.1
+    },
+    {
+      "chunk": "who are you",
+      "recall_id": "sys_identity",
+      "source": "metamorphic",
+      "family": "punctuation",
+      "expected": true,
+      "predicted": true,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "judge:The chunk 'who are you' is a direct question about the agent's identity.",
+      "proposed_ids": [
+        "sys_identity"
+      ],
+      "verified_ids": [
+        "sys_identity"
+      ],
+      "latency_ms": 1294.8
+    },
+    {
+      "chunk": "remind me to turn off the lights in 10 minutes",
+      "recall_id": "sys_learn_recall",
+      "source": "metamorphic",
+      "family": "reminder_not_learn",
+      "expected": false,
+      "predicted": false,
+      "stage1_hit": true,
+      "fn_stage": null,
+      "slm_reason": "judge:none",
+      "proposed_ids": [
+        "sys_deferred_work",
+        "sys_learn_recall",
+        "sys_plan"
+      ],
+      "verified_ids": [],
+      "latency_ms": 1358.2
+    }
+  ]
+}

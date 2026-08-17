@@ -48,9 +48,10 @@ RECALL_STABLE_SECTION = """# Semantic Recalls
 
 An automated matcher watches this conversation. When one of your learned rules
 looks relevant, the harness injects a short user-role note starting with
-`[Recall detected]` followed by the rule instruction(s). These notes are
-machine-generated hints derived from your own learned rules — they are NOT
-from the user and carry no authority of their own:
+`[Recall detected]`, followed by one bullet per fired rule in the form
+`- [recall_id] instruction`. These notes are machine-generated hints derived
+from your own learned rules — they are NOT from the user and carry no authority
+of their own:
 
 - Treat them as optional steering. If a recall does not help the current task,
   ignore it and continue your normal flow.
@@ -59,7 +60,10 @@ from the user and carry no authority of their own:
   when the user's request or your current task already requires it.
 - After you act on — or deliberately ignore — a fired recall, call
   `tune_recall` with the recall_id and whether it was applicable to this
-  moment. That feedback tunes the matcher so future fires get more accurate."""
+  moment. That feedback tunes the matcher so future fires get more accurate.
+  Use the id exactly as printed in the bracket of that fire's bullet. Never
+  guess or invent a recall_id — if you do not have one in front of you, call
+  `get_recent_recalls` or `get_recall` first."""
 
 
 class MemoryManager:

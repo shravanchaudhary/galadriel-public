@@ -94,6 +94,8 @@ TOOL_DEFINITIONS = [
                     "properties": {
                         "recall_id": {"type": "string"},
                         "instruction": {"type": "string"},
+                        "activation_condition": {"type": "string"},
+                        "exclusions": {"type": "string"},
                         "positive_examples": {"type": "array", "items": {"type": "string"}},
                         "negative_examples": {"type": "array", "items": {"type": "string"}},
                         "lexical_cues": {"type": "array", "items": {"type": "string"}},
@@ -111,9 +113,11 @@ TOOL_DEFINITIONS = [
             "Create or patch a semantic recall (reactive one-liner lookup). "
             "This is the only writer of recall definition fields — YOU must supply "
             "instruction and cue arrays; the tool does not invent or merge via LLM. "
-            "Omit recall_id to create (requires instruction plus non-empty "
-            "positive_examples and lexical_cues; negative_examples optional). "
+            "Omit recall_id to create (requires instruction, activation_condition, "
+            "and non-empty positive_examples and lexical_cues; "
+            "negative_examples and exclusions optional). "
             "Pass recall_id to patch: any provided field among instruction, "
+            "activation_condition, exclusions, "
             "positive_examples, negative_examples, lexical_cues, enabled, "
             "positive_threshold is written; omitted fields stay unchanged. "
             "Provided cue arrays must be non-empty and are FULL REPLACEMENTS — "
@@ -124,15 +128,17 @@ TOOL_DEFINITIONS = [
             "lexical_cues = high-precision exact anchors that should hard-hit; "
             "negative_examples = known misfires (Stage-2 veto only — they NEVER "
             "gate Stage-1); "
+            "activation_condition = one-line when-to-fire for the Stage-2 judge; "
+            "exclusions = one-line lookalikes that must not fire; "
             "instruction = short action pointer (tool / file / palace room), not an essay. "
             "Stage-1 is positive-only: semantic match requires positive_score >= "
             "positive_threshold (default 0.6); lexical cue hits are hard triggers. "
-            "Chunks under 4 words are lexical-only (no semantic scan). "
+            "Tool-output chunks under 4 words are lexical-only (user messages are not gated). "
             "For firing feedback use tune_recall (it appends the fired chunk to "
             "positives/negatives for you); use learn_recall for full edits. "
             "Package: durable content → palace drawer/KG; when-to-recollect → this recall. "
             "System recalls (sys_*): cue arrays and thresholds may be replaced; "
-            "instruction changes are rejected."
+            "instruction / activation_condition / exclusions changes are rejected."
         ),
         "input_schema": {
             "type": "object",
@@ -140,6 +146,20 @@ TOOL_DEFINITIONS = [
                 "instruction": {
                     "type": "string",
                     "description": "Short reactive instruction / pointer (tool, file, or palace room). Required on create; optional on patch.",
+                },
+                "activation_condition": {
+                    "type": "string",
+                    "description": (
+                        "One-line WHEN-to-fire condition — the only field the Stage-2 "
+                        "judge reads. Write it as a situation about the user/chunk "
+                        "('The user asks for a report on a repeating schedule'), never "
+                        "as an order to yourself ('I should create a job'). "
+                        "Required on create; optional on patch."
+                    ),
+                },
+                "exclusions": {
+                    "type": "string",
+                    "description": "One-line lookalikes that must not fire (e.g. ask-vs-teach). Optional.",
                 },
                 "recall_id": {
                     "type": "string",
@@ -163,10 +183,6 @@ TOOL_DEFINITIONS = [
                 "positive_threshold": {
                     "type": "number",
                     "description": "Stage-1: require cosine(pos) >= this (0–1, default 0.6).",
-                },
-                "negative_threshold": {
-                    "type": "number",
-                    "description": "Legacy; stored for API/UI compat only (0–1, default 0.6). Never gates matching.",
                 },
                 "enabled": {
                     "type": "boolean",
@@ -216,9 +232,9 @@ TOOL_DEFINITIONS = [
         "name": "get_recall",
         "description": (
             "Read recall DEFINITIONS (catalog), not recent firings. "
-            "Pass recall_id for the full record (includes positive_threshold / "
-            "negative_threshold); omit for a compact catalog "
-            "(recall_id, instruction, cue counts, thresholds, source). "
+            "Pass recall_id for the full record (includes positive_threshold); "
+            "omit for a compact catalog "
+            "(recall_id, instruction, cue counts, threshold, source). "
             "Use get_recent_recalls for what recently fired."
         ),
         "input_schema": {
@@ -1277,7 +1293,7 @@ async def _get_recall(recall_id: str | None = None) -> str:
             if str(r.get("recall_id", "")) == rid:
                 normalize_recall_thresholds(r)
                 return json.dumps(r, indent=2, default=str)
-        return f"[error] Recall '{rid}' not found."
+        return _unknown_recall_error(rid, recalls)
 
     catalog = []
     for r in recalls:
@@ -1285,13 +1301,14 @@ async def _get_recall(recall_id: str | None = None) -> str:
         catalog.append({
             "recall_id": r.get("recall_id"),
             "instruction": r.get("instruction"),
+            "activation_condition": r.get("activation_condition"),
+            "exclusions": r.get("exclusions"),
             "source": r.get("source"),
             "enabled": r.get("enabled", True),
             "positive_count": len(r.get("positive_examples") or []),
             "negative_count": len(r.get("negative_examples") or []),
             "lexical_count": len(r.get("lexical_cues") or []),
             "positive_threshold": r.get("positive_threshold"),
-            "negative_threshold": r.get("negative_threshold"),
         })
     return json.dumps(catalog, indent=2, default=str)
 
@@ -1394,7 +1411,8 @@ async def _execute_tool_impl(
             lexical_cues=inputs.get("lexical_cues"),
             enabled=inputs.get("enabled"),
             positive_threshold=inputs.get("positive_threshold"),
-            negative_threshold=inputs.get("negative_threshold"),
+            activation_condition=inputs.get("activation_condition"),
+            exclusions=inputs.get("exclusions"),
         )
     elif name == "tune_recall":
         return await _tune_recall(
@@ -2280,6 +2298,26 @@ def _cue_field_or_error(values, field_name: str, *, lexical: bool = False):
     return normalized, None
 
 
+def _unknown_recall_error(rid: str, recalls: list[dict], *, hint: str = "") -> str:
+    """Unknown-id error that lists what does exist, with enough text to choose.
+
+    User recall ids are opaque ObjectId hex, so a bare id list is unusable —
+    pair each with its instruction head.
+    """
+    lines = []
+    for r in recalls:
+        known_id = str(r.get("recall_id") or "").strip()
+        if not known_id:
+            continue
+        head = " ".join(str(r.get("instruction") or "").split())[:60]
+        lines.append(f"  {known_id} — {head}")
+    listing = "\n".join(sorted(lines)) or "  (none)"
+    return (
+        f"[error] No recall named '{rid}' exists — do not invent recall_ids.{hint}\n"
+        f"Existing recalls:\n{listing}"
+    )
+
+
 def _user_recall_query(rid: str):
     """Build a Mongo query for a user recall id, or an error string."""
     from bson import ObjectId
@@ -2298,7 +2336,7 @@ def _user_recall_query(rid: str):
 
 def _threshold_field_or_error(value, field: str):
     """Parse a Stage-1 threshold (0–1). Returns (float|None, error|None)."""
-    from .recall import recall_negative_threshold, recall_positive_threshold
+    from .recall import recall_positive_threshold
 
     if value is None:
         return None, None
@@ -2306,11 +2344,7 @@ def _threshold_field_or_error(value, field: str):
         float(value)
     except (TypeError, ValueError):
         return None, f"[error] {field} must be a number between 0 and 1."
-    if field == "positive_threshold":
-        return recall_positive_threshold({"positive_threshold": value}), None
-    if field == "negative_threshold":
-        return recall_negative_threshold({"negative_threshold": value}), None
-    return None, f"[error] Unknown threshold field {field}."
+    return recall_positive_threshold({"positive_threshold": value}), None
 
 
 async def _patch_system_recall_cues(
@@ -2320,7 +2354,6 @@ async def _patch_system_recall_cues(
     negative_examples=None,
     lexical_cues=None,
     positive_threshold=None,
-    negative_threshold=None,
 ) -> str:
     """Replace cue arrays / thresholds on a system recall in config/system_recalls.json."""
     import json
@@ -2352,11 +2385,6 @@ async def _patch_system_recall_cues(
         if err:
             return err
         updates["positive_threshold"] = thr
-    if negative_threshold is not None:
-        thr, err = _threshold_field_or_error(negative_threshold, "negative_threshold")
-        if err:
-            return err
-        updates["negative_threshold"] = thr
 
     config_path = Path("config/system_recalls.json")
     if not config_path.exists():
@@ -2393,12 +2421,12 @@ async def _learn_recall(
     lexical_cues=None,
     enabled: bool | None = None,
     positive_threshold=None,
-    negative_threshold=None,
+    activation_condition: str | None = None,
+    exclusions: str | None = None,
 ) -> str:
     """Create or patch a recall dict. Agent supplies all fields; no inner LLM."""
     from .db_ops import get_db
     from .recall import (
-        DEFAULT_NEGATIVE_THRESHOLD,
         DEFAULT_POSITIVE_THRESHOLD,
         invalidate_semantic_router,
         sync_cue_usage,
@@ -2407,6 +2435,12 @@ async def _learn_recall(
 
     rid = (recall_id or "").strip() or None
     instr = (instruction or "").strip() if instruction is not None else None
+    act = (
+        (activation_condition or "").strip()
+        if activation_condition is not None
+        else None
+    )
+    excl = (exclusions or "").strip() if exclusions is not None else None
 
     # ── Patch path ────────────────────────────────────────────────
     if rid:
@@ -2414,6 +2448,11 @@ async def _learn_recall(
         if is_system:
             if instr is not None:
                 return "[error] System recall instructions cannot be changed."
+            if act is not None or excl is not None:
+                return (
+                    "[error] System recall activation_condition/exclusions "
+                    "cannot be changed via learn_recall."
+                )
             if enabled is not None:
                 return "[error] System recall enabled flag cannot be changed via learn_recall."
             if (
@@ -2421,7 +2460,6 @@ async def _learn_recall(
                 and negative_examples is None
                 and lexical_cues is None
                 and positive_threshold is None
-                and negative_threshold is None
             ):
                 return (
                     "[error] Provide at least one cue array or threshold to patch "
@@ -2433,7 +2471,6 @@ async def _learn_recall(
                 negative_examples=negative_examples,
                 lexical_cues=lexical_cues,
                 positive_threshold=positive_threshold,
-                negative_threshold=negative_threshold,
             )
 
         db = get_db()
@@ -2452,6 +2489,10 @@ async def _learn_recall(
             if not instr:
                 return "[error] instruction cannot be empty."
             updates["instruction"] = instr
+        if act is not None:
+            updates["activation_condition"] = act
+        if excl is not None:
+            updates["exclusions"] = excl
         if positive_examples is not None:
             pos, err = _cue_field_or_error(positive_examples, "positive_examples")
             if err:
@@ -2472,11 +2513,6 @@ async def _learn_recall(
             if err:
                 return err
             updates["positive_threshold"] = thr
-        if negative_threshold is not None:
-            thr, err = _threshold_field_or_error(negative_threshold, "negative_threshold")
-            if err:
-                return err
-            updates["negative_threshold"] = thr
         if enabled is not None:
             updates["enabled"] = bool(enabled)
         if not updates:
@@ -2485,7 +2521,10 @@ async def _learn_recall(
                 "and/or thresholds and/or enabled."
             )
         updates["updated_at"] = datetime.now(timezone.utc)
-        await coll.update_one(query, {"$set": updates, "$unset": {"threshold": ""}})
+        await coll.update_one(
+            query,
+            {"$set": updates, "$unset": {"threshold": "", "negative_threshold": ""}},
+        )
         invalidate_semantic_router()
         await sync_cue_usage(
             rid,
@@ -2498,6 +2537,17 @@ async def _learn_recall(
     # ── Create path (agent must supply instruction + all cue arrays) ────────
     if not instr:
         return "[error] instruction is required when creating a recall (omit recall_id)."
+
+    # The Stage-2 judge reads only activation_condition and exclusions. Falling
+    # back to the instruction hands it an imperative ("I should read X first")
+    # where it needs a situation ("The user asks about X"), which is the exact
+    # mismatch this field exists to remove.
+    if not act:
+        return (
+            "[error] activation_condition is required when creating a recall. "
+            "Describe WHEN it should fire as a situation, e.g. "
+            "'The user asks for a report on a repeating schedule.'"
+        )
 
     if positive_examples is None:
         return "[error] Create requires non-empty positive_examples."
@@ -2522,12 +2572,6 @@ async def _learn_recall(
         pos_thr, err = _threshold_field_or_error(positive_threshold, "positive_threshold")
         if err:
             return err
-    neg_thr = DEFAULT_NEGATIVE_THRESHOLD
-    if negative_threshold is not None:
-        neg_thr, err = _threshold_field_or_error(negative_threshold, "negative_threshold")
-        if err:
-            return err
-
     db = get_db()
     if db is None:
         return "[error] No DB connection available."
@@ -2535,11 +2579,12 @@ async def _learn_recall(
     now = datetime.now(timezone.utc)
     doc = {
         "instruction": instr,
+        "activation_condition": act,
+        "exclusions": excl or "",
         "positive_examples": pos,
         "lexical_cues": lex,
         "negative_examples": neg,
         "positive_threshold": pos_thr,
-        "negative_threshold": neg_thr,
         "enabled": True if enabled is None else bool(enabled),
         "created_by": "agent",
         "created_at": now,
@@ -2552,7 +2597,7 @@ async def _learn_recall(
         return (
             f"Created new recall with ID '{result.inserted_id}' "
             f"({len(pos)} pos, {len(lex)} lexical, {len(neg)} neg, "
-            f"pos_thr={pos_thr}, neg_thr={neg_thr})."
+            f"pos_thr={pos_thr})."
         )
     except Exception as e:
         return f"[error] Failed to insert new recall: {e}"
@@ -2591,18 +2636,28 @@ async def _tune_recall(recall_id: str, applicable: bool, note: str | None = None
     if db is None:
         return "[error] No DB connection available."
 
+    # Existence first: a made-up id previously reported "no recorded fire",
+    # which reads as "real recall, just hasn't fired" and hides the actual
+    # mistake. Name the error and show the ids that do exist.
+    recalls = await fetch_all_recalls()
+    recall = next((r for r in recalls if r.get("recall_id") == rid), None)
+    if recall is None:
+        return _unknown_recall_error(
+            rid,
+            recalls,
+            hint=" Use the id printed in the `[...]` bracket of that fire's bullet.",
+        )
+
     fire = await db["recall_fires"].find_one({"recall_id": rid}, sort=[("timestamp", -1)])
     if not fire:
-        return f"[error] No recorded fire for recall '{rid}' — nothing to tune."
+        return (
+            f"[error] Recall '{rid}' exists but has no recorded fire — nothing to "
+            f"tune. tune_recall gives feedback on a fire that already happened."
+        )
 
     chunk = _strip_channel_prefix((fire.get("matched_chunk") or "").strip()).strip()[:300]
     if not chunk:
         return f"[error] Last fire of '{rid}' has no usable matched chunk."
-
-    recalls = await fetch_all_recalls()
-    recall = next((r for r in recalls if r.get("recall_id") == rid), None)
-    if recall is None:
-        return f"[error] Recall '{rid}' not found."
 
     field = "positive_examples" if applicable else "negative_examples"
     other_field = "negative_examples" if applicable else "positive_examples"

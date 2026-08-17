@@ -831,6 +831,27 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
             "persisted": True,
         })
 
+    @app.route("/api/recall-enabled", methods=["GET"])
+    def api_recall_enabled_get():
+        return jsonify({
+            "enabled": bool(getattr(agent, "recall_enabled", True)),
+            "persisted": tower_settings.is_configured(),
+        })
+
+    @app.route("/api/recall-enabled", methods=["POST"])
+    def api_recall_enabled_set():
+        data = request.json or {}
+        if "enabled" not in data:
+            return jsonify({"error": "Missing 'enabled' field"}), 400
+        try:
+            agent.set_recall_enabled(bool(data.get("enabled")))
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+        return jsonify({
+            "enabled": bool(agent.recall_enabled),
+            "persisted": tower_settings.is_configured(),
+        })
+
     @app.route("/api/recall-slm-model", methods=["GET"])
     def api_recall_slm_model_get():
         from harness.recall import get_recall_slm_status
@@ -867,6 +888,66 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
             return jsonify(status), 503
         return jsonify(status)
 
+    @app.route("/api/recall-stage2-tier", methods=["GET"])
+    def api_recall_stage2_tier_get():
+        from harness.recall import get_recall_slm_status
+
+        status = get_recall_slm_status()
+        return jsonify({
+            "tier": status.get("stage2_tier") or tower_settings.get_recall_stage2_tier(),
+            "options": list(tower_settings.RECALL_STAGE2_TIER_OPTIONS),
+            "stage2_mode": status.get("stage2_mode"),
+            "judge_model": status.get("judge_model"),
+            "armed": status.get("armed"),
+            "persisted": tower_settings.is_configured(),
+        })
+
+    @app.route("/api/recall-stage2-tier", methods=["POST"])
+    def api_recall_stage2_tier_set():
+        data = request.json or {}
+        tier = (data.get("tier") or "").strip().lower()
+        if not tier:
+            return jsonify({"error": "Missing 'tier' field"}), 400
+        try:
+            saved = tower_settings.set_recall_stage2_tier(tier)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except RuntimeError as e:
+            return jsonify({"error": str(e)}), 503
+        from harness.recall import get_recall_slm_status, invalidate_stage2_tier_cache
+
+        invalidate_stage2_tier_cache()
+        status = get_recall_slm_status()
+        status["tier"] = saved
+        status["persisted"] = True
+        return jsonify(status)
+
+    @app.route("/api/recall-judge-model", methods=["GET"])
+    def api_recall_judge_model_get():
+        return jsonify({
+            "model": tower_settings.get_recall_judge_model(),
+            "options": list(tower_settings.AGENT_MODEL_OPTIONS),
+            "default": tower_settings.DEFAULT_RECALL_JUDGE_MODEL,
+            "persisted": tower_settings.is_configured(),
+        })
+
+    @app.route("/api/recall-judge-model", methods=["POST"])
+    def api_recall_judge_model_set():
+        data = request.json or {}
+        model = (data.get("model") or "").strip()
+        if not model:
+            return jsonify({"error": "Missing 'model' field"}), 400
+        try:
+            saved = tower_settings.set_recall_judge_model(model)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except RuntimeError as e:
+            return jsonify({"error": str(e)}), 503
+        from harness.recall_judge import invalidate_judge_model_cache
+
+        invalidate_judge_model_cache()
+        return jsonify({"model": saved, "persisted": True})
+
     def _run_async(coro):
         loop = None
         if scheduler and hasattr(scheduler, "_loop") and scheduler._loop.is_running():
@@ -898,6 +979,11 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
         instruction = data.get("instruction", "").strip()
         if not instruction:
             return jsonify({"error": "Instruction is required"}), 400
+        if not (data.get("activation_condition") or "").strip():
+            return jsonify({
+                "error": "Activation condition is required — it is the only field "
+                         "the Stage-2 judge reads."
+            }), 400
 
         from harness.tools import _learn_recall
         try:
@@ -908,7 +994,8 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
                 negative_examples=data.get("negative_examples") or None,
                 lexical_cues=data.get("lexical_cues") or data.get("regex_tags"),
                 positive_threshold=data.get("positive_threshold"),
-                negative_threshold=data.get("negative_threshold"),
+                activation_condition=data.get("activation_condition"),
+                exclusions=data.get("exclusions"),
             ))
             if isinstance(result, str) and result.startswith("[error]"):
                 return jsonify({"error": result}), 400
@@ -918,27 +1005,48 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
 
     @app.route("/api/recalls/test", methods=["POST"])
     def api_test_recalls():
+        """Run both stages so the page predicts real fires, not just proposals."""
         data = request.json or {}
         text = data.get("text", "")
         model = data.get("model", "fastembed")
-            
-        from harness.recall import fetch_all_recalls, scan_text_for_recalls
-        
-        async def _test():
-            recalls = await fetch_all_recalls()
-            matches = scan_text_for_recalls(text, recalls, force_encoder_type=model)
-            # Remove mongo objects or make serializable
-            res = []
-            for m in matches:
-                m_copy = dict(m)
-                if "_id" in m_copy:
-                    m_copy["_id"] = str(m_copy["_id"])
-                res.append(m_copy)
-            return res
-            
+
+        from harness.recall import (
+            _stage2_mode,
+            fetch_all_recalls,
+            filter_matches_with_judge,
+            filter_matches_with_slm,
+            get_recall_slm_status,
+            scan_text_for_recalls,
+        )
+
+        def _serializable(match: dict) -> dict:
+            m = dict(match)
+            if "_id" in m:
+                m["_id"] = str(m["_id"])
+            return m
+
         try:
-            matches = _run_async(_test())
-            return jsonify({"status": "ok", "matches": matches})
+            status = get_recall_slm_status()
+            recalls = _run_async(fetch_all_recalls())
+            proposed = scan_text_for_recalls(
+                text,
+                recalls,
+                force_encoder_type=model,
+                segments=[{"text": text, "source": "user"}],
+            )
+            if _stage2_mode() == "judge":
+                verified, rejected = _run_async(filter_matches_with_judge(proposed))
+            else:
+                verified, rejected = filter_matches_with_slm(proposed)
+            return jsonify({
+                "status": "ok",
+                "armed": bool(status.get("armed")),
+                "stage2_mode": status.get("stage2_mode"),
+                "stage2_tier": status.get("stage2_tier"),
+                "judge_model": status.get("judge_model"),
+                "stage2_threshold": (status.get("reranker") or {}).get("threshold"),
+                "matches": [_serializable(m) for m in verified + rejected],
+            })
         except Exception as e:
             return jsonify({"status": "error", "error": str(e)}), 500
     @app.route("/api/recalls/<recall_id>/toggle", methods=["POST"])
@@ -979,7 +1087,6 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
         from harness.recall import (
             normalize_lexical_cue,
             normalize_recall_thresholds,
-            recall_negative_threshold,
             recall_positive_threshold,
         )
         positive = [x.strip() for x in data.get("positive_examples", []) if isinstance(x, str) and x.strip()]
@@ -994,10 +1101,8 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
                 seen_lex.add(cue)
                 lexical.append(cue)
         pos_thr = recall_positive_threshold({"positive_threshold": data.get("positive_threshold")})
-        neg_thr = recall_negative_threshold({"negative_threshold": data.get("negative_threshold")})
-        # If client omitted thresholds, keep existing values (handled below).
+        # If client omitted the threshold, keep the existing value (handled below).
         has_pos_thr = "positive_threshold" in data
-        has_neg_thr = "negative_threshold" in data
 
         async def _update():
             config_path = Path("config/system_recalls.json")
@@ -1013,8 +1118,6 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
                         r["lexical_cues"] = lexical
                         if has_pos_thr:
                             r["positive_threshold"] = pos_thr
-                        if has_neg_thr:
-                            r["negative_threshold"] = neg_thr
                         normalize_recall_thresholds(r)
                         updated = True
                         break
@@ -1053,14 +1156,12 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
                 }
                 if has_pos_thr:
                     set_fields["positive_threshold"] = pos_thr
-                if has_neg_thr:
-                    set_fields["negative_threshold"] = neg_thr
-                
+
                 await coll.update_one(
                     {"_id": ObjectId(recall_id)},
                     {
                         "$set": set_fields,
-                        "$unset": {"threshold": ""},
+                        "$unset": {"threshold": "", "negative_threshold": ""},
                     },
                 )
                 

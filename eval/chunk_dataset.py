@@ -13,9 +13,17 @@ propose:
     {
         "doc": str,                 # multi-line raw scan text
         "expected_ids": set[str],   # recall_ids that should be proposed
-        "family": str,              # tool_noise | signal_in_noise | clean_signal | chatter
+        "family": str,              # tool_noise | signal_in_noise | clean_signal
+                                    # | chatter | competing_signal
         "name": str,                # stable case id
+        "group": str,               # cases that are permutations of one another
+        "variant": str,             # which permutation, within the group
     }
+
+`group` is what makes positional instability measurable. Cases sharing a group
+carry the same content in a different line order, so they must produce the same
+proposals; scoring them independently (as this suite did until 2026-08-18)
+reports a disagreement as mediocre recall instead of as non-determinism.
 
 Families:
   tool_noise      real tool output carrying no intent. expected_ids is empty, so
@@ -27,6 +35,17 @@ Families:
                   happily "fix" by gating everything.
   clean_signal    the cue alone. Control: matches what today's tests cover.
   chatter         ordinary multi-line conversation with no recall intent.
+  competing_signal
+                  one exact lexical cue plus prose that weakly attracts the same
+                  recall, permuted over every position. Unlike signal_in_noise
+                  the buried signal is *contested*: the prose scores in the same
+                  0.6-0.75 band the cue's recall would, so whichever line the
+                  scan reaches first decides what the judge is shown.
+  long_paragraph  the cue inside one unwrapped paragraph, which newline
+                  splitting cannot break up.
+  runon_chat      the cue inside an unpunctuated single-line message, which
+                  neither newline nor terminator splitting can break up, so the
+                  whole message is scored as one vector.
 
 Noise bodies are seeded, so the corpus is byte-stable across runs.
 """
@@ -194,6 +213,116 @@ _CHATTER = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# competing_signal — the 2026-08-18 report, generalized.
+#
+# A user pastes an article, talks about it, and drops a link. The exact cue sits
+# on one short line; the surrounding prose is on-topic enough to score in the
+# same band as the cue's own recall. `prose` is tuned so the target recall clears
+# its 0.6 floor on at least one prose line — that contest is the whole point, and
+# `python -m eval.chunk_dataset --probe` prints the scores that verify it.
+# ---------------------------------------------------------------------------
+
+_COMPETING_CASES = [
+    {
+        "case": "control_plane",
+        "recall_id": "sys_architecture",
+        "cue_line": "walk me through the control plane routing again",
+        "prose": [
+            "the tenant isolation story is the interesting part of this design",
+            "each runtime gets its own service and hostname, which keeps the blast radius small",
+            "how the memory layers and the worker fit together still confuses me",
+        ],
+        "url": "https://medium.com/platform/multi-tenant-routing-explained-abc123",
+    },
+    {
+        "case": "api_key",
+        "recall_id": "sys_credentials",
+        "cue_line": "where is the api key for that service stored?",
+        "prose": [
+            "the integration has to authenticate before it can list anything",
+            "we should not be putting secrets straight into the task definition",
+            "rotation is handled somewhere else so that part is not a concern here",
+        ],
+        "url": "https://medium.com/security/secret-rotation-patterns-def456",
+    },
+    {
+        "case": "recurring",
+        "recall_id": "sys_recurring_work",
+        "cue_line": "can you run that check every day at 9am",
+        "prose": [
+            "the report only matters if it lands before the standup",
+            "doing it by hand has been fine but it is getting tedious",
+            "i would rather this just happened on a schedule without me asking",
+        ],
+        "url": "https://medium.com/ops/scheduling-jobs-reliably-ghi789",
+    },
+    {
+        "case": "custom_script",
+        "recall_id": "sys_custom_script",
+        "cue_line": "write a custom script that parses these logs",
+        "prose": [
+            "the log format changed last month and the old parser broke",
+            "there are about forty thousand lines to go through",
+            "some one-off automation over this workspace would save me the afternoon",
+        ],
+        "url": "https://medium.com/data/log-parsing-at-scale-jkl012",
+    },
+]
+
+# ---------------------------------------------------------------------------
+# runon_chat — the one shape no splitter here can cut.
+#
+# User messages are scanned too (harness/agent.py), and a user typing without
+# punctuation produces a single line with no `.?!` anywhere in it, so newline
+# and sentence splitting both return the whole message as one unit and the cue
+# is averaged into the message's topic centroid. Measured 2026-08-18: 45/48
+# cues still proposed, but 6 of 16 groups answer differently depending on where
+# in the message the cue sits, since word order moves the one vector.
+#
+# These variants reorder words rather than lines, so the unit text itself
+# differs between them and every group counts as an unstable binding by
+# construction. Read `agrees` for this family, not the binding column.
+# ---------------------------------------------------------------------------
+
+_RUNON_FILLER = [
+    "hey quick one before i forget",
+    "also the build has been flaky since yesterday morning",
+    "no rush on any of this by the way",
+]
+
+
+_PLACEMENTS = ("head", "middle", "tail")
+
+
+def _insert_at(lines: list[str], item: str, where: str) -> list[str]:
+    if where == "head":
+        return [item] + lines
+    if where == "tail":
+        return lines + [item]
+    mid = len(lines) // 2
+    return lines[:mid] + [item] + lines[mid:]
+
+
+def _competing_cases() -> list[dict]:
+    """Every (cue position, url position) pair of one document's lines."""
+    cases: list[dict] = []
+    for spec in _COMPETING_CASES:
+        for cue_at in _PLACEMENTS:
+            for url_at in _PLACEMENTS:
+                lines = _insert_at(list(spec["prose"]), spec["cue_line"], cue_at)
+                lines = _insert_at(lines, spec["url"], url_at)
+                cases.append({
+                    "doc": "\n".join(lines),
+                    "expected_ids": {spec["recall_id"]},
+                    "family": "competing_signal",
+                    "group": f"competing/{spec['case']}",
+                    "variant": f"cue-{cue_at}/url-{url_at}",
+                    "name": f"competing/{spec['case']}/cue-{cue_at}/url-{url_at}",
+                })
+    return cases
+
+
 def build_chunk_dataset() -> list[dict]:
     """Deterministic list of raw-document cases."""
     rng = random.Random(_SEED)
@@ -206,6 +335,8 @@ def build_chunk_dataset() -> list[dict]:
             "doc": _as_scan_doc(rng, body),
             "expected_ids": set(),
             "family": "tool_noise",
+            "group": f"noise/{name}",
+            "variant": "only",
             "name": f"noise/{name}",
         })
 
@@ -215,6 +346,8 @@ def build_chunk_dataset() -> list[dict]:
             "doc": text,
             "expected_ids": set(),
             "family": "chatter",
+            "group": f"chatter/{i}",
+            "variant": "only",
             "name": f"chatter/{i}",
         })
 
@@ -235,11 +368,17 @@ def build_chunk_dataset() -> list[dict]:
             "middle": "\n".join(lines[:mid] + [cue.strip()] + lines[mid:]),
             "tail": "\n".join(lines + [cue.strip()]),
         }
+        # One preamble for all three placements. Drawing it per placement (as
+        # this did until 2026-08-18) leaves the variants differing by more than
+        # line order, which makes the group useless for measuring invariance.
+        preamble = [rng.choice(_THOUGHTS), rng.choice(_TOOL_REQUESTS)]
         for where, doc in placements.items():
             cases.append({
-                "doc": _as_scan_doc(rng, doc),
+                "doc": "\n".join(preamble + [doc]),
                 "expected_ids": {recall_id},
                 "family": "signal_in_noise",
+                "group": f"buried/{recall_id}",
+                "variant": where,
                 "name": f"buried/{recall_id}/{where}",
             })
 
@@ -255,8 +394,54 @@ def build_chunk_dataset() -> list[dict]:
             "doc": cue.strip(),
             "expected_ids": {recall_id},
             "family": "clean_signal",
+            "group": f"clean/{recall_id}",
+            "variant": "only",
             "name": f"clean/{recall_id}",
         })
+
+    # 5. Contested signal: exact cue vs. on-topic prose, at every position.
+    cases.extend(_competing_cases())
+
+    # 6. The same cue inside one unwrapped paragraph. Newline splitting cannot
+    #    help here, so the whole paragraph embeds as a single vector and the
+    #    cue's signal is averaged into the topic centroid. Measured 2026-08-18:
+    #    16/16 cues proposed on their own line, 9/16 buried this way.
+    for recall_id, recall in recalls.items():
+        cue = next(
+            (e for e in (recall.get("positive_examples") or []) if isinstance(e, str) and e.strip()),
+            None,
+        )
+        if not cue:
+            continue
+        para = _long_prose_line(rng, 15)
+        half = len(para) // 2
+        cases.append({
+            "doc": f"{para[:half]} {cue.strip()} {para[half:]}",
+            "expected_ids": {recall_id},
+            "family": "long_paragraph",
+            "group": f"paragraph/{recall_id}",
+            "variant": "only",
+            "name": f"paragraph/{recall_id}",
+        })
+
+    # 7. The same cue inside an unpunctuated run-on message, at three positions.
+    for recall_id, recall in recalls.items():
+        cue = next(
+            (e for e in (recall.get("positive_examples") or []) if isinstance(e, str) and e.strip()),
+            None,
+        )
+        if not cue:
+            continue
+        bare_cue = cue.strip().rstrip(".?!").lower()
+        for where in _PLACEMENTS:
+            cases.append({
+                "doc": " ".join(_insert_at(list(_RUNON_FILLER), bare_cue, where)),
+                "expected_ids": {recall_id},
+                "family": "runon_chat",
+                "group": f"runon/{recall_id}",
+                "variant": where,
+                "name": f"runon/{recall_id}/{where}",
+            })
 
     return cases
 
@@ -270,6 +455,53 @@ def chunk_dataset_stats(cases: list[dict]) -> dict:
     return stats
 
 
+def probe_competing() -> None:
+    """Print each competing line's dense score for its target recall.
+
+    A competing case is only a real test if the prose contests the cue — i.e.
+    at least one prose line clears the target's positive floor on its own. If
+    every prose line sits well under it, the group agrees trivially and the case
+    proves nothing, so this prints the numbers rather than assuming them.
+    """
+    import os
+
+    os.environ.setdefault("RECALL_SLM_VERIFY", "1")
+    os.environ.setdefault("RECALL_STAGE2_MODE", "embed")
+    from harness import recall as hr
+
+    catalog = list(hr._load_system_recalls())
+    by_id = {r["recall_id"]: r for r in catalog if r.get("recall_id")}
+    router = hr.get_semantic_router(catalog)
+
+    for spec in _COMPETING_CASES:
+        rid = spec["recall_id"]
+        floor = hr.recall_positive_threshold(by_id.get(rid))
+        print(f"\n{spec['case']} -> {rid} (floor {floor:.2f})")
+        for kind, line in (
+            [("cue", spec["cue_line"])]
+            + [("prose", p) for p in spec["prose"]]
+            + [("url", hr.normalize_scan_text(spec["url"]))]
+        ):
+            decisions = router(line, limit=hr._STAGE1_DENSE_TOP_K) or []
+            if not isinstance(decisions, list):
+                decisions = [decisions]
+            ranked = hr._rank_decisions(decisions, by_id, line)
+            own = next((s for n, s in ranked if n == rid), None)
+            lex = hr._lexical_hit(line, (by_id.get(rid) or {}).get("lexical_cues") or [])
+            top = f"{ranked[0][0]} {ranked[0][1]:.3f}" if ranked else "-"
+            own_txt = f"{own:.3f}" if own is not None else "  -  "
+            flag = "CONTESTS" if (own is not None and own >= floor) else ""
+            print(
+                f"  {kind:<5} own={own_txt} {'lex=' + lex if lex else '':<22}"
+                f" top={top:<28} {flag}  {line[:60]!r}"
+            )
+
+
 if __name__ == "__main__":
-    cases = build_chunk_dataset()
-    print(json.dumps(chunk_dataset_stats(cases), indent=2))
+    import sys
+
+    if "--probe" in sys.argv:
+        probe_competing()
+    else:
+        cases = build_chunk_dataset()
+        print(json.dumps(chunk_dataset_stats(cases), indent=2))

@@ -43,6 +43,24 @@
 
         <div class="settings-row">
             <div class="settings-row-main">
+                <span class="settings-row-label">Semantic recall</span>
+                <span class="settings-row-hint">Scan turns for stored recalls, inject matches, and run the learn pass. Off leaves stored recalls and the test page untouched.</span>
+            </div>
+            <div class="toggle-row settings-row-control">
+                <label class="toggle-switch">
+                    <input type="checkbox" id="recall-toggle"
+                        {% if recall_enabled %}checked{% endif %}
+                        onchange="toggleRecall()">
+                    <span class="toggle-slider"></span>
+                </label>
+                <span id="recall-status" class="heartbeat-status {{ 'status-on' if recall_enabled else 'status-off' }}">
+                    {{ 'ON' if recall_enabled else 'Off' }}
+                </span>
+            </div>
+        </div>
+
+        <div class="settings-row">
+            <div class="settings-row-main">
                 <span class="settings-row-label">Recall Stage-2 SLM</span>
                 <span class="settings-row-hint" id="recall-slm-hint">One model loaded at a time; swap unloads the other</span>
             </div>
@@ -404,6 +422,31 @@ async function toggleHeadroom() {
         toggle.checked = !toggle.checked;
         if (window.towerToast) window.towerToast(err.message || 'Failed to toggle headroom', { type: 'error' });
         else alert(err.message || 'Failed to toggle headroom');
+    }
+}
+
+async function toggleRecall() {
+    const toggle = document.getElementById('recall-toggle');
+    const enabled = toggle.checked;
+    try {
+        const res = await fetch('/api/recall-enabled', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ enabled }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            throw new Error(data.error || 'Failed to set semantic recall');
+        }
+        const status = document.getElementById('recall-status');
+        status.textContent = data.enabled ? 'ON' : 'Off';
+        status.className = 'heartbeat-status ' + (data.enabled ? 'status-on' : 'status-off');
+        toggle.checked = !!data.enabled;
+    } catch (err) {
+        console.error('Failed to toggle semantic recall:', err);
+        toggle.checked = !toggle.checked;
+        if (window.towerToast) window.towerToast(err.message || 'Failed to toggle semantic recall', { type: 'error' });
+        else alert(err.message || 'Failed to toggle semantic recall');
     }
 }
 

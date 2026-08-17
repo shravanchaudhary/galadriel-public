@@ -96,9 +96,16 @@ class Qwen3Reranker:
         ptr = self._llama_cpp.llama_get_embeddings_seq(llm._ctx.ctx, 0)
         if not ptr:
             raise RuntimeError("llama_get_embeddings_seq returned NULL (reranker GGUF has no rank head)")
+        # RANK pooling already exposes the classifier's yes probability under
+        # llama.cpp (soft-maxed across cls.output). A second sigmoid crushed the
+        # distribution into [0.50, 0.73] (sigmoid of [0,1]) and made the 0.65
+        # threshold uninterpretable. Read the probability directly.
         raw = float(ctypes.cast(ptr, ctypes.POINTER(ctypes.c_float))[0])
         if not math.isfinite(raw):
             raise RuntimeError(f"non-finite rerank score {raw}")
+        if 0.0 <= raw <= 1.0:
+            return raw
+        # Older / broken quants sometimes still emit a logit; map once.
         return 1.0 / (1.0 + math.exp(-raw))
 
     def _sanity_check(self) -> None:

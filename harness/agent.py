@@ -153,19 +153,36 @@ async def _verify_and_select_recalls(
     channel_id: str,
     matches: list[dict],
     text_scanned: str,
+    *,
+    usage_callback=None,
 ) -> list[dict]:
-    """Stage-2 filter: log all proposals; return only verified (fail-open) matches."""
+    """Stage-2 filter: log all proposals; return only verified matches."""
     if not matches:
         return []
-    from .recall import filter_matches_with_slm, touch_cue_usage
-    # Cross-encoder passes are seconds of CPU on Fargate; run them off the
-    # event loop so SSE streaming and the scheduler keep breathing.
-    verified, rejected = await asyncio.to_thread(filter_matches_with_slm, matches)
+    from .recall import (
+        _stage2_mode,
+        filter_matches_with_judge,
+        filter_matches_with_slm,
+        touch_cue_usage,
+    )
+
+    mode = _stage2_mode()
+    if mode == "judge":
+        # Network I/O — stay on the event loop (no to_thread hop). The judge
+        # resolves its own provider from its own model, which is configured
+        # independently of this channel's.
+        verified, rejected = await filter_matches_with_judge(
+            matches,
+            usage_callback=usage_callback,
+        )
+    else:
+        # Cross-encoder / embed passes are CPU-heavy; keep them off the loop.
+        verified, rejected = await asyncio.to_thread(filter_matches_with_slm, matches)
+
     for m in rejected:
         await _log_proposed_recall(channel_id, m, text_scanned, injected=False)
     for m in verified:
         await _log_proposed_recall(channel_id, m, text_scanned, injected=True)
-        # Mark the cue that won Stage-2 as used so LRU eviction keeps it.
         if m.get("matched_example"):
             await touch_cue_usage(m.get("recall_id"), [m["matched_example"]])
     return verified
@@ -193,6 +210,8 @@ def _recall_fingerprint(recalls: list[dict]) -> dict[str, tuple]:
             continue
         out[rid] = (
             (r.get("instruction") or "").strip(),
+            (r.get("activation_condition") or "").strip(),
+            (r.get("exclusions") or "").strip(),
             tuple(r.get("positive_examples") or []),
             tuple(r.get("negative_examples") or []),
             tuple(r.get("lexical_cues") or []),
@@ -406,28 +425,28 @@ def _tool_result_scan_text(content) -> str:
     return str(content)
 
 
-def _build_tool_use_recall_scan_text(
+def _build_tool_use_recall_scan_segments(
     *,
     thought: str,
     assistant_content,
     tool_blocks: list,
     tool_results: list[dict],
-) -> str:
-    """Corpus for mid-turn recall: thought + tool request + tool outputs.
+) -> list[dict]:
+    """Segmented corpus for mid-turn recall with source tags.
 
-    Mid-turn inject is only possible on stop_reason=tool_use, so scan whatever
-    text is available from this pause (not end_turn prose).
+    Sources: thought | tool_request | tool_output. Stage-1 applies min-words /
+    structured-chunk gates to tool segments only.
     """
-    parts: list[str] = []
+    segments: list[dict] = []
     if thought and thought.strip():
-        parts.append(thought.strip())
+        segments.append({"text": thought.strip(), "source": "thought"})
 
     if isinstance(assistant_content, list):
         for block in assistant_content:
             if isinstance(block, dict) and block.get("type") == "text":
                 text = (block.get("text") or "").strip()
                 if text:
-                    parts.append(text)
+                    segments.append({"text": text, "source": "thought"})
 
     excluded_ids: set = set()
     for block in tool_blocks:
@@ -448,7 +467,7 @@ def _build_tool_use_recall_scan_text(
             raw_input = {}
         request = f"{name or 'tool'}\n{_summarize_tool_input(raw_input)}".strip()
         if request:
-            parts.append(request)
+            segments.append({"text": request, "source": "tool_request"})
 
     for result in tool_results:
         if not isinstance(result, dict):
@@ -457,9 +476,26 @@ def _build_tool_use_recall_scan_text(
             continue
         text = _tool_result_scan_text(result.get("content")).strip()
         if text:
-            parts.append(text)
+            segments.append({"text": text, "source": "tool_output"})
 
-    return "\n".join(parts).strip()
+    return segments
+
+
+def _build_tool_use_recall_scan_text(
+    *,
+    thought: str,
+    assistant_content,
+    tool_blocks: list,
+    tool_results: list[dict],
+) -> str:
+    """Joined mid-turn scan text (legacy helpers / logging)."""
+    segments = _build_tool_use_recall_scan_segments(
+        thought=thought,
+        assistant_content=assistant_content,
+        tool_blocks=tool_blocks,
+        tool_results=tool_results,
+    )
+    return "\n".join(s["text"] for s in segments).strip()
 
 
 def _contains_tool_use(msg: dict) -> bool:
@@ -614,6 +650,8 @@ class GaladrielAgent:
         self.provider_name = model_registry.provider_for_model(self.model)
         # In-process Headroom compression (Tower toggle). Default off.
         self.headroom_enabled = tower_settings.get_headroom_enabled()
+        # Semantic recall scanning/injection (Tower toggle). Default on.
+        self.recall_enabled = tower_settings.get_recall_enabled()
         # An explicitly-passed max_tokens pins every channel (tests, embedders).
         # Otherwise each channel gets its own model's documented output ceiling.
         self._max_tokens_pinned = max_tokens
@@ -1022,6 +1060,26 @@ class GaladrielAgent:
         except RuntimeError:
             log.warning("Headroom toggle changed but not persisted — MongoDB not configured")
         log.info(f"Headroom compression {'ENABLED' if self.headroom_enabled else 'DISABLED'}")
+
+    def set_recall_enabled(self, enabled: bool) -> None:
+        """Enable/disable semantic recall and persist in MongoDB.
+
+        Off idles the whole subsystem on the next turn: no scan, no inject, and
+        no ephemeral learn pass (which costs a full LLM call per compact / /new
+        / worked worker tick). Stored recalls and the Tower test page are
+        untouched, so switching back on resumes against the same catalog.
+        """
+        self.recall_enabled = bool(enabled)
+        try:
+            tower_settings.set_recall_enabled(self.recall_enabled)
+        except RuntimeError:
+            log.warning(
+                "Semantic recall toggle changed but not persisted — "
+                "MongoDB not configured"
+            )
+        log.info(
+            f"Semantic recall {'ENABLED' if self.recall_enabled else 'DISABLED'}"
+        )
 
     def set_experiential_enabled(self, enabled: bool) -> None:
         """Enable/disable appraisal and causal prompt influence at runtime."""
@@ -1848,7 +1906,11 @@ class GaladrielAgent:
         # message exactly once — compaction never double-logs. Context size is
         # managed solely by compaction (no routine message-count trim).
         from .recall import fetch_all_recalls, scan_text_for_recalls, generate_recall_fire_text
-        active_recalls = [] if ephemeral else await fetch_all_recalls()
+        # Empty catalog short-circuits scan_text_for_recalls, so this one gate
+        # covers both the turn-start scan and the mid-turn tool_use scan.
+        active_recalls = (
+            [] if (ephemeral or not self.recall_enabled) else await fetch_all_recalls()
+        )
         # Buffer-scoped: same set across turns until /new or summarization.
         notified_recall_ids = self._notified_recall_ids.setdefault(channel_id, set())
         turn_matched_recalls = []
@@ -1869,7 +1931,10 @@ class GaladrielAgent:
                     if _is_recall_fire_message(m)
                 ]
                 matched = scan_text_for_recalls(
-                    user_message, active_recalls, exclude_texts=exclude_texts,
+                    user_message,
+                    active_recalls,
+                    exclude_texts=exclude_texts,
+                    segments=[{"text": user_message, "source": "user"}],
                 )
                 for m in matched:
                     if m not in turn_matched_recalls:
@@ -1895,7 +1960,9 @@ class GaladrielAgent:
         if new_user_matches:
             scanned = user_message[:500] if isinstance(user_message, str) else ""
             new_user_matches = await _verify_and_select_recalls(
-                channel_id, new_user_matches, scanned,
+                channel_id,
+                new_user_matches,
+                scanned,
             )
         if new_user_matches:
             log.info(f"[Recall Check] Injecting matches for in-process steering (user_message): {[m.get('recall_id') for m in new_user_matches]}")
@@ -2573,21 +2640,25 @@ class GaladrielAgent:
                 # Mid-turn recall: only possible on tool_use pauses. Scan thought +
                 # tool name/args + tool outputs together; learn path untouched.
                 if not ephemeral:
-                    text_to_scan = _build_tool_use_recall_scan_text(
+                    scan_segments = _build_tool_use_recall_scan_segments(
                         thought=turn_thought,
                         assistant_content=assistant_content,
                         tool_blocks=tool_blocks,
                         tool_results=tool_results,
                     )
+                    text_to_scan = "\n".join(s["text"] for s in scan_segments).strip()
                     new_matches = []
-                    if text_to_scan:
+                    if scan_segments:
                         exclude_texts = [
                             m.get("content", "") if isinstance(m.get("content"), str) else ""
                             for m in messages
                             if _is_recall_fire_message(m)
                         ]
                         matched = scan_text_for_recalls(
-                            text_to_scan, active_recalls, exclude_texts=exclude_texts,
+                            text_to_scan,
+                            active_recalls,
+                            exclude_texts=exclude_texts,
+                            segments=scan_segments,
                         )
                         if matched:
                             log.debug(
@@ -2608,7 +2679,9 @@ class GaladrielAgent:
                             )
                         if new_matches:
                             new_matches = await _verify_and_select_recalls(
-                                channel_id, new_matches, text_to_scan[:500],
+                                channel_id,
+                                new_matches,
+                                text_to_scan[:500],
                             )
                     else:
                         new_matches = []
@@ -2739,6 +2812,12 @@ class GaladrielAgent:
         Returns recall_ids created or patched during the pass (for snapshot
         pointers).
         """
+        if not self.recall_enabled:
+            log.info(
+                f"[RecallUpdate] skip channel={channel_id} reason=recall_disabled"
+            )
+            return []
+
         if messages_snapshot is not None and not messages_snapshot:
             log.info(
                 f"[RecallUpdate] skip channel={channel_id} reason=empty_snapshot"

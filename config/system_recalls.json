@@ -19,7 +19,9 @@
             "palace search",
             "do you remember",
             "what did we agree"
-        ]
+        ],
+        "activation_condition": "The user asks the agent to state or rely on a specific past fact, decision, date, cost, name, or preference from this project's own history \u2014 something it must look up rather than reason out.",
+        "exclusions": "Opinions, creative writing, or general world knowledge. Requests to produce new work rather than recall something already established."
     },
     {
         "recall_id": "sys_procedure",
@@ -42,7 +44,9 @@
             "oom error",
             "deploy to staging",
             "database migration"
-        ]
+        ],
+        "activation_condition": "The user asks how to carry out a procedure, recover from a known failure mode, or apply a technique that is documented in this project's own knowledge base.",
+        "exclusions": "General programming or tooling questions with no project-specific procedure behind them. Greetings. Simple one-off file edits."
     },
     {
         "recall_id": "sys_architecture",
@@ -65,7 +69,9 @@
             "memory tiers",
             "control plane",
             "board files"
-        ]
+        ],
+        "activation_condition": "The user asks how THIS system is built: its memory tiers, worker role, board files, or control-plane/runtime split.",
+        "exclusions": "Software architecture as a general subject, and any coding, layout, algorithm, or language question that is not about this system's own design."
     },
     {
         "recall_id": "sys_tools_rules",
@@ -87,7 +93,9 @@
             "heartbeat",
             "one-shot wake",
             "browser tab"
-        ]
+        ],
+        "activation_condition": "The user asks which of the agent's own tools to use, where the agent should record its output, or how its heartbeat, wake, reflection, or browser-tab rules work.",
+        "exclusions": "Questions about ordinary software or command-line tools. Plain task requests where no tool-selection policy is actually in question."
     },
     {
         "recall_id": "sys_custom_script",
@@ -107,7 +115,9 @@
         "lexical_cues": [
             "custom script",
             "custom python"
-        ]
+        ],
+        "activation_condition": "The user asks the agent to write, run, or debug a script or one-off automation that operates on this workspace.",
+        "exclusions": "Standalone code that is not automation for this workspace, generic snippets requested as examples, and questions about how a language feature or concept works."
     },
     {
         "recall_id": "sys_personal_tools",
@@ -127,7 +137,9 @@
         "lexical_cues": [
             "personal tools",
             "personal-tools"
-        ]
+        ],
+        "activation_condition": "The user asks the agent to build, update, or use one of its own coded personal tools, or to handle the credentials or preferences belonging to one.",
+        "exclusions": "Physical real-world tools such as hammers. Edits to the agent's own harness source. Questions about what an API or a tool is in general."
     },
     {
         "recall_id": "sys_jobs",
@@ -148,7 +160,9 @@
             "pick up the job",
             "curator job",
             "jobs cookbook"
-        ]
+        ],
+        "activation_condition": "The user asks the agent to pick up, start, or look up one of its background worker or curator jobs and the cookbook behind it.",
+        "exclusions": "Human employment, careers, or job applications. Remarks about someone doing a good job. Pausing or resuming the worker itself, which is deferred-work control, not job pickup."
     },
     {
         "recall_id": "sys_recurring_work",
@@ -170,7 +184,9 @@
             "every day at",
             "recurring task",
             "repeating basis"
-        ]
+        ],
+        "activation_condition": "The user asks for work to happen on a repeating schedule \u2014 daily, weekly, or every time some event recurs.",
+        "exclusions": "Something wanted once, right now. Repeating things in the user's own life that the agent is not being asked to run. Asking what a daily special or routine is."
     },
     {
         "recall_id": "sys_deferred_work",
@@ -192,7 +208,9 @@
             "pause the worker",
             "resume the worker",
             "worker control"
-        ]
+        ],
+        "activation_condition": "The user asks the agent to park work for later, to pick queued work back up, to inspect the backlog, or to pause or resume its worker.",
+        "exclusions": "Pausing unrelated things such as music. Requests to do something immediately. Writing background or async code, which is a programming task rather than backlog control."
     },
     {
         "recall_id": "sys_plan",
@@ -214,7 +232,9 @@
             "today's plan",
             "daily plan",
             "re-plan"
-        ]
+        ],
+        "activation_condition": "The user asks the agent to plan, re-plan, or prioritise its OWN work for the current day or work period.",
+        "exclusions": "Planning something in the user's personal life, such as a trip or an event. Idioms like 'plan B'. Asking what a plan or business plan is."
     },
     {
         "recall_id": "sys_finish_work",
@@ -236,7 +256,9 @@
             "mark this task as complete",
             "unit of work",
             "irreversible action"
-        ]
+        ],
+        "activation_condition": "The agent's own current unit of work is being closed out and needs its status transition and wrap-up recorded.",
+        "exclusions": "The user finishing their own unrelated task, such as homework. Statements that explicitly say no action is needed. Physical senses of 'finish' like a wood finish or a finish line."
     },
     {
         "recall_id": "sys_status",
@@ -258,7 +280,9 @@
             "status update",
             "current blockers",
             "where do we stand"
-        ]
+        ],
+        "activation_condition": "The user asks for current progress, counts, or blockers on the agent's ongoing work, without declaring that work finished.",
+        "exclusions": "Declaring work complete. Asking to plan new work. Unrelated senses of 'status' such as social status or HTTP status codes."
     },
     {
         "recall_id": "sys_last_conversation",
@@ -280,7 +304,9 @@
             "last conversation",
             "previous conversation",
             "where we left off"
-        ]
+        ],
+        "activation_condition": "The user asks what was said or decided in an earlier session, or wants to resume where the last conversation left off.",
+        "exclusions": "Operating on the text of the current conversation, such as translating or summarising it on request. Asking what a conversation is or how to start one."
     },
     {
         "recall_id": "sys_credentials",
@@ -302,7 +328,9 @@
             "credentials map",
             "api key",
             "authenticated action"
-        ]
+        ],
+        "activation_condition": "The agent needs an actual secret, token, key, or login in order to perform an authenticated action against a real service.",
+        "exclusions": "Asking what credentials are, how an auth protocol such as OAuth works in general, or how to reset a password on the user's own personal device. Generating a throwaway password."
     },
     {
         "recall_id": "sys_identity",
@@ -324,7 +352,10 @@
             "soul.md",
             "are you conscious",
             "are you sentient"
-        ]
+        ],
+        "activation_condition": "The user asks the agent about ITSELF \u2014 whether it is alive, sentient, conscious, or real, who it is, or how its own sense of self has developed.",
+        "exclusions": "Identity as an abstract, legal, or criminal topic such as identity theft. Dictionary meanings of words like sentient. Song lyrics. Identifying some other thing, such as a bird.",
+        "positive_threshold": 0.6
     },
     {
         "recall_id": "sys_learn_recall",
@@ -359,6 +390,8 @@
             "keep this in mind",
             "learn recall",
             "save this as a rule"
-        ]
+        ],
+        "activation_condition": "The user states a durable fact, preference, or rule and wants the agent to retain it for future use.",
+        "exclusions": "Asking whether something is already remembered, or what was decided before. A reminder or task tied to one specific occasion. Bare tool names, markup, or greetings."
     }
 ]

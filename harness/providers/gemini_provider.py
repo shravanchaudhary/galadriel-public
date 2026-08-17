@@ -492,7 +492,10 @@ class GeminiProvider(BaseModelProvider):
             )
         return None
 
-    def _build_config(self, model, stable_system, tools, max_tokens, *, thinking=True):
+    def _build_config(
+        self, model, stable_system, tools, max_tokens, *, thinking=True,
+        temperature=None,
+    ):
         kwargs = dict(
             system_instruction=stable_system,
             max_output_tokens=max_tokens,
@@ -504,15 +507,19 @@ class GeminiProvider(BaseModelProvider):
         thinking_cfg = self._thinking_config(model, thinking=thinking)
         if thinking_cfg is not None:
             kwargs["thinking_config"] = thinking_cfg
+        if temperature is not None:
+            kwargs["temperature"] = temperature
         return types.GenerateContentConfig(**kwargs)
 
     async def create_message(
-        self, *, model, max_tokens, messages, system=None, tools=None, thinking=True
+        self, *, model, max_tokens, messages, system=None, tools=None, thinking=True,
+        temperature=None,
     ):
         stable, dynamic = _split_system(system)
         contents = _messages_to_contents(messages, trailing_text=dynamic)
         config = self._build_config(
-            model, stable, tools, max_tokens, thinking=thinking
+            model, stable, tools, max_tokens, thinking=thinking,
+            temperature=temperature,
         )
 
         async def _once():

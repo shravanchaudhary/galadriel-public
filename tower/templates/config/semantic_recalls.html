@@ -13,40 +13,54 @@
 <section class="settings-section">
     <div class="settings-section-head">
         <h2 class="settings-section-title">Semantic Recalls</h2>
-        <p class="settings-section-desc">Recalls fire when semantic score ≥ that recall's positive_threshold (default 0.6) or a lexical cue hits — Stage-1 is positive-only (chunks under 4 words are lexical-only). Negatives are Stage-2 counter-signal and misfire feedback from tune_recall; they never gate Stage-1. Tune cues and positive_threshold per recall.</p>
+        <p class="settings-section-desc">Recalls fire when semantic score ≥ that recall's positive_threshold (default 0.6) or a lexical/fuzzy cue hits — Stage-1 is positive-only. Min-words and structured-chunk gates apply to tool output only. Negatives are Stage-2 counter-signal from tune_recall. Stage-2 tier: paid Gemini judge (default) or free local cross-encoder.</p>
     </div>
     
     <div class="settings-rows" style="margin-bottom: 1rem; border: 1px solid var(--border-subtle); border-radius: 6px; padding: 1rem;">
         <h3 style="margin-top: 0; margin-bottom: 0.5rem; font-size: 0.9rem; color: var(--text-main);">Create New Recall</h3>
-        <p class="settings-row-hint" style="margin-bottom: 0.75rem;">Supply the instruction plus non-empty positives and lexical cues (negatives optional — misfires accumulate via tune_recall). One cue per line.</p>
-        <div style="display: flex; flex-direction: column; gap: 0.6rem;">
-            <input type="text" id="new-recall-instruction" placeholder="Instruction — e.g. Whenever I ask for daily updates, create a recurring job" autocomplete="off">
-            <div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
-                <label style="flex: 1; min-width: 180px; display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.75rem; font-weight: 600; color: var(--success); text-transform: uppercase;">
-                    Semantic positives
-                    <textarea id="new-recall-positives" rows="3" style="font-weight: 400; text-transform: none; width: 100%; padding: 0.4rem 0.5rem; font-size: 0.85rem; background: var(--bg-primary); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px;" placeholder="One phrase per line"></textarea>
-                </label>
-                <label style="flex: 1; min-width: 180px; display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.75rem; font-weight: 600; color: var(--danger); text-transform: uppercase;">
-                    Negatives (Stage-2 only)
-                    <textarea id="new-recall-negatives" rows="3" style="font-weight: 400; text-transform: none; width: 100%; padding: 0.4rem 0.5rem; font-size: 0.85rem; background: var(--bg-primary); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px;" placeholder="One near-miss per line"></textarea>
-                </label>
-                <label style="flex: 1; min-width: 180px; display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.75rem; font-weight: 600; color: var(--text-main); text-transform: uppercase;">
-                    Lexical cues
-                    <textarea id="new-recall-lexical" rows="3" style="font-weight: 400; text-transform: none; width: 100%; padding: 0.4rem 0.5rem; font-size: 0.85rem; background: var(--bg-primary); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px;" placeholder="One exact cue per line"></textarea>
-                </label>
+        <p class="settings-row-hint" style="margin-bottom: 1rem;">Each field feeds a different stage of the pipeline. One phrase per line in the text areas.</p>
+
+        <div style="display: flex; flex-direction: column; gap: 1.25rem;">
+
+            <div>
+                <div style="font-size: 0.7rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-main); margin-bottom: 0.15rem;">What fires</div>
+                <p class="settings-row-hint" style="margin: 0 0 0.5rem;">Injected into the agent's context when this recall fires. Keep it a short pointer, not a lesson.</p>
+                <input type="text" id="new-recall-instruction" placeholder="Instruction — e.g. Whenever I ask for daily updates, create a recurring job" autocomplete="off" style="width: 100%;">
             </div>
-            <div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
-                <label style="display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.75rem; font-weight: 600; color: var(--text-main);">
-                    Positive threshold
-                    <input type="number" id="new-recall-pos-thr" min="0" max="1" step="0.01" value="0.6"
-                           style="width: 6rem; padding: 0.35rem 0.5rem; font-size: 0.85rem; background: var(--bg-primary); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px;">
-                </label>
-                <label style="display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.75rem; font-weight: 600; color: var(--text-main);">
-                    Negative threshold (legacy; never gates)
-                    <input type="number" id="new-recall-neg-thr" min="0" max="1" step="0.01" value="0.6"
-                           style="width: 6rem; padding: 0.35rem 0.5rem; font-size: 0.85rem; background: var(--bg-primary); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px;">
-                </label>
+
+            <div>
+                <div style="font-size: 0.7rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-main); margin-bottom: 0.15rem;">Stage&nbsp;1 — find candidates</div>
+                <p class="settings-row-hint" style="margin: 0 0 0.5rem;">Cheap local matching. Anything missed here can never fire, so be generous.</p>
+                <div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
+                    <label style="flex: 1; min-width: 180px; display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.75rem; font-weight: 600; color: var(--success); text-transform: uppercase;">
+                        Semantic positives
+                        <textarea id="new-recall-positives" rows="3" style="font-weight: 400; text-transform: none; width: 100%; padding: 0.4rem 0.5rem; font-size: 0.85rem; background: var(--bg-primary); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px;" placeholder="Real phrasings a user would type"></textarea>
+                    </label>
+                    <label style="flex: 1; min-width: 180px; display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.75rem; font-weight: 600; color: var(--text-main); text-transform: uppercase;">
+                        Lexical cues
+                        <textarea id="new-recall-lexical" rows="3" style="font-weight: 400; text-transform: none; width: 100%; padding: 0.4rem 0.5rem; font-size: 0.85rem; background: var(--bg-primary); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px;" placeholder="Exact phrases that always mean this"></textarea>
+                    </label>
+                    <label style="display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.75rem; font-weight: 600; color: var(--text-main); text-transform: uppercase;">
+                        Threshold
+                        <input type="number" id="new-recall-pos-thr" min="0" max="1" step="0.01" value="0.6"
+                               style="width: 6rem; font-weight: 400; padding: 0.4rem 0.5rem; font-size: 0.85rem; background: var(--bg-primary); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px;">
+                    </label>
+                </div>
             </div>
+
+            <div>
+                <div style="font-size: 0.7rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-main); margin-bottom: 0.15rem;">Stage&nbsp;2 — decide if it applies</div>
+                <p class="settings-row-hint" style="margin: 0 0 0.5rem;">The judge reads only these two lines — never the instruction. Write the activation condition as a situation ("The user asks to…"), not as an order to the agent.</p>
+                <div style="display: flex; flex-direction: column; gap: 0.5rem;">
+                    <input type="text" id="new-recall-activation" placeholder="Activation condition — e.g. The user asks for a report on a repeating schedule" autocomplete="off" style="width: 100%;">
+                    <input type="text" id="new-recall-exclusions" placeholder="Exclusions (optional) — lookalikes that must not fire, e.g. one-off reminders" autocomplete="off" style="width: 100%;">
+                    <label style="display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.75rem; font-weight: 600; color: var(--danger); text-transform: uppercase;">
+                        Negatives — local tier only
+                        <textarea id="new-recall-negatives" rows="2" style="font-weight: 400; text-transform: none; width: 100%; padding: 0.4rem 0.5rem; font-size: 0.85rem; background: var(--bg-primary); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px;" placeholder="Optional — misfires also accumulate automatically via tune_recall"></textarea>
+                    </label>
+                </div>
+            </div>
+
             <div style="display: flex; justify-content: flex-end;">
                 <button type="button" class="btn btn-small" id="create-recall-btn" onclick="createRecall()">Create</button>
             </div>
@@ -65,7 +79,23 @@
 <section class="settings-section" style="margin-top: 2rem;">
     <div class="settings-section-head">
         <h2 class="settings-section-title">Test Semantic Recalls</h2>
-        <p class="settings-section-desc">Test Stage-1 only (positive-only: positive_threshold + lexical; min 4 words for semantic). Stage-2 is not run here.</p>
+        <p class="settings-section-desc">Runs the full pipeline. Stage-1 proposes (dense top-k ∪ lexical/fuzzy, RRF-fused, capped at 3), then Stage-2 verifies. Choose paid judge or free local tier below.</p>
+        <p class="settings-row-hint" id="recall-test-armed">Checking recall status…</p>
+    </div>
+
+    <div class="settings-row" style="flex-direction: column; align-items: flex-start; gap: 0.5rem; margin-bottom: 1rem;">
+        <label for="recall-stage2-tier">Stage-2 tier</label>
+        <select id="recall-stage2-tier" style="padding: 0.25rem;" onchange="saveStage2Tier()">
+            <option value="judge">Paid — entailment judge (default)</option>
+            <option value="local">Free — local Qwen3 cross-encoder</option>
+        </select>
+        <p class="settings-row-hint" id="recall-tier-status"></p>
+    </div>
+
+    <div class="settings-row" style="flex-direction: column; align-items: flex-start; gap: 0.5rem; margin-bottom: 1rem;" id="recall-judge-model-row">
+        <label for="recall-judge-model">Judge model</label>
+        <select id="recall-judge-model" style="padding: 0.25rem;" onchange="saveJudgeModel()"></select>
+        <p class="settings-row-hint" id="recall-judge-model-status">Used only by the paid tier. Stronger models honour exclusions better; flash-lite is cheapest.</p>
     </div>
     
     <div class="settings-row" style="flex-direction: column; align-items: flex-start; gap: 0.5rem; margin-bottom: 1rem;">
@@ -83,7 +113,7 @@
     </div>
     
     <div id="recall-test-results" style="margin-top: 1rem; padding: 1rem; background: var(--bg-hover); border-radius: 4px; display: none;">
-        <h3 style="margin-top: 0; font-size: 0.9rem; margin-bottom: 0.5rem;">Matched Recalls:</h3>
+        <h3 style="margin-top: 0; font-size: 0.9rem; margin-bottom: 0.5rem;">Stage-1 proposals and Stage-2 verdicts:</h3>
         <div id="recall-test-matches"></div>
     </div>
 </section>
@@ -118,6 +148,14 @@ async function loadRecalls() {
             instruction.style.marginBottom = '0.25rem';
             instruction.textContent = recall.instruction;
             content.appendChild(instruction);
+            if (recall.activation_condition) {
+                const act = document.createElement('div');
+                act.className = 'muted';
+                act.style.fontSize = '0.8rem';
+                act.style.marginBottom = '0.25rem';
+                act.textContent = `when: ${recall.activation_condition}`;
+                content.appendChild(act);
+            }
             
             const examplesDiv = document.createElement('div');
             examplesDiv.className = 'settings-list-note';
@@ -137,7 +175,6 @@ async function loadRecalls() {
                 negHtml = `<div style="line-height: 1.4;"><span style="color: var(--danger); font-weight: 600;">-</span> <span class="muted">${recall.negative_examples.join('<span style="opacity: 0.4; margin: 0 4px;">•</span>')}</span></div>`;
             }
             const posThr = recall.positive_threshold != null ? recall.positive_threshold : 0.6;
-            const negThr = recall.negative_threshold != null ? recall.negative_threshold : 0.6;
             const thrHtml = `<div style="margin-top: 0.35rem; line-height: 1.4;" class="muted">pos ≥ ${posThr} · positive-only Stage-1</div>`;
             
             examplesDiv.innerHTML = posHtml + lexHtml + negHtml + thrHtml;
@@ -261,9 +298,7 @@ async function loadRecalls() {
                 return { el: wrap, input };
             }
             const posThrInput = thrInput('Positive threshold', posThr);
-            const negThrInput = thrInput('Negative threshold (legacy; never gates)', negThr);
             thrRow.appendChild(posThrInput.el);
-            thrRow.appendChild(negThrInput.el);
             editForm.appendChild(thrRow);
             
             const actionsDiv = document.createElement('div');
@@ -296,7 +331,6 @@ async function loadRecalls() {
                             lexical_cues: lexEditor.getValues(),
                             negative_examples: negEditor.getValues(),
                             positive_threshold: parseFloat(posThrInput.input.value),
-                            negative_threshold: parseFloat(negThrInput.input.value),
                         })
                     });
                     const data = await response.json();
@@ -370,24 +404,32 @@ function linesToList(el) {
 
 async function createRecall() {
     const input = document.getElementById('new-recall-instruction');
+    const actEl = document.getElementById('new-recall-activation');
+    const exclEl = document.getElementById('new-recall-exclusions');
     const posEl = document.getElementById('new-recall-positives');
     const negEl = document.getElementById('new-recall-negatives');
     const lexEl = document.getElementById('new-recall-lexical');
     const btn = document.getElementById('create-recall-btn');
     const status = document.getElementById('create-recall-status');
     const instruction = input.value.trim();
+    const activation_condition = (actEl && actEl.value.trim()) || '';
+    const exclusions = (exclEl && exclEl.value.trim()) || undefined;
     const positive_examples = linesToList(posEl);
     const negative_examples = linesToList(negEl);
     const lexical_cues = linesToList(lexEl);
     const posThrEl = document.getElementById('new-recall-pos-thr');
-    const negThrEl = document.getElementById('new-recall-neg-thr');
     const positive_threshold = parseFloat(posThrEl.value);
-    const negative_threshold = parseFloat(negThrEl.value);
 
     if (!instruction) {
         status.style.display = 'block';
         status.style.color = 'var(--danger)';
         status.textContent = 'Instruction is required.';
+        return;
+    }
+    if (!activation_condition) {
+        status.style.display = 'block';
+        status.style.color = 'var(--danger)';
+        status.textContent = 'Activation condition is required — it is the only field the Stage-2 judge reads.';
         return;
     }
     if (!positive_examples.length || !lexical_cues.length) {
@@ -409,11 +451,12 @@ async function createRecall() {
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({
                 instruction,
+                activation_condition,
+                exclusions,
                 positive_examples,
                 negative_examples,
                 lexical_cues,
                 positive_threshold,
-                negative_threshold,
             })
         });
 
@@ -440,6 +483,117 @@ async function createRecall() {
     }
 }
 
+function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[c]));
+}
+
+function setArmedLine(armed, mode, threshold, tier, judgeModel) {
+    const el = document.getElementById('recall-test-armed');
+    if (!el) return;
+    if (armed) {
+        const thr = (threshold != null && mode === 'rerank') ? ` · accepts above ${threshold}` : '';
+        const tierNote = tier ? ` · tier ${tier}` : '';
+        const judgeNote = (mode === 'judge' && judgeModel) ? ` · ${judgeModel}` : '';
+        el.textContent = `Recall armed · Stage-2 ${mode || 'judge'}${tierNote}${judgeNote}${thr}`;
+        el.style.color = '';
+    } else {
+        el.textContent = 'Recall is DISARMED — Stage-2 verifier unavailable (judge needs GEMINI_API_KEY; local needs the reranker GGUF). Nothing will scan or inject.';
+        el.style.color = 'var(--danger)';
+    }
+}
+
+async function loadRecallArmed() {
+    try {
+        const res = await fetch('/api/recall-slm-model');
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'unavailable');
+        setArmedLine(
+            data.armed,
+            data.stage2_mode,
+            (data.reranker || {}).threshold,
+            data.stage2_tier,
+            data.judge_model,
+        );
+        const tierSel = document.getElementById('recall-stage2-tier');
+        if (tierSel && data.stage2_tier) tierSel.value = data.stage2_tier;
+    } catch (e) {
+        const el = document.getElementById('recall-test-armed');
+        if (el) el.textContent = 'Recall status unavailable.';
+    }
+}
+
+async function loadJudgeModel() {
+    const sel = document.getElementById('recall-judge-model');
+    if (!sel) return;
+    try {
+        const res = await fetch('/api/recall-judge-model');
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'unavailable');
+        sel.innerHTML = '';
+        (data.options || []).forEach(name => {
+            const opt = document.createElement('option');
+            opt.value = name;
+            opt.textContent = name === data.default ? `${name} (default)` : name;
+            sel.appendChild(opt);
+        });
+        if (data.model) sel.value = data.model;
+    } catch (e) {
+        const status = document.getElementById('recall-judge-model-status');
+        if (status) status.textContent = 'Judge model list unavailable.';
+    }
+}
+
+async function saveJudgeModel() {
+    const sel = document.getElementById('recall-judge-model');
+    const status = document.getElementById('recall-judge-model-status');
+    if (!sel) return;
+    status.style.color = '';
+    status.textContent = 'Saving…';
+    try {
+        const res = await fetch('/api/recall-judge-model', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ model: sel.value }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'save failed');
+        status.textContent = `Saved · judge runs on ${data.model}`;
+        loadRecallArmed();
+    } catch (e) {
+        status.textContent = String(e.message || e);
+        status.style.color = 'var(--danger)';
+    }
+}
+
+async function saveStage2Tier() {
+    const sel = document.getElementById('recall-stage2-tier');
+    const status = document.getElementById('recall-tier-status');
+    if (!sel) return;
+    status.textContent = 'Saving…';
+    try {
+        const res = await fetch('/api/recall-stage2-tier', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ tier: sel.value }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'save failed');
+        status.textContent = `Saved · active mode ${data.stage2_mode || sel.value}`;
+        setArmedLine(
+            data.armed,
+            data.stage2_mode,
+            (data.reranker || {}).threshold,
+            data.stage2_tier || sel.value,
+            data.judge_model,
+        );
+    } catch (e) {
+        status.textContent = String(e.message || e);
+        status.style.color = 'var(--danger)';
+    }
+}
+
 async function testRecalls() {
     const text = document.getElementById('recall-test-text').value.trim();
     const model = document.getElementById('recall-test-model').value;
@@ -453,7 +607,7 @@ async function testRecalls() {
     btn.disabled = true;
     btn.textContent = 'Testing...';
     resultsDiv.style.display = 'block';
-    matchesDiv.innerHTML = '<span class="muted">Running semantic scan... (this may take a moment if loading the model)</span>';
+    matchesDiv.innerHTML = '<span class="muted">Running Stage-1 and Stage-2... (this may take a moment if loading the model)</span>';
     
     try {
         const response = await fetch('/api/recalls/test', {
@@ -468,25 +622,41 @@ async function testRecalls() {
             throw new Error(data.error || 'Test failed');
         }
         
+        setArmedLine(
+            data.armed,
+            data.stage2_mode,
+            data.stage2_threshold,
+            data.stage2_tier,
+            data.judge_model,
+        );
+
         if (!data.matches || data.matches.length === 0) {
-            matchesDiv.innerHTML = '<span class="muted">No recalls triggered.</span>';
+            matchesDiv.innerHTML = data.armed
+                ? '<span class="muted">Nothing proposed. Stage-1 found no cue over its positive_threshold among the RRF-fused candidates.</span>'
+                : '<span style="color: var(--danger)">Recall is disarmed — nothing was scanned.</span>';
         } else {
-            matchesDiv.innerHTML = data.matches.map(m => {
+            const fired = data.matches.filter(m => m.slm_verified).length;
+            const summary = `<div class="settings-row-hint" style="margin-bottom: 0.75rem;">${fired} of ${data.matches.length} proposal(s) would fire · mode ${esc(data.stage2_mode || '')}.</div>`;
+            matchesDiv.innerHTML = summary + data.matches.map(m => {
                 const pos = (m.positive_score != null) ? Number(m.positive_score).toFixed(3) : 'n/a';
-                const neg = (m.negative_score != null) ? Number(m.negative_score).toFixed(3) : 'n/a';
-                const src = m.match_source || 'semantic';
-                const cue = m.lexical_cue ? ` · cue “${m.lexical_cue}”` : '';
-                return `
-                <div style="margin-bottom: 0.5rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border-color);">
-                    <div style="font-weight: 500;">
-                        ${src}${cue}
-                        &nbsp; Pos: <span style="color: var(--success);">${pos}</span>
-                        &nbsp; Neg: <span style="color: var(--danger);">${neg}</span>
-                    </div>
-                    <div style="font-size: 0.9rem;">${m.instruction}</div>
-                    <div style="font-family: monospace; font-size: 0.8rem; color: var(--text-muted);">${m.recall_id}</div>
-                </div>
-            `;
+                const src = esc(m.match_source || 'semantic');
+                const cue = m.lexical_cue ? ` · cue “${esc(m.lexical_cue)}”` : '';
+                const badge = m.slm_verified
+                    ? '<span style="color: var(--success); font-weight: 600;">FIRES</span>'
+                    : '<span style="color: var(--danger); font-weight: 600;">REJECTED</span>';
+                const reason = m.slm_reason
+                    ? `<div class="muted" style="font-size: 0.8rem;">reason: ${esc(m.slm_reason)}</div>`
+                    : '';
+                const won = m.matched_example
+                    ? `<div class="muted" style="font-size: 0.8rem;">Stage-2 matched cue: “${esc(m.matched_example)}”</div>`
+                    : '';
+                const chunk = m.matched_chunk
+                    ? `<div class="muted" style="font-size: 0.8rem;">chunk: “${esc(String(m.matched_chunk).slice(0, 160))}”</div>`
+                    : '';
+                return `<div style="margin-bottom: 0.75rem; padding-bottom: 0.5rem; border-bottom: 1px solid var(--border-subtle);">
+                    <div>${badge} <strong>${esc(m.recall_id || '')}</strong> · ${src} · pos ${pos}${cue}</div>
+                    ${reason}${won}${chunk}
+                </div>`;
             }).join('');
         }
     } catch (e) {
@@ -499,6 +669,8 @@ async function testRecalls() {
 
 document.addEventListener('DOMContentLoaded', () => {
     loadRecalls();
+    loadRecallArmed();
+    loadJudgeModel();
 });
 </script>
 {% endblock %}

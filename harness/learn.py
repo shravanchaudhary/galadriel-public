@@ -33,7 +33,8 @@ _DECOMPOSE_SYSTEM = (
     "{\n"
     '  "kg_triplets": [["subject", "predicate", "object"], ...],\n'
     '  "drawer": {"topic": "kebab-case-topic", "content": "..."} | null,\n'
-    '  "recall": {"instruction": "...", "positive_examples": ["..."],\n'
+    '  "recall": {"instruction": "...", "activation_condition": "...",\n'
+    '             "exclusions": "...", "positive_examples": ["..."],\n'
     '             "lexical_cues": ["..."]} | null\n'
     "}\n"
     "Rules:\n"
@@ -45,10 +46,13 @@ _DECOMPOSE_SYSTEM = (
     "by kg/recall.\n"
     "- recall: only when a clear future trigger moment exists where the agent "
     "should be reactively reminded. instruction = short action pointer (tool / "
-    "file / palace topic), NOT an essay. positive_examples = 5-10 short "
-    "realistic phrasings of that future moment (not paraphrases of the "
-    "instruction). lexical_cues = 1-5 high-precision exact anchors. null if "
-    "there is no reactive trigger.\n"
+    "file / palace topic), NOT an essay. activation_condition = REQUIRED "
+    "one-line when-to-fire, phrased as a situation about the user or chunk "
+    "(\"The user asks to ...\"), never as an order to the agent. "
+    "exclusions = one-line lookalikes that must not fire. "
+    "positive_examples = 5-10 short realistic phrasings of that future moment "
+    "(not paraphrases of the instruction). lexical_cues = 1-5 high-precision "
+    "exact anchors. null if there is no reactive trigger.\n"
     "- Use any combination; unused parts are null / empty."
 )
 
@@ -177,6 +181,8 @@ async def learn(
                 negative_examples=recall.get("negative_examples"),
                 lexical_cues=recall.get("lexical_cues"),
                 positive_threshold=recall.get("positive_threshold"),
+                activation_condition=recall.get("activation_condition"),
+                exclusions=recall.get("exclusions"),
             )
             lines.append(f"recall: {result}")
         except Exception as exc:

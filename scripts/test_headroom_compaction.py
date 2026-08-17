@@ -21,9 +21,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from headroom import CompressConfig, compress  # noqa: E402
-
+# harness first: its __init__ pins LITELLM_LOCAL_MODEL_COST_MAP before headroom
+# pulls litellm in, which otherwise blocks on a remote price-table fetch.
 from harness import headroom_compress  # noqa: E402
+
+from headroom import CompressConfig, compress  # noqa: E402
 
 MODEL = "claude-sonnet-4-5-20250929"
 

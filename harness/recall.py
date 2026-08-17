@@ -39,24 +39,26 @@ _RERANKER = None
 _RERANKER_FAILED = False
 _RERANKER_LOCK = threading.RLock()
 
-# Default per-recall Stage-1 positive floor. Negative veto is relative (neg >= pos):
+# Default per-recall Stage-1 positive floor. There is no negative counterpart:
 # near-miss negatives share the same cosine band as true positives, so an absolute
 # neg floor (e.g. 0.6) systematically over-vetoes when both scores clear ~0.6.
+# Negatives are a Stage-2 veto only, scored relative to the winning positive.
 DEFAULT_POSITIVE_THRESHOLD = 0.6
-# Stored on recalls for API/UI compat; not used for Stage-1 veto gating.
-DEFAULT_NEGATIVE_THRESHOLD = 0.6
 # Router encoder floor is open so per-recall positive_threshold can go below 0.6.
 _ROUTER_SCORE_FLOOR = 0.0
 # Lexical hard-hit score (exact cue match).
 _LEXICAL_POSITIVE_SCORE = 1.0
-# Chunks shorter than this many words never reach the embedding router —
-# lexical cues only. Bare tool names / tiny args carry no semantic intent.
+# Tool-output chunks shorter than this many words never reach the embedding
+# router — lexical cues only. Bare tool names / tiny args carry no semantic
+# intent. Direct user messages never hit this gate (short queries like
+# "who are you?" must reach the router).
 _MIN_SEMANTIC_SCAN_WORDS = 4
 # Structured tool output is not prose: JSON fragments ('"key": value', '{...')
 # and ls -l rows embed close to everything and were the dominant mid-turn
 # false-positive source (2026-08-16: 11 Stage-1 hits on trade JSON / directory
 # listings, 11 Stage-2 rejects at ~0.50, ~72s of blocked turn). These skip the
 # semantic router; lexical cues still run — same contract as the min-words gate.
+# Applied to tool_output / tool_request segments only.
 _STRUCTURED_CHUNK_RE = re.compile(
     r"^(?:"
     r"[\{\}\]\"']"                        # JSON/dict fragment starts
@@ -64,27 +66,38 @@ _STRUCTURED_CHUNK_RE = re.compile(
     r"|[-bcdlps][rwxsStT-]{9}[.+@]?\s"    # ls -l permission column
     r")"
 )
+# URL hosts are the intent-bearing part; path/query slug length used to swing
+# lexical and embedding scores. Collapse to scheme+host before scanning.
+_URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 
-# Stage-1 separation gate: how far the accepted routes must sit above the next
-# one down, per chunk. Absolute cosine cannot tell tool noise from intent —
-# bge-small is anisotropic, so unrelated text still lands ~0.7 and the accept
-# floor has no clean operating point (measured: raising it to kill all noise
-# costs ~35% of real recall). What does separate them is the *shape* of the
-# router's ranking. Noise is equally close to everything, so its top-5 comes
-# back flat (top1−top2 mean 0.020, max 0.027); real intent picks one recall out
-# (0.107 buried in noise, 0.161 standalone). Accept only a leading group the
-# runner-up cannot keep up with. See eval/run_stage1_chunking_eval.py.
+# Stage-1 flat-ranking diagnostic threshold (logged, never a veto). A gap below
+# this used to reject every candidate; now we take a top-k union instead.
 _STAGE1_MARGIN_DEFAULT = 0.05
+# Dense router candidates kept per chunk before RRF fusion with lexical/fuzzy.
+_STAGE1_DENSE_TOP_K = 5
+# RRF constant (Cormack et al.); higher = flatter fusion.
+_STAGE1_RRF_K = 60
+# Fuzzy lexical: SequenceMatcher ratio floor for near-miss cue hits.
+_FUZZY_LEXICAL_RATIO = 0.88
+# Fuzzy matching is pure-Python SequenceMatcher and costs ~130 ms per 1 KB chunk
+# across the cue catalog. It exists to absorb typos in what a human typed, so it
+# runs on prose segments only and only on chunks short enough to be one utterance.
+_FUZZY_MAX_CHUNK_CHARS = 240
+# Segment sources that receive the tool-junk gates (min words / structured).
+_TOOL_SEGMENT_SOURCES = frozenset({"tool_output", "tool_request", "tool"})
 
 # Legacy logit-margin default (experimental RECALL_STAGE2_MODE=logit only).
 _SLM_LOGIT_MARGIN_DEFAULT = 2.0
 # Embedding pos−neg margin (explicit RECALL_STAGE2_MODE=embed only — never an
 # automatic fallback; see recall_system_armed).
 _STAGE2_EMBED_MARGIN_DEFAULT = 0.0
-# Cross-encoder P(yes) floor. Benchmarked score mass is strongly bimodal —
-# negatives cluster at ~0.50 (p90 0.58), positives at ~0.731 — so 0.65 sits in
-# the empty gap between the modes rather than on a sharp operating point.
-_STAGE2_RERANK_THRESHOLD_DEFAULT = 0.65
+# Cross-encoder P(yes) floor, calibrated by eval/calibrate_local_threshold.py
+# against GGUF sha256 c04f5f56 (see eval/results/local_threshold_calibration.json).
+# The old 0.65 was read off double-sigmoid scores squeezed into [0.50, 0.73] and
+# is meaningless on the corrected scale, where true paraphrase pairs land ~0.55.
+# This tier cannot reach P>=0.95 at any threshold — 0.487 is its best operating
+# point at P=0.864 / R=0.537, which is why `judge` is the default.
+_STAGE2_RERANK_THRESHOLD_DEFAULT = 0.487
 # Counter-signal slack for the rerank veto: reject when the best negative scores
 # above (best positive − delta). 0.0 = veto only when a negative strictly wins.
 # Negatives are verbatim misfire chunks, so a recurrence self-matches near 1.0
@@ -132,22 +145,68 @@ def recall_positive_threshold(recall: dict | None) -> float:
     )
 
 
-def recall_negative_threshold(recall: dict | None) -> float:
-    if not isinstance(recall, dict):
-        return DEFAULT_NEGATIVE_THRESHOLD
-    return _clamp_threshold(
-        recall.get("negative_threshold"), DEFAULT_NEGATIVE_THRESHOLD
-    )
-
-
 def normalize_recall_thresholds(recall: dict) -> dict:
-    """Ensure positive/negative thresholds are present with defaults; drop legacy."""
+    """Ensure positive_threshold is present with a default; drop legacy fields.
+
+    `negative_threshold` gated Stage-1 until the reranker rewrite and is stripped
+    on read, so stored copies age out without a migration.
+    """
     if not isinstance(recall, dict):
         return recall
     recall.pop("threshold", None)
+    recall.pop("negative_threshold", None)
     recall["positive_threshold"] = recall_positive_threshold(recall)
-    recall["negative_threshold"] = recall_negative_threshold(recall)
     return recall
+
+
+def recall_activation_condition(recall: dict | None) -> str:
+    """Matching target for Stage-2. Falls back to instruction for unmigrated rows."""
+    if not isinstance(recall, dict):
+        return ""
+    text = (recall.get("activation_condition") or "").strip()
+    if text:
+        return text
+    return (recall.get("instruction") or "").strip()
+
+
+def recall_exclusions(recall: dict | None) -> str:
+    if not isinstance(recall, dict):
+        return ""
+    return (recall.get("exclusions") or "").strip()
+
+
+def normalize_scan_text(text: str) -> str:
+    """Collapse URLs to scheme+host so path slug length cannot swing a verdict."""
+    if not text:
+        return ""
+
+    def _host_only(match: re.Match) -> str:
+        url = match.group(0)
+        try:
+            from urllib.parse import urlparse
+
+            parsed = urlparse(url)
+            if parsed.scheme and parsed.netloc:
+                return f"{parsed.scheme}://{parsed.netloc}"
+        except Exception:
+            pass
+        return url
+
+    return _URL_RE.sub(_host_only, text)
+
+
+def _is_tool_segment(source: str | None) -> bool:
+    return (source or "user").strip().lower() in _TOOL_SEGMENT_SOURCES
+
+
+def _should_run_semantic_router(chunk: str, source: str | None) -> bool:
+    """Min-words and structured-chunk gates apply to tool segments only."""
+    if _is_tool_segment(source):
+        if len(chunk.split()) < _MIN_SEMANTIC_SCAN_WORDS:
+            return False
+        if _STRUCTURED_CHUNK_RE.match(chunk):
+            return False
+    return True
 
 
 def get_encoder(force_type=None):
@@ -410,6 +469,107 @@ def _split_line_for_embedding(
     return chunks
 
 
+# Sentence boundary: terminator, optional closing quote/bracket, then whitespace.
+# Deliberately does NOT require a capital after the break — chat prose is mostly
+# lowercase, and requiring one made this split nothing at all on real messages.
+# Rule-based on purpose, and measured rather than assumed. A neural segmenter
+# (SaT / wtpsplit, ONNX CPU) was benchmarked against this on 2026-08-18 and
+# rejected. It segments far better in isolation — 0.90 boundary F1 for sat-3l-sm
+# and 0.94 for sat-12l-sm where this scores 0.00, on text with the terminators
+# stripped — but every scan document whose lines are already newline-separated
+# came out identical under both. The whole gain sat in unpunctuated run-on
+# messages, worth 3 recoveries of one recall, against +14% Stage-1 false-positive
+# proposals (each a Stage-2 forward pass), +680 MB resident and 1.5x scan
+# latency. A boundary error here is graceful anyway: both halves are still
+# scanned and lexical cues still match.
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])[\"')\]]*\s+(?=\S)")
+# Terminators that end an abbreviation rather than a sentence. Checked against
+# the tail of the candidate left-hand side, lowercased.
+_ABBREVIATIONS = (
+    "e.g.", "i.e.", "etc.", "vs.", "cf.", "al.", "approx.", "dr.", "mr.", "mrs.",
+    "ms.", "prof.", "sr.", "jr.", "st.", "no.", "fig.", "inc.", "ltd.", "co.",
+)
+# A unit shorter than this is a fragment ("It's this:") — not self-contained
+# enough to embed on its own, so it joins the next unit. Dense X Retrieval
+# (EMNLP 2024) is explicit that the retrieval unit has to stand alone. Swept 3/4/5
+# on the chunk dataset: all three recover buried-paragraph recall in full, so 4 is
+# chosen for the low false-positive count and because it leaves genuine four-word
+# questions ("who are you really?") standing on their own.
+_MIN_UNIT_WORDS = 4
+
+
+def _sentence_split(line: str) -> list[str]:
+    """Split one line into sentences, then glue fragments onto their successor."""
+    parts: list[str] = []
+    start = 0
+    for match in _SENTENCE_SPLIT_RE.finditer(line):
+        left = line[start:match.start()]
+        stripped = left.rstrip().lower()
+        if any(stripped.endswith(a) for a in _ABBREVIATIONS):
+            continue
+        # "3. " in a numbered list, or a decimal, is not a sentence end.
+        if re.search(r"(?:^|\s)\d+\.$", stripped):
+            continue
+        piece = left.strip()
+        if piece:
+            parts.append(piece)
+        start = match.end()
+    tail = line[start:].strip()
+    if tail:
+        parts.append(tail)
+    if not parts:
+        return []
+
+    merged: list[str] = []
+    pending = ""
+    for piece in parts:
+        candidate = f"{pending} {piece}".strip() if pending else piece
+        if len(candidate.split()) < _MIN_UNIT_WORDS:
+            pending = candidate
+            continue
+        merged.append(candidate)
+        pending = ""
+    if pending:
+        if merged:
+            merged[-1] = f"{merged[-1]} {pending}"
+        else:
+            merged.append(pending)
+    return merged
+
+
+def split_scan_units(text: str) -> list[str]:
+    """The exact units Stage-1 will score for one segment.
+
+    Newline, then URL, then sentence. Splitting only on newlines let an
+    unwrapped paragraph embed as one vector, which averages a cue into the
+    paragraph's topic centroid: on the chunk dataset's long_paragraph family
+    that cost 37.5 points of Stage-1 recall (0.625 -> 1.0 here), for +5.8%
+    chunks and no measurable latency penalty. A URL becomes its own unit
+    because it is the intent-bearing token in a line like "can you read this:
+    https://medium.com", where it would otherwise be diluted by the sentence
+    around it.
+
+    Public because the chunking eval has to measure what production does rather
+    than keep its own copy of the rules.
+    """
+    units: list[str] = []
+    for line in (c.strip() for c in text.split("\n")):
+        if not line:
+            continue
+        pos = 0
+        for match in _URL_RE.finditer(line):
+            before = line[pos:match.start()].strip()
+            if before:
+                units.extend(_sentence_split(before))
+            units.append(match.group(0))
+            pos = match.end()
+        rest = line[pos:].strip()
+        if rest:
+            units.extend(_sentence_split(rest))
+    # Oversized units (minified JSON, CSV rows) still need the token windower.
+    return [sub for unit in units for sub in _split_line_for_embedding(unit)]
+
+
 def _as_float_score(score) -> float | None:
     if score is None or score == "N/A":
         return None
@@ -539,6 +699,73 @@ def _lexical_hit(chunk: str, cues: list) -> str | None:
     return None
 
 
+def _fuzzy_lexical_hit(chunk: str, cues: list, *, source: str | None = None) -> str | None:
+    """Near-miss lexical anchor via SequenceMatcher (typos in typed prose).
+
+    Skipped for tool segments and long chunks: machine output has no typos to
+    absorb, and the matcher is quadratic pure Python (see _FUZZY_MAX_CHUNK_CHARS).
+    """
+    if not chunk or not cues:
+        return None
+    if _is_tool_segment(source):
+        return None
+    text = " ".join(chunk.casefold().split())
+    if not text or len(text) > _FUZZY_MAX_CHUNK_CHARS:
+        return None
+
+    from difflib import SequenceMatcher
+
+    words = text.split()
+    best_cue = None
+    best_ratio = 0.0
+    for raw in cues:
+        cue = normalize_lexical_cue(raw)
+        if not cue or len(cue) < 4:
+            continue
+        # Exact substrings are _lexical_hit's job; it already ran and missed.
+        n = len(cue.split())
+        # Compare the cue against same-length word windows only.
+        for i in range(max(1, len(words) - n + 1)):
+            piece = " ".join(words[i : i + n])
+            ratio = SequenceMatcher(None, cue, piece).ratio()
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_cue = cue
+            if best_ratio >= 0.99:
+                break
+    if best_cue is not None and best_ratio >= _FUZZY_LEXICAL_RATIO:
+        return best_cue
+    return None
+
+
+def _rrf_fuse(
+    ranked_lists: list[list[tuple[str, float]]],
+    *,
+    k: int = _STAGE1_RRF_K,
+) -> list[tuple[str, float]]:
+    """Reciprocal rank fusion over (id, score) lists. Returns (id, rrf_score)."""
+    scores: dict[str, float] = {}
+    for ranked in ranked_lists:
+        for rank, (rid, _) in enumerate(ranked):
+            if not rid:
+                continue
+            scores[rid] = scores.get(rid, 0.0) + 1.0 / (k + rank + 1)
+    return sorted(scores.items(), key=lambda pair: pair[1], reverse=True)
+
+
+# Ordering of evidence kinds when one recall is proposed by several chunks. An
+# exact cue is a hand-written hard trigger and outranks any cosine, so it wins
+# even against a higher-scoring semantic neighbour.
+_MATCH_SOURCE_RANK = {"lexical": 2, "fuzzy": 1, "semantic": 0}
+
+
+def _proposal_strength(match: dict) -> tuple[int, float]:
+    return (
+        _MATCH_SOURCE_RANK.get(match.get("match_source"), 0),
+        _as_float_score(match.get("positive_score")) or 0.0,
+    )
+
+
 def _accept_candidate(
     *,
     recall: dict,
@@ -546,17 +773,16 @@ def _accept_candidate(
     chunk: str,
     positive_score: float,
     match_source: str,
-    seen: set,
-    matches: list,
     lexical_cue: str | None = None,
-) -> None:
-    """Accept semantic if pos >= pos_thr; lexical is a hard hit.
+) -> dict | None:
+    """Build the match for one chunk's proposal, or None if it misses the floor.
 
-    Stage-1 is positive-only: negative examples never gate here. Near-miss
-    negatives share the positive cosine band, so any Stage-1 neg veto
-    (absolute or relative) randomly blocks true hits while letting real false
-    positives through. Negatives remain stored on the recall as Stage-2 /
-    tune_recall counter-signal only.
+    Semantic accepts at pos >= pos_thr; lexical is a hard hit. Stage-1 is
+    positive-only: negative examples never gate here. Near-miss negatives share
+    the positive cosine band, so any Stage-1 neg veto (absolute or relative)
+    randomly blocks true hits while letting real false positives through.
+    Negatives remain stored on the recall as Stage-2 / tune_recall
+    counter-signal only.
     """
     pos_thr = recall_positive_threshold(recall)
 
@@ -565,7 +791,7 @@ def _accept_candidate(
             f"[Semantic Miss] route='{recall_id}' source={match_source} "
             f"pos={positive_score:.4f} < pos_thr={pos_thr:.4f} chunk='{chunk[:100]}'"
         )
-        return
+        return None
 
     cue_note = f" cue={lexical_cue!r}" if lexical_cue else ""
     log.info(
@@ -573,7 +799,6 @@ def _accept_candidate(
         f"pos={positive_score:.4f}>={pos_thr:.4f}"
         f"{cue_note} chunk='{chunk[:100]}'"
     )
-    seen.add(recall_id)
     match_obj = dict(recall)
     normalize_recall_thresholds(match_obj)
     match_obj["positive_score"] = positive_score
@@ -582,7 +807,7 @@ def _accept_candidate(
     match_obj["matched_chunk"] = chunk
     if lexical_cue:
         match_obj["lexical_cue"] = lexical_cue
-    matches.append(match_obj)
+    return match_obj
 
 
 def _rank_decisions(decisions, recall_map: dict, chunk: str) -> list[tuple[str, float]]:
@@ -607,14 +832,10 @@ def _rank_decisions(decisions, recall_map: dict, chunk: str) -> list[tuple[str, 
 def _margin_accepts(
     ranked: list[tuple[str, float]], margin: float
 ) -> list[tuple[str, float]]:
-    """The leading route, when the runner-up cannot keep up with it.
+    """Legacy single-winner gate (kept for chunking eval / diagnostics only).
 
-    One line of text carries one intent, so a router that likes five recalls
-    equally has recognised nothing — that flat shape is what tool output and
-    small talk produce. Requiring the top route to beat the second by `margin`
-    reads that shape directly, which an absolute cosine floor cannot. Returns
-    [] for a flat ranking. margin <= 0 disables the gate (RECALL_STAGE1_MARGIN=0)
-    and restores the pre-gate behaviour of accepting every route over the floor.
+    Production Stage-1 uses `_candidate_union` instead: a flat ranking is a
+    signal to verify more candidates, not to reject all of them.
     """
     if not ranked:
         return []
@@ -625,27 +846,79 @@ def _margin_accepts(
     return ranked[:1] if (ranked[0][1] - ranked[1][1]) >= margin else []
 
 
+def _candidate_union(
+    dense_ranked: list[tuple[str, float]],
+    lexical_hits: list[tuple[str, float]],
+    fuzzy_hits: list[tuple[str, float]],
+    *,
+    dense_top_k: int = _STAGE1_DENSE_TOP_K,
+    cap: int | None = None,
+) -> list[tuple[str, float]]:
+    """Fuse dense top-k with lexical/fuzzy anchors via RRF; cap survivors.
+
+    Exact lexical cues are hand-written hard triggers, so they are seeded ahead
+    of the fused order and can never be squeezed out by dense neighbours.
+    """
+    if cap is None:
+        cap = _stage2_max_candidates()
+    cap = max(1, cap)
+    dense = dense_ranked[: max(0, dense_top_k)]
+    fused = _rrf_fuse([dense, lexical_hits, fuzzy_hits])
+    if not fused:
+        return []
+    fused_scores = dict(fused)
+    forced = [rid for rid, _ in lexical_hits][:cap]
+    out = [(rid, fused_scores.get(rid, 0.0)) for rid in forced]
+    for rid, score in fused:
+        if len(out) >= cap:
+            break
+        if rid not in forced:
+            out.append((rid, score))
+    return out
+
+
 def scan_text_for_recalls(
-    text: str,
-    recalls: list[dict],
+    text: str | None = None,
+    recalls: list[dict] | None = None,
     exclude_texts: list[str] | None = None,
     force_encoder_type=None,
+    segments: list[dict] | None = None,
 ) -> list[dict]:
-    """Scan text: semantic OR lexical cue hit, gated by the positive floor.
+    """Scan text: semantic OR lexical/fuzzy cue hit, gated by the positive floor.
 
-    Chunks under _MIN_SEMANTIC_SCAN_WORDS words (bare tool names, tiny args
-    like "active", write-acks) skip the embedding router entirely — they carry
-    no intent signal and were the main mid-turn false-positive source. Lexical
-    cues still run on them: exact cues are intentional hard triggers.
+    `segments` is an optional list of `{text, source}` dicts. `source` is one of
+    user / thought / tool_request / tool_output. Min-words and structured-chunk
+    gates apply only to tool segments so short user queries still reach the
+    router. When `segments` is omitted the whole `text` is treated as `user`.
     """
-    if not text or not recalls:
+    if recalls is None:
+        recalls = []
+    if not recalls:
         return []
 
     if not recall_system_armed():
         return []
 
-    sanitized_text = sanitize_text_with_exclude_texts(text, exclude_texts)
-    if not sanitized_text:
+    if segments:
+        prepared: list[tuple[str, str]] = []
+        for seg in segments:
+            if not isinstance(seg, dict):
+                continue
+            raw = normalize_scan_text(str(seg.get("text") or ""))
+            cleaned = sanitize_text_with_exclude_texts(raw, exclude_texts)
+            if cleaned:
+                prepared.append((cleaned, str(seg.get("source") or "user")))
+    else:
+        if not text:
+            return []
+        cleaned = sanitize_text_with_exclude_texts(
+            normalize_scan_text(text), exclude_texts
+        )
+        if not cleaned:
+            return []
+        prepared = [(cleaned, "user")]
+
+    if not prepared:
         return []
 
     router = get_semantic_router(recalls, force_encoder_type)
@@ -653,83 +926,124 @@ def scan_text_for_recalls(
     if not recall_map:
         return []
 
-    matches = []
-    seen = set()
+    # recall_id -> its strongest proposal across every chunk of every segment.
+    # Keeping the first proposal instead made the whole scan order-dependent: a
+    # weak semantic hit on an early line claimed the recall, and the line that
+    # actually triggered it — often an exact cue scoring 1.0 — was skipped, so
+    # Stage-2 was handed evidence that genuinely did not match and rejected it.
+    best: dict[str, dict] = {}
     margin = _stage1_margin()
 
-    line_chunks = [c.strip() for c in sanitized_text.split("\n") if c.strip()]
-    chunks = [
-        sub
-        for line in line_chunks
-        for sub in _split_line_for_embedding(line)
-    ]
+    for sanitized_text, source in prepared:
+        chunks = split_scan_units(sanitized_text)
 
-    for chunk in chunks:
-        if (
-            router is not None
-            and len(chunk.split()) >= _MIN_SEMANTIC_SCAN_WORDS
-            and not _STRUCTURED_CHUNK_RE.match(chunk)
-        ):
-            decisions = router(chunk, limit=5)
-            if decisions and not isinstance(decisions, list):
-                decisions = [decisions]
+        for chunk in chunks:
+            dense_ranked: list[tuple[str, float]] = []
+            if router is not None and _should_run_semantic_router(chunk, source):
+                decisions = router(chunk, limit=_STAGE1_DENSE_TOP_K)
+                if decisions and not isinstance(decisions, list):
+                    decisions = [decisions]
+                dense_ranked = _rank_decisions(decisions, recall_map, chunk)
+                # Flat ranking is a diagnostic, not a veto.
+                if (
+                    margin > 0
+                    and len(dense_ranked) >= 2
+                    and (dense_ranked[0][1] - dense_ranked[1][1]) < margin
+                ):
+                    log.info(
+                        f"[Stage1 Flat] top={dense_ranked[0][0]!r} "
+                        f"pos={dense_ranked[0][1]:.4f} "
+                        f"runner_up={dense_ranked[1][1]:.4f} gap<{margin:.4f} "
+                        f"source={source} chunk='{chunk[:100]}'"
+                    )
 
-            # Rank before the `seen` filter: a recall already accepted from an
-            # earlier chunk still holds its place here, because its similarity
-            # is what tells us whether this chunk resolved to anything.
-            ranked = _rank_decisions(decisions, recall_map, chunk)
-            accepted = _margin_accepts(ranked, margin)
-            if ranked and not accepted:
-                log.info(
-                    f"[Stage1 Flat] top={ranked[0][0]!r} pos={ranked[0][1]:.4f} "
-                    f"runner_up={ranked[1][1]:.4f} gap<{margin:.4f} "
-                    f"chunk='{chunk[:100]}'"
-                )
-
-            for recall_id, positive_score in accepted:
-                if recall_id in seen:
+            lexical_hits: list[tuple[str, float]] = []
+            fuzzy_hits: list[tuple[str, float]] = []
+            cue_by_id: dict[str, str] = {}
+            for recall_id, recall in recall_map.items():
+                cues = recall.get("lexical_cues") or []
+                hit_cue = _lexical_hit(chunk, cues)
+                if hit_cue:
+                    lexical_hits.append((recall_id, _LEXICAL_POSITIVE_SCORE))
+                    cue_by_id[recall_id] = hit_cue
                     continue
-                _accept_candidate(
+                fuzzy = _fuzzy_lexical_hit(chunk, cues, source=source)
+                if fuzzy:
+                    fuzzy_hits.append((recall_id, 0.95))
+                    cue_by_id[recall_id] = fuzzy
+
+            # Filter dense by per-recall positive floor before fusion.
+            dense_cleared = [
+                (rid, score)
+                for rid, score in dense_ranked
+                if score >= recall_positive_threshold(recall_map[rid])
+            ]
+            accepted = _candidate_union(dense_cleared, lexical_hits, fuzzy_hits)
+
+            lex_map = {rid: score for rid, score in lexical_hits}
+            fuzzy_map = {rid: score for rid, score in fuzzy_hits}
+            dense_map = {rid: score for rid, score in dense_cleared}
+
+            for recall_id, fused_score in accepted:
+                if recall_id in lex_map:
+                    match_source = "lexical"
+                    positive_score = lex_map[recall_id]
+                    lexical_cue = cue_by_id.get(recall_id)
+                elif recall_id in fuzzy_map:
+                    match_source = "fuzzy"
+                    positive_score = fuzzy_map[recall_id]
+                    lexical_cue = cue_by_id.get(recall_id)
+                else:
+                    match_source = "semantic"
+                    positive_score = dense_map.get(recall_id, fused_score)
+                    lexical_cue = None
+                candidate = _accept_candidate(
                     recall=recall_map[recall_id],
                     recall_id=recall_id,
                     chunk=chunk,
                     positive_score=positive_score,
-                    match_source="semantic",
-                    seen=seen,
-                    matches=matches,
+                    match_source=match_source,
+                    lexical_cue=lexical_cue,
                 )
+                if candidate is None:
+                    continue
+                incumbent = best.get(recall_id)
+                # Strictly greater, so an earlier chunk holds a tie and the
+                # result stays deterministic.
+                if incumbent is None or _proposal_strength(candidate) > _proposal_strength(
+                    incumbent
+                ):
+                    best[recall_id] = candidate
 
-        for recall_id, recall in recall_map.items():
-            if recall_id in seen:
-                continue
-            hit_cue = _lexical_hit(chunk, recall.get("lexical_cues") or [])
-            if not hit_cue:
-                continue
-            _accept_candidate(
-                recall=recall,
-                recall_id=recall_id,
-                chunk=chunk,
-                positive_score=_LEXICAL_POSITIVE_SCORE,
-                match_source="lexical",
-                seen=seen,
-                matches=matches,
-                lexical_cue=hit_cue,
-            )
+    matches = list(best.values())
 
     if matches:
-        log.debug(f"Semantic scan matched {len(matches)} rule(s) for text: {text[:200]}...")
+        log.debug(
+            "Semantic scan matched %s rule(s) for text: %s...",
+            len(matches),
+            (text or prepared[0][0])[:200],
+        )
 
     return matches
 
 
 def generate_recall_fire_text(matched_recalls: list[dict]) -> str:
-    """Generate the injected recall-fire suggestion text from matched recalls."""
+    """Injected recall-fire text: `- [recall_id] instruction` per match.
+
+    The id must be in the visible text. The stable block tells the agent to call
+    `tune_recall(recall_id, ...)` after a fire, but the id previously lived only
+    in the message's `matched_recall_ids` metadata, which the model never sees —
+    so it invented plausible ids (`sys_worker_board`, `sys_cookbooks`) and every
+    feedback call failed.
+    """
     if not matched_recalls:
         return ""
 
     fire_lines = []
     for recall in matched_recalls:
-        fire_lines.append(f"- {recall.get('instruction')}")
+        rid = (recall.get("recall_id") or "").strip()
+        instruction = recall.get("instruction")
+        fire_lines.append(f"- [{rid}] {instruction}" if rid else f"- {instruction}")
 
     return "\n".join(fire_lines)
 
@@ -828,6 +1142,15 @@ def _get_slm_client():
             return None
 
 
+def _judge_model_for_status() -> str:
+    from .recall_judge import DEFAULT_JUDGE_MODEL, resolve_judge_model
+
+    try:
+        return resolve_judge_model()
+    except Exception:
+        return DEFAULT_JUDGE_MODEL
+
+
 def get_recall_slm_status() -> dict:
     """Status payload for Tower UI / API."""
     from local_llm import list_model_profiles
@@ -839,18 +1162,23 @@ def get_recall_slm_status() -> dict:
     mode = _stage2_mode()
     with _RERANKER_LOCK:
         reranker_loaded = _RERANKER is not None
+    tier = "judge" if mode == "judge" else "local"
+    try:
+        from . import tower_settings
+
+        tier = tower_settings.get_recall_stage2_tier()
+    except Exception:
+        pass
     return {
         "model": key,
         "loaded_model": loaded,
         "loaded": loaded_now,
         "enabled": _slm_verify_enabled(),
         "options": list_model_profiles(),
-        # The generative model above only drives Stage-2 in logit mode; surface
-        # the active backend so the UI does not imply the selector is in play.
         "stage2_mode": mode,
+        "stage2_tier": tier,
         "stage2_model_active": mode == "logit",
-        # Fail-closed master switch: in rerank mode the whole recall pipeline
-        # is off until the reranker loads (no embed fallback).
+        "judge_model": _judge_model_for_status() if mode == "judge" else None,
         "armed": recall_system_armed(),
         "reranker": {
             "loaded": reranker_loaded,
@@ -967,18 +1295,47 @@ def _slm_logit_margin() -> float:
         return _SLM_LOGIT_MARGIN_DEFAULT
 
 
-def _stage2_mode() -> str:
-    """Stage-2 backend: rerank (default), embed, or experimental logit.
+_STAGE2_TIER_CACHE: tuple[float, str] | None = None
+_STAGE2_TIER_TTL_SECONDS = 15.0
 
-    Benchmarked on eval/ (198 labeled cases, composed after Stage-1):
-      rerank  P=0.912 R=0.979 F1=0.944 @0.65, 6/7 production FP incidents
-              blocked (106 MB RSS; swept optimum F1=0.968 @0.718)
-      embed   P=0.833 R=1.000 F1=0.909, 0/7
-      logit   best generative was qwen2.5-3b P=0.847 R=0.874 F1=0.860, 6/7
-              (3.9 GB peak RSS, 2.4 s mean); every smaller IT scored worse
+
+def invalidate_stage2_tier_cache() -> None:
+    """Drop the cached Tower tier so a UI change takes effect immediately."""
+    global _STAGE2_TIER_CACHE
+    _STAGE2_TIER_CACHE = None
+
+
+def _stage2_tier_cached() -> str:
+    """Tower-persisted tier, TTL-cached — _stage2_mode runs on the scan hot path."""
+    global _STAGE2_TIER_CACHE
+    now = time.monotonic()
+    if _STAGE2_TIER_CACHE is not None and now - _STAGE2_TIER_CACHE[0] < _STAGE2_TIER_TTL_SECONDS:
+        return _STAGE2_TIER_CACHE[1]
+    try:
+        from . import tower_settings
+
+        tier = tower_settings.get_recall_stage2_tier()
+        value = "judge" if tier == "judge" else "rerank"
+    except Exception:
+        value = "judge"
+    _STAGE2_TIER_CACHE = (now, value)
+    return value
+
+
+def _stage2_mode() -> str:
+    """Stage-2 backend: judge (default), rerank/local, embed, or experimental logit.
+
+    `judge` = Gemini batched entailment (paid tier).
+    `rerank` / `local` = Qwen3 cross-encoder (free tier).
+    `embed` / `logit` = test/dev only.
+    Tower tier setting maps local→rerank and judge→judge; env wins when set.
     """
-    raw = (os.environ.get("RECALL_STAGE2_MODE") or "rerank").strip().lower()
-    return raw if raw in ("embed", "logit", "rerank") else "rerank"
+    raw = (os.environ.get("RECALL_STAGE2_MODE") or "").strip().lower()
+    if not raw:
+        raw = _stage2_tier_cached()
+    if raw == "local":
+        raw = "rerank"
+    return raw if raw in ("embed", "logit", "rerank", "judge") else "judge"
 
 
 def _stage2_embed_margin() -> float:
@@ -1086,16 +1443,33 @@ _DISARM_LOGGED = False
 def recall_system_armed() -> bool:
     """Master switch: a recall system without its verifier must not run at all.
 
-    In the default rerank mode the whole pipeline disarms — Stage-1 included —
-    when the reranker cannot load (missing/broken GGUF, dead rank head). There
-    is no silent embed fallback: the embed margin blocked 0/7 production FP
-    incidents, so a degraded recall system is worse than none. Explicit
-    non-default configs (RECALL_SLM_VERIFY=0, RECALL_STAGE2_MODE=embed/logit)
-    are deliberate operator choices and stay armed.
+    - rerank/local: fail-closed until the GGUF loads (no silent embed fallback).
+    - judge: armed when a Gemini key is present, OR when the local reranker is
+      loaded as a degraded fallback. Otherwise disarm.
+    - embed/logit and RECALL_SLM_VERIFY=0: deliberate operator choices; stay armed.
     """
     global _DISARM_LOGGED
-    if not _slm_verify_enabled() or _stage2_mode() != "rerank":
+    if not _slm_verify_enabled():
         return True
+    mode = _stage2_mode()
+    if mode in ("embed", "logit"):
+        return True
+    if mode == "judge":
+        # Short-circuit: never pay the GGUF load (~400 MB, seconds of CPU) just to
+        # confirm a fallback we will not use while the judge is reachable.
+        armed = bool((os.environ.get("GEMINI_API_KEY") or "").strip()) or (
+            _get_reranker() is not None
+        )
+        if armed:
+            _DISARM_LOGGED = False
+        elif not _DISARM_LOGGED:
+            log.error(
+                "Recall system DISARMED: judge mode configured but GEMINI_API_KEY "
+                "is missing and the local reranker is unavailable."
+            )
+            _DISARM_LOGGED = True
+        return armed
+    # rerank / local
     armed = _get_reranker() is not None
     if armed:
         _DISARM_LOGGED = False
@@ -1283,21 +1657,12 @@ def verify_recall_candidate_rerank(
     reranker=None,
     out: dict | None = None,
 ) -> tuple[bool, str]:
-    """Stage-2 via Qwen3 cross-encoder (default path).
+    """Stage-2 via Qwen3 cross-encoder (local / free tier).
 
-    Scores the chunk against the recall's most similar positive examples plus
-    its instruction and accepts on the best P(yes). Unlike the embedding margin
-    this reads the pair jointly, so near-miss negatives that share a cosine
-    band with true positives get separated. Fail-closed: no reranker or a
-    scoring error rejects the candidate — never a silent embed fallback
-    (see recall_system_armed).
-
-    Both sweeps are pre-ranked by cosine to a fixed cue budget, which is what
-    keeps cost flat as tune_recall grows a cue list toward its cap.
-
-    Negatives are scored only after the positives clear, so a recall with no
-    recorded misfires costs nothing extra and a rejected candidate is never
-    charged for the counter-signal pass.
+    Scores the chunk against the recall's activation_condition (preferred) plus
+    a small preranked positive-cue set, and accepts when the best P(yes) clears
+    both an absolute floor and a margin over frozen off-topic anchors. Negatives
+    still veto after positives clear. Fail-closed when the reranker is missing.
     """
     if not _slm_verify_enabled():
         return True, "stage2_disabled"
@@ -1312,8 +1677,6 @@ def verify_recall_candidate_rerank(
 
     rr = reranker if reranker is not None else _get_reranker()
     if rr is None:
-        # scan_text_for_recalls is already disarmed in this state; this guards
-        # direct callers (tower test endpoints, scripts).
         return False, "stage2_disarmed:reranker_unavailable"
 
     positives = [
@@ -1322,8 +1685,11 @@ def verify_recall_candidate_rerank(
     ]
     ranked = _prerank_cues(text, positives, _STAGE2_PRERANK_K)
     truncated = len(ranked) < len(positives)
-    docs = list(ranked)
-    docs.append(instruction)
+    # Qwen3-Reranker is a query->document *relevance* model. Concrete utterances
+    # score in the usable band; abstract meta-text ("the user is asking the agent
+    # to...") scores ~0.01 even on a true match, so activation_condition is the
+    # judge tier's input and never a document here.
+    docs = list(ranked) + [instruction]
     negatives = [
         e for e in (recall.get("negative_examples") or [])
         if isinstance(e, str) and e.strip()
@@ -1346,12 +1712,6 @@ def verify_recall_candidate_rerank(
             else None
         )
         if truncated and neg_hit is not None and neg_hit[0] > score - delta:
-            # The threshold test is absolute, but the veto compares two maxima —
-            # so a pre-ranked positive score, which is only a lower bound, can
-            # manufacture a veto that the full sweep would not produce (observed
-            # on the eval set: true max 0.718 vs pre-ranked 0.669 against a
-            # 0.702 negative). Escalate to the exact positive max before
-            # rejecting; stop_at exits as soon as the negative cannot win.
             exact = rr.best_match(text, positives, stop_at=neg_hit[0] + delta)
             if exact is not None and exact[0] > score:
                 score, matched = exact
@@ -1390,17 +1750,16 @@ def verify_recall_candidate_slm(
 ) -> tuple[bool, str]:
     """Stage-2 intent filter. Returns (ok, reason).
 
-    Default (`RECALL_STAGE2_MODE=rerank`): Qwen3 cross-encoder P(yes);
-    fail-closed when the reranker is unavailable (see recall_system_armed).
-    Test/dev (`embed`, explicit config only): FastEmbed pos−neg margin.
-    Experimental (`logit`): LocalLLM YES/NO logits — tiny instruction-tuned
-    models latch onto a completion token and should not be used in production.
-
-    `out`, when given, collects diagnostics: `matched_example` (the cue that won,
-    for LRU usage tracking) and `stage2_negative_score`.
+    Default (`RECALL_STAGE2_MODE=judge`): use `filter_matches_with_judge` for the
+    batched path; this per-candidate entry falls through to local rerank so
+    sync callers (tower test, embed scripts) keep working when judge is unset.
+    `rerank` / `local`: Qwen3 cross-encoder.
+    `embed` / `logit`: test/dev only.
     """
     mode = _stage2_mode()
-    if mode == "rerank":
+    if mode in ("rerank", "judge"):
+        # Judge mode still uses local rerank here as the sync/fallback path;
+        # the async batched judge is filter_matches_with_judge.
         return verify_recall_candidate_rerank(chunk, recall, out=out)
     if mode != "logit":
         return verify_recall_candidate_embed(chunk, recall, margin=margin, out=out)
@@ -1441,11 +1800,11 @@ def verify_recall_candidate_slm(
 
 
 def filter_matches_with_slm(matches: list[dict], *, client=None) -> tuple[list[dict], list[dict]]:
-    """Verify Stage-1 matches. Returns (verified, rejected). Fail-open keeps match.
+    """Verify Stage-1 matches synchronously (local/embed/logit). Returns (verified, rejected).
 
-    Verification is capped at _STAGE2_MAX_CANDIDATES (best Stage-1 positive
-    first) so one noisy scan cannot buy an unbounded number of cross-encoder
-    passes; overflow is rejected unverified with reason stage2_candidate_cap.
+    Cap at _STAGE2_MAX_CANDIDATES. For the paid judge tier prefer
+    `filter_matches_with_judge` (async, one batched call); this path remains the
+    local fallback and the sync API used by Tower test + eval.
     """
     verified: list[dict] = []
     rejected: list[dict] = []
@@ -1484,6 +1843,149 @@ def filter_matches_with_slm(matches: list[dict], *, client=None) -> tuple[list[d
                 (chunk or "")[:100],
             )
     return verified, rejected
+
+
+_JUDGE_PROVIDER_CACHE: dict[str, object] = {}
+
+
+def _judge_provider(model: str, passed):
+    """Provider that actually serves `model`.
+
+    The judge model is configured independently of the agent's, so the caller's
+    provider is not necessarily the right one — a Claude or Ollama agent with a
+    Gemini judge would post a Gemini model name to the wrong API. `passed` is an
+    explicit override for tests; production callers leave it None.
+    """
+    if passed is not None:
+        return passed
+    from . import model_registry
+
+    want = model_registry.provider_for_model(model)
+    cached = _JUDGE_PROVIDER_CACHE.get(want)
+    if cached is not None:
+        return cached
+    try:
+        built = model_registry.build_provider(want)
+    except Exception as e:
+        log.warning("Recall judge provider %s unavailable: %s", want, e)
+        return None
+    _JUDGE_PROVIDER_CACHE[want] = built
+    return built
+
+
+async def filter_matches_with_judge(
+    matches: list[dict],
+    *,
+    provider=None,
+    usage_callback=None,
+) -> tuple[list[dict], list[dict]]:
+    """Batched Gemini entailment judge. Falls back to local rerank on failure."""
+    if not matches:
+        return [], []
+    if not _slm_verify_enabled():
+        out = []
+        for m in matches:
+            enriched = dict(m)
+            enriched["slm_verified"] = True
+            enriched["slm_reason"] = "stage2_disabled"
+            out.append(enriched)
+        return out, []
+
+    cap = _stage2_max_candidates()
+    ordered = sorted(
+        matches,
+        key=lambda m: _as_float_score(m.get("positive_score")) or 0.0,
+        reverse=True,
+    )
+    rejected: list[dict] = []
+    for match in ordered[cap:]:
+        enriched = dict(match)
+        enriched["slm_verified"] = False
+        enriched["slm_reason"] = f"stage2_candidate_cap:{cap}"
+        rejected.append(enriched)
+
+    candidates = ordered[:cap]
+    live: list[dict] = []
+    for match in candidates:
+        chunk = match.get("matched_chunk") or ""
+        if _is_stage2_junk(_strip_channel_prefix(chunk)):
+            enriched = dict(match)
+            enriched["slm_verified"] = False
+            enriched["slm_reason"] = "stage2_junk"
+            rejected.append(enriched)
+            log.info(
+                "[Stage2 Reject] route=%r reason=stage2_junk chunk=%r",
+                match.get("recall_id"),
+                chunk[:100],
+            )
+        else:
+            live.append(match)
+
+    if not live:
+        return [], rejected
+
+    pre_judge_rejected = list(rejected)
+
+    def _local_fallback() -> tuple[list[dict], list[dict]]:
+        log.warning(
+            "Recall judge unavailable/malformed; falling back to local rerank"
+        )
+        local_v, local_r = filter_matches_with_slm(live)
+        verified_fb = []
+        for m in local_v:
+            enriched = dict(m)
+            enriched["slm_reason"] = f"judge_fallback:{m.get('slm_reason')}"
+            verified_fb.append(enriched)
+        rejected_fb = list(pre_judge_rejected)
+        for m in local_r:
+            enriched = dict(m)
+            enriched["slm_reason"] = f"judge_fallback:{m.get('slm_reason')}"
+            rejected_fb.append(enriched)
+        return verified_fb, rejected_fb
+
+    from .recall_judge import judge_applicability, resolve_judge_model
+
+    model = resolve_judge_model()
+    provider = _judge_provider(model, provider)
+    if provider is None:
+        return _local_fallback()
+
+    by_chunk: dict[str, list[dict]] = {}
+    for match in live:
+        key = (match.get("matched_chunk") or "").strip()
+        by_chunk.setdefault(key, []).append(match)
+
+    verified: list[dict] = []
+    judge_rejected: list[dict] = []
+    for chunk, group in by_chunk.items():
+        judgment = await judge_applicability(
+            provider,
+            chunk=chunk,
+            candidates=group,
+            model=model,
+            usage_callback=usage_callback,
+        )
+        if judgment is None:
+            return _local_fallback()
+        applicable = set(judgment.get("applicable") or [])
+        reasons = judgment.get("reasons") or {}
+        for match in group:
+            rid = match.get("recall_id")
+            enriched = dict(match)
+            if rid in applicable:
+                enriched["slm_verified"] = True
+                enriched["slm_reason"] = f"judge:{reasons.get(rid) or 'applicable'}"
+                verified.append(enriched)
+            else:
+                enriched["slm_verified"] = False
+                enriched["slm_reason"] = "judge:none"
+                judge_rejected.append(enriched)
+                log.info(
+                    "[Stage2 Reject] route=%r reason=judge:none chunk=%r",
+                    rid,
+                    chunk[:100],
+                )
+    return verified, pre_judge_rejected + judge_rejected
 
 
 # ── Cue usage / LRU ─────────────────────────────────────────────────────────
