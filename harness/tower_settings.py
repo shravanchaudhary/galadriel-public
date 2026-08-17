@@ -35,10 +35,10 @@ RECALL_STAGE2_TIER_OPTIONS: tuple[str, ...] = ("judge", "local")
 DEFAULT_RECALL_STAGE2_TIER = "judge"
 
 # Judge model for the paid tier — any AGENT_MODEL_OPTIONS entry. Measured on the
-# 208-case leave-one-out set: flash P=0.952 R=0.952, flash-lite P=0.899 R=0.952
-# at the same latency. Flash-lite reads an exclusion, restates it, and fires
-# anyway often enough to miss the precision bar, so flash is the default.
-DEFAULT_RECALL_JUDGE_MODEL = "gemini-2.5-flash"
+# 208-case leave-one-out set 2026-08-18: flash and flash-lite both P=0.916
+# R=0.952 F1=0.933, identical case-level verdicts, ~1.3 s/scan. Flash-lite is
+# ~3.8x cheaper on the judge payload, so it is the default.
+DEFAULT_RECALL_JUDGE_MODEL = "gemini-2.5-flash-lite"
 
 # Idle-poll minutes when the worker has nothing to do (default 10).
 VALID_WORKER_IDLE_MINUTES: tuple[int, ...] = (5, 10, 15, 20, 30, 60)

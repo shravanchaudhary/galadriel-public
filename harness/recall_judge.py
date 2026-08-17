@@ -17,7 +17,7 @@ from typing import Any
 
 log = logging.getLogger("galadriel.recall_judge")
 
-DEFAULT_JUDGE_MODEL = "gemini-2.5-flash"
+DEFAULT_JUDGE_MODEL = "gemini-2.5-flash-lite"
 # Back-compat alias for callers that imported the constant directly.
 JUDGE_MODEL = DEFAULT_JUDGE_MODEL
 # Measured med 1.22s / p90 1.27s locally. 1.5s left no headroom and tripped on
