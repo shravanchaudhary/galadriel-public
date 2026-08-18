@@ -209,6 +209,70 @@
     {% endif %}
 </section>
 
+<section class="settings-section costs-section">
+    <div class="settings-section-head">
+        <h2 class="settings-section-title">Recall Stage-2 (judge)</h2>
+        <p class="settings-section-desc">
+            Verification-call cost, plus how many verified recalls were pushed
+            and how <code>tune_recall</code> graded them afterward
+        </p>
+    </div>
+    <div class="settings-summary">
+        <div class="settings-summary-item">
+            <span class="settings-summary-label">Judge cost (range)</span>
+            <span class="settings-summary-value">{{ recall_cost_range | usd }}</span>
+        </div>
+        <div class="settings-summary-item">
+            <span class="settings-summary-label">Pushed</span>
+            <span class="settings-summary-value">{{ recall_fire_range_totals.pushed | default(0) }}</span>
+        </div>
+        <div class="settings-summary-item">
+            <span class="settings-summary-label">Correct</span>
+            <span class="settings-summary-value">{{ recall_fire_range_totals.correct | default(0) }}</span>
+        </div>
+        <div class="settings-summary-item">
+            <span class="settings-summary-label">Incorrect</span>
+            <span class="settings-summary-value">{{ recall_fire_range_totals.incorrect | default(0) }}</span>
+        </div>
+    </div>
+    {% if recall_daily_rows %}
+<div class="table-wrap" role="region" tabindex="0">
+    <table class="wf-table">
+        <thead>
+            <tr>
+                <th>Date</th>
+                <th>Judge calls</th>
+                <th>Input tok</th>
+                <th>Output tok</th>
+                <th>Judge cost</th>
+                <th>Pushed</th>
+                <th>Correct</th>
+                <th>Incorrect</th>
+                <th>Unlabeled</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in recall_daily_rows %}
+            <tr>
+                <td>{{ row.date }}</td>
+                <td>{{ row.calls }}</td>
+                <td>{{ "{:,}".format(row.input_tokens) }}</td>
+                <td>{{ "{:,}".format(row.output_tokens) }}</td>
+                <td>{{ row.cost_total | usd }}</td>
+                <td>{{ row.pushed }}</td>
+                <td>{{ row.correct }}</td>
+                <td>{{ row.incorrect }}</td>
+                <td>{{ row.unlabeled }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+    {% else %}
+    <p class="settings-empty">No recall Stage-2 activity in this range yet.</p>
+    {% endif %}
+</section>
+
 {% endif %}
 </div>
 {% endblock %}

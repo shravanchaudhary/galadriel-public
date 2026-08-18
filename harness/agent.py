@@ -151,6 +151,27 @@ async def _log_recall_fire(channel_id: str, match: dict, text_scanned: str) -> N
         log.warning(f"Failed to log recall fire to DB: {e}")
 
 
+def _log_recall_judge_usage(response, model: str, channel_id: str) -> None:
+    """Cost-log a Stage-2 judge call the same way agent turns are logged, so
+    recall verification spend is visible on the Costs page."""
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return
+    values = {
+        "input": int(getattr(usage, "input_tokens", 0) or 0),
+        "cache_read": int(getattr(usage, "cache_read_input_tokens", 0) or 0),
+        "cache_write": int(getattr(usage, "cache_creation_input_tokens", 0) or 0),
+        "output": int(getattr(usage, "output_tokens", 0) or 0),
+    }
+    cost_tracker.log_call(
+        channel_id,
+        "recall_judge",
+        model_registry.provider_for_model(model),
+        model,
+        values,
+    )
+
+
 async def _verify_and_select_recalls(
     channel_id: str,
     matches: list[dict],
@@ -175,7 +196,11 @@ async def _verify_and_select_recalls(
         # independently of this channel's.
         verified, rejected = await filter_matches_with_judge(
             matches,
-            usage_callback=usage_callback,
+            usage_callback=usage_callback or (
+                lambda response, model: _log_recall_judge_usage(
+                    response, model, channel_id,
+                )
+            ),
         )
     else:
         # Embed/logit test passes are CPU-heavy; keep them off the loop.

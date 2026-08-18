@@ -133,13 +133,17 @@ def is_configured() -> bool:
     return _db() is not None
 
 
-def _match_stage(since: datetime | None, models: list[str] | None) -> dict | None:
-    """Build a $match stage from optional time and model filters."""
+def _match_stage(
+    since: datetime | None, models: list[str] | None, task: str | None = None,
+) -> dict | None:
+    """Build a $match stage from optional time, model, and task filters."""
     clauses = [{"tenant_id": os.environ.get("REPLIKA_TENANT_ID", "default")}]
     if since:
         clauses.append({"ts": {"$gte": since}})
     if models:
         clauses.append({"model": {"$in": models}})
+    if task:
+        clauses.append({"task": task})
     if not clauses:
         return None
     if len(clauses) == 1:
@@ -147,16 +151,21 @@ def _match_stage(since: datetime | None, models: list[str] | None) -> dict | Non
     return {"$and": clauses}
 
 
-def daily_totals(since: datetime | None = None, models: list[str] | None = None) -> list[dict]:
+def daily_totals(
+    since: datetime | None = None,
+    models: list[str] | None = None,
+    task: str | None = None,
+) -> list[dict]:
     """Cost + tokens grouped by UTC date, most recent first.
 
     `since=None` returns all history. Each row: {date, calls, cost_total,
     input_tokens, output_tokens, cache_read_tokens, cache_write_tokens}.
+    `task` optionally restricts to one logged task (e.g. "recall_judge").
     """
     db = _db()
     if db is None:
         return []
-    match = _match_stage(since, models)
+    match = _match_stage(since, models, task)
     pipeline = [
         *([{"$match": match}] if match else []),
         {"$group": {
@@ -264,12 +273,16 @@ def _grouped_totals(
     return rows
 
 
-def total_cost(since: datetime | None = None, models: list[str] | None = None) -> float:
+def total_cost(
+    since: datetime | None = None,
+    models: list[str] | None = None,
+    task: str | None = None,
+) -> float:
     """Single cumulative cost figure since `since` (or all-time if None)."""
     db = _db()
     if db is None:
         return 0.0
-    match = _match_stage(since, models)
+    match = _match_stage(since, models, task)
     pipeline = [
         *([{"$match": match}] if match else []),
         {"$group": {"_id": None, "cost_total": {"$sum": "$cost_total"}}},
@@ -333,3 +346,64 @@ def headroom_totals(
         else:
             off = bucket
     return [on, off]
+
+
+# ── Recall Stage-2 push/feedback stats (read side, `recall_fires`) ─────────
+# `tune_recall` writes its verdict directly onto the fire doc it graded
+# (`feedback`: "applicable" | "misfire" — see harness/tools.py:_tune_recall),
+# so correctness can be read straight off `recall_fires` without a join.
+
+RECALL_FIRES_COLLECTION = "recall_fires"
+
+
+def recall_fire_daily_totals(since: datetime | None = None) -> list[dict]:
+    """Recalls pushed (Stage-2 verified + injected) grouped by UTC date, with
+    `tune_recall` verdict counts. Most recent first.
+
+    Each row: {date, pushed, correct, incorrect, unlabeled}. `correct` /
+    `incorrect` come from the fire's own `feedback` field; `unlabeled` is
+    fires nobody has graded with `tune_recall` yet.
+    """
+    db = _db()
+    if db is None:
+        return []
+    match = {"timestamp": {"$gte": since}} if since else None
+    pipeline = [
+        *([{"$match": match}] if match else []),
+        {"$group": {
+            "_id": {"$dateToString": {"format": "%Y-%m-%d", "date": "$timestamp"}},
+            "pushed": {"$sum": 1},
+            "correct": {"$sum": {"$cond": [{"$eq": ["$feedback", "applicable"]}, 1, 0]}},
+            "incorrect": {"$sum": {"$cond": [{"$eq": ["$feedback", "misfire"]}, 1, 0]}},
+        }},
+        {"$sort": {"_id": -1}},
+    ]
+    rows = list(db[RECALL_FIRES_COLLECTION].aggregate(pipeline))
+    for r in rows:
+        r["date"] = r.pop("_id")
+        r["unlabeled"] = r["pushed"] - r["correct"] - r["incorrect"]
+    return rows
+
+
+def recall_fire_totals(since: datetime | None = None) -> dict:
+    """Single {pushed, correct, incorrect, unlabeled} summary since `since`."""
+    db = _db()
+    if db is None:
+        return {"pushed": 0, "correct": 0, "incorrect": 0, "unlabeled": 0}
+    match = {"timestamp": {"$gte": since}} if since else None
+    pipeline = [
+        *([{"$match": match}] if match else []),
+        {"$group": {
+            "_id": None,
+            "pushed": {"$sum": 1},
+            "correct": {"$sum": {"$cond": [{"$eq": ["$feedback", "applicable"]}, 1, 0]}},
+            "incorrect": {"$sum": {"$cond": [{"$eq": ["$feedback", "misfire"]}, 1, 0]}},
+        }},
+    ]
+    rows = list(db[RECALL_FIRES_COLLECTION].aggregate(pipeline))
+    if not rows:
+        return {"pushed": 0, "correct": 0, "incorrect": 0, "unlabeled": 0}
+    row = rows[0]
+    row.pop("_id", None)
+    row["unlabeled"] = row["pushed"] - row["correct"] - row["incorrect"]
+    return row
