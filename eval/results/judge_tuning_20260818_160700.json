@@ -1,0 +1,258 @@
+{
+  "benchmark": "judge_tuning",
+  "summary": {
+    "cases": 20,
+    "judge_model": "gemini-2.5-flash-lite",
+    "errors": 0,
+    "neg_cases": 12,
+    "neg_baseline_fps": 2,
+    "neg_tuned_fps": 2,
+    "pos_cases": 8,
+    "pos_baseline_fires": 8,
+    "pos_tuned_fires": 8,
+    "pos_lost_to_tuning": 0,
+    "latency": {
+      "n": 19,
+      "mean_ms": 2896.8,
+      "p95_ms": 3305.2
+    },
+    "passed": true
+  },
+  "rows": [
+    {
+      "chunk": "[Tower]: what are you doing every day thats consuming upto 20$ of your token usage every day?",
+      "recall_id": "sys_plan",
+      "source": "incident",
+      "expected": false,
+      "baseline_fired": false,
+      "tuned_fired": false,
+      "seeded_misfires": [
+        "[Tower]: what are you doing every day thats consuming upto 20$ of your token usage every day?"
+      ]
+    },
+    {
+      "chunk": "[Tower]: what are you doing every day thats consuming upto 20$ of your token usage every day?",
+      "recall_id": "sys_jobs",
+      "source": "incident",
+      "expected": false,
+      "baseline_fired": false,
+      "tuned_fired": false,
+      "seeded_misfires": [
+        "[Tower]: what are you doing every day thats consuming upto 20$ of your token usage every day?"
+      ]
+    },
+    {
+      "chunk": "read_file",
+      "recall_id": "sys_architecture",
+      "source": "incident",
+      "expected": false,
+      "baseline_fired": false,
+      "tuned_fired": false,
+      "seeded_misfires": [],
+      "junk_filtered": true
+    },
+    {
+      "chunk": "active",
+      "recall_id": "sys_finish_work",
+      "source": "incident",
+      "expected": false,
+      "baseline_fired": true,
+      "tuned_fired": true,
+      "seeded_misfires": [
+        "active"
+      ]
+    },
+    {
+      "chunk": "active",
+      "recall_id": "sys_status",
+      "source": "incident",
+      "expected": false,
+      "baseline_fired": true,
+      "tuned_fired": true,
+      "seeded_misfires": [
+        "active"
+      ]
+    },
+    {
+      "chunk": "{\"path\": \"state/worker_control.md\"}",
+      "recall_id": "sys_deferred_work",
+      "source": "incident",
+      "expected": false,
+      "baseline_fired": false,
+      "tuned_fired": false,
+      "seeded_misfires": [
+        "{\"path\": \"state/worker_control.md\"}"
+      ]
+    },
+    {
+      "chunk": "{\"content\": \"paused\", \"path\": \"state/worker_control.md\"}",
+      "recall_id": "sys_jobs",
+      "source": "incident",
+      "expected": false,
+      "baseline_fired": false,
+      "tuned_fired": false,
+      "seeded_misfires": [
+        "{\"content\": \"paused\", \"path\": \"state/worker_control.md\"}"
+      ]
+    },
+    {
+      "chunk": "can you explain what a React hook is in general?",
+      "recall_id": "sys_procedure",
+      "source": "cue_audit",
+      "expected": false,
+      "baseline_fired": false,
+      "tuned_fired": false,
+      "seeded_misfires": [
+        "can you explain what a React hook is in general?"
+      ]
+    },
+    {
+      "chunk": "how do I center a div in CSS?",
+      "recall_id": "sys_architecture",
+      "source": "cue_audit",
+      "expected": false,
+      "baseline_fired": false,
+      "tuned_fired": false,
+      "seeded_misfires": [
+        "how do I center a div in CSS?"
+      ]
+    },
+    {
+      "chunk": "can you write a sorting algorithm in Python?",
+      "recall_id": "sys_architecture",
+      "source": "cue_audit",
+      "expected": false,
+      "baseline_fired": false,
+      "tuned_fired": false,
+      "seeded_misfires": [
+        "can you write a sorting algorithm in Python?"
+      ]
+    },
+    {
+      "chunk": "what is the weather like today?",
+      "recall_id": "sys_architecture",
+      "source": "cue_audit",
+      "expected": false,
+      "baseline_fired": false,
+      "tuned_fired": false,
+      "seeded_misfires": [
+        "what is the weather like today?"
+      ]
+    },
+    {
+      "chunk": "please translate this text to Spanish",
+      "recall_id": "sys_architecture",
+      "source": "cue_audit",
+      "expected": false,
+      "baseline_fired": false,
+      "tuned_fired": false,
+      "seeded_misfires": [
+        "please translate this text to Spanish"
+      ]
+    },
+    {
+      "chunk": "remind me what name was on yesterday's email?",
+      "recall_id": "sys_fact_lookup",
+      "source": "heldout",
+      "expected": true,
+      "baseline_fired": true,
+      "tuned_fired": true,
+      "seeded_misfires": [
+        "tell me a joke about a programmer",
+        "can you write a script to scrape this website?",
+        "let's plan out the architecture for the new service"
+      ]
+    },
+    {
+      "chunk": "when did we choose MongoDB again?",
+      "recall_id": "sys_fact_lookup",
+      "source": "heldout",
+      "expected": true,
+      "baseline_fired": true,
+      "tuned_fired": true,
+      "seeded_misfires": [
+        "let's plan out the architecture for the new service",
+        "can you write a script to scrape this website?",
+        "what do you think is the best way to write this function?"
+      ]
+    },
+    {
+      "chunk": "what was last month's cloud bill?",
+      "recall_id": "sys_fact_lookup",
+      "source": "heldout",
+      "expected": true,
+      "baseline_fired": true,
+      "tuned_fired": true,
+      "seeded_misfires": [
+        "let's plan out the architecture for the new service",
+        "can you write a script to scrape this website?",
+        "tell me a joke about a programmer"
+      ]
+    },
+    {
+      "chunk": "what API design choice did we settle on?",
+      "recall_id": "sys_fact_lookup",
+      "source": "heldout",
+      "expected": true,
+      "baseline_fired": true,
+      "tuned_fired": true,
+      "seeded_misfires": [
+        "let's plan out the architecture for the new service",
+        "what do you think is the best way to write this function?",
+        "tell me a joke about a programmer"
+      ]
+    },
+    {
+      "chunk": "steps to ship this app to staging please?",
+      "recall_id": "sys_procedure",
+      "source": "heldout",
+      "expected": true,
+      "baseline_fired": true,
+      "tuned_fired": true,
+      "seeded_misfires": [
+        "create a new file called test.py",
+        "can you explain what a React hook is in general?",
+        "hello there, how are you doing today?"
+      ]
+    },
+    {
+      "chunk": "we hit OOM \u2014 what's the recovery checklist?",
+      "recall_id": "sys_procedure",
+      "source": "heldout",
+      "expected": true,
+      "baseline_fired": true,
+      "tuned_fired": true,
+      "seeded_misfires": [
+        "hello there, how are you doing today?",
+        "can you explain what a React hook is in general?",
+        "create a new file called test.py"
+      ]
+    },
+    {
+      "chunk": "how should I add a DB migration the usual way?",
+      "recall_id": "sys_procedure",
+      "source": "heldout",
+      "expected": true,
+      "baseline_fired": true,
+      "tuned_fired": true,
+      "seeded_misfires": [
+        "create a new file called test.py",
+        "can you explain what a React hook is in general?",
+        "hello there, how are you doing today?"
+      ]
+    },
+    {
+      "chunk": "please remember that I prefer dark mode in editors",
+      "recall_id": "sys_learn_recall",
+      "source": "heldout",
+      "expected": true,
+      "baseline_fired": true,
+      "tuned_fired": true,
+      "seeded_misfires": [
+        "<!doctype html>",
+        "why are you not creating semantic recall as well",
+        "do you remember when we switched to MongoDB?"
+      ]
+    }
+  ]
+}

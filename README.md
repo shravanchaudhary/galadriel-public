@@ -342,7 +342,7 @@ mempalace init              # creates ~/.mempalace/
 python main.py
 ```
 
-Skipping the local-LLM install is fine — Stage-2 **fail-opens** (Stage-1 still proposes; without the GGUF you will see more false injects). Staging runtime images bake the GGUF + `llama-cpp-python` automatically.
+Skipping the local-LLM install is fine — the production Stage-2 judge needs only `GEMINI_API_KEY`; the local GGUFs serve the `embed`/`logit` test modes. Staging runtime images bake the Gemma GGUFs + `llama-cpp-python` automatically.
 
 **Tower-only mode:** Omit `DISCORD_BOT_TOKEN` (and `SLACK_BOT_TOKEN`/`SLACK_APP_TOKEN`) — the harness runs with just the web UI on port 8080.
 
@@ -531,13 +531,13 @@ Palace search is **pull** (the model decides to look something up). Semantic rec
 | Variable | Default | Purpose |
 |---|---|---|
 | `RECALL_SLM_VERIFY` | `1` | Set `0` to disable Stage-2 (Stage-1 only; more false injects). |
-| `RECALL_STAGE2_MODE` | `embed` | `embed` (default) or experimental `logit` YES/NO. |
+| `RECALL_STAGE2_MODE` | `judge` | `judge` (default, Gemini entailment) or test-only `embed` / `logit`. |
 | `RECALL_STAGE2_MARGIN` | `0.0` | Required embedding pos−neg margin for Stage-2. |
 | `RECALL_SLM_MARGIN` | `2.0` | Only for `RECALL_STAGE2_MODE=logit`. |
 | `LOCAL_LLM_FORCE_CPU` | unset (staging image sets `1`) | Force CPU backend for Fargate. |
 | `LOCAL_LLM_MODELS_DIR` | `local_llm/models` | GGUF location (gitignored `*.gguf`). |
 
-Staging runtime images install `requirements-local-llm.txt` and bake the Q4_K_M GGUF. Without the model, Stage-2 fail-opens until the GGUF is available. Collections: `proposed_recalls` (every Stage-1 candidate) and `recall_fires` (verified injects). Event kind is `recall_fire` (legacy `nudge` / `is_nudge` markers are gone).
+Staging runtime images install `requirements-local-llm.txt` and bake the Gemma Q4_K_M GGUFs for the test modes; the judge itself needs only `GEMINI_API_KEY` and disarms the whole system without it. Collections: `proposed_recalls` (every Stage-1 candidate) and `recall_fires` (verified injects). Event kind is `recall_fire` (legacy `nudge` / `is_nudge` markers are gone).
 
 ---
 

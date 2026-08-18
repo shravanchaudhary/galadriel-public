@@ -13,8 +13,3 @@ psutil>=5.9
 semantic-router>=0.1.16
 fastembed>=0.8.0
 pymongo[aws]>=4.9
-
-# qwen3-reranker transformers CPU fallback only (skip if you always use the
-# GGUF backend; ~800 MB of wheels, and the model runs at ~2.4 GB RSS fp32)
-torch>=2.3
-transformers>=4.51

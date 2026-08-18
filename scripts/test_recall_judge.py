@@ -34,6 +34,25 @@ def test_bounded_envelope_strips_instruction_body() -> None:
     assert env["candidates"][0]["activation_condition"] == "user wants durable storage"
 
 
+def test_bounded_envelope_includes_capped_misfires() -> None:
+    env = bounded_envelope(
+        "okay pause the worker",
+        [{
+            "recall_id": "sys_jobs",
+            "activation_condition": "user manages background jobs",
+            "judge_negatives": ["a", "b", "c", "d", "  ", 42, "x" * 500],
+        }],
+    )
+    misfires = env["candidates"][0]["known_misfires"]
+    assert misfires == ["a", "b", "c"], misfires
+
+    env2 = bounded_envelope(
+        "hello",
+        [{"recall_id": "sys_jobs", "activation_condition": "jobs"}],
+    )
+    assert "known_misfires" not in env2["candidates"][0]
+
+
 def test_validate_drops_unknown_id() -> None:
     """Unknown ids are dropped, never returned — but must not void the batch."""
     got = validate_judgment(
@@ -50,7 +69,7 @@ def test_validate_drops_unknown_id() -> None:
 
 
 def test_validate_tolerates_shape_drift() -> None:
-    """Missing `reasons` / extra keys must not demote the scan to local rerank."""
+    """Missing `reasons` / extra keys must not void a usable judgment."""
     assert validate_judgment(
         {"applicable": ["sys_learn_recall"]}, {"sys_learn_recall"}
     ) == {"applicable": ["sys_learn_recall"], "reasons": {}}
@@ -115,6 +134,7 @@ def test_validate_none_is_empty() -> None:
 
 if __name__ == "__main__":
     test_bounded_envelope_strips_instruction_body()
+    test_bounded_envelope_includes_capped_misfires()
     test_validate_drops_unknown_id()
     test_validate_tolerates_shape_drift()
     test_validate_rejects_unusable_payload()

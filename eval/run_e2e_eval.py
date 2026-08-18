@@ -9,7 +9,7 @@ cannot inflate results.
 
 Usage:
   RECALL_STAGE2_MODE=embed venv/bin/python -m eval.run_e2e_eval
-  RECALL_STAGE2_MODE=rerank venv/bin/python -m eval.run_e2e_eval --leave-one-out
+  RECALL_STAGE2_MODE=judge venv/bin/python -m eval.run_e2e_eval --leave-one-out
   venv/bin/python -m eval.run_e2e_eval --metamorphic-only
 """
 
@@ -29,7 +29,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-# Stage-1-capable without GGUF unless the operator asks for rerank/judge.
+# Stage-1-capable without a judge key unless the operator asks for judge.
 os.environ.setdefault("RECALL_SLM_VERIFY", "1")
 os.environ.setdefault("RECALL_STAGE2_MODE", "embed")
 

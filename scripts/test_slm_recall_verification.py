@@ -92,7 +92,7 @@ def test_configured_mode_routes() -> None:
         "negative_examples": ["do you remember when we met?"],
     }
     mode = _stage2_mode()
-    expected_prefix = {"embed": "embed_", "rerank": "rerank:", "logit": "slm_logit"}[mode]
+    expected_prefix = {"embed": "embed_", "logit": "slm_logit"}[mode]
     ok, reason = verify_recall_candidate_slm(
         "please remember that I like green tea", recall
     )

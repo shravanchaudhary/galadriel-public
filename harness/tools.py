@@ -126,7 +126,8 @@ TOOL_DEFINITIONS = [
             "phrasings that should fire (not instruction paraphrases) — dense "
             "coverage is good, up to 100 entries; "
             "lexical_cues = high-precision exact anchors that should hard-hit; "
-            "negative_examples = known misfires (Stage-2 veto only — they NEVER "
+            "negative_examples = known misfires (shown to the Stage-2 judge as "
+            "known_misfires when similar to the scanned chunk — they NEVER "
             "gate Stage-1); "
             "activation_condition = one-line when-to-fire for the Stage-2 judge; "
             "exclusions = one-line lookalikes that must not fire; "
@@ -173,7 +174,7 @@ TOOL_DEFINITIONS = [
                 "negative_examples": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Known misfire texts. Stage-2 veto only (a misfire outscoring the best positive rejects the fire) — never gates Stage-1. Optional on create; full replace on patch.",
+                    "description": "Known misfire texts. Shown to the Stage-2 judge as known_misfires when similar to the scanned chunk — never gates Stage-1. Optional on create; full replace on patch.",
                 },
                 "lexical_cues": {
                     "type": "array",
@@ -199,12 +200,16 @@ TOOL_DEFINITIONS = [
             "you acted on — or deliberately ignored — a fire. "
             "applicable=true reinforces the match: the fired chunk is appended to "
             "the recall's positive_examples. applicable=false records a misfire: "
-            "the chunk is appended to negative_examples, which Stage-2 uses to veto "
-            "a fire when the misfire outscores the best positive (Stage-1 is never "
-            "gated by negatives). A chunk too similar to an existing cue is not "
+            "the chunk is appended to negative_examples, and the Stage-2 judge is "
+            "shown the stored misfires most similar to a future chunk as "
+            "known_misfires, vetoing lookalikes (Stage-1 is never gated by "
+            "negatives). A chunk too similar to an existing cue is not "
             "stored — the feedback is still recorded. When an array is full the "
             "least-recently-matched cue is evicted. "
             "Feedback is also logged for the ambient tuning pass. "
+            "Judge applicable (and write note, if any) against the fire's own "
+            "`matched <segment>: \"...\"` line, not against whatever else is "
+            "salient in the conversation — that line is the actual trigger. "
             "Cheap and safe — prefer calling it over silently tolerating bad fires. "
             "For structural edits (instruction, thresholds, full cue arrays) use "
             "learn_recall instead."
@@ -1237,7 +1242,9 @@ async def _get_recent_recalls(hours_ago: int = 24) -> str:
             "(leave if veto correct; if FN strengthen positives). "
             "proposed+verified / verified = Stage-2 accepted and injected "
             "(if FP add matched_chunk to negative_examples via learn_recall). "
-            "matched_chunk = Stage-2 input; text_scanned = broader scan window.\n"
+            "matched_chunk = Stage-2 input; text_scanned = broader scan window; "
+            "segment = which of your own thought/tool_request/tool_output (or "
+            "the user's message) the chunk was scanned from.\n"
         )
         res = [legend]
         for n in events:
@@ -1249,6 +1256,8 @@ async def _get_recent_recalls(hours_ago: int = 24) -> str:
             neg_s = f"{neg:.3f}" if isinstance(neg, (int, float)) else "n/a"
             channel = n.get("channel_id", "")
             src = n.get("match_source") or "?"
+            seg = n.get("segment_source")
+            seg_s = f" segment={seg}" if seg else ""
             cue = n.get("lexical_cue")
             cue_s = f" cue={cue!r}" if cue else ""
             if n.get("_log_source") == "recall_fires":
@@ -1261,7 +1270,7 @@ async def _get_recent_recalls(hours_ago: int = 24) -> str:
             slm_s = f" slm={slm}" if slm else ""
             lines = [
                 f"[{n.get('timestamp')}] status={status} channel={channel} recall={r_id} "
-                f"source={src} pos={float(pos):.3f} neg={neg_s}{cue_s}{slm_s}"
+                f"source={src}{seg_s} pos={float(pos):.3f} neg={neg_s}{cue_s}{slm_s}"
             ]
             if matched:
                 lines.append(f"matched_chunk: {matched}")

@@ -98,12 +98,11 @@ Rules of thumb:
 
 Palace tools are **pull**. Semantic recalls are **push**: Stage-1 (positive-only:
 embed floor 0.6 / lexical; chunks under 4 words are lexical-only) proposes on
-`matched_chunk`; Stage-2 re-scores with the Qwen3 cross-encoder reranker
-(cosine top-2 cues + instruction, P(yes) > 0.65, misfire-negative veto)
-plus a junk filter; only verified fires
-inject a user-role `[Recall detected]` note (`kind=recall_fire`). If the
-reranker is unavailable the whole recall system is disarmed (fail-closed — no
-scans, no fires). Fires are ignorable hints — never a reason for
+`matched_chunk`; Stage-2 verifies with a batched Gemini entailment judge
+(activation_condition + exclusions) plus a junk filter; only verified fires
+inject a user-role `[Recall detected]` note (`kind=recall_fire`). Without a
+Gemini key the whole recall system is disarmed (fail-closed — no scans, no
+fires). Fires are ignorable hints — never a reason for
 side-effectful actions — and you grade them with `tune_recall`.
 
 Inject windows: new user message at turn start, and mid-turn **only** on
@@ -132,7 +131,7 @@ everything into one file.
 | A new coded tool / reusable capability as code | **`personal-tools/`** (never `harness/`) | See §3 — agent-owned tools. Product tools are provider-updated and blocked from agent edits |
 | A DB read / write / state change / counter | **The `db_*` primitive tools** | See `knowledge/reference/data.md`, `state/db_index.md`. Freestyle pymongo/mongosh in `run_shell` is refused. New kind of state → author a `workflows/*.json` spec |
 | Something to remember long-term, searchable later | **Palace** — `palace_add_drawer`, `palace_kg_add`, `palace_diary_write`, or `memory_log` (hot daily index only) | See `knowledge/reference/tools.md` decision matrix. Don't duplicate |
-| When to recollect a stored fact mid-turn | **Semantic recall** — `learn_recall` (Stage-1 embed/lexical + Stage-2 rerank verify) | Point at palace/file; don't essay the fact into the instruction |
+| When to recollect a stored fact mid-turn | **Semantic recall** — `learn_recall` (Stage-1 embed/lexical + Stage-2 judge verify) | Point at palace/file; don't essay the fact into the instruction |
 | Deep expertise on a subject | **The SME workflow** (section 4) | Curate `.md` files under `sme/`; durable learned facts → palace `room=knowledge` |
 
 ### 3. Two tool sections — developer tools vs personal tools

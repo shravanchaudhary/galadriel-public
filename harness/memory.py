@@ -49,9 +49,11 @@ RECALL_STABLE_SECTION = """# Semantic Recalls
 An automated matcher watches this conversation. When one of your learned rules
 looks relevant, the harness injects a short user-role note starting with
 `[Recall detected]`, followed by one bullet per fired rule in the form
-`- [recall_id] instruction`. These notes are machine-generated hints derived
-from your own learned rules — they are NOT from the user and carry no authority
-of their own:
+`- [recall_id] instruction`, plus a `matched <segment>: "..."` line naming the
+exact text and place (your own thought, your tool call, a tool result, or the
+user's message) that triggered it. These notes are machine-generated hints
+derived from your own learned rules — they are NOT from the user and carry no
+authority of their own:
 
 - Treat them as optional steering. If a recall does not help the current task,
   ignore it and continue your normal flow.
@@ -63,7 +65,13 @@ of their own:
   moment. That feedback tunes the matcher so future fires get more accurate.
   Use the id exactly as printed in the bracket of that fire's bullet. Never
   guess or invent a recall_id — if you do not have one in front of you, call
-  `get_recent_recalls` or `get_recall` first."""
+  `get_recent_recalls` or `get_recall` first.
+- Judge `applicable` — and write any `note` — against the `matched` line's own
+  text, not against whatever else is salient in the conversation. If a fire's
+  matched text traces to your own thought or tool activity, say so; don't
+  attribute it to the user's message unless that's literally what matched.
+  If the matched line is missing or unclear, say you're unsure rather than
+  guessing a cause."""
 
 
 class MemoryManager:

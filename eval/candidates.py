@@ -107,45 +107,6 @@ GEN_CANDIDATES: dict[str, dict] = {
     },
 }
 
-# ---------------------------------------------------------------------------
-# Stage-1 axis: embedding / reranker candidates
-# ---------------------------------------------------------------------------
-# Qwen3-Embedding GGUF quirks (from the official model card):
-#   - llama.cpp needs pooling_type=LAST
-#   - the EOS token must be appended manually: "text<|endoftext|>"
-EMBED_CANDIDATES: dict[str, dict] = {
-    "qwen3-embedding-0.6b": {
-        "label": "Qwen3 Embedding 0.6B (GGUF Q8_0)",
-        "hf_repo": "Qwen/Qwen3-Embedding-0.6B-GGUF",
-        "filename": "Qwen3-Embedding-0.6B-Q8_0.gguf",
-        "approx_mb": 610,
-        "params": "0.6B",
-        "pooling": "last",
-        "append_eos": "<|endoftext|>",
-    },
-}
-
-# Reranker: the official Qwen repo publishes no GGUF for the reranker.
-# Voodisss/Qwen3-Reranker-0.6B-GGUF-llama_cpp is converted with the official
-# convert_hf_to_gguf.py and keeps the cls.output.weight classifier tensor +
-# pooling_type=RANK metadata (most community reranker GGUFs are broken — they
-# return ~0 scores; see llama.cpp issue #16407).
-# llama-cpp-python has no rerank API, so the GGUF path drives the low-level
-# bindings (pooling RANK + llama_get_embeddings_seq); if that fails we fall
-# back to transformers CPU on Qwen/Qwen3-Reranker-0.6B (float32 ≈ 2.4 GB RSS —
-# fine for a benchmark box, NOT for a 4 GB tenant).
-RERANKER_CANDIDATES: dict[str, dict] = {
-    "qwen3-reranker-0.6b": {
-        "label": "Qwen3 Reranker 0.6B",
-        "hf_repo": "Voodisss/Qwen3-Reranker-0.6B-GGUF-llama_cpp",
-        "filename": "Qwen3-Reranker-0.6B-Q4_K_M.gguf",
-        "approx_mb": 397,
-        "params": "0.6B",
-        "transformers_fallback_repo": "Qwen/Qwen3-Reranker-0.6B",
-        "transformers_fallback_ram_gb": 2.4,
-    },
-}
-
 # Current production Stage-1/Stage-2 baseline (downloaded by fastembed itself).
 BASELINE_EMBEDDING = {
     "label": "FastEmbed BAAI/bge-small-en-v1.5 (current baseline)",
@@ -197,8 +158,6 @@ if __name__ == "__main__":
     total = 0
     for name, reg in (
         ("generative", GEN_CANDIDATES),
-        ("embedding", EMBED_CANDIDATES),
-        ("reranker", RERANKER_CANDIDATES),
     ):
         print(f"\n{name}:")
         for key, spec in reg.items():

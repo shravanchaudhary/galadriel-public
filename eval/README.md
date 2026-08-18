@@ -5,9 +5,7 @@ Benchmark suite for choosing:
 1. **Stage-2 verifier** — a small local generative model (GGUF, CPU) that answers:
    *"Would injecting this recall's instruction into the agent's context lead to a
    better response — is the rule genuinely applicable to this text?"*
-2. **Stage-1 rerank pass** — embedding / reranker alternatives to the current
-   FastEmbed `BAAI/bge-small-en-v1.5` cosine approach.
-3. **Stage-1 chunking / gating** — whether the chunker hands the embedder text it
+2. **Stage-1 chunking / gating** — whether the chunker hands the embedder text it
    can judge, scanning whole raw mid-turn documents rather than pre-split
    sentences. This is the only suite that exercises `scan_text_for_recalls`
    end-to-end on realistic tool output.
@@ -24,10 +22,8 @@ venv/bin/pip install -r eval/requirements-eval.txt
 
 Notes:
 - `llama-cpp-python` + `numpy` are already in the repo venv.
-- `semantic-router` / `fastembed` / `pymongo` are only needed for the Stage-1
-  `baseline` scorer (it imports `harness/recall.py`).
-- `torch` + `transformers` are only needed for the reranker's transformers CPU
-  fallback — skip them if the GGUF reranker backend works for you.
+- `semantic-router` / `fastembed` / `pymongo` are only needed for the suites
+  that import `harness/recall.py`.
 
 ## Dataset
 
@@ -90,26 +86,11 @@ repos/filenames verified on HuggingFace (Aug 2026).
 All ten: ~7.8 GB. Qwen3 models get a `/no_think` suffix (they default to
 thinking mode); their chat calls get extra `max_tokens` headroom.
 
-### Stage-1 axis
+### Stage-1 baseline
 
 | key | model | repo / file | size |
 |---|---|---|---|
 | baseline | FastEmbed `BAAI/bge-small-en-v1.5` (current prod) | downloaded by fastembed itself | ~130 MB |
-| `qwen3-embedding-0.6b` | Qwen3 Embedding 0.6B | `Qwen/Qwen3-Embedding-0.6B-GGUF` / `Qwen3-Embedding-0.6B-Q8_0.gguf` (official) | 610 MB |
-| `qwen3-reranker-0.6b` | Qwen3 Reranker 0.6B | `Voodisss/Qwen3-Reranker-0.6B-GGUF-llama_cpp` / `Qwen3-Reranker-0.6B-Q4_K_M.gguf` | 397 MB |
-
-Reranker caveats:
-- The official Qwen org publishes **no reranker GGUF**. Most community
-  conversions are broken (missing `cls.output.weight` → ~0 scores; llama.cpp
-  issue #16407). The registered Voodisss quant is converted with the official
-  `convert_hf_to_gguf.py` and keeps the classifier head + RANK pooling metadata.
-- `llama-cpp-python` has no rerank API; the GGUF backend drives the low-level
-  bindings (RANK pooling + `llama_get_embeddings_seq`) and runs a sanity check
-  at load. If anything fails, `--reranker-backend auto` falls back to
-  transformers CPU on `Qwen/Qwen3-Reranker-0.6B` — **~2.4 GB RSS at float32**,
-  fine on a benchmark box, too heavy for a 4 GB tenant.
-- Qwen3 Embedding GGUF quirks are handled in code: `pooling_type=last` and a
-  manually appended `<|endoftext|>` (official model-card requirement).
 
 ## Run
 
@@ -121,11 +102,6 @@ venv/bin/python -m eval.run_stage2_eval
 venv/bin/python -m eval.run_stage2_eval --models gemma3-270m,qwen3-0.6b,smollm2-360m
 venv/bin/python -m eval.run_stage2_eval --skip-download --strategies logit --timeout 60
 venv/bin/python -m eval.run_stage2_eval --max-cases 40      # quick smoke run
-
-# Stage-1: baseline vs qwen3 embedding vs reranker
-venv/bin/python -m eval.run_stage1_rerank_eval
-venv/bin/python -m eval.run_stage1_rerank_eval --scorers baseline,qwen3-embed
-venv/bin/python -m eval.run_stage1_rerank_eval --reranker-backend transformers
 
 # Stage-1 chunking / gating (no weights beyond fastembed; ~5 s)
 venv/bin/python -m eval.run_stage1_chunking_eval
@@ -169,11 +145,6 @@ the markdown is the summary table.
   model per invocation (`--models <key>`). Target: model + overhead must fit
   comfortably in 4 GB alongside the app (~1 GB) — i.e. the 3B Q4 (~2.3 GB
   resident) is already borderline.
-- Stage-1 table shows both the **production rule** operating point (0.6 positive
-  floor + relative negative veto; P(yes) ≥ 0.5 for the reranker) and the
-  **best-F1 swept threshold** — cosine scales differ per embedding model, so
-  the sweep is the fair comparison; the default rule shows what a drop-in
-  replacement would do with no retuning.
 - **Chunking eval** (`stage1_chunking_<ts>.md`) reports, per configuration:
   `fp props (noise docs)` — Stage-1 proposals on documents that should fire
   nothing, each of which costs a Stage-2 forward pass in production; `buried R` /

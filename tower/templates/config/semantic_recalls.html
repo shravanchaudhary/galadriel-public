@@ -79,23 +79,14 @@
 <section class="settings-section" style="margin-top: 2rem;">
     <div class="settings-section-head">
         <h2 class="settings-section-title">Test Semantic Recalls</h2>
-        <p class="settings-section-desc">Runs the full pipeline. Stage-1 proposes (dense top-k ∪ lexical/fuzzy, RRF-fused, capped at 3), then Stage-2 verifies. Choose paid judge or free local tier below.</p>
+        <p class="settings-section-desc">Runs the full pipeline. Stage-1 proposes (dense top-k ∪ lexical/fuzzy, RRF-fused, capped at 3), then the Stage-2 judge verifies.</p>
         <p class="settings-row-hint" id="recall-test-armed">Checking recall status…</p>
-    </div>
-
-    <div class="settings-row" style="flex-direction: column; align-items: flex-start; gap: 0.5rem; margin-bottom: 1rem;">
-        <label for="recall-stage2-tier">Stage-2 tier</label>
-        <select id="recall-stage2-tier" style="padding: 0.25rem;" onchange="saveStage2Tier()">
-            <option value="judge">Paid — entailment judge (default)</option>
-            <option value="local">Free — local Qwen3 cross-encoder</option>
-        </select>
-        <p class="settings-row-hint" id="recall-tier-status"></p>
     </div>
 
     <div class="settings-row" style="flex-direction: column; align-items: flex-start; gap: 0.5rem; margin-bottom: 1rem;" id="recall-judge-model-row">
         <label for="recall-judge-model">Judge model</label>
         <select id="recall-judge-model" style="padding: 0.25rem;" onchange="saveJudgeModel()"></select>
-        <p class="settings-row-hint" id="recall-judge-model-status">Used only by the paid tier. Stronger models honour exclusions better; flash-lite is cheapest.</p>
+        <p class="settings-row-hint" id="recall-judge-model-status">Stronger models honour exclusions better; flash-lite is cheapest.</p>
     </div>
     
     <div class="settings-row" style="flex-direction: column; align-items: flex-start; gap: 0.5rem; margin-bottom: 1rem;">
@@ -489,17 +480,15 @@ function esc(s) {
     }[c]));
 }
 
-function setArmedLine(armed, mode, threshold, tier, judgeModel) {
+function setArmedLine(armed, mode, judgeModel) {
     const el = document.getElementById('recall-test-armed');
     if (!el) return;
     if (armed) {
-        const thr = (threshold != null && mode === 'rerank') ? ` · accepts above ${threshold}` : '';
-        const tierNote = tier ? ` · tier ${tier}` : '';
         const judgeNote = (mode === 'judge' && judgeModel) ? ` · ${judgeModel}` : '';
-        el.textContent = `Recall armed · Stage-2 ${mode || 'judge'}${tierNote}${judgeNote}${thr}`;
+        el.textContent = `Recall armed · Stage-2 ${mode || 'judge'}${judgeNote}`;
         el.style.color = '';
     } else {
-        el.textContent = 'Recall is DISARMED — Stage-2 verifier unavailable (judge needs GEMINI_API_KEY; local needs the reranker GGUF). Nothing will scan or inject.';
+        el.textContent = 'Recall is DISARMED — Stage-2 judge unavailable (needs GEMINI_API_KEY). Nothing will scan or inject.';
         el.style.color = 'var(--danger)';
     }
 }
@@ -509,15 +498,7 @@ async function loadRecallArmed() {
         const res = await fetch('/api/recall-slm-model');
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'unavailable');
-        setArmedLine(
-            data.armed,
-            data.stage2_mode,
-            (data.reranker || {}).threshold,
-            data.stage2_tier,
-            data.judge_model,
-        );
-        const tierSel = document.getElementById('recall-stage2-tier');
-        if (tierSel && data.stage2_tier) tierSel.value = data.stage2_tier;
+        setArmedLine(data.armed, data.stage2_mode, data.judge_model);
     } catch (e) {
         const el = document.getElementById('recall-test-armed');
         if (el) el.textContent = 'Recall status unavailable.';
@@ -567,33 +548,6 @@ async function saveJudgeModel() {
     }
 }
 
-async function saveStage2Tier() {
-    const sel = document.getElementById('recall-stage2-tier');
-    const status = document.getElementById('recall-tier-status');
-    if (!sel) return;
-    status.textContent = 'Saving…';
-    try {
-        const res = await fetch('/api/recall-stage2-tier', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ tier: sel.value }),
-        });
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'save failed');
-        status.textContent = `Saved · active mode ${data.stage2_mode || sel.value}`;
-        setArmedLine(
-            data.armed,
-            data.stage2_mode,
-            (data.reranker || {}).threshold,
-            data.stage2_tier || sel.value,
-            data.judge_model,
-        );
-    } catch (e) {
-        status.textContent = String(e.message || e);
-        status.style.color = 'var(--danger)';
-    }
-}
-
 async function testRecalls() {
     const text = document.getElementById('recall-test-text').value.trim();
     const model = document.getElementById('recall-test-model').value;
@@ -622,13 +576,7 @@ async function testRecalls() {
             throw new Error(data.error || 'Test failed');
         }
         
-        setArmedLine(
-            data.armed,
-            data.stage2_mode,
-            data.stage2_threshold,
-            data.stage2_tier,
-            data.judge_model,
-        );
+        setArmedLine(data.armed, data.stage2_mode, data.judge_model);
 
         if (!data.matches || data.matches.length === 0) {
             matchesDiv.innerHTML = data.armed

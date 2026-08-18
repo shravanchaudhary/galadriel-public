@@ -113,6 +113,7 @@ async def _log_proposed_recall(
             "positive_score": match.get("positive_score", 0.0),
             "negative_score": match.get("negative_score"),
             "match_source": match.get("match_source"),
+            "segment_source": match.get("segment_source"),
             "lexical_cue": match.get("lexical_cue"),
             "matched_chunk": (match.get("matched_chunk") or "")[:500],
             "text_scanned": (text_scanned or "")[:500],
@@ -138,6 +139,7 @@ async def _log_recall_fire(channel_id: str, match: dict, text_scanned: str) -> N
             "positive_score": match.get("positive_score", 0.0),
             "negative_score": match.get("negative_score"),
             "match_source": match.get("match_source"),
+            "segment_source": match.get("segment_source"),
             "lexical_cue": match.get("lexical_cue"),
             "matched_chunk": (match.get("matched_chunk") or "")[:500],
             "text_scanned": (text_scanned or "")[:500],
@@ -176,7 +178,7 @@ async def _verify_and_select_recalls(
             usage_callback=usage_callback,
         )
     else:
-        # Cross-encoder / embed passes are CPU-heavy; keep them off the loop.
+        # Embed/logit test passes are CPU-heavy; keep them off the loop.
         verified, rejected = await asyncio.to_thread(filter_matches_with_slm, matches)
 
     for m in rejected:

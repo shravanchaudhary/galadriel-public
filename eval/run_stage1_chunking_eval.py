@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Stage-1 chunking / gating benchmark: what does the embedder actually see?
 
-`eval/run_stage1_rerank_eval.py` asks which *scorer* is best on already-clean
-one-sentence chunks. This asks the upstream question that nothing else covers:
+Other suites ask which *scorer* is best on already-clean one-sentence chunks.
+This asks the upstream question that nothing else covers:
 given a whole raw mid-turn document, does the chunker hand the embedder text it
 can judge, and how many junk candidates does Stage-1 propose off it?
 
@@ -39,8 +39,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-# Stage-1 only: embed mode keeps recall_system_armed() true without loading the
-# reranker GGUF (see harness/recall.recall_system_armed).
+# Stage-1 only: embed mode keeps recall_system_armed() true without a judge key
+# (see harness/recall.recall_system_armed).
 os.environ.setdefault("RECALL_SLM_VERIFY", "1")
 os.environ.setdefault("RECALL_STAGE2_MODE", "embed")
 

@@ -979,40 +979,6 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
             return jsonify(status), 503
         return jsonify(status)
 
-    @app.route("/api/recall-stage2-tier", methods=["GET"])
-    def api_recall_stage2_tier_get():
-        from harness.recall import get_recall_slm_status
-
-        status = get_recall_slm_status()
-        return jsonify({
-            "tier": status.get("stage2_tier") or tower_settings.get_recall_stage2_tier(),
-            "options": list(tower_settings.RECALL_STAGE2_TIER_OPTIONS),
-            "stage2_mode": status.get("stage2_mode"),
-            "judge_model": status.get("judge_model"),
-            "armed": status.get("armed"),
-            "persisted": tower_settings.is_configured(),
-        })
-
-    @app.route("/api/recall-stage2-tier", methods=["POST"])
-    def api_recall_stage2_tier_set():
-        data = request.json or {}
-        tier = (data.get("tier") or "").strip().lower()
-        if not tier:
-            return jsonify({"error": "Missing 'tier' field"}), 400
-        try:
-            saved = tower_settings.set_recall_stage2_tier(tier)
-        except ValueError as e:
-            return jsonify({"error": str(e)}), 400
-        except RuntimeError as e:
-            return jsonify({"error": str(e)}), 503
-        from harness.recall import get_recall_slm_status, invalidate_stage2_tier_cache
-
-        invalidate_stage2_tier_cache()
-        status = get_recall_slm_status()
-        status["tier"] = saved
-        status["persisted"] = True
-        return jsonify(status)
-
     @app.route("/api/recall-judge-model", methods=["GET"])
     def api_recall_judge_model_get():
         return jsonify({
@@ -1133,9 +1099,7 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
                 "status": "ok",
                 "armed": bool(status.get("armed")),
                 "stage2_mode": status.get("stage2_mode"),
-                "stage2_tier": status.get("stage2_tier"),
                 "judge_model": status.get("judge_model"),
-                "stage2_threshold": (status.get("reranker") or {}).get("threshold"),
                 "matches": [_serializable(m) for m in verified + rejected],
             })
         except Exception as e:

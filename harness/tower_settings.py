@@ -31,7 +31,6 @@ WORKER_IDLE_DOC_ID = "worker_idle_interval"
 TIMEZONE_DOC_ID = "agent_timezone"
 RECALL_SLM_MODEL_DOC_ID = "recall_slm_model"
 RECALL_ENABLED_DOC_ID = "recall_enabled"
-RECALL_STAGE2_TIER_DOC_ID = "recall_stage2_tier"
 RECALL_JUDGE_MODEL_DOC_ID = "recall_judge_model"
 COMPACT_THRESHOLD_DOC_ID = "compact_threshold"
 THINKING_EFFORT_DOC_ID = "thinking_effort"
@@ -43,10 +42,6 @@ _AVAILABLE_TIMEZONES = available_timezones()
 # Stage-2 SLM profile keys (must match local_llm.config.RECALL_SLM_MODEL_OPTIONS).
 RECALL_SLM_MODEL_OPTIONS: tuple[str, ...] = ("270m", "1b")
 DEFAULT_RECALL_SLM_MODEL = "1b"
-
-# Stage-2 verification tier: paid Gemini judge vs free local cross-encoder.
-RECALL_STAGE2_TIER_OPTIONS: tuple[str, ...] = ("judge", "local")
-DEFAULT_RECALL_STAGE2_TIER = "judge"
 
 # Judge model for the paid tier — any AGENT_MODEL_OPTIONS entry. Measured on the
 # 208-case leave-one-out set 2026-08-18: flash and flash-lite both P=0.916
@@ -424,39 +419,6 @@ def set_recall_slm_model(key: str) -> str:
     return model
 
 
-def normalize_recall_stage2_tier(key: str | None) -> str | None:
-    if not key or not isinstance(key, str):
-        return None
-    k = key.strip().lower()
-    if k in RECALL_STAGE2_TIER_OPTIONS:
-        return k
-    if k == "rerank":
-        return "local"
-    return None
-
-
-def get_recall_stage2_tier() -> str:
-    """Return paid `judge` or free `local` Stage-2 tier (default judge)."""
-    # Explicit env wins so CI/eval can force embed/rerank without Mongo.
-    env = (os.environ.get("RECALL_STAGE2_MODE") or "").strip().lower()
-    if env in ("judge",):
-        return "judge"
-    if env in ("rerank", "local"):
-        return "local"
-    if env in ("embed", "logit"):
-        return "local"
-    db = _db()
-    if db is None:
-        return DEFAULT_RECALL_STAGE2_TIER
-    doc = db[COLLECTION].find_one(
-        {"_id": _doc_id(RECALL_STAGE2_TIER_DOC_ID), "tenant_id": _tenant_id()}
-    )
-    return (
-        normalize_recall_stage2_tier((doc or {}).get("tier"))
-        or DEFAULT_RECALL_STAGE2_TIER
-    )
-
-
 def normalize_recall_judge_model(model: str | None) -> str | None:
     if not model or not isinstance(model, str):
         return None
@@ -503,30 +465,6 @@ def set_recall_judge_model(model: str) -> str:
         upsert=True,
     )
     return name
-
-
-def set_recall_stage2_tier(key: str) -> str:
-    """Persist Stage-2 tier (`judge` | `local`). Returns the normalized key."""
-    tier = normalize_recall_stage2_tier(key)
-    if tier is None:
-        raise ValueError(
-            f"Unsupported recall Stage-2 tier: {key}; "
-            f"expected one of {list(RECALL_STAGE2_TIER_OPTIONS)}"
-        )
-    db = _db()
-    if db is None:
-        raise RuntimeError("MONGO_URI / MONGO_DB not configured")
-    db[COLLECTION].replace_one(
-        {"_id": _doc_id(RECALL_STAGE2_TIER_DOC_ID)},
-        {
-            "_id": _doc_id(RECALL_STAGE2_TIER_DOC_ID),
-            "tenant_id": _tenant_id(),
-            "tier": tier,
-            "updated_at": datetime.now(timezone.utc),
-        },
-        upsert=True,
-    )
-    return tier
 
 
 def normalize_compact_threshold(value) -> int | None:

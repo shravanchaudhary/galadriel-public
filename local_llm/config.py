@@ -35,12 +35,6 @@ RECALL_SLM_MODEL_PROFILES: dict[str, dict[str, str]] = {
 DEFAULT_RECALL_SLM_MODEL = "1b"
 RECALL_SLM_MODEL_OPTIONS: tuple[str, ...] = tuple(RECALL_SLM_MODEL_PROFILES.keys())
 
-# Stage-2 cross-encoder (default backend). The official Qwen org publishes no
-# reranker GGUF; this quant is converted with the official convert_hf_to_gguf.py
-# so the cls.output.weight rank head survives.
-RERANKER_HF_REPO = "Voodisss/Qwen3-Reranker-0.6B-GGUF-llama_cpp"
-RERANKER_FILENAME = "Qwen3-Reranker-0.6B-Q4_K_M.gguf"
-
 # Module defaults track the active default profile (1B). Override via env for
 # local experiments or emergency rollback without code changes.
 _DEFAULT_PROFILE = RECALL_SLM_MODEL_PROFILES[DEFAULT_RECALL_SLM_MODEL]
@@ -75,10 +69,6 @@ def resolve_model_profile(key: str | None = None) -> dict[str, str]:
 def model_path_for(key: str | None = None) -> Path:
     profile = resolve_model_profile(key)
     return MODELS_DIR / profile["filename"]
-
-
-def reranker_path() -> Path:
-    return MODELS_DIR / RERANKER_FILENAME
 
 
 def default_model_path() -> Path:

@@ -75,7 +75,7 @@ def load_system_recalls() -> dict[str, dict]:
 
 def _ls_block(rng: random.Random, rows: int) -> str:
     names = [
-        "recall.py", "agent.py", "tools.py", "reranker.py", "engine.py",
+        "recall.py", "agent.py", "tools.py", "recall_judge.py", "engine.py",
         "config.json", "state.db", "notes.md", "Dockerfile", "main.py",
     ]
     out = ["total 2873024", "drwxr-xr-x@ 13 user staff 416 Aug 16 18:25 ."]
@@ -112,8 +112,8 @@ def _traceback_block() -> str:
         '  File "/app/harness/agent.py", line 2613, in _verify_and_select_recalls',
         "    verified, rejected = await asyncio.to_thread(filter_matches_with_slm, matches)",
         '  File "/app/harness/recall.py", line 1190, in filter_matches_with_slm',
-        "    hit = rr.best_match(text, docs, stop_at=thr)",
-        "RuntimeError: non-finite rerank score nan",
+        "    ok, reason = verify_recall_candidate_slm(chunk, match, out=enriched)",
+        "RuntimeError: non-finite verify score nan",
     ])
 
 
