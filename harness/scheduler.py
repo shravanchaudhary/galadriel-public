@@ -597,7 +597,7 @@ class Scheduler:
 
     def _paused(self) -> bool:
         """True if state/scheduler_control.md explicitly says paused."""
-        control_path = self.agent.runtime_root / "state" / "scheduler_control.md"
+        control_path = Path(self.agent.working_dir) / "state" / "scheduler_control.md"
         try:
             content = control_path.read_text(encoding="utf-8")
         except Exception:

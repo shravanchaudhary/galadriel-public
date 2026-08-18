@@ -45,7 +45,7 @@ class CompletionWatcher:
 
     def _paused(self) -> bool:
         """True if state/watcher_control.md explicitly says paused."""
-        control_path = getattr(self.agent, "runtime_root", Path(".")) / "state" / "watcher_control.md"
+        control_path = Path(self.agent.working_dir) / "state" / "watcher_control.md"
         try:
             content = control_path.read_text(encoding="utf-8")
         except Exception:
