@@ -1,4 +1,13 @@
-"""Discord gateway — relays messages between Discord and the GaladrielAgent."""
+"""Discord gateway — relays messages between Discord and the GaladrielAgent.
+
+DEPRECATED — DO NOT WORK ON THIS FILE.
+
+Discord is no longer a supported surface; Slack channels are the only chat
+surface under active development. This module is kept only so existing
+deployments keep importing cleanly. Do not extend it, do not modernise it, and
+do not include it when rolling out provider or agent-loop changes (for example
+the non-streaming thought capture) unless the maintainer explicitly asks for it.
+"""
 
 import os
 import base64
@@ -24,25 +33,10 @@ MAX_IMAGE_BYTES = 5 * 1024 * 1024  # 5 MB — Claude's per-image limit
 
 # ─── Status report — pricing + formatter ────────────────────────────
 #
-# Prices in USD per million tokens. Keep keys matched to models in
-# harness/model_registry.py TASKS (and ANTHROPIC_DEFAULTS).
-MODEL_PRICING_USD_PER_MTOK = {
-    # Gemini family (implicit caching — cache_write always 0)
-    "gemini-3.1-pro-preview": {"input": 2.00, "cache_read": 0.20, "cache_write": 0.00, "output": 12.00},
-    "gemini-2.5-flash":       {"input": 0.30, "cache_read": 0.03, "cache_write": 0.00, "output": 2.50},
-    "gemini-2.5-pro":         {"input": 1.25, "cache_read": 0.125, "cache_write": 0.00, "output": 10.00},
-    # Claude Opus family
-    "claude-opus-4-7": {"input": 15.00, "cache_read": 1.50, "cache_write": 18.75, "output": 75.00},
-    "claude-opus-4-6": {"input": 15.00, "cache_read": 1.50, "cache_write": 18.75, "output": 75.00},
-    "claude-opus-4-5": {"input": 15.00, "cache_read": 1.50, "cache_write": 18.75, "output": 75.00},
-    "claude-opus-4-8": {"input": 15.00, "cache_read": 1.50, "cache_write": 18.75, "output": 75.00},
-    # Claude Sonnet family
-    "claude-sonnet-4-6": {"input": 3.00, "cache_read": 0.30, "cache_write": 3.75, "output": 15.00},
-    "claude-sonnet-4-5": {"input": 3.00, "cache_read": 0.30, "cache_write": 3.75, "output": 15.00},
-    "claude-sonnet-4":   {"input": 3.00, "cache_read": 0.30, "cache_write": 3.75, "output": 15.00},
-    # Claude Haiku family
-    "claude-haiku-4-5":  {"input": 0.80, "cache_read": 0.08, "cache_write": 1.00, "output": 4.00},
-}
+# Prices in USD per million tokens, from harness/pricing.py so /status can never
+# disagree with the Costs page. This used to be a hand-maintained copy and had
+# drifted badly (Claude Opus was listed at $15/$75 against a real $5/$25).
+from harness.pricing import RATES as MODEL_PRICING_USD_PER_MTOK
 
 
 def _price_call(usage: dict, model: str) -> tuple[float, float, float]:

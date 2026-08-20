@@ -83,7 +83,7 @@
                         data-channel="{{ item.channel }}"
                         onchange="changeLoopModel(this)">
                     {% for m in model_options %}
-                    <option value="{{ m }}" {% if m == item.model %}selected{% endif %}>{{ m }}</option>
+                    <option value="{{ m.value }}" {% if m.value == item.model %}selected{% endif %}>{{ m.label }}</option>
                     {% endfor %}
                 </select>
             </div>

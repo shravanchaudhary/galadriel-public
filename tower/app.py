@@ -12,7 +12,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from flask import Flask, render_template, request, jsonify, Response, redirect, url_for, g
 from harness.agent import MAIN_CHANNEL_ID
-from harness import tower_settings
+from harness import model_catalog, tower_settings
+from harness.providers.llm_retry import error_detail, format_error
 from . import auth as tower_auth
 
 log = logging.getLogger("galadriel.tower")
@@ -326,6 +327,16 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
         response.headers["Cache-Control"] = "no-store"
         return response
 
+    def _error_event(exc: BaseException) -> dict:
+        """SSE error frame carrying why the call failed, not just its repr.
+
+        `detail` names the provider, model, and HTTP status so a rate limit is
+        distinguishable from a bad key or a gated model. `error` stays a plain
+        string for older clients.
+        """
+        detail = error_detail(exc)
+        return {"type": "error", "error": format_error(detail), "detail": detail}
+
     def _sse_from_events(events: "queue.Queue", *, on_disconnect=None) -> Response:
         """Drain a thread-safe queue into SSE frames until a None sentinel."""
 
@@ -430,7 +441,7 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
                     events.put({"type": "done", "text": final})
             except Exception as e:
                 log.exception("Tower stream error")
-                events.put({"type": "error", "error": str(e)})
+                events.put(_error_event(e))
                 if channel not in agent.conversation_queue._active_turns:
                     orphan = agent.conversation_queue._hubs.pop(channel, None)
                     if orphan is not None:
@@ -484,7 +495,7 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
                     events.put(event)
             except Exception as e:
                 log.exception("Tower stream attach error")
-                events.put({"type": "error", "error": str(e)})
+                events.put(_error_event(e))
             finally:
                 await cleanup()
                 events.put(None)
@@ -695,16 +706,21 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
 
     # ── Agent model API ──────────────────────────────────────────
 
-    def _context_options(current) -> list[dict]:
+    def _context_options(model: str | None, current) -> list[dict]:
+        """Compaction-trigger choices for `model`. Every Mantle model and the
+        Claude 4.5 family have a real context window below the 300K/1M pair,
+        so those models get their own ceiling as the (sole) option instead —
+        see `tower_settings.context_options_for_model`."""
+        valid = tower_settings.context_options_for_model(model)
         options = [
-            {"value": tokens, "label": label}
-            for tokens, label in tower_settings.CONTEXT_LABELS.items()
+            {"value": tokens, "label": tower_settings.CONTEXT_LABELS.get(tokens, f"{tokens:,}")}
+            for tokens in valid
         ]
         try:
             tokens = int(current)
         except (TypeError, ValueError):
             return options
-        if tokens not in tower_settings.CONTEXT_LABELS:
+        if tokens not in valid:
             options.append({"value": tokens, "label": f"{tokens:,}"})
         return options
 
@@ -717,15 +733,24 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
         return {
             "model": model,
             "options": list(tower_settings.AGENT_MODEL_OPTIONS),
+            # Same models as `options`, carrying the display name and intel
+            # score. `options` stays a plain string list because it is also the
+            # validation contract for POST /api/model.
+            "model_labels": model_catalog.labels(tower_settings.AGENT_MODEL_OPTIONS),
             "context": int(
                 getattr(
                     agent,
                     "compact_threshold",
-                    tower_settings.DEFAULT_COMPACT_THRESHOLD,
+                    tower_settings.default_compact_threshold_for_model(model),
                 )
             ),
             "context_options": _context_options(
-                getattr(agent, "compact_threshold", tower_settings.DEFAULT_COMPACT_THRESHOLD)
+                model,
+                getattr(
+                    agent,
+                    "compact_threshold",
+                    tower_settings.default_compact_threshold_for_model(model),
+                ),
             ),
             "effort": tower_settings.clamp_effort_for_model(
                 model,
@@ -793,7 +818,7 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
     def api_context_set():
         data = request.json or {}
         tokens = tower_settings.normalize_compact_threshold(
-            data.get("context", data.get("tokens"))
+            data.get("context", data.get("tokens")), getattr(agent, "model", None)
         )
         if tokens is None:
             return jsonify({"error": "Invalid context"}), 400
@@ -983,7 +1008,10 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
     def api_recall_judge_model_get():
         return jsonify({
             "model": tower_settings.get_recall_judge_model(),
-            "options": list(tower_settings.AGENT_MODEL_OPTIONS),
+            # Judge list is wider than the agent list: the judge returns a JSON
+            # verdict and never calls a tool, so no-tool models stay eligible.
+            "options": list(tower_settings.JUDGE_MODEL_OPTIONS),
+            "model_labels": model_catalog.labels(tower_settings.JUDGE_MODEL_OPTIONS),
             "default": tower_settings.DEFAULT_RECALL_JUDGE_MODEL,
             "persisted": tower_settings.is_configured(),
         })

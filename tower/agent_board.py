@@ -10,7 +10,7 @@ import os
 from flask import Blueprint, abort, redirect, render_template, request, url_for
 
 from . import ui_context as ui_ctx
-from harness import tower_settings
+from harness import model_catalog, tower_settings
 from harness.loop_prompts import (
     DEFAULT_HEARTBEAT_PROMPT,
     PROCESS_COMPLETE_EXAMPLE,
@@ -200,7 +200,7 @@ def register_agent_board(app, scheduler=None, agent=None, worker=None):
             loops=loops,
             today=today,
             scheduler=sched,
-            model_options=list(tower_settings.AGENT_MODEL_OPTIONS),
+            model_options=model_catalog.labels(tower_settings.AGENT_MODEL_OPTIONS),
             model_persisted=tower_settings.is_configured(),
             saved=request.args.get("saved"),
             page_context=ui_ctx.agent_index(),

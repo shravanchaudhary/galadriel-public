@@ -274,24 +274,30 @@
                     label: 'chats',
                     reload_on_done: false,
                 },
-                onDone: async () => {
+                onDone: async (turn) => {
                     streaming = false;
                     if (stopBtn) stopBtn.hidden = true;
                     if (sendBtn) sendBtn.disabled = false;
                     if (input) input.disabled = false;
                     if (newChatSend) newChatSend.disabled = false;
                     if (newChatInput) newChatInput.disabled = false;
-                    try {
-                        const hist = await ChatLive.fetchHistory();
-                        if (hist.run_id) {
-                            currentDetail.id = hist.run_id;
-                            selectedId = hist.run_id;
-                            setActiveItem(hist.run_id);
-                            const url = `/chats?kind=${encodeURIComponent(kind)}&id=${encodeURIComponent(hist.run_id)}`;
-                            history.replaceState({ id: hist.run_id, kind }, '', url);
-                        }
-                        ChatLive.hydrate(historyEl, hist.history || []);
-                    } catch (err) {}
+                    // A failed turn's error bubble isn't in server history yet
+                    // (it's never persisted) — re-hydrating now would erase it
+                    // the instant it appeared. Leave it in place; the next
+                    // successful turn's hydrate naturally clears it.
+                    if (!turn || !turn.errored) {
+                        try {
+                            const hist = await ChatLive.fetchHistory();
+                            if (hist.run_id) {
+                                currentDetail.id = hist.run_id;
+                                selectedId = hist.run_id;
+                                setActiveItem(hist.run_id);
+                                const url = `/chats?kind=${encodeURIComponent(kind)}&id=${encodeURIComponent(hist.run_id)}`;
+                                history.replaceState({ id: hist.run_id, kind }, '', url);
+                            }
+                            ChatLive.hydrate(historyEl, hist.history || []);
+                        } catch (err) {}
+                    }
                     await refreshRail();
                     const titleNode = selectedId
                         ? list.querySelector(`.runs-list-item[data-chat-id="${selectedId}"]`)
@@ -496,28 +502,32 @@
                 await ChatLive.attachStream({
                     log: historyEl,
                     channel: streamChannel,
-                    onDone: async () => {
+                    onDone: async (turn) => {
                         if (seq !== detailSeq) return;
                         streaming = false;
                         if (stopBtn) stopBtn.hidden = true;
                         if (sendBtn) sendBtn.disabled = false;
                         if (input) input.disabled = false;
-                        try {
-                            if (detail.continuable) {
-                                const hist = await ChatLive.fetchHistory();
-                                if (seq !== detailSeq) return;
-                                ChatLive.hydrate(historyEl, hist.history || []);
-                            } else {
-                                const res2 = await fetch(`/chats/detail?kind=${encodeURIComponent(kind)}&id=${encodeURIComponent(id)}`);
-                                if (seq !== detailSeq) return;
-                                if (res2.ok) {
-                                    const refreshed = await res2.json();
-                                    ChatLive.hydrate(historyEl, refreshed.history || []);
-                                    currentDetail = refreshed;
-                                    renderComposerMeta(refreshed);
+                        // Skip re-hydrate on error — the error bubble isn't
+                        // in server history and re-hydrating erases it.
+                        if (!turn || !turn.errored) {
+                            try {
+                                if (detail.continuable) {
+                                    const hist = await ChatLive.fetchHistory();
+                                    if (seq !== detailSeq) return;
+                                    ChatLive.hydrate(historyEl, hist.history || []);
+                                } else {
+                                    const res2 = await fetch(`/chats/detail?kind=${encodeURIComponent(kind)}&id=${encodeURIComponent(id)}`);
+                                    if (seq !== detailSeq) return;
+                                    if (res2.ok) {
+                                        const refreshed = await res2.json();
+                                        ChatLive.hydrate(historyEl, refreshed.history || []);
+                                        currentDetail = refreshed;
+                                        renderComposerMeta(refreshed);
+                                    }
                                 }
-                            }
-                        } catch (err) {}
+                            } catch (err) {}
+                        }
                         await refreshRail();
                     },
                     onError: () => {
@@ -614,22 +624,26 @@
                 run_id: currentDetail.id,
                 reload_on_done: false,
             },
-            onDone: async () => {
+            onDone: async (turn) => {
                 streaming = false;
                 stopBtn.hidden = true;
                 sendBtn.disabled = false;
                 input.disabled = false;
-                try {
-                    const hist = await ChatLive.fetchHistory();
-                    if (hist.run_id) {
-                        currentDetail.id = hist.run_id;
-                        selectedId = hist.run_id;
-                        setActiveItem(hist.run_id);
-                        const url = `/chats?kind=${encodeURIComponent(kind)}&id=${encodeURIComponent(hist.run_id)}`;
-                        history.replaceState({ id: hist.run_id, kind }, '', url);
-                    }
-                    ChatLive.hydrate(historyEl, hist.history || []);
-                } catch (err) {}
+                // See the new-chat onDone above: skip re-hydrate on error so
+                // the (unpersisted) error bubble stays visible.
+                if (!turn || !turn.errored) {
+                    try {
+                        const hist = await ChatLive.fetchHistory();
+                        if (hist.run_id) {
+                            currentDetail.id = hist.run_id;
+                            selectedId = hist.run_id;
+                            setActiveItem(hist.run_id);
+                            const url = `/chats?kind=${encodeURIComponent(kind)}&id=${encodeURIComponent(hist.run_id)}`;
+                            history.replaceState({ id: hist.run_id, kind }, '', url);
+                        }
+                        ChatLive.hydrate(historyEl, hist.history || []);
+                    } catch (err) {}
+                }
                 await refreshRail();
                 const titleNode = selectedId
                     ? list.querySelector(`.runs-list-item[data-chat-id="${selectedId}"]`)

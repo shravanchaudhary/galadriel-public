@@ -9,7 +9,9 @@ from datetime import datetime, timezone
 from pymongo import MongoClient
 
 COLLECTION = "provider_credentials"
-SUPPORTED_PROVIDERS = frozenset({"anthropic", "gemini"})
+SUPPORTED_PROVIDERS = frozenset(
+    {"bedrock_anthropic", "bedrock_mantle", "gemini"}
+)
 # Providers users can save BYOM keys for in Tower. Others are Coming Soon.
 BYOM_PROVIDERS = frozenset({"gemini"})
 _sync_db = None
@@ -111,8 +113,9 @@ def delete(provider: str, *, db=None) -> bool:
 
 def _env_key_for(provider: str) -> str | None:
     """Plaintext API key from process env, if present."""
-    if provider == "anthropic":
-        return (os.environ.get("ANTHROPIC_API_KEY") or "").strip() or None
+    if provider in ("bedrock_anthropic", "bedrock_mantle"):
+        # Both Bedrock providers authenticate with the same Bedrock API key.
+        return (os.environ.get("AWS_BEARER_TOKEN_BEDROCK") or "").strip() or None
     if provider == "gemini":
         return (
             (os.environ.get("GEMINI_API_KEY") or "").strip()

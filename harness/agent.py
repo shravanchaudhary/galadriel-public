@@ -50,6 +50,7 @@ from .safety import (
 )
 from .compaction import partition
 from .providers import BaseModelProvider
+from . import model_catalog
 from . import model_registry
 from . import conversation_store
 from . import cost_tracker
@@ -261,46 +262,33 @@ class TurnCancelled(Exception):
 CONTEXT_WINDOW_DEFAULT = 200_000  # tokens
 MAX_OUTPUT_DEFAULT = 8_192        # tokens — conservative floor for unlisted models
 
-# (context window, max output tokens) per model, transcribed from provider docs:
-#   Gemini — ai.google.dev/gemini-api/docs/models/<model>
-#   Claude — platform.claude.com/docs/en/about-claude/models/overview
-# Both halves matter: the context window drives compaction and the usage
-# warnings, max output caps what a single response may generate. Anything
-# unlisted (Ollama tags, models newer than this table) uses the defaults above.
-MODEL_CAPS: dict[str, tuple[int, int]] = {
-    # Gemini — every current tier is 1,048,576 in / 65,536 out.
-    "gemini-3.7-flash": (1_048_576, 65_536),
-    "gemini-3.6-flash": (1_048_576, 65_536),
-    "gemini-3.5-flash": (1_048_576, 65_536),
-    "gemini-3.5-flash-lite": (1_048_576, 65_536),
-    "gemini-3.1-pro-preview": (1_048_576, 65_536),
-    "gemini-3.1-flash-lite": (1_048_576, 65_536),
-    "gemini-3-flash-preview": (1_048_576, 65_536),
-    "gemini-2.5-pro": (1_048_576, 65_536),
-    "gemini-2.5-flash": (1_048_576, 65_536),
-    "gemini-2.5-flash-lite": (1_048_576, 65_536),
+# (context window, max output tokens) per model. Both halves matter: the context
+# window drives compaction and the usage warnings, max output caps what a single
+# response may generate. Derived from `model_catalog`; `LEGACY_MODEL_CAPS` covers
+# names that are no longer selectable but may still sit in a stored config.
+# Anything unlisted (Ollama tags) uses the defaults above.
+LEGACY_MODEL_CAPS: dict[str, tuple[int, int]] = {
     # Gemini legacy (shut down upstream; kept so an old config still resolves).
     "gemini-2.0-flash": (1_048_576, 8_192),
     "gemini-2.0-flash-lite": (1_048_576, 8_192),
     "gemini-1.5-pro": (1_048_576, 8_192),
     "gemini-1.5-flash": (1_048_576, 8_192),
-    # Claude — Opus/Sonnet 4.6 and later are 1M in / 128k out.
+    # Claude names from before the Bedrock migration.
     "claude-opus-5": (1_000_000, 128_000),
     "claude-sonnet-5": (1_000_000, 128_000),
     "claude-fable-5": (1_000_000, 128_000),
     "claude-opus-4-8": (1_000_000, 128_000),
     "claude-opus-4-7": (1_000_000, 128_000),
-    "claude-opus-4-6": (1_000_000, 128_000),
-    "claude-sonnet-4-6": (1_000_000, 128_000),
-    # Claude 4.5 generation — 200k in / 64k out, plus the 1M-context variants.
     "claude-opus-4-5-1m": (1_000_000, 64_000),
     "claude-sonnet-4-5-1m": (1_000_000, 64_000),
-    "claude-opus-4-5": (200_000, 64_000),
     "claude-opus-4-5-20251101": (200_000, 64_000),
-    "claude-sonnet-4-5": (200_000, 64_000),
     "claude-sonnet-4-5-20250929": (200_000, 64_000),
-    "claude-haiku-4-5": (200_000, 64_000),
     "claude-haiku-4-5-20251001": (200_000, 64_000),
+}
+
+MODEL_CAPS: dict[str, tuple[int, int]] = {
+    **LEGACY_MODEL_CAPS,
+    **{m.key: (m.context, m.max_output) for m in model_catalog.MODELS},
 }
 
 WARN_TIER_ATTENTION = "attention"  # 90%
@@ -334,26 +322,14 @@ def _resolve_max_output(model: str) -> int:
 # CACHING.md. Unknown models default to the conservative 4096.
 CACHE_MINIMUM_DEFAULT = 4096
 CACHE_MINIMUM_OVERRIDES = {
-    # Gemini (per-tier; 3.x preview values track this project's docs)
-    "gemini-3.7-flash": 4096,
-    "gemini-3.6-flash": 4096,
-    "gemini-3.5-flash": 4096,
-    "gemini-3.5-flash-lite": 4096,
-    "gemini-3.1-pro-preview": 4096,
-    "gemini-3.1-flash-lite": 4096,
-    "gemini-3-flash-preview": 4096,
-    "gemini-2.5-pro": 2048,
-    "gemini-2.5-flash": 2048,
-    "gemini-2.5-flash-lite": 2048,
+    **{m.key: m.cache_minimum for m in model_catalog.MODELS},
+    # Legacy names still resolvable from an old stored config.
     "gemini-2.0-flash": 2048,
     "gemini-2.0-flash-lite": 2048,
     "gemini-1.5-pro": 2048,
     "gemini-1.5-flash": 2048,
-    # Claude
     "claude-opus-4-8": 1024,
-    "claude-sonnet-4-6": 2048,
     "claude-opus-4-7": 2048,
-    "claude-haiku-4-5": 4096,
 }
 
 
@@ -430,6 +406,33 @@ def _serialize_content(content):
     return str(content)
 
 
+def _response_thought(response) -> str:
+    """Reasoning text from a non-streamed response.
+
+    Reasoning is present whether or not the call streamed; only the delivery
+    shape differs. Our Anthropic-shaped providers (Bedrock Mantle, Gemini,
+    Ollama) hang it off `.thought`, deliberately outside `.content` — this is
+    the model's OWN reply text/tool-call and is what UI/history render and
+    diff; the thought is stored alongside it (see `assistant_msg["_thought"]`
+    below) and each provider decides for itself whether and how to replay it
+    on the next call (Mantle/Ollama re-attach the raw text on tool-call turns
+    inside the open cascade; Gemini instead round-trips an opaque
+    `thought_signature`). Native Anthropic responses carry `thinking` blocks
+    inline in `.content` already, where they must stay for tool-use signature
+    continuity, so this function reads them from there as a fallback.
+    """
+    if response is None:
+        return ""
+    thought = getattr(response, "thought", "") or ""
+    if thought:
+        return thought
+    parts = []
+    for block in getattr(response, "content", None) or []:
+        if getattr(block, "type", None) == "thinking":
+            parts.append(getattr(block, "thinking", "") or "")
+    return "".join(parts)
+
+
 def _summarize_tool_input(tool_input) -> str:
     """Full JSON view of a tool's input for live UI streaming. The UI shows a
     one-line preview in the card header and the complete value on expand."""
@@ -467,7 +470,23 @@ def _build_tool_use_recall_scan_segments(
 
     Sources: thought | tool_request | tool_output. Stage-1 applies min-words /
     structured-chunk gates to tool segments only.
+
+    When every tool call in the turn is recall bookkeeping
+    (RECALL_SCAN_EXCLUDED_TOOLS), the whole turn is bookkeeping: the thought
+    and text around a lone `tune_recall` restate the matched chunk and recall
+    topic in prose ("the recall fired because I mentioned X... recorded as a
+    misfire"), and scanning that narration re-fires the very recall being
+    tuned. Excluding only the tool args/results while scanning the narration
+    was the gap — so in that case nothing in the turn is scanned at all.
     """
+    tool_names = [
+        getattr(block, "name", None)
+        or (block.get("name") if isinstance(block, dict) else "")
+        for block in tool_blocks
+    ]
+    if tool_names and all(name in RECALL_SCAN_EXCLUDED_TOOLS for name in tool_names):
+        return []
+
     segments: list[dict] = []
     if thought and thought.strip():
         segments.append({"text": thought.strip(), "source": "thought"})
@@ -676,9 +695,12 @@ class GaladrielAgent:
         # Provider clients are resolved lazily on the first turn. Managed
         # Replikas can therefore boot their settings UI before a BYOM key exists.
         self.provider = provider
-        # Best-effort provider id for cost logging (matches model_registry's
-        # ANTHROPIC/GEMINI/OLLAMA strings even when a custom `provider` is injected).
+        # Best-effort provider id for cost logging (matches model_catalog's
+        # provider ids even when a custom `provider` is injected).
         self.provider_name = model_registry.provider_for_model(self.model)
+        # Side tasks (chat title, compaction fallback, learn packaging, Slack
+        # reply gate) follow the main-channel model instead of pinned defaults.
+        model_registry.set_active_model(self.model)
         # In-process Headroom compression (Tower toggle). Default off.
         self.headroom_enabled = tower_settings.get_headroom_enabled()
         # Semantic recall scanning/injection (Tower toggle). Default on.
@@ -1049,8 +1071,13 @@ class GaladrielAgent:
         cached = self._provider_cache.get(name)
         if cached is not None:
             return cached
+        # An explicitly-constructed api_key is forwarded to whichever remote
+        # provider the model resolves to; each provider otherwise reads its own
+        # credential. This used to be pinned to Anthropic, which no longer names
+        # a single provider now that Claude and the open models share Bedrock.
         provider = model_registry.build_provider(
-            name, api_key=self._api_key if name == model_registry.ANTHROPIC else None,
+            name,
+            api_key=self._api_key if name != model_registry.OLLAMA else None,
         )
         self._provider_cache[name] = provider
         return provider
@@ -1072,6 +1099,7 @@ class GaladrielAgent:
             self.max_tokens = self.max_output_for_channel(MAIN_CHANNEL_ID)
             self.provider = self._provider_for(model)
             self.provider_name = model_registry.provider_for_model(model)
+            model_registry.set_active_model(model)
             self._apply_runtime(model)
         try:
             tower_settings.set_channel_model(channel, model)
@@ -1093,7 +1121,7 @@ class GaladrielAgent:
                     getattr(
                         self,
                         "compact_threshold",
-                        tower_settings.DEFAULT_COMPACT_THRESHOLD,
+                        tower_settings.default_compact_threshold_for_model(model),
                     )
                 ),
                 "effort": getattr(
@@ -1125,18 +1153,23 @@ class GaladrielAgent:
             )
 
     def set_compact_threshold(self, tokens: int) -> None:
-        """Set the auto-compaction trigger (300K or 1M) for the current model."""
-        value = tower_settings.normalize_compact_threshold(tokens)
+        """Set the auto-compaction trigger for the current model, clamped to
+        what that model's context window can actually hold (see
+        `tower_settings.context_options_for_model`)."""
+        value = tower_settings.normalize_compact_threshold(tokens, self.model)
         if value is None:
             raise ValueError(
-                f"Unsupported context: {tokens}; "
-                f"expected one of {list(tower_settings.CONTEXT_OPTIONS)}"
+                f"Unsupported context for {self.model}: {tokens}; expected one "
+                f"of {list(tower_settings.context_options_for_model(self.model))}"
             )
         self.compact_threshold = value
         self._remember_runtime(self.model, context=value)
         try:
+            # Legacy tenant-wide 300K/1M mirror; a model-specific value below
+            # that pair (most Mantle/Claude-4.5 models) has nowhere to go
+            # there and is skipped — the per-model write above is authoritative.
             tower_settings.set_compact_threshold(value)
-        except RuntimeError:
+        except (RuntimeError, ValueError):
             pass
         log.info(f"Compaction threshold for {self.model} set to {value:,} tokens")
 
@@ -2269,12 +2302,7 @@ class GaladrielAgent:
                     thinking=not is_silent_turn,
                     effort=runtime["effort"],
                 )
-                
-                # Extract turn_thought if available on the response blocks
-                if response and hasattr(response, "content"):
-                    for block in response.content:
-                        if getattr(block, "type", None) == "thought":
-                            turn_thought += getattr(block, "text", "")
+                turn_thought += _response_thought(response)
 
             call_duration_ms = int(
                 (datetime.now(timezone.utc) - call_started_at).total_seconds() * 1000

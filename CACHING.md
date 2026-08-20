@@ -179,5 +179,13 @@ default compaction model and a good choice if you want cheaper automated turns.
 Anthropic — easier to clear than Opus's 4,096, with lower base token cost.
 
 To switch models or providers, edit `TASKS` in `harness/model_registry.py`.
-Copy entries from `ANTHROPIC_DEFAULTS` to switch a task back to Claude — no other
-code changes needed.
+Copy entries from `BEDROCK_DEFAULTS` to move a task onto Claude or an open model
+— no other code changes needed. Which models exist, and their cache minimums,
+live in `harness/model_catalog.py`.
+
+Claude and the open models both run on Bedrock. Claude keeps Anthropic's
+explicit `cache_control` breakpoints. The open models on `bedrock-mantle` cache
+*automatically* off the request prefix, like Gemini implicit caching: there is no
+breakpoint to set, hits arrive as `prompt_tokens_details.cached_tokens`, and
+there is no cache-write charge. The stable-prefix rule therefore matters just as
+much there — see `harness/providers/bedrock_mantle_provider.py`.

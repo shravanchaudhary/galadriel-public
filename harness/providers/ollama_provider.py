@@ -19,7 +19,9 @@ Ollama reuses KV-cache prefixes automatically — there is no explicit
 `cache_control` to set. Gemini-only fields in stored history
 (`thought_signature`) are ignored so mid-chat Gemini → Ollama switches stay
 safe. Thinking models emit `message.thinking`, mapped onto the existing
-`("thought", delta)` stream contract.
+`("thought", delta)` stream contract, stored on history as `_thought`, and
+replayed verbatim on the `thinking` field of every subsequent request —
+append-only, so the KV-cache prefix stays intact.
 
 Config:
   OLLAMA_HOST     — default http://localhost:11434
@@ -83,10 +85,14 @@ class _Usage:
 
 
 class _Message:
-    def __init__(self, content: list, usage: _Usage, stop_reason: str):
+    def __init__(self, content: list, usage: _Usage, stop_reason: str, thought: str = ""):
         self.content = content
         self.usage = usage
         self.stop_reason = stop_reason
+        # Reasoning rides alongside `content`, never inside it: `content` is
+        # what gets serialized into conversation history, and thoughts must not
+        # be replayed back to the model as prior assistant text.
+        self.thought = thought
 
 
 # ─── Anthropic → Ollama input translation ────────────────────────────
@@ -196,6 +202,11 @@ def _messages_to_ollama(messages: list, system: Any = None) -> list[dict]:
     every call, we first build an id→name map from all tool_use blocks, then
     resolve each tool_result against it.
 
+    Every assistant turn's stored `_thought` is replayed as-is on the
+    `thinking` field, unconditionally — append-only history keeps the request
+    prefix byte-identical across calls, which is what Ollama's KV-prefix cache
+    keys on, and Ollama's own docs build follow-up requests this way.
+
     Gemini-only `thought_signature` fields are ignored.
     """
     id_to_name: dict[str, str] = {}
@@ -268,6 +279,10 @@ def _messages_to_ollama(messages: list, system: Any = None) -> list[dict]:
             ollama_msg["images"] = images
         if tool_calls:
             ollama_msg["tool_calls"] = tool_calls
+        if role == "assistant":
+            thought = (msg.get("_thought") or "").strip()
+            if thought:
+                ollama_msg["thinking"] = thought
         # Skip empty user messages with nothing useful.
         if not ollama_msg["content"] and not images and not tool_calls:
             continue
@@ -369,7 +384,7 @@ def _response_to_message(response) -> _Message:
     else:
         stop_reason = "end_turn"
 
-    return _Message(blocks, _map_usage(response), stop_reason)
+    return _Message(blocks, _map_usage(response), stop_reason, thought=_message_thinking(message))
 
 
 def _default_num_ctx() -> int:
@@ -401,9 +416,9 @@ class OllamaProvider(BaseModelProvider):
 
     async def create_message(
         self, *, model, max_tokens, messages, system=None, tools=None, thinking=True,
-        temperature=None, effort=None,
+        temperature=None, effort=None, attempts=None,
     ):
-        del effort
+        del effort, attempts  # local model, never retried
         response = await self.client.chat(
             model=model,
             messages=_messages_to_ollama(messages, system=system),

@@ -1,5 +1,13 @@
 """Completion Watcher — reports when external/detached shell processes finish.
 
+ON HOLD — DO NOT WORK ON THIS FILE until the maintainer revisits it.
+
+Recent architectural changes left this path largely unused: it mattered when
+detached shell processes were the main way long work happened, which is no
+longer how the agent operates. Its future is undecided, so it is deliberately
+excluded from ongoing work (for example the non-streaming thought capture).
+Leave it as-is rather than fixing, extending, or deleting it.
+
 Long shell processes the agent launches but cannot `await` in one turn (e.g.
 narration pipelines, batch jobs) write a JSON completion marker to the
 configured marker directory. This watcher polls for those markers and pushes a

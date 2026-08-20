@@ -1122,12 +1122,13 @@ def _get_slm_client():
 
 
 def _judge_model_for_status() -> str:
-    from .recall_judge import DEFAULT_JUDGE_MODEL, resolve_judge_model
+    from . import tower_settings
+    from .recall_judge import resolve_judge_model
 
     try:
         return resolve_judge_model()
     except Exception:
-        return DEFAULT_JUDGE_MODEL
+        return tower_settings.DEFAULT_RECALL_JUDGE_MODEL
 
 
 def get_recall_slm_status() -> dict:
@@ -1728,13 +1729,12 @@ async def filter_matches_with_judge(
         if judgment is None:
             return _fail_closed("unusable_judgment")
         applicable = set(judgment.get("applicable") or [])
-        reasons = judgment.get("reasons") or {}
         for match in group:
             rid = match.get("recall_id")
             enriched = dict(match)
             if rid in applicable:
                 enriched["slm_verified"] = True
-                enriched["slm_reason"] = f"judge:{reasons.get(rid) or 'applicable'}"
+                enriched["slm_reason"] = "judge:applicable"
                 verified.append(enriched)
             else:
                 enriched["slm_verified"] = False

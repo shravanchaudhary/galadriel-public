@@ -538,6 +538,7 @@ class ReplyGate:
                         },
                     }, ensure_ascii=False)}],
                     tools=[self.TOOL],
+                    thinking=False,
                 )
                 decision = self._parse(response)
                 if decision is None:

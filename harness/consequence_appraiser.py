@@ -8,8 +8,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
+# Cheap classifier model per provider. Keys are `model_catalog` provider ids and
+# values must be catalog keys — the acting agent's own provider client is reused,
+# so a name the catalog cannot resolve would be sent to the API verbatim.
 APPRAISER_MODELS = {
-    "anthropic": "claude-haiku-4-5-20251001",
+    "bedrock_anthropic": "claude-haiku-4-5",
+    "bedrock_mantle": "glm-4.7-flash",
     "gemini": "gemini-2.5-flash",
 }
 OUTCOMES = frozenset({"success", "partial", "failure", "neutral"})
@@ -54,12 +58,10 @@ No markdown and no additional keys."""
 
 
 def _provider_for_model(model: str) -> str:
-    normalized = str(model or "").lower()
-    if normalized.startswith("claude"):
-        return "anthropic"
-    if normalized.startswith("gemini"):
-        return "gemini"
-    return "ollama"
+    # Imported lazily: this module is pulled in by agent.py at import time.
+    from . import model_catalog
+
+    return model_catalog.provider_for(model)
 
 
 def _text_from_response(response: Any) -> str:
@@ -353,6 +355,9 @@ async def appraise(
                     ),
                 }],
                 thinking=False,
+                # Output is parsed, not read, so sampling noise here shows up as
+                # a dropped appraisal rather than a different wording.
+                temperature=0.0,
             ),
             timeout=timeout_seconds,
         )

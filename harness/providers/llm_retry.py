@@ -8,11 +8,18 @@ instead of killing the turn with a raw traceback.
 Honours `Retry-After` when the API sends it; otherwise exponential jitter.
 Stops after a fixed attempt budget — outer cancellation (turn cancel, process
 shutdown) still aborts immediately because `CancelledError` is not retried.
+
+The budget is deliberately small. It used to be 8 attempts with delays up to
+60s, so a sustained rate limit spent minutes silently backing off and then
+surfaced as a bare exception string. Three attempts fail fast enough that the
+real error reaches the user while it still explains anything; `describe_error`
+turns that exception into the payload the UI renders.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import random
 import re
@@ -30,11 +37,13 @@ T = TypeVar("T")
 # Match google-genai's default retriable set, plus Anthropic's 529 overloaded.
 RETRYABLE_HTTP_CODES = frozenset({408, 429, 500, 502, 503, 504, 529})
 
-# Generous enough for a multi-minute Gemini outage; still bounded so a
-# permanently broken key doesn't hang a worker forever.
-DEFAULT_ATTEMPTS = 8
+# Three attempts total (two retries). Applies to every provider and every error
+# class: past this the request is reported, not retried.
+DEFAULT_ATTEMPTS = 3
 DEFAULT_INITIAL_DELAY = 1.0
-DEFAULT_MAX_DELAY = 60.0
+# Capped well below the old 60s: a cooldown longer than this outlives the
+# user's patience, and the point now is to surface the error, not outwait it.
+DEFAULT_MAX_DELAY = 8.0
 DEFAULT_EXP_BASE = 2.0
 
 # "Please retry in 12.5s" / "retry after 30 seconds" in Gemini error bodies.
@@ -137,6 +146,102 @@ def retry_after_seconds(exc: BaseException) -> float | None:
     return _header_retry_after(exc) or _body_retry_after(exc)
 
 
+def _unwrap_json_message(text: str, _depth: int = 0) -> str:
+    """Peel off a JSON-encoded error body that's been stuffed into a message.
+
+    google-genai's `APIError._get_message` prefers a top-level `message` key
+    over `error.message`, but some backends (Gemini's own quota errors) put
+    the *entire* `{"error": {...}}` body, JSON-encoded as a string, in that
+    top-level `message` field. Left alone, the UI renders that raw blob
+    instead of the one sentence a human should see. Capped depth guards
+    against a pathological double-wrap.
+    """
+    if _depth >= 3:
+        return text
+    stripped = text.strip()
+    if not (stripped.startswith("{") and stripped.endswith("}")):
+        return text
+    try:
+        parsed = json.loads(stripped)
+    except (json.JSONDecodeError, TypeError):
+        return text
+    if isinstance(parsed, dict):
+        error = parsed.get("error")
+        if isinstance(error, dict) and error.get("message"):
+            return _unwrap_json_message(str(error["message"]), _depth + 1)
+        if parsed.get("message"):
+            return _unwrap_json_message(str(parsed["message"]), _depth + 1)
+    return text
+
+
+def _error_message(exc: BaseException) -> str:
+    """The provider's own explanation, preferred over the exception repr.
+
+    SDKs vary: google-genai puts the useful text in `.message`, the OpenAI and
+    Anthropic SDKs put a parsed dict in `.body` with the real reason under
+    `error.message` (or `message` on Bedrock's own errors). `str(exc)` is the
+    last resort because for some SDKs it is just "Error code: 429".
+    """
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict) and error.get("message"):
+            return _unwrap_json_message(str(error["message"]))
+        if body.get("message"):
+            return _unwrap_json_message(str(body["message"]))
+    message = getattr(exc, "message", None)
+    if isinstance(message, str) and message.strip():
+        return _unwrap_json_message(message.strip())
+    text = str(exc).strip()
+    return _unwrap_json_message(text) if text else type(exc).__name__
+
+
+def describe_error(
+    exc: BaseException,
+    *,
+    provider: str | None = None,
+    model: str | None = None,
+    attempts: int | None = None,
+) -> dict:
+    """Structured description of a failed LLM call, for logs and the UI.
+
+    Callers surface this instead of `str(exc)`, which for most SDKs is an opaque
+    "Error code: 429" that tells the user nothing about which provider failed or
+    why.
+    """
+    status = getattr(exc, "status_code", None)
+    if not isinstance(status, int):
+        code = getattr(exc, "code", None)
+        status = code if isinstance(code, int) else None
+    return {
+        "kind": type(exc).__name__,
+        "provider": provider,
+        "model": model,
+        "status": status,
+        "message": _error_message(exc),
+        "retryable": is_transient_llm_error(exc),
+        "attempts": attempts if attempts is not None else DEFAULT_ATTEMPTS,
+        "retry_after": retry_after_seconds(exc),
+    }
+
+
+def format_error(detail: dict) -> str:
+    """One-line human summary of a `describe_error` payload."""
+    parts = []
+    if detail.get("model"):
+        parts.append(str(detail["model"]))
+    elif detail.get("provider"):
+        parts.append(str(detail["provider"]))
+    if detail.get("status") is not None:
+        parts.append(f"HTTP {detail['status']}")
+    prefix = " · ".join(parts)
+    message = detail.get("message") or detail.get("kind") or "unknown error"
+    line = f"{prefix}: {message}" if prefix else str(message)
+    if detail.get("retryable") and detail.get("attempts"):
+        line += f" (gave up after {detail['attempts']} attempts)"
+    return line
+
+
 def wait_seconds(
     attempt_number: int,
     exc: BaseException | None = None,
@@ -194,15 +299,48 @@ def llm_retrying(
     )
 
 
+DETAIL_ATTR = "galadriel_error_detail"
+
+
+def annotate(exc: BaseException, provider=None, model=None, attempts=None) -> None:
+    """Attach a `describe_error` payload to the exception on its way out.
+
+    The Tower stream handler that renders the failure is far from the provider
+    that knows which model and backend were involved, and the exception is the
+    only thing that travels between them.
+    """
+    try:
+        setattr(
+            exc,
+            DETAIL_ATTR,
+            describe_error(exc, provider=provider, model=model, attempts=attempts),
+        )
+    except Exception:
+        pass  # never let error reporting mask the original failure
+
+
+def error_detail(exc: BaseException) -> dict:
+    """Structured detail for `exc`, computed on the spot if none was attached."""
+    detail = getattr(exc, DETAIL_ATTR, None)
+    return detail if isinstance(detail, dict) else describe_error(exc)
+
+
 async def with_llm_retry(
     fn: Callable[[], Awaitable[T]],
     *,
     attempts: int = DEFAULT_ATTEMPTS,
+    provider: str | None = None,
+    model: str | None = None,
 ) -> T:
     """Run an async LLM call, retrying transient failures with cooldown."""
-    async for attempt in llm_retrying(attempts=attempts):
-        with attempt:
-            return await fn()
+    try:
+        async for attempt in llm_retrying(attempts=attempts):
+            with attempt:
+                return await fn()
+    except BaseException as exc:
+        if not isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt)):
+            annotate(exc, provider, model, attempts)
+        raise
     raise RuntimeError("llm_retrying exhausted without result")  # pragma: no cover
 
 
@@ -210,6 +348,8 @@ async def stream_with_llm_retry(
     factory: Callable[[], AsyncIterator[Any]],
     *,
     attempts: int = DEFAULT_ATTEMPTS,
+    provider: str | None = None,
+    model: str | None = None,
 ) -> AsyncIterator[Any]:
     """Retry a streaming LLM call only while nothing has been yielded yet.
 
@@ -226,6 +366,8 @@ async def stream_with_llm_retry(
             return
         except BaseException as exc:
             if yielded or not is_transient_llm_error(exc) or attempt_number >= attempts:
+                if not isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt)):
+                    annotate(exc, provider, model, attempts)
                 raise
             last_exc = exc
             sleep_for = wait_seconds(attempt_number, exc)

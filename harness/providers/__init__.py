@@ -1,20 +1,30 @@
 """Model providers for the Galadriel harness."""
 
 from .base import BaseModelProvider
-from .anthropic_provider import AnthropicProvider
 
-__all__ = ["BaseModelProvider", "AnthropicProvider", "GeminiProvider", "OllamaProvider"]
+__all__ = [
+    "BaseModelProvider",
+    "BedrockAnthropicProvider",
+    "BedrockMantleProvider",
+    "GeminiProvider",
+    "OllamaProvider",
+]
+
+# Every provider is imported lazily so that running on one backend never
+# requires the others' packages (google-genai, ollama, boto3/anthropic) to be
+# installed.
+_LAZY = {
+    "BedrockAnthropicProvider": ".bedrock_anthropic_provider",
+    "BedrockMantleProvider": ".bedrock_mantle_provider",
+    "GeminiProvider": ".gemini_provider",
+    "OllamaProvider": ".ollama_provider",
+}
 
 
 def __getattr__(name):
-    # Import GeminiProvider / OllamaProvider lazily so running on Anthropic
-    # never requires the google-genai or ollama packages to be installed.
-    if name == "GeminiProvider":
-        from .gemini_provider import GeminiProvider
+    module = _LAZY.get(name)
+    if module is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    from importlib import import_module
 
-        return GeminiProvider
-    if name == "OllamaProvider":
-        from .ollama_provider import OllamaProvider
-
-        return OllamaProvider
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return getattr(import_module(module, __name__), name)

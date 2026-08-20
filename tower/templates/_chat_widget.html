@@ -400,7 +400,10 @@
         if (turn) turn.finished = true;
         wfcSetTurnActive(false);
         wfcLoadQueue();
-        wfcRefreshHistory();
+        // A failed turn's error bubble isn't in server history yet (it's
+        // never persisted) — refreshing now would erase it the instant it
+        // appeared. Leave it in place; the next successful turn clears it.
+        if (!turn || !turn.errored) wfcRefreshHistory();
         if (activeStreams === 0 && pageContext.reload_on_done !== false) {
             setTimeout(() => location.reload(), 900);
         }
@@ -594,8 +597,11 @@
             message,
             images,
             context: pageContext,
-            onDone: () => wfcFinishTurn({ finished: false }),
-            onError: () => wfcFinishTurn({ finished: false }),
+            // wfcFinishTurn's re-entrancy guard checks turn.finished, which
+            // streamChat has already set by the time onDone/onError fire —
+            // pass a fresh object each time, carrying the errored flag along.
+            onDone: (turn) => wfcFinishTurn({ finished: false, errored: !!(turn && turn.errored) }),
+            onError: () => wfcFinishTurn({ finished: false, errored: true }),
         });
         // streamChat invokes onDone or onError exactly once.
     };

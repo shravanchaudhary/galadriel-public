@@ -56,47 +56,43 @@ def test_bounded_envelope_includes_capped_misfires() -> None:
 def test_validate_drops_unknown_id() -> None:
     """Unknown ids are dropped, never returned — but must not void the batch."""
     got = validate_judgment(
-        {"applicable": ["sys_evil"], "reasons": {"sys_evil": "no"}},
+        {"applicable": ["sys_evil"]},
         {"sys_learn_recall"},
     )
-    assert got == {"applicable": [], "reasons": {}}
+    assert got == {"applicable": []}
 
     mixed = validate_judgment(
-        {"applicable": ["sys_evil", "sys_learn_recall"], "reasons": {}},
+        {"applicable": ["sys_evil", "sys_learn_recall"]},
         {"sys_learn_recall"},
     )
-    assert mixed == {"applicable": ["sys_learn_recall"], "reasons": {}}
+    assert mixed == {"applicable": ["sys_learn_recall"]}
 
 
 def test_validate_tolerates_shape_drift() -> None:
-    """Missing `reasons` / extra keys must not void a usable judgment."""
+    """Extra keys — including a `reasons` key the model wasn't asked for —
+    must not void a usable judgment, and are simply ignored."""
     assert validate_judgment(
         {"applicable": ["sys_learn_recall"]}, {"sys_learn_recall"}
-    ) == {"applicable": ["sys_learn_recall"], "reasons": {}}
+    ) == {"applicable": ["sys_learn_recall"]}
 
     assert validate_judgment(
-        {"applicable": [], "reasons": {}, "confidence": 0.9}, {"sys_learn_recall"}
-    ) == {"applicable": [], "reasons": {}}
+        {"applicable": [], "reasons": {"x": "unsolicited"}, "confidence": 0.9},
+        {"sys_learn_recall"},
+    ) == {"applicable": []}
 
 
 def test_validate_rejects_unusable_payload() -> None:
-    assert validate_judgment({"reasons": {}}, {"sys_learn_recall"}) is None
+    assert validate_judgment({"confidence": 0.9}, {"sys_learn_recall"}) is None
     assert validate_judgment("nope", {"sys_learn_recall"}) is None
     assert validate_judgment({"applicable": "sys_learn_recall"}, {"sys_learn_recall"}) is None
 
 
 def test_validate_accepts_subset() -> None:
     got = validate_judgment(
-        {
-            "applicable": ["sys_learn_recall"],
-            "reasons": {"sys_learn_recall": "teach intent"},
-        },
+        {"applicable": ["sys_learn_recall"]},
         {"sys_learn_recall", "sys_identity"},
     )
-    assert got == {
-        "applicable": ["sys_learn_recall"],
-        "reasons": {"sys_learn_recall": "teach intent"},
-    }
+    assert got == {"applicable": ["sys_learn_recall"]}
 
 
 def test_judge_call_is_deterministic() -> None:
@@ -108,7 +104,7 @@ def test_judge_call_is_deterministic() -> None:
             seen.update(kwargs)
             return SimpleNamespace(content=[SimpleNamespace(
                 type="text",
-                text=json.dumps({"applicable": [], "reasons": {}}),
+                text=json.dumps({"applicable": []}),
             )])
 
     asyncio.run(judge_applicability(
@@ -126,10 +122,10 @@ def test_judge_call_is_deterministic() -> None:
 
 def test_validate_none_is_empty() -> None:
     got = validate_judgment(
-        {"applicable": [], "reasons": {}},
+        {"applicable": []},
         {"sys_learn_recall"},
     )
-    assert got == {"applicable": [], "reasons": {}}
+    assert got == {"applicable": []}
 
 
 if __name__ == "__main__":

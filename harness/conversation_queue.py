@@ -730,6 +730,18 @@ class ConversationQueue:
                 )
                 hub = self._hubs.pop(channel, None)
                 if hub is not None:
+                    # The enqueuing caller learns about a failure through its
+                    # waiter, but everyone merely *attached* to the stream only
+                    # saw the hub close and had no idea the turn had failed.
+                    if outcome == "failed":
+                        from .providers.llm_retry import error_detail, format_error
+
+                        detail = error_detail(result)
+                        await hub.emit({
+                            "type": "error",
+                            "error": format_error(detail),
+                            "detail": detail,
+                        })
                     hub.close()
 
             for item in batch:

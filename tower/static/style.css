@@ -1096,6 +1096,13 @@ h3 {
     color: var(--text);
 }
 
+.msg-error {
+    color: var(--danger);
+    background: var(--danger-bg);
+    border-radius: 10px;
+    padding: 0.55rem 0.75rem;
+}
+
 /* Assistant markdown (ChatGPT/Claude-style reading) */
 .markdown-body {
     white-space: normal;

@@ -513,10 +513,17 @@ async function loadJudgeModel() {
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'unavailable');
         sel.innerHTML = '';
-        (data.options || []).forEach(name => {
+        // model_labels carries the display name plus intel score; fall back to
+        // the bare ids when the server doesn't send it.
+        const rows = (data.model_labels && data.model_labels.length)
+            ? data.model_labels
+            : (data.options || []).map(name => ({ value: name, label: name }));
+        rows.forEach(row => {
             const opt = document.createElement('option');
-            opt.value = name;
-            opt.textContent = name === data.default ? `${name} (default)` : name;
+            opt.value = row.value;
+            opt.textContent = row.value === data.default
+                ? `${row.label} (default)`
+                : row.label;
             sel.appendChild(opt);
         });
         if (data.model) sel.value = data.model;
@@ -592,7 +599,13 @@ async function testRecalls() {
                 const badge = m.slm_verified
                     ? '<span style="color: var(--success); font-weight: 600;">FIRES</span>'
                     : '<span style="color: var(--danger); font-weight: 600;">REJECTED</span>';
-                const reason = m.slm_reason
+                // judge:applicable / judge:none just restate the FIRES/REJECTED
+                // badge (the judge no longer explains its verdict — see
+                // knowledge/reference/bedrock_providers.md). Other tags
+                // (stage2_junk, stage2_disabled, judge_unavailable:*,
+                // stage2_candidate_cap:N) still say something the badge doesn't.
+                const genericReason = m.slm_reason === 'judge:applicable' || m.slm_reason === 'judge:none';
+                const reason = (m.slm_reason && !genericReason)
                     ? `<div class="muted" style="font-size: 0.8rem;">reason: ${esc(m.slm_reason)}</div>`
                     : '';
                 const won = m.matched_example

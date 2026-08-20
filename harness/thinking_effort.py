@@ -1,4 +1,9 @@
-"""Gemini thinking-effort mapping used by Tower and the Gemini provider.
+"""Thinking-effort vocabulary shared by Tower and the providers.
+
+`thinking_kwargs` is Gemini-specific; the Bedrock providers read the effort key
+and translate it themselves (Anthropic `budget_tokens`, OpenAI
+`reasoning_effort`). Everything else here — the option lists, defaults, and
+clamping Tower uses to build the effort dropdown — covers every provider.
 
 Gemini 3.x takes `thinking_level` only (never `thinking_budget` — that can
 misbehave on 3 Pro). Gemini 2.5 takes `thinking_budget`: `0` is off, `-1` is
@@ -109,13 +114,54 @@ _KINDS: dict[str, dict[str, Any]] = {
         },
         "silent_budget": 0,
     },
+    # Bedrock families. `api` is neither "level" nor "budget", so
+    # `thinking_kwargs` (Gemini-only) returns None for these — each Bedrock
+    # provider translates the effort key itself, into an Anthropic
+    # `budget_tokens` or an OpenAI `reasoning_effort`. These entries exist so
+    # Tower still offers an effort dropdown for the model.
+    "bedrock-anthropic": {
+        # Anthropic extended thinking can be switched off entirely, and its
+        # smallest legal budget (1024) maps to "minimal".
+        "api": "anthropic_budget",
+        "family": ("off", "minimal", "low", "medium", "high"),
+        "options": ("off", "minimal", "low", "medium", "high"),
+        "default": "high",
+    },
+    "bedrock-mantle": {
+        # OpenAI reasoning_effort is a three-way switch, so the finer Tower keys
+        # have nothing to map onto and are left unselectable.
+        "api": "openai_effort",
+        "family": ("low", "medium", "high"),
+        "options": ("low", "medium", "high"),
+        "default": "high",
+    },
 }
+
+_BEDROCK_KINDS = {
+    "bedrock_anthropic": "bedrock-anthropic",
+    "bedrock_mantle": "bedrock-mantle",
+}
+
+
+def _bedrock_kind(model: str | None) -> str | None:
+    """Effort kind for a Bedrock model, or None for Ollama / no-thinking models.
+
+    Imported lazily: `model_catalog` is cheap but this module is imported by
+    `tower_settings`, and a top-level import would make the cycle load-order
+    dependent.
+    """
+    from . import model_catalog
+
+    entry = model_catalog.get(model)
+    if entry is None or not entry.supports_thinking:
+        return None
+    return _BEDROCK_KINDS.get(entry.provider)
 
 
 def _kind(model: str | None) -> str | None:
     m = (model or "").lower()
     if not m.startswith("gemini-"):
-        return None
+        return _bedrock_kind(model)
     if m.startswith("gemini-2.0") or m.startswith("gemini-1.5"):
         return None
     if "2.5" in m:
@@ -203,7 +249,10 @@ def thinking_kwargs(
     thinking: bool = True,
     effort: str | None = None,
 ) -> dict | None:
-    """Return ThinkingConfig kwargs, or None to omit thinking_config.
+    """Return Gemini ThinkingConfig kwargs, or None to omit thinking_config.
+
+    Gemini-only: a Bedrock model returns None here because its provider maps the
+    effort key onto a different API shape.
 
     Never sets both `thinking_level` and `thinking_budget`. Gemini 3 always
     gets a level; Gemini 2.5 always gets a budget. `thinking=False` (titles,
@@ -211,7 +260,7 @@ def thinking_kwargs(
     `minimal`/`low` on Gemini 3, `0` on 2.5 Flash, `128` on 2.5 Pro.
     """
     spec = _spec(model)
-    if spec is None:
+    if spec is None or spec["api"] not in ("level", "budget"):
         return None
     if spec["api"] == "level":
         if not thinking:

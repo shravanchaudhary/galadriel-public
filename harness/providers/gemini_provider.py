@@ -104,10 +104,14 @@ class _Usage:
 
 
 class _Message:
-    def __init__(self, content: list, usage: _Usage, stop_reason: str):
+    def __init__(self, content: list, usage: _Usage, stop_reason: str, thought: str = ""):
         self.content = content
         self.usage = usage
         self.stop_reason = stop_reason
+        # Reasoning rides alongside `content`, never inside it: `content` is
+        # what gets serialized into conversation history, and thoughts must not
+        # be replayed back to the model as prior assistant text.
+        self.thought = thought
 
 
 # ─── Anthropic → Gemini input translation ────────────────────────────
@@ -144,11 +148,19 @@ def _split_system(system) -> tuple[str | None, str | None]:
     per-call change never busts the cached prefix as the conversation grows.
 
     A plain-string system is treated as fully stable; `None` yields (None, None).
+
+    The split only applies when there is a cacheable prefix to protect. The
+    agent always marks its stable block, but single-purpose callers (judges,
+    gates, titles) pass one unmarked block; treating that as dynamic would
+    demote their whole instruction set to a trailing user turn and send no
+    `system_instruction` at all. With nothing marked, everything is stable.
     """
     if system is None:
         return None, None
     if isinstance(system, str):
         return (system or None), None
+    if not any(isinstance(b, dict) and b.get("cache_control") for b in system):
+        return _flatten_blocks(system), None
     stable = [b for b in system if isinstance(b, dict) and b.get("cache_control")]
     dynamic = [b for b in system if not (isinstance(b, dict) and b.get("cache_control"))]
     return _flatten_blocks(stable), _flatten_blocks(dynamic)
@@ -389,14 +401,16 @@ def _recursive_dict(obj):
     return obj
 
 
-def _parts_to_blocks(parts) -> tuple[list, bool]:
+def _parts_to_blocks(parts) -> tuple[list, bool, str]:
     """Convert Gemini content parts to Anthropic content blocks.
 
-    Returns (blocks, has_tool_call). Text is concatenated into one text block
-    (mirroring Anthropic, which emits a single assistant text block); function
-    calls become tool_use blocks. "thought" parts are dropped from content.
+    Returns (blocks, has_tool_call, thought). Text is concatenated into one text
+    block (mirroring Anthropic, which emits a single assistant text block);
+    function calls become tool_use blocks. `thought` parts stay out of `content`
+    (which becomes conversation history) and are returned separately.
     """
     text_pieces = []
+    thought_pieces = []
     tool_blocks = []
     # For a no-functionCall response the signature rides the LAST part (which may
     # be a thought part whose text we drop). Track the most recent one so we can
@@ -420,8 +434,11 @@ def _parts_to_blocks(parts) -> tuple[list, bool]:
         if sig:
             text_signature = base64.b64encode(sig).decode()
         text = getattr(part, "text", None)
-        if text and not getattr(part, "thought", False):
-            text_pieces.append(text)
+        if text:
+            if getattr(part, "thought", False):
+                thought_pieces.append(text)
+            else:
+                text_pieces.append(text)
 
     blocks = []
     if text_pieces:
@@ -434,7 +451,7 @@ def _parts_to_blocks(parts) -> tuple[list, bool]:
             )
         )
     blocks.extend(tool_blocks)
-    return blocks, bool(tool_blocks)
+    return blocks, bool(tool_blocks), "".join(thought_pieces)
 
 
 def _response_to_message(response) -> _Message:
@@ -446,7 +463,7 @@ def _response_to_message(response) -> _Message:
         content = getattr(candidate, "content", None)
         parts = getattr(content, "parts", None) if content else None
 
-    blocks, has_tool_call = _parts_to_blocks(parts)
+    blocks, has_tool_call, thought = _parts_to_blocks(parts)
 
     if has_tool_call:
         stop_reason = "tool_use"
@@ -455,7 +472,12 @@ def _response_to_message(response) -> _Message:
     else:
         stop_reason = "end_turn"
 
-    return _Message(blocks, _map_usage(getattr(response, "usage_metadata", None)), stop_reason)
+    return _Message(
+        blocks,
+        _map_usage(getattr(response, "usage_metadata", None)),
+        stop_reason,
+        thought=thought,
+    )
 
 
 # ─── Provider ─────────────────────────────────────────────────────────
@@ -519,7 +541,7 @@ class GeminiProvider(BaseModelProvider):
 
     async def create_message(
         self, *, model, max_tokens, messages, system=None, tools=None, thinking=True,
-        temperature=None, effort=None,
+        temperature=None, effort=None, attempts=None,
     ):
         stable, dynamic = _split_system(system)
         contents = _messages_to_contents(messages, trailing_text=dynamic)
@@ -536,7 +558,10 @@ class GeminiProvider(BaseModelProvider):
             )
             return _response_to_message(response)
 
-        return await with_llm_retry(_once)
+        return await with_llm_retry(
+            _once, provider="gemini", model=model,
+            **({} if attempts is None else {"attempts": attempts}),
+        )
 
     async def stream_message(
         self, *, model, max_tokens, messages, system=None, tools=None, thinking=True,
@@ -580,7 +605,7 @@ class GeminiProvider(BaseModelProvider):
                 if getattr(chunk, "usage_metadata", None) is not None:
                     usage_metadata = chunk.usage_metadata
 
-            blocks, has_tool_call = _parts_to_blocks(all_parts)
+            blocks, has_tool_call, thought = _parts_to_blocks(all_parts)
             if has_tool_call:
                 stop_reason = "tool_use"
             elif _finish_reason_name(finish_reason) == "MAX_TOKENS":
@@ -588,7 +613,12 @@ class GeminiProvider(BaseModelProvider):
             else:
                 stop_reason = "end_turn"
 
-            yield ("message", _Message(blocks, _map_usage(usage_metadata), stop_reason))
+            yield (
+                "message",
+                _Message(blocks, _map_usage(usage_metadata), stop_reason, thought=thought),
+            )
 
-        async for item in stream_with_llm_retry(_stream_once):
+        async for item in stream_with_llm_retry(
+            _stream_once, provider="gemini", model=model
+        ):
             yield item

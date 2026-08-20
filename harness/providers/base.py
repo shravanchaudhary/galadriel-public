@@ -25,11 +25,16 @@ class BaseModelProvider(ABC):
         thinking: bool = True,
         temperature: float | None = None,
         effort: str | None = None,
+        attempts: int | None = None,
     ) -> Any:
         """Single-shot completion. Returns the provider's message response.
 
         ``thinking=False`` asks the backend to skip chain-of-thought when it
         supports that (Gemini thinking_budget=0, Ollama think=False).
+
+        ``attempts=1`` disables the transient-error retry for callers on a hard
+        deadline, where a backoff would burn the budget they were going to use
+        for the answer. Everything else leaves it None for the default budget.
 
         ``temperature=None`` leaves the backend default alone. Deterministic
         callers — classifiers, judges, extractors, anything whose output is

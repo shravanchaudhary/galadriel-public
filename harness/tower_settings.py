@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo, available_timezones
 
 from pymongo import MongoClient
 
+from . import model_catalog
 from .thinking_effort import (  # noqa: F401 — re-exported for Tower routes
     DEFAULT_EFFORT as DEFAULT_THINKING_EFFORT,
     EFFORT_LABELS,
@@ -47,7 +48,9 @@ DEFAULT_RECALL_SLM_MODEL = "1b"
 # 208-case leave-one-out set 2026-08-18: flash and flash-lite both P=0.916
 # R=0.952 F1=0.933, identical case-level verdicts, ~1.3 s/scan. Flash-lite is
 # ~3.8x cheaper on the judge payload, so it is the default.
-DEFAULT_RECALL_JUDGE_MODEL = "gemini-2.5-flash-lite"
+# Cheapest model that scored 100% on the judge eval (see
+# knowledge/reference/bedrock_providers.md): ~$0.05/1k calls at p90 1.1s.
+DEFAULT_RECALL_JUDGE_MODEL = "gpt-oss-20b"
 
 # Idle-poll minutes when the worker has nothing to do (default 10).
 VALID_WORKER_IDLE_MINUTES: tuple[int, ...] = (5, 10, 15, 20, 30, 60)
@@ -55,9 +58,45 @@ DEFAULT_WORKER_IDLE_MINUTES = 10
 
 # Compaction trigger (input tokens). Gemini's window is ~1M; 300K is the
 # historical default so long chats fold before they get expensive.
+#
+# Neither option fits every model: every Mantle model tops out at 262,144 and
+# the Claude 4.5 family at 200,000, both below the 300K "small" option. Using
+# 300K there would mean compaction never fires — the model's own context
+# limit is hit first and the turn 400s instead of summarizing. Callers that
+# know the model must go through `context_options_for_model` /
+# `default_compact_threshold_for_model` below rather than these raw
+# constants, which stay as the two canonical choices for models that fit them
+# (currently the 1M-context Gemini and Claude 4.6 tiers).
 CONTEXT_OPTIONS: tuple[int, ...] = (300_000, 1_000_000)
 DEFAULT_COMPACT_THRESHOLD = 300_000
 CONTEXT_LABELS: dict[int, str] = {300_000: "300K", 1_000_000: "1M"}
+
+
+def _model_context_ceiling(model: str | None) -> int | None:
+    """Real context window for `model`, or None if it is not in the catalog."""
+    entry = model_catalog.get(model) if model else None
+    return entry.context if entry is not None else None
+
+
+def context_options_for_model(model: str | None) -> tuple[int, ...]:
+    """CONTEXT_OPTIONS filtered to what `model` can actually hold.
+
+    Falls back to the model's own ceiling as the sole option when even 300K
+    would exceed it — every Mantle model and the Claude 4.5 family land here.
+    Unknown models (Ollama tags) keep the unfiltered pair.
+    """
+    ceiling = _model_context_ceiling(model)
+    if ceiling is None:
+        return CONTEXT_OPTIONS
+    fitting = tuple(t for t in CONTEXT_OPTIONS if t <= ceiling)
+    return fitting or (ceiling,)
+
+
+def default_compact_threshold_for_model(model: str | None) -> int:
+    """DEFAULT_COMPACT_THRESHOLD, clamped down to the model's own context
+    window when that window is smaller."""
+    ceiling = _model_context_ceiling(model)
+    return DEFAULT_COMPACT_THRESHOLD if ceiling is None else min(DEFAULT_COMPACT_THRESHOLD, ceiling)
 
 # Channels with a user-selectable model in Tower (main chat + autonomous loops).
 CONFIGURABLE_CHANNELS: tuple[str, ...] = (
@@ -82,23 +121,16 @@ def _channel_setting_id(channel: str) -> str:
         return _CHANNEL_DOC_IDS[channel]
     return f"channel_model_{channel}"
 
-# Selectable agent models in Tower. Provider is resolved from the model name
-# via model_registry.provider_for_model (gemini-* → Gemini).
-# Kept in sync with https://ai.google.dev/gemini-api/docs/models — only
-# current (non-shut-down) Gemini text/agentic models are listed here. Gemini
-# 2.0 and 1.5 have been shut down upstream / delisted; do not add them back.
-AGENT_MODEL_OPTIONS: tuple[str, ...] = (
-    "gemini-3.7-flash",
-    "gemini-3.6-flash",
-    "gemini-3.5-flash",
-    "gemini-3.5-flash-lite",
-    "gemini-3.1-flash-lite",
-    "gemini-3.1-pro-preview",
-    "gemini-3-flash-preview",
-    "gemini-2.5-pro",
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
-)
+# Selectable models in Tower, both derived from `model_catalog` so a model is
+# added in exactly one place. Provider is resolved from the model name via
+# model_registry.provider_for_model.
+#
+# The two lists differ deliberately: an agent model must be able to call tools
+# (Gemma 3 27B accepts a tools array and then answers in prose, which would look
+# like a working agent that never acts), while the recall judge only emits a JSON
+# verdict and so can use the cheaper no-tool models.
+AGENT_MODEL_OPTIONS: tuple[str, ...] = model_catalog.agent_options()
+JUDGE_MODEL_OPTIONS: tuple[str, ...] = model_catalog.judge_options()
 
 _sync_db = None
 
@@ -423,7 +455,7 @@ def normalize_recall_judge_model(model: str | None) -> str | None:
     if not model or not isinstance(model, str):
         return None
     m = model.strip()
-    return m if m in AGENT_MODEL_OPTIONS else None
+    return m if m in JUDGE_MODEL_OPTIONS else None
 
 
 def get_recall_judge_model() -> str:
@@ -449,7 +481,7 @@ def set_recall_judge_model(model: str) -> str:
     if name is None:
         raise ValueError(
             f"Unsupported recall judge model: {model}; "
-            f"expected one of {list(AGENT_MODEL_OPTIONS)}"
+            f"expected one of {list(JUDGE_MODEL_OPTIONS)}"
         )
     db = _db()
     if db is None:
@@ -467,16 +499,25 @@ def set_recall_judge_model(model: str) -> str:
     return name
 
 
-def normalize_compact_threshold(value) -> int | None:
+def normalize_compact_threshold(value, model: str | None = None) -> int | None:
+    """`value` if it is a valid compaction-trigger choice, else None.
+
+    Pass `model` to validate against that model's own fitting options
+    (`context_options_for_model`); without it, validates against the flat
+    300K/1M pair only — used for the legacy tenant-wide preference below,
+    which predates per-model settings and was never anything else.
+    """
     try:
         tokens = int(value)
     except (TypeError, ValueError):
         return None
-    return tokens if tokens in CONTEXT_OPTIONS else None
+    valid = context_options_for_model(model) if model else CONTEXT_OPTIONS
+    return tokens if tokens in valid else None
 
 
 def get_compact_threshold() -> int | None:
-    """Persisted compaction threshold, or None if unset / Mongo unavailable."""
+    """Persisted (legacy, tenant-wide) compaction threshold, or None if unset
+    / Mongo unavailable."""
     db = _db()
     if db is None:
         return None
@@ -486,19 +527,28 @@ def get_compact_threshold() -> int | None:
     return normalize_compact_threshold((doc or {}).get("tokens"))
 
 
-def resolve_compact_threshold() -> int:
-    """Mongo, then AGENT_COMPACT_THRESHOLD, then 300K."""
+def resolve_compact_threshold(model: str | None = None) -> int:
+    """Legacy tenant-wide preference (Mongo, then AGENT_COMPACT_THRESHOLD),
+    honored only for a `model` that can actually hold it — otherwise clamped
+    to that model's own default. Used solely to bootstrap
+    `resolve_model_runtime` before any per-model setting exists.
+    """
     saved = get_compact_threshold()
-    if saved is not None:
-        return saved
-    env = (os.environ.get("AGENT_COMPACT_THRESHOLD") or "").strip()
-    if env.isdigit() and int(env) > 0:
-        return int(env)
-    return DEFAULT_COMPACT_THRESHOLD
+    if saved is None:
+        env = (os.environ.get("AGENT_COMPACT_THRESHOLD") or "").strip()
+        if env.isdigit() and int(env) > 0:
+            saved = int(env)
+    if saved is None:
+        return default_compact_threshold_for_model(model)
+    ceiling = _model_context_ceiling(model)
+    if ceiling is not None and saved > ceiling:
+        return default_compact_threshold_for_model(model)
+    return saved
 
 
 def set_compact_threshold(tokens: int) -> int:
-    """Persist 300K or 1M. Returns the stored value."""
+    """Persist the legacy tenant-wide 300K/1M preference. Returns the stored
+    value. Per-model choices go through `set_model_runtime` instead."""
     value = normalize_compact_threshold(tokens)
     if value is None:
         raise ValueError(
@@ -561,7 +611,7 @@ def _runtime_entry(model: str, cfg) -> dict:
     if not isinstance(cfg, dict):
         return {}
     entry: dict = {}
-    context = normalize_compact_threshold(cfg.get("context"))
+    context = normalize_compact_threshold(cfg.get("context"), model)
     if context is not None:
         entry["context"] = context
     effort = normalize_thinking_effort(cfg.get("effort"))
@@ -594,18 +644,20 @@ def get_model_runtime_map() -> dict[str, dict]:
 def resolve_model_runtime(model: str, saved_map: dict[str, dict] | None = None) -> dict:
     """Last context/effort for `model`, or that model's defaults.
 
-    An empty map falls back to the legacy global compact threshold so an
-    existing 1M choice is not reset on first deploy. After any per-model
-    row exists, unseen models start at 300K + the model's default effort.
+    An empty map falls back to the legacy global compact threshold (clamped
+    to what `model` can hold) so an existing 1M choice is not reset on first
+    deploy. After any per-model row exists, unseen models start at
+    `default_compact_threshold_for_model(model)` — 300K, or that model's own
+    context window when it is smaller — plus the model's default effort.
     """
     configs = get_model_runtime_map() if saved_map is None else saved_map
     saved = configs.get(model) or {}
     if saved.get("context") is not None:
         context = saved["context"]
     elif not configs:
-        context = resolve_compact_threshold()
+        context = resolve_compact_threshold(model)
     else:
-        context = DEFAULT_COMPACT_THRESHOLD
+        context = default_compact_threshold_for_model(model)
     if saved.get("effort") is not None:
         effort = clamp_effort_for_model(model, saved["effort"])
     else:
@@ -621,10 +673,11 @@ def set_model_runtime(
         raise ValueError(f"Unsupported model: {model}")
     entry: dict = {}
     if context is not None:
-        tokens = normalize_compact_threshold(context)
+        tokens = normalize_compact_threshold(context, model)
         if tokens is None:
             raise ValueError(
-                f"Unsupported context: {context}; expected one of {list(CONTEXT_OPTIONS)}"
+                f"Unsupported context for {model}: {context}; "
+                f"expected one of {list(context_options_for_model(model))}"
             )
         entry["context"] = tokens
     if effort is not None:

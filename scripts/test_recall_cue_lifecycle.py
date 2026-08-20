@@ -134,7 +134,7 @@ def test_judge_sees_similar_negatives() -> None:
 
     async def spy_judge(provider, *, chunk, candidates, model=None, usage_callback=None, **kw):
         seen["candidates"] = candidates
-        return {"applicable": [], "reasons": {}}
+        return {"applicable": []}
 
     rj.judge_applicability = spy_judge
     try:

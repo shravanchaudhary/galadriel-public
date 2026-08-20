@@ -17,9 +17,6 @@ from typing import Any
 
 log = logging.getLogger("galadriel.recall_judge")
 
-DEFAULT_JUDGE_MODEL = "gemini-2.5-flash-lite"
-# Back-compat alias for callers that imported the constant directly.
-JUDGE_MODEL = DEFAULT_JUDGE_MODEL
 # Measured med 1.22s / p90 1.27s locally. 1.5s left no headroom and tripped on
 # ~40% of calls, silently voiding scans. Wait instead: this is one call per scan.
 JUDGE_TIMEOUT_SECONDS = 6.0
@@ -32,7 +29,6 @@ MAX_CANDIDATES = 3
 MAX_CHUNK_CHARS = 600
 MAX_CONDITION_CHARS = 240
 MAX_EXCLUSION_CHARS = 240
-MAX_REASON_CHARS = 160
 # known_misfires are tune_recall negatives pre-selected by similarity to the
 # current chunk (see recall.filter_matches_with_judge). Caps keep the judge
 # prompt bounded no matter how large the stored negative array grows.
@@ -50,8 +46,9 @@ This rule is decisive: if the chunk is identical to a known_misfire, or
 describes essentially the same situation, the recall does NOT apply — even
 when the activation_condition alone would seem satisfied.
 Return exactly one JSON object:
-{"applicable":["recall_id",...],"reasons":{"recall_id":"one short reason"}}
-Use an empty applicable list when none apply.
+{"applicable":["recall_id",...]}
+Use an empty applicable list when none apply. Membership in the list is the
+verdict — yes if present, no if absent. Do not explain your reasoning.
 applicable may only contain ids from the candidates list.
 No markdown and no additional keys."""
 
@@ -67,17 +64,21 @@ def invalidate_judge_model_cache() -> None:
 
 
 def resolve_judge_model() -> str:
-    """Judge model from env / Tower, TTL-cached (one Mongo read per scan otherwise)."""
+    """Judge model from env / Tower, TTL-cached (one Mongo read per scan otherwise).
+
+    `tower_settings.DEFAULT_RECALL_JUDGE_MODEL` is the only place the judge
+    default is defined — do not add another constant here.
+    """
     global _MODEL_CACHE
     now = time.monotonic()
     if _MODEL_CACHE is not None and now - _MODEL_CACHE[0] < _MODEL_TTL_SECONDS:
         return _MODEL_CACHE[1]
-    try:
-        from . import tower_settings
+    from . import tower_settings
 
+    try:
         model = tower_settings.get_recall_judge_model()
     except Exception:
-        model = DEFAULT_JUDGE_MODEL
+        model = tower_settings.DEFAULT_RECALL_JUDGE_MODEL
     _MODEL_CACHE = (now, model)
     return model
 
@@ -121,20 +122,17 @@ def validate_judgment(
     """Enforce applicable ⊆ allowed_ids; salvage everything else.
 
     The safety property is the subset rule: an id we drop can never be injected,
-    because callers only ever iterate their own candidate list. Everything
-    else — a missing `reasons` key, an extra key, a hallucinated id alongside
-    good ones — is cosmetic, and rejecting the whole judgment over it voids a
-    scan the judge actually decided. Only a structurally unusable payload
-    returns None.
+    because callers only ever iterate their own candidate list. An extra key or
+    a hallucinated id alongside good ones is cosmetic, and rejecting the whole
+    judgment over it voids a scan the judge actually decided. Only a
+    structurally unusable payload returns None. Any `reasons` key the model
+    adds unprompted is ignored — the schema only asks for `applicable`.
     """
     if not isinstance(value, dict):
         return None
     applicable = value.get("applicable")
     if applicable is None or not isinstance(applicable, list):
         return None
-    reasons = value.get("reasons")
-    if not isinstance(reasons, dict):
-        reasons = {}
     clean_ids: list[str] = []
     seen: set[str] = set()
     for item in applicable:
@@ -145,11 +143,7 @@ def validate_judgment(
             continue
         seen.add(rid)
         clean_ids.append(rid)
-    clean_reasons: dict[str, str] = {}
-    for key, reason in reasons.items():
-        if isinstance(key, str) and key in seen and isinstance(reason, str):
-            clean_reasons[key] = _clean_text(reason, MAX_REASON_CHARS)
-    return {"applicable": clean_ids, "reasons": clean_reasons}
+    return {"applicable": clean_ids}
 
 
 def _text_from_response(response: Any) -> str:
@@ -189,7 +183,7 @@ async def judge_applicability(
     envelope = bounded_envelope(chunk, candidates)
     allowed = {c["recall_id"] for c in envelope["candidates"]}
     if not allowed:
-        return {"applicable": [], "reasons": {}}
+        return {"applicable": []}
     try:
         response = await asyncio.wait_for(
             provider.create_message(
@@ -203,6 +197,11 @@ async def judge_applicability(
                 }],
                 thinking=False,
                 temperature=JUDGE_TEMPERATURE,
+                # One shot, no backoff. The judge lives inside a few-second
+                # deadline; retrying a 429 just spends that deadline sleeping
+                # and times out anyway. A failed judge already degrades safely
+                # to "no verdict", so failing fast is strictly better.
+                attempts=1,
             ),
             timeout=timeout_seconds,
         )

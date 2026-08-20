@@ -75,7 +75,7 @@ running agent in two steps. New to Docker? Start with Docker's own short guides 
 ```bash
 git clone https://github.com/avasol/galadriel-public.git
 cd galadriel-public
-cp .env.example .env          # open .env, paste your ANTHROPIC_API_KEY
+cp .env.example .env          # open .env, paste your GEMINI_API_KEY
 docker compose up -d --build  # builds the image and starts the agent
 docker compose logs -f        # watch her wake up
 ```
@@ -803,7 +803,8 @@ See `.env.example` for the full list with inline documentation.
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `GEMINI_API_KEY` | Yes* | Gemini API key (*or `GOOGLE_API_KEY` — default provider) |
-| `ANTHROPIC_API_KEY` | No | Required only if you switch tasks back to Claude in `model_registry.py` |
+| `AWS_BEARER_TOKEN_BEDROCK` | No | Bedrock API key — needed only to use Claude or the open models (both run on Bedrock). Omit to use ambient AWS credentials |
+| `BEDROCK_REGION` | No | Region for Bedrock calls (default: `us-east-1`, which serves a superset of other regions). Separate from `AWS_REGION` |
 | `DISCORD_BOT_TOKEN` | No | Enables Discord gateway |
 | `DISCORD_AUTHORIZED_USER_ID` | No | Only this Discord user ID can interact |
 | `DISCORD_CHANNEL_ID` | No | Guild channel for conversation |
@@ -818,8 +819,8 @@ See `.env.example` for the full list with inline documentation.
 | `TOWER_AUTH_USERNAME` | No | Login username (default: `clyra`) |
 | `TOWER_AUTH_TOKEN` | No | Login password and legacy Bearer token |
 | `TOWER_COOKIE_SECURE` | No | Secure session cookies (`true` by default when auth is required) |
-| Model selection | — | Edit `TASKS` in `harness/model_registry.py` (default: gemini-3.1-pro-preview agent, gemini-2.5-flash compaction; copy from `ANTHROPIC_DEFAULTS` to switch back to Claude Opus / Haiku) |
-| Max output tokens | — | Not an env var. Each model's documented ceiling comes from `MODEL_CAPS` in `harness/agent.py` (Gemini 3.x: 65,536; Claude 4.6+: 128,000) |
+| Model selection | — | Edit `TASKS` in `harness/model_registry.py` (default: gemini-3.1-pro-preview agent, gemini-2.5-flash compaction; copy from `BEDROCK_DEFAULTS` for Claude / open models). Every model, its price, caps, and intel score live in `harness/model_catalog.py` |
+| Max output tokens | — | Not an env var. Each model's documented ceiling comes from `harness/model_catalog.py` via `MODEL_CAPS` (Gemini 3.x: 65,536; Claude 4.6+: 128,000) |
 | `AGENT_COMPACT_THRESHOLD` | No | Input tokens that trigger compaction (default: `300000`) |
 | `MEMPALACE_PATH` | No | Palace directory — read by the [MemPalace](https://github.com/MemPalace/mempalace) library itself (default: `~/.mempalace/palace`) |
 | `PALACE_ARCHIVE_ROOT` | No | Where archived conversations + pre-compaction tool_results land before mining (default: `~/.mempalace/archive`) |

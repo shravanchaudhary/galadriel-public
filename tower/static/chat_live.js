@@ -70,6 +70,17 @@ window.ChatLive = (function () {
         return turn;
     }
 
+    /** A failed call, in plain text and red — not the JSON payload. */
+    function appendError(message, turn, log) {
+        if (!turn) turn = startAssistant(log);
+        const el = document.createElement('div');
+        el.className = 'msg-text msg-error';
+        el.textContent = message;
+        turn.bodyEl.appendChild(el);
+        turn.textEl = null;
+        return turn;
+    }
+
     function appendThought(delta, turn, opts) {
         const isRecallFire = opts && opts.kind === 'recall_fire';
         if (isRecallFire) {
@@ -152,12 +163,30 @@ window.ChatLive = (function () {
                 break;
             case 'error':
                 clearTyping(turn);
-                appendText(`[Error] ${ev.error}`, turn, log);
+                appendError(errorText(ev), turn, log);
                 clearTyping(turn);
                 turn.finished = true;
+                turn.errored = true;
                 break;
         }
         return turn;
+    }
+
+    /** A short, human sentence for the chat log — never the raw JSON payload. */
+    const GENERIC_ERROR = "Something went wrong on our end. Please try again in a moment.";
+
+    function errorText(ev) {
+        const d = ev.detail;
+        // Full model/provider/HTTP detail stays in devtools for whoever's
+        // debugging; the person chatting just needs to know it failed.
+        if (d) console.error('[chat error]', d);
+        const message = (d && d.message) || ev.error;
+        if (!message || typeof message !== 'string') return GENERIC_ERROR;
+        // Provider messages are sometimes still a raw JSON blob despite the
+        // backend's best effort to unwrap them — never show that to the user.
+        const trimmed = message.trim();
+        if (trimmed.startsWith('{') || trimmed.startsWith('[')) return GENERIC_ERROR;
+        return trimmed;
     }
 
     function appendUser(log, text, images) {
@@ -221,9 +250,10 @@ window.ChatLive = (function () {
             });
             if (!res.ok || !res.body) {
                 const err = await res.json().catch(() => ({ error: res.statusText }));
-                appendText(`[Error] ${err.error || res.statusText}`, turn, log);
+                appendError(errorText(err), turn, log);
                 turn.finished = true;
-                if (onError) onError(err.error || res.statusText);
+                turn.errored = true;
+                if (onError) onError(err.error || res.statusText, turn);
                 else if (onDone) onDone(turn);
                 return turn;
             }
@@ -231,9 +261,10 @@ window.ChatLive = (function () {
             if (!turn.finished) turn.finished = true;
             if (onDone) onDone(turn);
         } catch (err) {
-            appendText(`[Error] ${err.message}`, turn, log);
+            appendError(errorText({ error: err.message }), turn, log);
             turn.finished = true;
-            if (onError) onError(err.message);
+            turn.errored = true;
+            if (onError) onError(err.message, turn);
             else if (onDone) onDone(turn);
         }
         return turn;
@@ -261,19 +292,25 @@ window.ChatLive = (function () {
             }
             if (!res.ok || !res.body) {
                 const err = await res.json().catch(() => ({ error: res.statusText }));
-                turn.div.remove();
-                if (onError) onError(err.error || res.statusText);
-                else if (onDone) onDone(null);
-                return null;
+                const message = err.error || res.statusText;
+                // Previously the turn was dropped silently here, so a failed
+                // attach looked identical to a turn that never started.
+                appendError(errorText(err), turn, log);
+                turn.finished = true;
+                turn.errored = true;
+                if (onError) onError(message, turn);
+                else if (onDone) onDone(turn);
+                return turn;
             }
             await consumeSse(res, turn, log);
             if (!turn.finished) turn.finished = true;
             if (!turn.bodyEl.textContent.trim()) turn.div.remove();
             if (onDone) onDone(turn);
         } catch (err) {
-            appendText(`[Error] ${err.message}`, turn, log);
+            appendError(errorText({ error: err.message }), turn, log);
             turn.finished = true;
-            if (onError) onError(err.message);
+            turn.errored = true;
+            if (onError) onError(err.message, turn);
             else if (onDone) onDone(turn);
         }
         return turn;
@@ -384,13 +421,13 @@ window.ChatLive = (function () {
             'Agent model',
             'Model resets on restart — set MONGO_URI / MONGO_DB to persist',
         );
+        // model_labels carries the display name plus intel score; options is the
+        // bare id list, kept as a fallback for a server that predates it.
+        const modelItems = (data.model_labels && data.model_labels.length)
+            ? data.model_labels.map((m) => ({ value: m.value, label: m.label }))
+            : (data.options || []).map((m) => ({ value: m, label: m }));
         for (const el of groups.models) {
-            fillSelect(
-                el,
-                (data.options || []).map((m) => ({ value: m, label: m })),
-                data.model,
-                modelTitle,
-            );
+            fillSelect(el, modelItems, data.model, modelTitle);
         }
         const contextTitle = persistHint(data, 'Context before compaction', 'Context resets on restart');
         for (const el of groups.contexts) {
