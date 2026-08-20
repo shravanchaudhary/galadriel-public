@@ -136,6 +136,7 @@ variable "replika_runtime_provider_secret_arns" {
   validation {
     condition = length(setsubtract(toset(keys(var.replika_runtime_provider_secret_arns)), toset([
       "AGENTSOURCE_API_KEY",
+      "AWS_BEARER_TOKEN_BEDROCK",
       "BCE_API_KEY",
       "FULLENRICH_API_KEY",
       "GEMINI_API_KEY",
@@ -155,7 +156,10 @@ variable "replika_runtime_environment" {
     BCE_EXTENSION_DOWNLOAD_URL = "https://bce-extension-releases-020571892795.s3.ap-south-1.amazonaws.com/latest.zip"
     BCE_EXTENSION_VERSIONS_URL = "https://bce-extension-releases-020571892795.s3.ap-south-1.amazonaws.com/index.html"
     BROWSER_BACKEND            = "bce"
-    TRAFILATURA_ENDPOINT       = "https://o73bnbnsxmhfzx6yjncuyvcmwq0jspde.lambda-url.ap-south-1.on.aws"
+    # Bedrock calls go to us-east-1 regardless of the ap-south-1 infra region:
+    # it serves a superset of models and some work only there.
+    BEDROCK_REGION       = "us-east-1"
+    TRAFILATURA_ENDPOINT = "https://o73bnbnsxmhfzx6yjncuyvcmwq0jspde.lambda-url.ap-south-1.on.aws"
   }
   validation {
     condition = length(setsubtract(toset(keys(var.replika_runtime_environment)), toset([
@@ -163,6 +167,7 @@ variable "replika_runtime_environment" {
       "BCE_TIMEOUT_MS",
       "BCE_EXTENSION_DOWNLOAD_URL",
       "BCE_EXTENSION_VERSIONS_URL",
+      "BEDROCK_REGION",
       "BROWSER_BACKEND",
       "TRAFILATURA_ENDPOINT",
     ]))) == 0
@@ -170,10 +175,11 @@ variable "replika_runtime_environment" {
   }
 }
 variable "replika_runtime_secret_names" {
-  description = "Provider infrastructure secrets exposed to tenant runtimes. Slack installation credentials stay excluded; platform Gemini is included as the default model key."
+  description = "Provider infrastructure secrets exposed to tenant runtimes. Slack installation credentials stay excluded; platform Gemini and the Bedrock API key are included as model credentials."
   type        = set(string)
   default = [
     "AGENTSOURCE_API_KEY",
+    "AWS_BEARER_TOKEN_BEDROCK",
     "BCE_API_KEY",
     "FULLENRICH_API_KEY",
     "GEMINI_API_KEY",
@@ -185,6 +191,7 @@ variable "replika_runtime_secret_names" {
   validation {
     condition = length(setsubtract(var.replika_runtime_secret_names, toset([
       "AGENTSOURCE_API_KEY",
+      "AWS_BEARER_TOKEN_BEDROCK",
       "BCE_API_KEY",
       "FULLENRICH_API_KEY",
       "GEMINI_API_KEY",

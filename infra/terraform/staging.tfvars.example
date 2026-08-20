@@ -18,6 +18,7 @@ replika_control_plane_only  = true
 replika_callback_token_secret_arn = "arn:aws:secretsmanager:REGION:ACCOUNT:secret:replika/provisioner-callback"
 replika_runtime_secret_names = [
   "AGENTSOURCE_API_KEY",
+  "AWS_BEARER_TOKEN_BEDROCK",
   "BCE_API_KEY",
   "FULLENRICH_API_KEY",
   "GEMINI_API_KEY",
@@ -27,8 +28,9 @@ replika_runtime_secret_names = [
   "TRAFILATURA_API_KEY",
 ]
 replika_runtime_provider_secret_arns = {
-  AGENTSOURCE_API_KEY = "arn:aws:secretsmanager:ap-south-1:ACCOUNT:secret:replika/runtime/agentsource-api-key"
-  BCE_API_KEY         = "arn:aws:secretsmanager:ap-south-1:ACCOUNT:secret:replika/runtime/bce-api-key"
+  AGENTSOURCE_API_KEY      = "arn:aws:secretsmanager:ap-south-1:ACCOUNT:secret:replika/runtime/agentsource-api-key"
+  AWS_BEARER_TOKEN_BEDROCK = "arn:aws:secretsmanager:ap-south-1:ACCOUNT:secret:replika/runtime/bedrock-bearer-token"
+  BCE_API_KEY              = "arn:aws:secretsmanager:ap-south-1:ACCOUNT:secret:replika/runtime/bce-api-key"
   FULLENRICH_API_KEY  = "arn:aws:secretsmanager:ap-south-1:ACCOUNT:secret:replika/runtime/fullenrich-api-key"
   GEMINI_API_KEY      = "arn:aws:secretsmanager:ap-south-1:ACCOUNT:secret:replika/runtime/gemini-api-key"
   HANDINGER_API_KEY   = "arn:aws:secretsmanager:ap-south-1:ACCOUNT:secret:replika/runtime/handinger-api-key"
@@ -41,6 +43,7 @@ replika_runtime_environment = {
   BCE_EXTENSION_DOWNLOAD_URL = "https://bce-extension-releases-ACCOUNT.s3.ap-south-1.amazonaws.com/latest.zip"
   BCE_EXTENSION_VERSIONS_URL = "https://bce-extension-releases-ACCOUNT.s3.ap-south-1.amazonaws.com/index.html"
   BROWSER_BACKEND            = "bce"
+  BEDROCK_REGION             = "us-east-1"
   TRAFILATURA_ENDPOINT       = "https://web-fetch.example.internal"
 }
 
