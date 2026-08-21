@@ -49,13 +49,13 @@ Each process starts with limited context. Memory is stacked:
 - **`MEMORY.md`** — always-on lean facts needed every turn.
 - **Daily logs + memory palace** — durable detail and searchable history.
 - **Semantic recalls** — reactive one-liner lookups. Stage-1 (embed floor 0.6 or
-  lexical cue) proposes candidates; Stage-2 (local SLM) verifies intent on
-  `matched_chunk` before inject (recall pos/neg examples = YES/NO few-shots).
+  lexical cue) proposes candidates; Stage-2 (judge model) verifies intent on
+  `matched_chunk` before inject (recall pos/neg examples = judge few-shots).
   Mid-turn inject only on `tool_use` pauses (plus start-of-turn user scan).
   Instructions stay minimal pointers — not essays. When writing cues via
   `learn_recall`: positives = 3–5 realistic phrasings (not instruction
   paraphrases); lexical = high-precision anchors; negatives = near-misses
-  (Stage-1 veto AND Stage-2 NO few-shots — FP injects: add `matched_chunk` to
+  (Stage-1 veto AND Stage-2 judge few-shots — FP injects: add `matched_chunk` to
   negatives). Package durable content in palace/KG and point the recall at it.
   Tools: `get_recall`, `get_recent_recalls` (proposed vs verified),
   `learn_recall` (full-replace cue arrays), `purge_recall` (user recalls only).

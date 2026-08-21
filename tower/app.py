@@ -968,40 +968,12 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
             "persisted": tower_settings.is_configured(),
         })
 
-    @app.route("/api/recall-slm-model", methods=["GET"])
-    def api_recall_slm_model_get():
-        from harness.recall import get_recall_slm_status
+    @app.route("/api/recall-status", methods=["GET"])
+    def api_recall_status_get():
+        from harness.recall import get_recall_status
 
-        status = get_recall_slm_status()
+        status = get_recall_status()
         status["persisted"] = tower_settings.is_configured()
-        return jsonify(status)
-
-    @app.route("/api/recall-slm-model", methods=["POST"])
-    def api_recall_slm_model_set():
-        from harness.recall import set_recall_slm_model
-
-        data = request.json or {}
-        model = (data.get("model") or "").strip().lower()
-        if not model:
-            return jsonify({"error": "Missing 'model' field"}), 400
-        if model not in tower_settings.RECALL_SLM_MODEL_OPTIONS:
-            return jsonify({
-                "error": (
-                    f"Invalid model; expected one of "
-                    f"{list(tower_settings.RECALL_SLM_MODEL_OPTIONS)}"
-                ),
-            }), 400
-        try:
-            status = set_recall_slm_model(model, preload=True)
-        except ValueError as e:
-            return jsonify({"error": str(e)}), 400
-        except RuntimeError as e:
-            return jsonify({"error": str(e)}), 503
-        except Exception as e:
-            return jsonify({"error": str(e)}), 500
-        status["persisted"] = True
-        if status.get("error") and not status.get("loaded"):
-            return jsonify(status), 503
         return jsonify(status)
 
     @app.route("/api/recall-judge-model", methods=["GET"])
@@ -1096,11 +1068,9 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
         model = data.get("model", "fastembed")
 
         from harness.recall import (
-            _stage2_mode,
             fetch_all_recalls,
             filter_matches_with_judge,
-            filter_matches_with_slm,
-            get_recall_slm_status,
+            get_recall_status,
             scan_text_for_recalls,
         )
 
@@ -1111,7 +1081,7 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
             return m
 
         try:
-            status = get_recall_slm_status()
+            status = get_recall_status()
             recalls = _run_async(fetch_all_recalls())
             proposed = scan_text_for_recalls(
                 text,
@@ -1119,14 +1089,10 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
                 force_encoder_type=model,
                 segments=[{"text": text, "source": "user"}],
             )
-            if _stage2_mode() == "judge":
-                verified, rejected = _run_async(filter_matches_with_judge(proposed))
-            else:
-                verified, rejected = filter_matches_with_slm(proposed)
+            verified, rejected = _run_async(filter_matches_with_judge(proposed))
             return jsonify({
                 "status": "ok",
                 "armed": bool(status.get("armed")),
-                "stage2_mode": status.get("stage2_mode"),
                 "judge_model": status.get("judge_model"),
                 "matches": [_serializable(m) for m in verified + rejected],
             })

@@ -39,10 +39,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-# Stage-1 only: embed mode keeps recall_system_armed() true without a judge key
-# (see harness/recall.recall_system_armed).
+# Stage-1 only: this benchmark never calls the judge, so a placeholder key is
+# enough to keep recall_system_armed() true (it only checks presence, see
+# harness/recall.recall_system_armed) without needing a real Gemini key.
 os.environ.setdefault("RECALL_SLM_VERIFY", "1")
-os.environ.setdefault("RECALL_STAGE2_MODE", "embed")
+os.environ.setdefault("GEMINI_API_KEY", "eval-placeholder")
 
 from eval.chunk_dataset import build_chunk_dataset, chunk_dataset_stats  # noqa: E402
 from eval.common import (  # noqa: E402

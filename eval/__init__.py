@@ -1,6 +1,5 @@
-"""Benchmark suite for choosing Stage-1/Stage-2 recall-verification models.
+"""Eval suite for the recall-verification pipeline (Stage-1 propose + Stage-2 judge).
 
-Read-only over the production code: this package imports from harness/ and
-local_llm/ but never modifies them. All artifacts (downloaded GGUFs, results)
-stay under eval/.
+Read-only over the production code: this package imports from harness/ but
+never modifies it. All artifacts (results) stay under eval/.
 """

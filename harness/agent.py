@@ -183,29 +183,19 @@ async def _verify_and_select_recalls(
     """Stage-2 filter: log all proposals; return only verified matches."""
     if not matches:
         return []
-    from .recall import (
-        _stage2_mode,
-        filter_matches_with_judge,
-        filter_matches_with_slm,
-        touch_cue_usage,
-    )
+    from .recall import filter_matches_with_judge, touch_cue_usage
 
-    mode = _stage2_mode()
-    if mode == "judge":
-        # Network I/O — stay on the event loop (no to_thread hop). The judge
-        # resolves its own provider from its own model, which is configured
-        # independently of this channel's.
-        verified, rejected = await filter_matches_with_judge(
-            matches,
-            usage_callback=usage_callback or (
-                lambda response, model: _log_recall_judge_usage(
-                    response, model, channel_id,
-                )
-            ),
-        )
-    else:
-        # Embed/logit test passes are CPU-heavy; keep them off the loop.
-        verified, rejected = await asyncio.to_thread(filter_matches_with_slm, matches)
+    # Network I/O — stay on the event loop (no to_thread hop). The judge
+    # resolves its own provider from its own model, which is configured
+    # independently of this channel's.
+    verified, rejected = await filter_matches_with_judge(
+        matches,
+        usage_callback=usage_callback or (
+            lambda response, model: _log_recall_judge_usage(
+                response, model, channel_id,
+            )
+        ),
+    )
 
     for m in rejected:
         await _log_proposed_recall(channel_id, m, text_scanned, injected=False)

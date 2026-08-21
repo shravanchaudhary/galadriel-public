@@ -17,15 +17,12 @@
 # ---------- builder: compile wheels ----------
 FROM public.ecr.aws/docker/library/python:3.12-slim AS builder
 WORKDIR /build
-# cmake/ninja: llama-cpp-python may need a source build when no manylinux wheel
-# matches (staging Fargate is linux/amd64 CPU).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential cmake ninja-build \
+        build-essential \
     && rm -rf /var/lib/apt/lists/*
-COPY requirements.txt requirements-local-llm.txt ./
+COPY requirements.txt ./
 RUN pip wheel --no-cache-dir --wheel-dir /wheels \
-        -r requirements.txt \
-        -r requirements-local-llm.txt
+        -r requirements.txt
 
 # ---------- frontend: bundle browser-only dependencies ----------
 FROM public.ecr.aws/docker/library/node:22-alpine AS frontend
@@ -59,20 +56,10 @@ RUN useradd --create-home --home-dir /data --uid 1000 galadriel
 WORKDIR /app
 
 COPY --from=builder /wheels /wheels
-COPY requirements.txt requirements-local-llm.txt ./
+COPY requirements.txt ./
 RUN pip install --no-cache-dir --no-index --find-links=/wheels \
         -r requirements.txt \
-        -r requirements-local-llm.txt \
     && rm -rf /wheels
-
-# Bake the Stage-2 SLM weights (Gemma 270M + 1B GGUFs for the embed/logit test
-# modes) so a UI hot-swap never downloads at runtime. Stub package init avoids
-# importing llama.cpp here; the full COPY below replaces the stub.
-# Weights stay in place (.gguf is dockerignored).
-RUN mkdir -p local_llm && touch local_llm/__init__.py
-COPY local_llm/config.py local_llm/download.py local_llm/
-RUN mkdir -p local_llm/models \
-    && python -c "from local_llm.download import ensure_all_profile_models; print(ensure_all_profile_models())"
 
 # Application code. .dockerignore keeps keys/, .env, memory logs and bloat out.
 COPY . .
@@ -111,8 +98,7 @@ ENV MEMPALACE_PATH=/data/.mempalace/palace \
     TOWER_PORT=8080 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    RECALL_SLM_VERIFY=1 \
-    LOCAL_LLM_FORCE_CPU=1
+    RECALL_SLM_VERIFY=1
 
 # Tower form/session auth (TOWER_AUTH_*) protects the UI when enabled. Prefer
 # binding to localhost or an authenticated edge; see docker-compose.yml.

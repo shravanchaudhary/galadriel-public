@@ -480,12 +480,12 @@ function esc(s) {
     }[c]));
 }
 
-function setArmedLine(armed, mode, judgeModel) {
+function setArmedLine(armed, judgeModel) {
     const el = document.getElementById('recall-test-armed');
     if (!el) return;
     if (armed) {
-        const judgeNote = (mode === 'judge' && judgeModel) ? ` · ${judgeModel}` : '';
-        el.textContent = `Recall armed · Stage-2 ${mode || 'judge'}${judgeNote}`;
+        const judgeNote = judgeModel ? ` · ${judgeModel}` : '';
+        el.textContent = `Recall armed · Stage-2 judge${judgeNote}`;
         el.style.color = '';
     } else {
         el.textContent = 'Recall is DISARMED — Stage-2 judge unavailable (needs GEMINI_API_KEY). Nothing will scan or inject.';
@@ -495,10 +495,10 @@ function setArmedLine(armed, mode, judgeModel) {
 
 async function loadRecallArmed() {
     try {
-        const res = await fetch('/api/recall-slm-model');
+        const res = await fetch('/api/recall-status');
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'unavailable');
-        setArmedLine(data.armed, data.stage2_mode, data.judge_model);
+        setArmedLine(data.armed, data.judge_model);
     } catch (e) {
         const el = document.getElementById('recall-test-armed');
         if (el) el.textContent = 'Recall status unavailable.';
@@ -583,7 +583,7 @@ async function testRecalls() {
             throw new Error(data.error || 'Test failed');
         }
         
-        setArmedLine(data.armed, data.stage2_mode, data.judge_model);
+        setArmedLine(data.armed, data.judge_model);
 
         if (!data.matches || data.matches.length === 0) {
             matchesDiv.innerHTML = data.armed
@@ -591,7 +591,7 @@ async function testRecalls() {
                 : '<span style="color: var(--danger)">Recall is disarmed — nothing was scanned.</span>';
         } else {
             const fired = data.matches.filter(m => m.slm_verified).length;
-            const summary = `<div class="settings-row-hint" style="margin-bottom: 0.75rem;">${fired} of ${data.matches.length} proposal(s) would fire · mode ${esc(data.stage2_mode || '')}.</div>`;
+            const summary = `<div class="settings-row-hint" style="margin-bottom: 0.75rem;">${fired} of ${data.matches.length} proposal(s) would fire.</div>`;
             matchesDiv.innerHTML = summary + data.matches.map(m => {
                 const pos = (m.positive_score != null) ? Number(m.positive_score).toFixed(3) : 'n/a';
                 const src = esc(m.match_source || 'semantic');

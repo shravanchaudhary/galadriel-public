@@ -61,20 +61,6 @@
 
         <div class="settings-row">
             <div class="settings-row-main">
-                <span class="settings-row-label">Recall Stage-2 SLM</span>
-                <span class="settings-row-hint" id="recall-slm-hint">One model loaded at a time; swap unloads the other</span>
-            </div>
-            <div class="settings-row-control" style="display: flex; align-items: center; gap: 0.5rem;">
-                <select id="recall-slm-select" class="interval-select" onchange="setRecallSlmModel()">
-                    <option value="270m">Gemma 3 270M</option>
-                    <option value="1b">Gemma 3 1B</option>
-                </select>
-                <span id="recall-slm-status" class="settings-row-hint">—</span>
-            </div>
-        </div>
-
-        <div class="settings-row">
-            <div class="settings-row-main">
                 <span class="settings-row-label">Experiential state</span>
                 <span class="settings-row-hint">Independent episode appraisal and shared causal workspace</span>
             </div>
@@ -450,70 +436,6 @@ async function toggleRecall() {
     }
 }
 
-function _renderRecallSlmStatus(data) {
-    const select = document.getElementById('recall-slm-select');
-    const status = document.getElementById('recall-slm-status');
-    if (!select || !status) return;
-    if (data.model) select.value = data.model;
-    const parts = [];
-    if (!data.enabled) parts.push('verify off');
-    else if (data.loaded) parts.push('loaded');
-    else if (data.loaded_model) parts.push(`was ${data.loaded_model}`);
-    else parts.push('not loaded');
-    if (data.load_ms != null) parts.push(`${data.load_ms}ms`);
-    if (data.error) parts.push(data.error);
-    status.textContent = parts.join(' · ');
-}
-
-async function loadRecallSlmModel() {
-    try {
-        const res = await fetch('/api/recall-slm-model');
-        const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Failed to load SLM model');
-        _renderRecallSlmStatus(data);
-    } catch (err) {
-        console.error('Failed to load recall SLM model:', err);
-        const status = document.getElementById('recall-slm-status');
-        if (status) status.textContent = 'unavailable';
-    }
-}
-
-async function setRecallSlmModel() {
-    const select = document.getElementById('recall-slm-select');
-    const status = document.getElementById('recall-slm-status');
-    const model = select.value;
-    const prev = select.dataset.prev || model;
-    status.textContent = 'loading…';
-    select.disabled = true;
-    try {
-        const res = await fetch('/api/recall-slm-model', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ model }),
-        });
-        const data = await res.json();
-        if (!res.ok) {
-            throw new Error(data.error || 'Failed to set SLM model');
-        }
-        select.dataset.prev = data.model || model;
-        _renderRecallSlmStatus(data);
-        if (window.towerToast) {
-            window.towerToast(
-                `Recall SLM → ${data.model}${data.load_ms != null ? ` (${data.load_ms}ms)` : ''}`,
-                { type: 'success' }
-            );
-        }
-    } catch (err) {
-        console.error('Failed to set recall SLM model:', err);
-        select.value = prev;
-        if (window.towerToast) window.towerToast(err.message || 'Failed to set SLM model', { type: 'error' });
-        else alert(err.message || 'Failed to set SLM model');
-        status.textContent = 'error';
-    } finally {
-        select.disabled = false;
-    }
-}
-
 function renderExperientialEvidence(data) {
     const dimensions = data.state?.dimensions || {};
     const computed = Object.entries(dimensions)
@@ -660,7 +582,6 @@ async function deleteProviderKey(provider) {
 initTimezoneMenu();
 refreshExperientialState();
 refreshProviderKeys();
-loadRecallSlmModel();
 </script>
 <script>
 async function toggleActivity(target, state) {

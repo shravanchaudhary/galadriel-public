@@ -115,7 +115,7 @@ or truncated, grep the source file the result names.
 
 **Package learnings:** durable content → drawer/KG; when-to-recollect →
 `learn_recall` with quality cues (positives = realistic phrasings, lexical =
-high-precision anchors, negatives = near-misses that also feed Stage-2 SLM
+high-precision anchors, negatives = near-misses that also feed Stage-2 judge
 few-shots, instruction = short pointer). `get_recent_recalls` shows proposed vs
 verified: FP inject → add `matched_chunk` to negatives; Stage-2 reject that
 should have fired → strengthen positives (ambient + silent learn passes).

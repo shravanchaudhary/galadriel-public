@@ -110,10 +110,10 @@ def _traceback_block() -> str:
     return "\n".join([
         "Traceback (most recent call last):",
         '  File "/app/harness/agent.py", line 2613, in _verify_and_select_recalls',
-        "    verified, rejected = await asyncio.to_thread(filter_matches_with_slm, matches)",
-        '  File "/app/harness/recall.py", line 1190, in filter_matches_with_slm',
-        "    ok, reason = verify_recall_candidate_slm(chunk, match, out=enriched)",
-        "RuntimeError: non-finite verify score nan",
+        "    verified, rejected = await filter_matches_with_judge(matches)",
+        '  File "/app/harness/recall.py", line 1190, in filter_matches_with_judge',
+        "    judgment = await judge_applicability(provider, chunk=chunk, candidates=judge_candidates)",
+        "RuntimeError: judge provider unavailable",
     ])
 
 
@@ -466,7 +466,6 @@ def probe_competing() -> None:
     import os
 
     os.environ.setdefault("RECALL_SLM_VERIFY", "1")
-    os.environ.setdefault("RECALL_STAGE2_MODE", "embed")
     from harness import recall as hr
 
     catalog = list(hr._load_system_recalls())

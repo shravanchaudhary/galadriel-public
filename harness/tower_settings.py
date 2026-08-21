@@ -30,7 +30,6 @@ HEADROOM_DOC_ID = "headroom"
 EXPERIENTIAL_STATE_DOC_ID = "experiential_state"
 WORKER_IDLE_DOC_ID = "worker_idle_interval"
 TIMEZONE_DOC_ID = "agent_timezone"
-RECALL_SLM_MODEL_DOC_ID = "recall_slm_model"
 RECALL_ENABLED_DOC_ID = "recall_enabled"
 RECALL_JUDGE_MODEL_DOC_ID = "recall_judge_model"
 COMPACT_THRESHOLD_DOC_ID = "compact_threshold"
@@ -39,10 +38,6 @@ MODEL_RUNTIME_DOC_ID = "model_runtime"
 # Matches scheduler defaults until the user sets Agent time in Configuration.
 DEFAULT_AGENT_TIMEZONE = "Europe/Stockholm"
 _AVAILABLE_TIMEZONES = available_timezones()
-
-# Stage-2 SLM profile keys (must match local_llm.config.RECALL_SLM_MODEL_OPTIONS).
-RECALL_SLM_MODEL_OPTIONS: tuple[str, ...] = ("270m", "1b")
-DEFAULT_RECALL_SLM_MODEL = "1b"
 
 # Judge model for the paid tier — any AGENT_MODEL_OPTIONS entry. Measured on the
 # 208-case leave-one-out set 2026-08-18: flash and flash-lite both P=0.916
@@ -404,51 +399,6 @@ def set_agent_timezone(tz_name: str) -> str:
         upsert=True,
     )
     return tz
-
-
-def normalize_recall_slm_model(key: str | None) -> str | None:
-    """Return a normalized Stage-2 profile key, or None if unsupported."""
-    if not key or not isinstance(key, str):
-        return None
-    k = key.strip().lower()
-    if k in RECALL_SLM_MODEL_OPTIONS:
-        return k
-    return None
-
-
-def get_recall_slm_model() -> str:
-    """Return the persisted Stage-2 SLM profile key (default 1b)."""
-    db = _db()
-    if db is None:
-        return DEFAULT_RECALL_SLM_MODEL
-    doc = db[COLLECTION].find_one(
-        {"_id": _doc_id(RECALL_SLM_MODEL_DOC_ID), "tenant_id": _tenant_id()}
-    )
-    return normalize_recall_slm_model((doc or {}).get("model")) or DEFAULT_RECALL_SLM_MODEL
-
-
-def set_recall_slm_model(key: str) -> str:
-    """Persist Stage-2 SLM profile key. Returns the normalized key."""
-    model = normalize_recall_slm_model(key)
-    if model is None:
-        raise ValueError(
-            f"Unsupported recall SLM model: {key}; "
-            f"expected one of {list(RECALL_SLM_MODEL_OPTIONS)}"
-        )
-    db = _db()
-    if db is None:
-        raise RuntimeError("MONGO_URI / MONGO_DB not configured")
-    db[COLLECTION].replace_one(
-        {"_id": _doc_id(RECALL_SLM_MODEL_DOC_ID)},
-        {
-            "_id": _doc_id(RECALL_SLM_MODEL_DOC_ID),
-            "tenant_id": _tenant_id(),
-            "model": model,
-            "updated_at": datetime.now(timezone.utc),
-        },
-        upsert=True,
-    )
-    return model
 
 
 def normalize_recall_judge_model(model: str | None) -> str | None:

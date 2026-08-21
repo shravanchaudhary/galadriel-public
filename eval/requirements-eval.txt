@@ -1,8 +1,6 @@
 # Benchmark-only dependencies. Do NOT merge into the runtime requirements.
 # Install into the repo venv:  venv/bin/pip install -r eval/requirements-eval.txt
 
-# GGUF inference (already in the repo venv; pinned here for reproducibility)
-llama-cpp-python>=0.3.0
 numpy
 
 # memory measurement

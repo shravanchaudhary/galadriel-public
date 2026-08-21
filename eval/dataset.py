@@ -10,9 +10,7 @@ Each case is a dict:
     }
 
 Sources (all read-only):
-  - heldout:   CASES from scripts/test_slm_recall_verification.py, extracted via
-               ast so we do not import that module (it pulls in harness.recall
-               and its heavy deps).
+  - heldout:   CASES from eval/heldout_cases.py (pure data, no harness import).
   - incident:  real production false-positive injects that MUST stay negative.
   - cue_audit: per-recall positive/negative examples from
                config/system_recalls.json (the Stage-1 cue-audit corpus), plus
@@ -20,18 +18,20 @@ Sources (all read-only):
 
 Leakage note: cue_audit chunks are the recalls' own example sentences. Prompt
 builders that few-shot from a recall's examples must exclude the exact eval
-chunk (run_stage2_eval does this).
+chunk.
 """
 
 from __future__ import annotations
 
-import ast
 import json
+import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SYSTEM_RECALLS_PATH = REPO_ROOT / "config" / "system_recalls.json"
-HELDOUT_SCRIPT_PATH = REPO_ROOT / "scripts" / "test_slm_recall_verification.py"
+
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 # Real incident false positives (production inject logs). Every one of these
 # fired in production and should not have. All expected=False.
@@ -85,19 +85,10 @@ def load_system_recalls() -> dict[str, dict]:
 
 
 def load_heldout_cases() -> list[tuple[str, str, bool]]:
-    """Extract CASES from scripts/test_slm_recall_verification.py without importing it.
+    """Returns list of (recall_id, chunk, expected) from eval/heldout_cases.py."""
+    from eval.heldout_cases import CASES
 
-    Returns list of (recall_id, chunk, expected).
-    """
-    tree = ast.parse(HELDOUT_SCRIPT_PATH.read_text(encoding="utf-8"))
-    for node in ast.walk(tree):
-        if isinstance(node, ast.AnnAssign) and getattr(node.target, "id", None) == "CASES":
-            return list(ast.literal_eval(node.value))
-        if isinstance(node, ast.Assign):
-            for target in node.targets:
-                if getattr(target, "id", None) == "CASES":
-                    return list(ast.literal_eval(node.value))
-    raise RuntimeError(f"CASES not found in {HELDOUT_SCRIPT_PATH}")
+    return list(CASES)
 
 
 def build_dataset() -> list[dict]:

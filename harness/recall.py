@@ -3,7 +3,6 @@ import json
 import logging
 import os
 import re
-import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,10 +30,6 @@ _ENCODER_TYPE = None
 _ROUTER_CACHE = None
 _CACHED_RECALL_IDS = set()
 _ROUTER_DIRTY = False
-_SLM_CLIENT = None
-_SLM_CLIENT_FAILED = False
-_SLM_LOADED_KEY = None
-_SLM_LOCK = threading.RLock()
 
 # Default per-recall Stage-1 positive floor. There is no negative counterpart:
 # near-miss negatives share the same cosine band as true positives, so an absolute
@@ -83,11 +78,6 @@ _FUZZY_MAX_CHUNK_CHARS = 240
 # Segment sources that receive the tool-junk gates (min words / structured).
 _TOOL_SEGMENT_SOURCES = frozenset({"tool_output", "tool_request", "tool"})
 
-# Legacy logit-margin default (experimental RECALL_STAGE2_MODE=logit only).
-_SLM_LOGIT_MARGIN_DEFAULT = 2.0
-# Embedding pos−neg margin (explicit RECALL_STAGE2_MODE=embed only — never an
-# automatic fallback; see recall_system_armed).
-_STAGE2_EMBED_MARGIN_DEFAULT = 0.0
 # A new cue at or above this cosine to an existing one adds no coverage: both
 # stages accept on max(), so a near-duplicate is either never the argmax (dead
 # weight) or a marginal region extension. Skipping it keeps the LRU window for
@@ -1028,97 +1018,9 @@ def generate_recall_fire_text(matched_recalls: list[dict]) -> str:
 
 
 def _slm_verify_enabled() -> bool:
+    """Master Stage-2 on/off switch (name predates the judge; still gates it)."""
     raw = (os.environ.get("RECALL_SLM_VERIFY") or "1").strip().lower()
     return raw not in ("0", "false", "no", "off")
-
-
-def _configured_slm_model_key() -> str:
-    """Active Stage-2 profile key from tower_settings (falls back to default)."""
-    try:
-        from . import tower_settings
-
-        return tower_settings.get_recall_slm_model()
-    except Exception:
-        from local_llm.config import DEFAULT_RECALL_SLM_MODEL
-
-        return DEFAULT_RECALL_SLM_MODEL
-
-
-def _close_slm_client_unlocked() -> None:
-    global _SLM_CLIENT, _SLM_CLIENT_FAILED, _SLM_LOADED_KEY
-    client = _SLM_CLIENT
-    _SLM_CLIENT = None
-    _SLM_LOADED_KEY = None
-    _SLM_CLIENT_FAILED = False
-    if client is not None:
-        try:
-            client.close()
-        except Exception as e:
-            log.warning("Recall SLM close failed: %s", e)
-
-
-def _build_slm_client(model_key: str):
-    """Construct an in-process client for one profile. Raises on hard failures."""
-    from local_llm import LocalGemma, LocalLLMClient, model_path_for, resolve_model_profile
-
-    profile = resolve_model_profile(model_key)
-    path = model_path_for(model_key)
-    if not path.exists():
-        return None, path, profile
-    engine = LocalGemma(
-        model_path=path,
-        ensure=False,
-        model_id=profile["model_id"],
-        hf_repo=profile["hf_repo"],
-    )
-    client = LocalLLMClient(
-        in_process=True,
-        engine=engine,
-        model=profile["model_id"],
-    )
-    return client, path, profile
-
-
-def _get_slm_client():
-    """Lazy LocalLLMClient for Stage-2 verify. One model loaded; None if unavailable."""
-    global _SLM_CLIENT, _SLM_CLIENT_FAILED, _SLM_LOADED_KEY
-    if not _slm_verify_enabled():
-        return None
-    with _SLM_LOCK:
-        if _SLM_CLIENT_FAILED:
-            return None
-        wanted = _configured_slm_model_key()
-        if _SLM_CLIENT is not None and _SLM_LOADED_KEY == wanted:
-            return _SLM_CLIENT
-        if _SLM_CLIENT is not None and _SLM_LOADED_KEY != wanted:
-            log.info(
-                "Recall SLM: configured model changed %s → %s; unloading",
-                _SLM_LOADED_KEY,
-                wanted,
-            )
-            _close_slm_client_unlocked()
-        try:
-            client, path, profile = _build_slm_client(wanted)
-            if client is None:
-                # Do not sticky-fail: image/entrypoint may populate weights later.
-                log.warning(
-                    "Recall SLM verify: GGUF missing at %s; fail-open until available",
-                    path,
-                )
-                return None
-            _SLM_CLIENT = client
-            _SLM_LOADED_KEY = wanted
-            log.info(
-                "Recall SLM loaded model=%s id=%s path=%s",
-                wanted,
-                profile["model_id"],
-                path,
-            )
-            return _SLM_CLIENT
-        except Exception as e:
-            log.warning(f"Recall SLM verify: client init failed ({e}); fail-open")
-            _SLM_CLIENT_FAILED = True
-            return None
 
 
 def _judge_model_for_status() -> str:
@@ -1131,153 +1033,13 @@ def _judge_model_for_status() -> str:
         return tower_settings.DEFAULT_RECALL_JUDGE_MODEL
 
 
-def get_recall_slm_status() -> dict:
-    """Status payload for Tower UI / API."""
-    from local_llm import list_model_profiles
-
-    key = _configured_slm_model_key()
-    with _SLM_LOCK:
-        loaded = _SLM_LOADED_KEY
-        loaded_now = _SLM_CLIENT is not None and loaded == key
-    mode = _stage2_mode()
+def get_recall_status() -> dict:
+    """Status payload for Tower UI / API (Stage-2 is judge-only)."""
     return {
-        "model": key,
-        "loaded_model": loaded,
-        "loaded": loaded_now,
         "enabled": _slm_verify_enabled(),
-        "options": list_model_profiles(),
-        "stage2_mode": mode,
-        "stage2_model_active": mode == "logit",
-        "judge_model": _judge_model_for_status() if mode == "judge" else None,
+        "judge_model": _judge_model_for_status(),
         "armed": recall_system_armed(),
     }
-
-
-def set_recall_slm_model(model_key: str, *, preload: bool = True) -> dict:
-    """Switch Stage-2 model. With preload=True, persist only after a successful load.
-
-    Only one GGUF is resident at a time. On preload failure the previous model
-    stays configured and is best-effort reloaded (unload-then-load to fit 4GB
-    tenants). Returns status including load_ms.
-    """
-    global _SLM_CLIENT, _SLM_CLIENT_FAILED, _SLM_LOADED_KEY
-    from . import tower_settings
-
-    model = tower_settings.normalize_recall_slm_model(model_key)
-    if model is None:
-        raise ValueError(
-            f"Unsupported recall SLM model: {model_key}; "
-            f"expected one of {list(tower_settings.RECALL_SLM_MODEL_OPTIONS)}"
-        )
-
-    load_ms = None
-    error = None
-    with _SLM_LOCK:
-        # Config-only: persist immediately; unload mismatch so the next verify
-        # lazy-loads the new key.
-        if not preload or not _slm_verify_enabled():
-            saved = tower_settings.set_recall_slm_model(model)
-            if _SLM_LOADED_KEY != saved:
-                _close_slm_client_unlocked()
-            status = get_recall_slm_status()
-            status["load_ms"] = load_ms
-            return status
-
-        # Already resident — just ensure Mongo matches.
-        if _SLM_CLIENT is not None and _SLM_LOADED_KEY == model:
-            tower_settings.set_recall_slm_model(model)
-            status = get_recall_slm_status()
-            status["load_ms"] = 0.0
-            return status
-
-        previous_loaded = _SLM_LOADED_KEY
-        # Free RAM before loading the replacement (important on 4GB tenants).
-        if _SLM_LOADED_KEY != model:
-            _close_slm_client_unlocked()
-
-        t0 = time.perf_counter()
-        # Clear sticky fail so a previous hard fail can recover after bake/swap.
-        _SLM_CLIENT_FAILED = False
-        try:
-            client, path, profile = _build_slm_client(model)
-            if client is None:
-                error = f"GGUF missing at {path}"
-            else:
-                _SLM_CLIENT = client
-                _SLM_LOADED_KEY = model
-                tower_settings.set_recall_slm_model(model)
-                load_ms = round((time.perf_counter() - t0) * 1000.0, 1)
-                log.info(
-                    "Recall SLM hot-swap model=%s id=%s load_ms=%.1f",
-                    model,
-                    profile["model_id"],
-                    load_ms,
-                )
-        except Exception as e:
-            error = str(e)
-            log.warning("Recall SLM hot-swap failed: %s", e)
-
-        if error:
-            # Do not persist the failed key. Reload the previous resident model.
-            if previous_loaded:
-                try:
-                    restored, _, _ = _build_slm_client(previous_loaded)
-                    if restored is not None:
-                        _SLM_CLIENT = restored
-                        _SLM_LOADED_KEY = previous_loaded
-                        _SLM_CLIENT_FAILED = False
-                        log.info(
-                            "Recall SLM restored previous model=%s after failed swap",
-                            previous_loaded,
-                        )
-                    else:
-                        # Missing weights must not sticky-fail the process.
-                        _SLM_CLIENT_FAILED = False
-                except Exception as restore_e:
-                    log.warning(
-                        "Recall SLM restore after failed swap failed: %s", restore_e
-                    )
-                    _SLM_CLIENT_FAILED = True
-            elif "GGUF missing" in error:
-                _SLM_CLIENT_FAILED = False
-            else:
-                _SLM_CLIENT_FAILED = True
-
-    status = get_recall_slm_status()
-    status["load_ms"] = load_ms
-    if error:
-        status["error"] = error
-    return status
-
-
-def _slm_logit_margin() -> float:
-    raw = (os.environ.get("RECALL_SLM_MARGIN") or "").strip()
-    if not raw:
-        return _SLM_LOGIT_MARGIN_DEFAULT
-    try:
-        return float(raw)
-    except ValueError:
-        return _SLM_LOGIT_MARGIN_DEFAULT
-
-
-def _stage2_mode() -> str:
-    """Stage-2 backend: judge (default), embed, or experimental logit.
-
-    `judge` = Gemini batched entailment.
-    `embed` / `logit` = test/dev only.
-    """
-    raw = (os.environ.get("RECALL_STAGE2_MODE") or "").strip().lower()
-    return raw if raw in ("embed", "logit", "judge") else "judge"
-
-
-def _stage2_embed_margin() -> float:
-    raw = (os.environ.get("RECALL_STAGE2_MARGIN") or "").strip()
-    if not raw:
-        return _STAGE2_EMBED_MARGIN_DEFAULT
-    try:
-        return float(raw)
-    except ValueError:
-        return _STAGE2_EMBED_MARGIN_DEFAULT
 
 
 def _stage2_max_candidates() -> int:
@@ -1306,14 +1068,12 @@ _DISARM_LOGGED = False
 def recall_system_armed() -> bool:
     """Master switch: a recall system without its verifier must not run at all.
 
-    - judge: armed when a Gemini key is present; otherwise disarm (fail-closed).
-    - embed/logit and RECALL_SLM_VERIFY=0: deliberate operator choices; stay armed.
+    Armed when a Gemini key is present; otherwise disarm (fail-closed).
+    RECALL_SLM_VERIFY=0 is a deliberate operator choice to disable Stage-2
+    entirely; that path stays armed since there is nothing to verify.
     """
     global _DISARM_LOGGED
     if not _slm_verify_enabled():
-        return True
-    mode = _stage2_mode()
-    if mode in ("embed", "logit"):
         return True
     armed = bool((os.environ.get("GEMINI_API_KEY") or "").strip())
     if armed:
@@ -1372,224 +1132,6 @@ def _is_stage2_junk(chunk: str) -> bool:
     if re.match(r"Written \d+ bytes to ", text):
         return True
     return False
-
-
-# Kept for experimental RECALL_STAGE2_MODE=logit only. Tiny ITs latch onto the
-# favored completion token and do not judge the question (hola/bola repro).
-_SLM_GLOBAL_HARD_NEGATIVES: tuple[str, ...] = (
-    "<!doctype html>",
-    "<head>",
-    "--bg: #ffffff;",
-    "read_file",
-    "write_file",
-    "Written 7 bytes to state/worker_control.md",
-    "hello how are you today",
-)
-
-
-def _build_slm_verify_prompt(chunk: str, recall: dict) -> str:
-    """Few-shot YES/NO steering-value prompt (logit scoring path).
-
-    The question is framed as steering value, not surface match: would
-    injecting this rule's instruction lead the agent to a better response —
-    one more likely what the user (or the agent's own current task) wants?
-    """
-    instruction = (recall.get("instruction") or "").strip()
-    lines = [
-        "An agent is mid-conversation. TEXT is what the agent just saw. RULE is a",
-        "learned instruction that may be injected as a hint. Answer YES or NO:",
-        "would injecting RULE now lead the agent to a better response — one more",
-        "likely what the user or the agent's own current task wants?",
-        "YES only if TEXT is genuinely about RULE's situation.",
-        "NO for HTML/CSS markup, bare tool names, file-write acks, tiny fragments,",
-        "or chatter where RULE would only distract.",
-        f"RULE: {instruction[:160]}",
-    ]
-    for ex in _SLM_GLOBAL_HARD_NEGATIVES:
-        lines.append(f"TEXT: {ex}\nAnswer: NO")
-    for ex in (recall.get("positive_examples") or [])[:3]:
-        if isinstance(ex, str) and ex.strip():
-            lines.append(f"TEXT: {ex.strip()[:160]}\nAnswer: YES")
-    for ex in (recall.get("negative_examples") or [])[:3]:
-        if isinstance(ex, str) and ex.strip():
-            if ex.strip() in _SLM_GLOBAL_HARD_NEGATIVES:
-                continue
-            lines.append(f"TEXT: {ex.strip()[:160]}\nAnswer: NO")
-    lines.append(f"TEXT: {chunk.strip()[:400]}\nAnswer:")
-    return "\n".join(lines)
-
-
-def verify_recall_candidate_embed(
-    chunk: str,
-    recall: dict,
-    *,
-    margin: float | None = None,
-    encoder=None,
-    out: dict | None = None,
-) -> tuple[bool, str]:
-    """Stage-2 via embedding pos−neg margin (explicit RECALL_STAGE2_MODE=embed).
-
-    Test/dev backend only — it blocked 0/7 production FP incidents, so it is
-    never used as an automatic fallback for the judge. Re-scores with the same
-    FastEmbed encoder used at Stage-1: accept when max(pos) − max(neg) > margin.
-    """
-    if not _slm_verify_enabled():
-        return True, "stage2_disabled"
-
-    instruction = (recall.get("instruction") or "").strip()
-    text = _strip_channel_prefix(chunk)
-    if not text or not instruction:
-        return True, "stage2_skip_empty"
-
-    if _is_stage2_junk(text):
-        return False, "stage2_junk"
-
-    positives = recall.get("positive_examples") or []
-    negatives = recall.get("negative_examples") or []
-    if not positives:
-        return True, "stage2_no_positives"
-
-    try:
-        enc = encoder if encoder is not None else get_encoder()
-        pos_hit = _argmax_cosine(enc, text, positives)
-        pos_score = None if pos_hit is None else pos_hit[0]
-        neg_score = _max_cosine(enc, text, negatives) if negatives else None
-    except Exception as e:
-        log.warning(
-            "Recall Stage-2 embed error for %s (%s); fail-open",
-            recall.get("recall_id"),
-            e,
-        )
-        return True, f"stage2_error:{type(e).__name__}"
-
-    if pos_score is None:
-        return True, "stage2_pos_unscored"
-
-    threshold = _stage2_embed_margin() if margin is None else float(margin)
-    if neg_score is None:
-        ok = pos_score > threshold  # no negatives → require some positive mass
-        reason = (
-            f"embed_pos:{pos_score:.3f}>{threshold:.3f}"
-            if ok
-            else f"embed_pos:{pos_score:.3f}<={threshold:.3f}"
-        )
-        if ok and out is not None:
-            out["matched_example"] = pos_hit[1]
-        return ok, reason
-
-    diff = float(pos_score) - float(neg_score)
-    ok = diff > threshold
-    reason = (
-        f"embed_margin:{diff:+.3f}>{threshold:.3f}"
-        f"(pos={pos_score:.3f},neg={neg_score:.3f})"
-        if ok
-        else f"embed_margin:{diff:+.3f}<={threshold:.3f}"
-        f"(pos={pos_score:.3f},neg={neg_score:.3f})"
-    )
-    if out is not None:
-        out["stage2_negative_score"] = round(float(neg_score), 4)
-        if ok:
-            out["matched_example"] = pos_hit[1]
-    return ok, reason
-
-
-def verify_recall_candidate_slm(
-    chunk: str,
-    recall: dict,
-    *,
-    client=None,
-    margin: float | None = None,
-    out: dict | None = None,
-) -> tuple[bool, str]:
-    """Stage-2 intent filter for the sync test/dev backends. Returns (ok, reason).
-
-    The production path (`RECALL_STAGE2_MODE=judge`) is the async batched
-    `filter_matches_with_judge`; callers only reach this dispatcher for the
-    explicit `embed` / `logit` test modes.
-    """
-    mode = _stage2_mode()
-    if mode != "logit":
-        return verify_recall_candidate_embed(chunk, recall, margin=margin, out=out)
-
-    if not _slm_verify_enabled():
-        return True, "slm_disabled"
-
-    instruction = (recall.get("instruction") or "").strip()
-    text = _strip_channel_prefix(chunk)
-    if not text or not instruction:
-        return True, "slm_skip_empty"
-
-    if _is_stage2_junk(text):
-        return False, "stage2_junk"
-
-    llm = client if client is not None else _get_slm_client()
-    if llm is None:
-        return True, "slm_unavailable"
-
-    prompt = _build_slm_verify_prompt(text, recall)
-    threshold = _slm_logit_margin() if margin is None else float(margin)
-    try:
-        diff = float(llm.yes_no_logit_margin(prompt))
-        ok = diff > threshold
-        reason = (
-            f"slm_logit:{diff:+.2f}>{threshold:.2f}"
-            if ok
-            else f"slm_logit:{diff:+.2f}<={threshold:.2f}"
-        )
-        return ok, reason
-    except Exception as e:
-        log.warning(
-            "Recall SLM verify error for %s (%s); fail-open",
-            recall.get("recall_id"),
-            e,
-        )
-        return True, f"slm_error:{type(e).__name__}"
-
-
-def filter_matches_with_slm(matches: list[dict], *, client=None) -> tuple[list[dict], list[dict]]:
-    """Verify Stage-1 matches synchronously (embed/logit test modes). Returns (verified, rejected).
-
-    Cap at _STAGE2_MAX_CANDIDATES. Production uses `filter_matches_with_judge`
-    (async, one batched call); this is the sync API used by Tower test + eval
-    when an explicit test mode is set.
-    """
-    verified: list[dict] = []
-    rejected: list[dict] = []
-    cap = _stage2_max_candidates()
-    ordered = sorted(
-        matches,
-        key=lambda m: _as_float_score(m.get("positive_score")) or 0.0,
-        reverse=True,
-    )
-    for match in ordered[cap:]:
-        enriched = dict(match)
-        enriched["slm_verified"] = False
-        enriched["slm_reason"] = f"stage2_candidate_cap:{cap}"
-        rejected.append(enriched)
-        log.info(
-            "[Stage2 Skip] route=%r reason=candidate_cap(%d) pos=%s chunk=%r",
-            match.get("recall_id"), cap, match.get("positive_score"),
-            (match.get("matched_chunk") or "")[:100],
-        )
-    for match in ordered[:cap]:
-        chunk = match.get("matched_chunk") or ""
-        enriched = dict(match)
-        ok, reason = verify_recall_candidate_slm(
-            chunk, match, client=client, out=enriched
-        )
-        enriched["slm_verified"] = bool(ok)
-        enriched["slm_reason"] = reason
-        if ok:
-            verified.append(enriched)
-        else:
-            rejected.append(enriched)
-            log.info(
-                "[Stage2 Reject] route=%r reason=%s chunk=%r",
-                match.get("recall_id"),
-                reason,
-                (chunk or "")[:100],
-            )
-    return verified, rejected
 
 
 _JUDGE_PROVIDER_CACHE: dict[str, object] = {}

@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Audit recall cue quality on system recalls (Stage-1 + Stage-2 embed).
+"""Audit recall cue quality on system recalls (Stage-1 + a local embed margin).
 
 Contract (positive-only Stage-1):
   - Stage-1 is a high-recall proposer: positives must propose their recall_id,
     lexical cues must hard-hit. Negatives are NOT gated at Stage-1.
   - Negative holdout is an end-to-end property: a negative "leaks" only if
-    Stage-1 proposes it AND Stage-2 (embed margin) verifies it.
+    Stage-1 proposes it AND a local pos−neg cosine margin also clears it.
+    This stands in for the judge (production Stage-2) so the audit stays
+    fast and offline; it does not exercise the judge itself.
   - Chunks under the min-word gate must never propose semantically
     (lexical cues still may).
 
@@ -23,18 +25,19 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-# Embed-only Stage-2: no GGUF required (shares the FastEmbed encoder).
 os.environ["RECALL_SLM_VERIFY"] = "1"
-os.environ["RECALL_STAGE2_MODE"] = "embed"
 
 from harness.recall import (  # noqa: E402
     DEFAULT_POSITIVE_THRESHOLD,
     _MIN_SEMANTIC_SCAN_WORDS,
     _load_system_recalls,
+    _max_cosine,
     generate_recall_fire_text,
+    get_encoder,
     scan_text_for_recalls,
-    verify_recall_candidate_embed,
 )
+
+_NEG_MARGIN = 0.0  # matches the old test-only Stage-2 embed default
 
 
 def _assert(cond: bool, msg: str) -> None:
@@ -47,12 +50,21 @@ def _stage1_ids(text: str, recalls: list[dict]) -> set[str]:
 
 
 def _verified_ids(text: str, recalls: list[dict]) -> set[str]:
-    """End-to-end: Stage-1 propose, then Stage-2 embed verify."""
+    """End-to-end: Stage-1 propose, then a local pos−neg cosine margin re-score."""
+    encoder = get_encoder()
     out = set()
     for m in scan_text_for_recalls(text, recalls):
-        ok, _reason = verify_recall_candidate_embed(m.get("matched_chunk") or text, m)
-        if ok and m.get("recall_id"):
-            out.add(m["recall_id"])
+        rid = m.get("recall_id")
+        positives = m.get("positive_examples") or []
+        if not rid or not positives:
+            continue
+        chunk = m.get("matched_chunk") or text
+        pos_score = _max_cosine(encoder, chunk, positives)
+        if pos_score is None:
+            continue
+        neg_score = _max_cosine(encoder, chunk, m.get("negative_examples") or [])
+        if neg_score is None or pos_score - neg_score > _NEG_MARGIN:
+            out.add(rid)
     return out
 
 

@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """End-to-end recall eval: Stage-1 propose + Stage-2 verify on the real path.
 
-Drives `scan_text_for_recalls` then `filter_matches_with_slm` rather than scoring
-(chunk, recall) pairs in isolation. Attributes every false negative to either
-candidate selection (Stage-1 miss) or verification (Stage-2 reject). Leave-one-out
-drops the exact eval chunk from positive_examples so cue_audit self-matches
-cannot inflate results.
+Drives `scan_text_for_recalls` then `filter_matches_with_judge` rather than
+scoring (chunk, recall) pairs in isolation. Attributes every false negative to
+either candidate selection (Stage-1 miss) or verification (Stage-2 reject).
+Leave-one-out drops the exact eval chunk from positive_examples so cue_audit
+self-matches cannot inflate results. Requires GEMINI_API_KEY (the judge's
+production provider).
 
 Usage:
-  RECALL_STAGE2_MODE=embed venv/bin/python -m eval.run_e2e_eval
-  RECALL_STAGE2_MODE=judge venv/bin/python -m eval.run_e2e_eval --leave-one-out
+  venv/bin/python -m eval.run_e2e_eval --leave-one-out
   venv/bin/python -m eval.run_e2e_eval --metamorphic-only
 """
 
@@ -29,9 +29,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-# Stage-1-capable without a judge key unless the operator asks for judge.
 os.environ.setdefault("RECALL_SLM_VERIFY", "1")
-os.environ.setdefault("RECALL_STAGE2_MODE", "embed")
 
 from eval.common import (  # noqa: E402
     classification_metrics,
@@ -156,17 +154,11 @@ def _attach_dataset_dicts(cases: list[dict], recalls: dict[str, dict]) -> list[d
 
 
 def _verify(proposed: list[dict]) -> tuple[list[dict], list[dict]]:
-    """Stage-2 via the same dispatch the agent uses, so `judge` is really tested."""
-    from harness.recall import (
-        _stage2_mode,
-        filter_matches_with_judge,
-        filter_matches_with_slm,
-    )
+    """Stage-2 via the same judge dispatch the agent uses."""
+    from harness.recall import filter_matches_with_judge
 
     if not proposed:
         return [], []
-    if _stage2_mode() != "judge":
-        return filter_matches_with_slm(proposed)
     return asyncio.run(filter_matches_with_judge(proposed, provider=_judge_provider()))
 
 
@@ -249,8 +241,7 @@ def build_markdown(payload: dict) -> str:
         f"(tp={m['tp']} fp={m['fp']} tn={m['tn']} fn={m['fn']})"
     )
     lines.append("")
-    lines.append(f"leave_one_out={payload['config']['leave_one_out']}  "
-                 f"mode={payload['config']['stage2_mode']}")
+    lines.append(f"leave_one_out={payload['config']['leave_one_out']}")
     lines.append("")
     by_src = payload.get("metrics_by_source") or {}
     if by_src:
@@ -297,7 +288,7 @@ def main() -> int:
 
     stats = dataset_stats(cases)
     print(f"dataset: {json.dumps(stats)}")
-    print(f"stage2_mode={os.environ.get('RECALL_STAGE2_MODE')!r} leave_one_out={args.leave_one_out}")
+    print(f"leave_one_out={args.leave_one_out}")
 
     rows: list[dict] = []
     for i, case in enumerate(cases):
@@ -322,7 +313,6 @@ def main() -> int:
         "dataset": stats,
         "config": {
             "leave_one_out": bool(args.leave_one_out),
-            "stage2_mode": os.environ.get("RECALL_STAGE2_MODE"),
             "metamorphic_only": bool(args.metamorphic_only),
         },
         "metrics": metrics,

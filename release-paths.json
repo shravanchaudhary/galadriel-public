@@ -33,8 +33,7 @@
       "main.py",
       "harness/**",
       "tower/**",
-      "*_bot/**",
-      "local_llm/**"
+      "*_bot/**"
     ],
     "excludes": [
       "tower/control_app.py",
