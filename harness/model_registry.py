@@ -10,10 +10,11 @@ clients. Because every provider returns responses in the same shape (see
 harness/providers/base.py), switching a task to a different provider requires
 NO other code changes: just flip the entry below.
 
-Default provider is Gemini. Claude and the open models both run on Bedrock now
-(Claude via bedrock-runtime, the rest via bedrock-mantle) and share one
-credential, `AWS_BEARER_TOKEN_BEDROCK`. Runtime Tower model switches go through
-`provider_for_model()`, so changing model mid-chat also changes provider.
+Default provider is Bedrock Mantle (GLM-5). Claude and the open models both run
+on Bedrock (Claude via bedrock-runtime, the rest via bedrock-mantle) and share
+one credential, `AWS_BEARER_TOKEN_BEDROCK`. Runtime Tower model switches go
+through `provider_for_model()`, so changing model mid-chat also changes
+provider.
 """
 
 import os
@@ -27,22 +28,22 @@ from .model_catalog import (
 )
 from .providers import BaseModelProvider
 
-DEFAULT_PROVIDER = GEMINI
+DEFAULT_PROVIDER = BEDROCK_MANTLE
 
 # ─────────────────────────────────────────────────────────────────────
 # Task → (provider, model). This is the ONLY place models are chosen.
 # ─────────────────────────────────────────────────────────────────────
 TASKS: dict[str, tuple[str, str]] = {
     # The main conversational agent — tool use, streaming, the full loop.
-    "agent": (GEMINI, "gemini-3.1-pro-preview"),
+    "agent": (BEDROCK_MANTLE, "glm-5"),
     # The cheap summarizer /compact uses to shrink old tool results.
-    "compaction": (GEMINI, "gemini-2.5-flash"),
+    "compaction": (BEDROCK_MANTLE, "glm-5"),
     # Lightweight structured gate for shared Slack channel replies.
-    "slack_reply_gate": (GEMINI, "gemini-2.5-flash"),
+    "slack_reply_gate": (BEDROCK_MANTLE, "glm-5"),
     # One-shot short title for a new conversation run.
-    "chat_title": (GEMINI, "gemini-2.5-flash"),
+    "chat_title": (BEDROCK_MANTLE, "glm-5"),
     # Decomposes freeform `learn` content into kg/drawer/recall artifacts.
-    "learn_packaging": (GEMINI, "gemini-2.5-flash"),
+    "learn_packaging": (BEDROCK_MANTLE, "glm-5"),
 }
 
 # Bedrock equivalents — drop any of these into TASKS to move a task onto Claude

@@ -12,8 +12,13 @@ COLLECTION = "provider_credentials"
 SUPPORTED_PROVIDERS = frozenset(
     {"bedrock_anthropic", "bedrock_mantle", "gemini"}
 )
-# Providers users can save BYOM keys for in Tower. Others are Coming Soon.
-BYOM_PROVIDERS = frozenset({"gemini"})
+# Providers shown (and BYOM-savable) in the Tower UI. "bedrock" is a single
+# entry covering both bedrock_anthropic and bedrock_mantle, which share one
+# credential (AWS_BEARER_TOKEN_BEDROCK) — see `_STORAGE_PROVIDER` below.
+UI_PROVIDERS = frozenset({"gemini", "bedrock"})
+BYOM_PROVIDERS = frozenset({"gemini", "bedrock"})
+# Internal provider ids that alias to a shared UI/storage credential.
+_STORAGE_PROVIDER = {"bedrock_anthropic": "bedrock", "bedrock_mantle": "bedrock"}
 _sync_db = None
 
 
@@ -44,7 +49,8 @@ def _kms():
 
 def _provider(value: str) -> str:
     provider = (value or "").strip().lower()
-    if provider not in SUPPORTED_PROVIDERS:
+    provider = _STORAGE_PROVIDER.get(provider, provider)
+    if provider not in SUPPORTED_PROVIDERS and provider not in UI_PROVIDERS:
         raise ValueError("Unsupported model provider")
     return provider
 
@@ -113,7 +119,7 @@ def delete(provider: str, *, db=None) -> bool:
 
 def _env_key_for(provider: str) -> str | None:
     """Plaintext API key from process env, if present."""
-    if provider in ("bedrock_anthropic", "bedrock_mantle"):
+    if provider in ("bedrock", "bedrock_anthropic", "bedrock_mantle"):
         # Both Bedrock providers authenticate with the same Bedrock API key.
         return (os.environ.get("AWS_BEARER_TOKEN_BEDROCK") or "").strip() or None
     if provider == "gemini":
@@ -144,7 +150,7 @@ def list_summaries(*, db=None) -> list[dict]:
     except Exception:
         # Local / env-only deployments still report configured keys below.
         pass
-    for provider in sorted(SUPPORTED_PROVIDERS):
+    for provider in sorted(UI_PROVIDERS):
         if provider in by_provider:
             continue
         secret = _env_key_for(provider)
@@ -165,7 +171,7 @@ def list_summaries(*, db=None) -> list[dict]:
                 "source": None,
                 "updated_at": None,
             }
-    return [by_provider[p] for p in sorted(SUPPORTED_PROVIDERS)]
+    return [by_provider[p] for p in sorted(UI_PROVIDERS)]
 
 
 def summary(document: dict, *, source: str = "byom") -> dict:

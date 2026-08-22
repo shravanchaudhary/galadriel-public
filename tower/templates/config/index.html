@@ -92,12 +92,12 @@
         <div class="settings-row provider-keys-block" id="model-provider">
             <div class="settings-row-main">
                 <span class="settings-row-label">Model providers</span>
-                <span class="settings-row-hint">Platform Gemini is used by default. Add your own key to override.</span>
+                <span class="settings-row-hint">Platform keys are used by default. Add your own key to override.</span>
             </div>
             <div class="provider-key-list">
                 <div class="provider-key-item" data-provider="gemini">
                     <div class="provider-key-item-head">
-                        <span class="provider-key-name">Gemini</span>
+                        <span class="provider-key-name">Google Vertex AI</span>
                         <span class="settings-row-hint" id="provider-key-status-gemini">Checking…</span>
                     </div>
                     <div class="settings-inline-form">
@@ -109,10 +109,18 @@
                                 onclick="deleteProviderKey('gemini')">Remove</button>
                     </div>
                 </div>
-                <div class="provider-key-item provider-key-item-soon" data-provider="anthropic">
+                <div class="provider-key-item" data-provider="bedrock">
                     <div class="provider-key-item-head">
-                        <span class="provider-key-name">Anthropic</span>
-                        <span class="settings-row-hint">Coming soon</span>
+                        <span class="provider-key-name">AWS Bedrock</span>
+                        <span class="settings-row-hint" id="provider-key-status-bedrock">Checking…</span>
+                    </div>
+                    <div class="settings-inline-form">
+                        <input type="password" id="provider-key-input-bedrock" autocomplete="off"
+                               placeholder="Paste your API key to override">
+                        <button type="button" class="btn btn-small" id="provider-key-save-bedrock"
+                                onclick="saveProviderKey('bedrock')">Save</button>
+                        <button type="button" class="btn btn-small btn-secondary" id="provider-key-remove-bedrock"
+                                onclick="deleteProviderKey('bedrock')">Remove</button>
                     </div>
                 </div>
                 <div class="provider-key-item provider-key-item-soon" data-provider="openai">
@@ -504,34 +512,38 @@ function hasPlatformProviderKey(provider) {
     return !!(row && row.configured && row.source === 'env');
 }
 
+const BYOM_PROVIDER_IDS = ['gemini', 'bedrock'];
+
 function updateProviderKeyUI() {
-    const status = document.getElementById('provider-key-status-gemini');
-    const input = document.getElementById('provider-key-input-gemini');
-    const saveBtn = document.getElementById('provider-key-save-gemini');
-    const removeBtn = document.getElementById('provider-key-remove-gemini');
-    if (!status || !input || !saveBtn || !removeBtn) return;
+    for (const provider of BYOM_PROVIDER_IDS) {
+        const status = document.getElementById(`provider-key-status-${provider}`);
+        const input = document.getElementById(`provider-key-input-${provider}`);
+        const saveBtn = document.getElementById(`provider-key-save-${provider}`);
+        const removeBtn = document.getElementById(`provider-key-remove-${provider}`);
+        if (!status || !input || !saveBtn || !removeBtn) continue;
 
-    const userKey = hasUserProviderKey('gemini');
-    const platformKey = hasPlatformProviderKey('gemini');
-    removeBtn.disabled = !userKey;
-    input.value = '';
+        const userKey = hasUserProviderKey(provider);
+        const platformKey = hasPlatformProviderKey(provider);
+        removeBtn.disabled = !userKey;
+        input.value = '';
 
-    if (userKey) {
-        const masked = providerKeyState.gemini.masked || '****';
-        status.textContent = `${masked} · using your API key`;
-        status.classList.remove('muted');
-        status.classList.add('status-on');
-        input.placeholder = 'Paste a new key to replace';
-    } else if (platformKey) {
-        status.textContent = 'Configured by default';
-        status.classList.add('muted');
-        status.classList.remove('status-on');
-        input.placeholder = 'Paste your API key to override';
-    } else {
-        status.textContent = 'No key configured — add your API key';
-        status.classList.add('muted');
-        status.classList.remove('status-on');
-        input.placeholder = 'Paste your API key';
+        if (userKey) {
+            const masked = providerKeyState[provider].masked || '****';
+            status.textContent = `${masked} · using your API key`;
+            status.classList.remove('muted');
+            status.classList.add('status-on');
+            input.placeholder = 'Paste a new key to replace';
+        } else if (platformKey) {
+            status.textContent = 'Configured by default';
+            status.classList.add('muted');
+            status.classList.remove('status-on');
+            input.placeholder = 'Paste your API key to override';
+        } else {
+            status.textContent = 'No key configured — add your API key';
+            status.classList.add('muted');
+            status.classList.remove('status-on');
+            input.placeholder = 'Paste your API key';
+        }
     }
 }
 
@@ -547,11 +559,11 @@ async function refreshProviderKeys() {
 }
 
 async function saveProviderKey(provider) {
-    if (provider !== 'gemini') {
+    if (!BYOM_PROVIDER_IDS.includes(provider)) {
         if (window.towerToast) window.towerToast('Coming soon', { type: 'error' });
         return;
     }
-    const input = document.getElementById('provider-key-input-gemini');
+    const input = document.getElementById(`provider-key-input-${provider}`);
     const response = await fetch(`/api/provider-keys/${provider}`, {
         method: 'PUT',
         headers: {'Content-Type': 'application/json'},
@@ -568,7 +580,7 @@ async function saveProviderKey(provider) {
 }
 
 async function deleteProviderKey(provider) {
-    if (provider !== 'gemini' || !hasUserProviderKey(provider)) return;
+    if (!BYOM_PROVIDER_IDS.includes(provider) || !hasUserProviderKey(provider)) return;
     const response = await fetch(`/api/provider-keys/${provider}`, {method: 'DELETE'});
     const data = await response.json();
     if (!response.ok) {

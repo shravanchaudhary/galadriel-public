@@ -213,14 +213,14 @@ def set_agent_model(model: str) -> None:
 
 
 def get_headroom_enabled() -> bool:
-    """Return whether in-agent Headroom compression is enabled (default False)."""
+    """Return whether in-agent Headroom compression is enabled (default True)."""
     db = _db()
     if db is None:
-        return False
+        return True
     doc = db[COLLECTION].find_one(
         {"_id": _doc_id(HEADROOM_DOC_ID), "tenant_id": _tenant_id()}
     )
-    return bool((doc or {}).get("enabled", False))
+    return bool((doc or {}).get("enabled", True))
 
 
 def set_headroom_enabled(enabled: bool) -> None:
