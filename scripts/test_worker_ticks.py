@@ -13,7 +13,7 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -165,6 +165,24 @@ class WorkerBoardTests(unittest.TestCase):
             followed_detail = self.client.get("/worker-runs/tick-1", follow_redirects=True)
             self.assertEqual(followed_detail.status_code, 200)
         self.assertEqual(self.client.get("/worker-runs/missing").status_code, 404)
+
+
+class TickListProjectionTests(unittest.TestCase):
+    def test_recent_ticks_uses_inclusion_projection(self):
+        ticks = MagicMock()
+        cursor = MagicMock()
+        ticks.find.return_value = cursor
+        cursor.sort.return_value = cursor
+        cursor.skip.return_value = cursor
+        cursor.limit.return_value = []
+        with patch.object(worker_tick_store, "_sync_db", return_value={
+            worker_tick_store.TICKS_COLLECTION: ticks,
+        }), patch.object(worker_tick_store, "ensure_list_indexes"):
+            worker_tick_store.recent_ticks(26, channel_id="worker", skip=75)
+        ticks.find.assert_called_once()
+        self.assertEqual(ticks.find.call_args[0][1], worker_tick_store._LIST_PROJECTION)
+        self.assertNotIn("user_prompt", worker_tick_store._LIST_PROJECTION)
+        self.assertNotIn("system_prompt_versions", worker_tick_store._LIST_PROJECTION)
 
 
 if __name__ == "__main__":

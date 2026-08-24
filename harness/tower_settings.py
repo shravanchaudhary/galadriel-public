@@ -5,6 +5,7 @@ one sync pymongo client for reads/writes from Flask routes and agent startup.
 """
 
 import os
+import time
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo, available_timezones
 
@@ -128,6 +129,8 @@ AGENT_MODEL_OPTIONS: tuple[str, ...] = model_catalog.agent_options()
 JUDGE_MODEL_OPTIONS: tuple[str, ...] = model_catalog.judge_options()
 
 _sync_db = None
+_timezone_cache: tuple[float, str] | None = None
+_TIMEZONE_TTL_SEC = 30.0
 
 
 def _tenant_id() -> str:
@@ -351,14 +354,26 @@ def _valid_timezone(name: str | None) -> str | None:
 
 
 def get_agent_timezone() -> str:
-    """Return the persisted agent display/operating timezone (IANA name)."""
+    """Return the persisted agent display/operating timezone (IANA name).
+
+    Cached: list renderers call this per row (bucket + time label), so an
+    uncached read costs one Mongo round-trip per cell.
+    """
+    global _timezone_cache
+    if _timezone_cache is not None:
+        cached_at, cached_tz = _timezone_cache
+        if time.monotonic() - cached_at < _TIMEZONE_TTL_SEC:
+            return cached_tz
     db = _db()
     if db is None:
         return DEFAULT_AGENT_TIMEZONE
     doc = db[COLLECTION].find_one(
-        {"_id": _doc_id(TIMEZONE_DOC_ID), "tenant_id": _tenant_id()}
+        {"_id": _doc_id(TIMEZONE_DOC_ID), "tenant_id": _tenant_id()},
+        {"timezone": 1, "_id": 0},
     )
-    return _valid_timezone((doc or {}).get("timezone")) or DEFAULT_AGENT_TIMEZONE
+    tz = _valid_timezone((doc or {}).get("timezone")) or DEFAULT_AGENT_TIMEZONE
+    _timezone_cache = (time.monotonic(), tz)
+    return tz
 
 
 def agent_zoneinfo() -> ZoneInfo:
@@ -382,6 +397,7 @@ def agent_today() -> str:
 
 def set_agent_timezone(tz_name: str) -> str:
     """Persist the agent timezone. Returns the normalized IANA name."""
+    global _timezone_cache
     tz = _valid_timezone(tz_name)
     if tz is None:
         raise ValueError(f"Unsupported timezone: {tz_name}")
@@ -398,6 +414,7 @@ def set_agent_timezone(tz_name: str) -> str:
         },
         upsert=True,
     )
+    _timezone_cache = (time.monotonic(), tz)
     return tz
 
 

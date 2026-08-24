@@ -351,29 +351,31 @@ def _channel_query(channel_id: str | None) -> dict:
     return {"channel_id": channel_id}
 
 
-def ticks_for_day(day_cet: str, channel_id: str | None = None) -> list[dict]:
-    db = _sync_db()
-    if db is None:
-        return []
-    query = {"day_cet": day_cet, **_channel_query(channel_id)}
-    return list(db[TICKS_COLLECTION].find(query).sort("started_at", -1))
-
-
-# Fields needed by the Chats rail; excludes full prompts / system versions.
+# Fields needed by the Chats rail. Inclusion projection — never pull
+# user_prompt / system_prompt_versions and strip them in Python.
 _LIST_PROJECTION = {
     "_id": 0,
     "tick_id": 1,
     "channel_id": 1,
-    "day_cet": 1,
     "state": 1,
     "worker_status": 1,
     "started_at": 1,
     "notification": 1,
     "llm_call_count": 1,
     "cost_total": 1,
-    "token_total": 1,
-    "duration_ms": 1,
 }
+
+
+def ticks_for_day(day_cet: str, channel_id: str | None = None) -> list[dict]:
+    db = _sync_db()
+    if db is None:
+        return []
+    query = {"day_cet": day_cet, **_channel_query(channel_id)}
+    return list(
+        db[TICKS_COLLECTION]
+        .find(query, _LIST_PROJECTION)
+        .sort("started_at", -1)
+    )
 
 
 def count_ticks(channel_id: str | None = None) -> int:

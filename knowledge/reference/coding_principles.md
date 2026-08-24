@@ -81,3 +81,16 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 - When you implement a feature, change configuration, or edit code, the running process does not automatically hot-reload the updated Python modules or instructions.
 - Therefore, **you must trigger a restart of your own service after implementing any feature** before continuing with subsequent features or tasks.
 - Even if multiple feature requests are given at once, implement them incrementally, restart yourself after each major component is ready, and pick up where you left off. This ensures you are always executing with the most correct, up-to-date definitions and capabilities.
+
+## 6. Mongo listing is a projection, not a strip
+
+A list endpoint (cards, tables, rails, `db_query`) asks Mongo for **only the fields the list renders**. Inclusion projection on `find` / `find_one`. Never `find()` the full document (prompts, `history[]`, embeddings, payloads, `system_prompt_versions`) and pick keys in Python.
+
+- Detail / `db_get` loads the blob. List does not.
+- List handlers do not N+1 into events, transcripts, or backfills to invent a title.
+- Paginate with `sort` + `skip`/`limit` (or limit+1). Do not load the collection and slice.
+- **Row count must not multiply round-trips.** No settings/config/label read inside a
+  per-row formatter — cache it or hoist it. A remote round-trip is ~50-60ms, so a few
+  reads per row is seconds of latency on every page.
+- Time the endpoint before diagnosing: flat cost across pages = per-request/per-row
+  overhead; cost growing with the page = missing projection or index.

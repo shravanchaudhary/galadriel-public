@@ -23,7 +23,7 @@ put it in the prompt.
   neutral first-boot defaults.
 - Tenant storage contains `config/`, `memory/`, `knowledge/`, `state/`, `jobs/`,
   `workflows/`, personal tools, and memory-palace data.
-- MongoDB stores queryable operational records and runtime audit history.
+- MongoDB stores queryable operational records and runtime audit history. List reads use inclusion projection (card/table fields only); full docs are detail/`db_get`.
 - The memory palace stores searchable long-term recall.
 
 Image defaults copy only into missing tenant paths. A release may add a new

@@ -119,13 +119,16 @@ async def query(
     descending: bool = False,
     limit: int = 50,
 ) -> str:
-    """List entities matching an optional filter. Returns up to `limit` docs."""
+    """List entities matching an optional filter. Returns up to `limit` docs.
+
+    Omits `history[]` — that array is unbounded. Use `get` for one full doc.
+    """
     try:
         spec = resolve(entity)
     except WorkflowSpecError as e:
         return f"[error] {e}"
     db = get_db()
-    cursor = db[spec.collection].find(filter or {})
+    cursor = db[spec.collection].find(filter or {}, {"history": 0})
     if sort:
         cursor = cursor.sort(sort, -1 if descending else 1)
     cursor = cursor.limit(int(limit))

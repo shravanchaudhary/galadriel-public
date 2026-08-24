@@ -352,10 +352,27 @@ def taxonomy_data() -> dict:
     return {"total": total, "wings": wings, "halls": halls}
 
 
+# List/browse fields. Inclusion — never pull embedding (384 floats) or
+# future blobs and strip them after the round-trip.
+_LIST_PROJECTION = {
+    "_id": 1,
+    "text": 1,
+    "wing": 1,
+    "room": 1,
+    "hall": 1,
+    "source_file": 1,
+    "filed_at": 1,
+    "topic": 1,
+    "agent": 1,
+    "chunk_index": 1,
+    "updated_at": 1,
+}
+
+
 def list_drawers(wing=None, room=None, hall=None, limit=50, offset=0) -> dict:
     match = {key: value for key, value in (("wing", wing), ("room", room), ("hall", hall)) if value is not None}
     collection = _collection()
-    rows = collection.find(match, {"embedding": 0}).sort("filed_at", -1).skip(max(0, offset)).limit(max(1, limit))
+    rows = collection.find(match, _LIST_PROJECTION).sort("filed_at", -1).skip(max(0, offset)).limit(max(1, limit))
     return {"total": collection.count_documents(match), "drawers": [_without_embedding(row) for row in rows]}
 
 

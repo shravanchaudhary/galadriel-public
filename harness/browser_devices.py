@@ -125,6 +125,17 @@ def _local_status(profile: dict) -> dict:
     }
 
 
+def _status_for(profile: dict, *, include_pairing_code: bool = False) -> dict:
+    """Live status for an already-loaded profile (no re-read)."""
+    base = _public(profile, include_pairing_code=include_pairing_code)
+    live = (
+        _bce_status(profile)
+        if profile["backend"] == "bce"
+        else _local_status(profile)
+    )
+    return {**base, **live}
+
+
 def status(
     profile_id: str | None = None,
     *,
@@ -139,13 +150,7 @@ def status(
             "online": False,
             "error": "Browser profile is not configured",
         }
-    base = _public(profile, include_pairing_code=include_pairing_code)
-    live = (
-        _bce_status(profile)
-        if profile["backend"] == "bce"
-        else _local_status(profile)
-    )
-    return {**base, **live}
+    return _status_for(profile, include_pairing_code=include_pairing_code)
 
 
 def list_devices(
@@ -160,11 +165,10 @@ def list_devices(
             profiles.append(implicit)
     profiles.sort(key=lambda profile: profile["profile_id"])
     if include_status:
+        # list_profiles already returned these rows — status() would re-read
+        # each one from Mongo (one round-trip per device).
         return [
-            status(
-                profile["profile_id"],
-                include_pairing_code=include_pairing_code,
-            )
+            _status_for(profile, include_pairing_code=include_pairing_code)
             for profile in profiles
         ]
     return [

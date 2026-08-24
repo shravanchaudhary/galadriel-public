@@ -187,7 +187,7 @@ entity against that spec and enforce it.
 |---|---|
 | `db_create(entity, doc)` | Insert; status forced to initial; unique key dedups |
 | `db_get(entity, key)` | Exact read — **read state before you act** |
-| `db_query(entity, filter, sort, descending, limit)` | List / "what's due now" |
+| `db_query(entity, filter, sort, descending, limit)` | List / "what's due now" — lean, no `history[]` |
 | `db_move_state(entity, key, to, note)` | Enforced status transition; atomic + precondition-guarded |
 | `db_update(entity, key, fields)` | Non-status fields (refuses `status`) |
 | `db_delete(entity, key)` | Delete one doc (irreversible; for cleanup) |

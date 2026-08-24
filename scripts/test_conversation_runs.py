@@ -66,6 +66,24 @@ class TitleTests(unittest.TestCase):
         items = _main_items(rows)
         self.assertEqual(items[0]["title"], "First question")
 
+    def test_main_items_do_not_backfill_titles(self):
+        rows = [{
+            "run_id": "run-2",
+            "title": None,
+            "sources": ["tower"],
+            "end_reason": "completed",
+            "started_at": datetime.now(timezone.utc),
+            "state": "closed",
+            "llm_call_count": 0,
+            "cost_total": 0,
+        }]
+        with patch.object(
+            conversation_run_store, "backfill_run_title", return_value="from events",
+        ) as backfill:
+            items = _main_items(rows)
+        self.assertEqual(items[0]["title"], "tower")
+        backfill.assert_not_called()
+
 
 class RecorderFlushTests(unittest.TestCase):
     def test_events_buffer_until_finalize(self):
@@ -353,6 +371,103 @@ class ChatsBoardTests(unittest.TestCase):
             self.assertEqual(legacy.status_code, 200)
         self.assertEqual(self.client.get("/runs/user/missing").status_code, 404)
         self.assertEqual(self.client.get("/chats/detail?kind=chat&id=missing").status_code, 404)
+
+    def test_items_list_does_not_backfill_or_load_active(self):
+        run = {
+            "run_id": "run-2",
+            "title": None,
+            "sources": ["tower"],
+            "started_at": datetime.now(timezone.utc),
+            "state": "closed",
+            "llm_call_count": 0,
+            "cost_total": 0,
+        }
+        with patch.object(conversation_run_store, "is_configured", return_value=True), \
+             patch.object(conversation_run_store, "recent_runs", return_value=[run]), \
+             patch.object(conversation_run_store, "active_run") as active_mock, \
+             patch.object(
+                 conversation_run_store, "backfill_run_title", return_value="nope",
+             ) as backfill:
+            response = self.client.get("/chats/items?kind=chat&page=4")
+        self.assertEqual(response.status_code, 200)
+        body = response.get_json()
+        self.assertEqual(body["items"][0]["title"], "tower")
+        self.assertEqual(body["page"], 4)
+        active_mock.assert_not_called()
+        backfill.assert_not_called()
+
+
+class AgentTimezoneCacheTests(unittest.TestCase):
+    """The Chats rail asks for the agent timezone ~3x per row (bucket + label).
+
+    Uncached that was one Mongo round-trip per cell — 78 reads / ~4.5s per page.
+    """
+
+    def setUp(self):
+        from harness import tower_settings
+        self.tower_settings = tower_settings
+        self.addCleanup(setattr, tower_settings, "_timezone_cache", None)
+        tower_settings._timezone_cache = None
+
+    def test_repeated_reads_hit_mongo_once(self):
+        settings = MagicMock()
+        settings.find_one.return_value = {"timezone": "Asia/Kolkata"}
+        with patch.object(
+            self.tower_settings, "_db",
+            return_value={self.tower_settings.COLLECTION: settings},
+        ):
+            values = [self.tower_settings.get_agent_timezone() for _ in range(50)]
+        self.assertEqual(set(values), {"Asia/Kolkata"})
+        settings.find_one.assert_called_once()
+        self.assertEqual(settings.find_one.call_args[0][1], {"timezone": 1, "_id": 0})
+
+    def test_set_timezone_refreshes_cache(self):
+        settings = MagicMock()
+        settings.find_one.return_value = {"timezone": "Asia/Kolkata"}
+        with patch.object(
+            self.tower_settings, "_db",
+            return_value={self.tower_settings.COLLECTION: settings},
+        ):
+            self.assertEqual(self.tower_settings.get_agent_timezone(), "Asia/Kolkata")
+            self.tower_settings.set_agent_timezone("Europe/Stockholm")
+            settings.find_one.reset_mock()
+            self.assertEqual(
+                self.tower_settings.get_agent_timezone(), "Europe/Stockholm",
+            )
+        settings.find_one.assert_not_called()
+
+
+class ListProjectionTests(unittest.TestCase):
+    def test_recent_runs_uses_inclusion_projection(self):
+        runs = MagicMock()
+        cursor = MagicMock()
+        runs.find.return_value = cursor
+        cursor.sort.return_value = cursor
+        cursor.skip.return_value = cursor
+        cursor.limit.return_value = []
+        with patch.object(conversation_run_store, "_sync_db", return_value={
+            conversation_run_store.RUNS: runs,
+        }), patch.object(conversation_run_store, "ensure_list_indexes"):
+            conversation_run_store.recent_runs(26, skip=75)
+        runs.find.assert_called_once_with({}, conversation_run_store._LIST_PROJECTION)
+        self.assertNotIn("system_prompt_versions", conversation_run_store._LIST_PROJECTION)
+        cursor.skip.assert_called_once_with(75)
+        cursor.limit.assert_called_once_with(26)
+
+    def test_backfill_projects_event_content_only(self):
+        runs = MagicMock()
+        events = MagicMock()
+        runs.find_one.return_value = {"title": None}
+        events.find_one.return_value = {"content": "hello"}
+        db = {
+            conversation_run_store.RUNS: runs,
+            conversation_run_store.EVENTS: events,
+        }
+        with patch.object(conversation_run_store, "_sync_db", return_value=db):
+            title = conversation_run_store.backfill_run_title("run-3")
+        self.assertEqual(title, "hello")
+        events.find_one.assert_called_once()
+        self.assertEqual(events.find_one.call_args[0][1], {"content": 1, "_id": 0})
 
 
 class LegacyRedirectTests(unittest.TestCase):

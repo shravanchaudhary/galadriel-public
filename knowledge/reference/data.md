@@ -30,7 +30,7 @@ Why not the palace for this? It is eventually consistent (a write isn't searchab
 |---|---|
 | `db_create(entity, doc)` | Insert; forces `status`=spec initial, inits `history[]`, dedups on the unique key |
 | `db_get(entity, key)` | Exact read of one doc by unique key — **read before you write** |
-| `db_query(entity, filter, sort, descending, limit)` | List / "what's due now" |
+| `db_query(entity, filter, sort, descending, limit)` | List / "what's due now" — **lean**: omits `history[]`. Use `db_get` for the full doc |
 | `db_move_state(entity, key, to, note)` | **Enforced** state transition (rejects illegal moves), atomic + precondition-guarded, appends `history[]`. Also = request approval (→ an approval state) and mark done (→ a terminal state) |
 | `db_update(entity, key, fields)` | Set non-status fields, append `history[]` (refuses `status`) |
 | `db_delete(entity, key)` | Delete one doc by unique key (like Mongo's `deleteOne`) — irreversible, for cleaning up test/dummy docs |
@@ -43,6 +43,8 @@ What the primitives guarantee so you don't have to hand-roll it:
 - **Audit** — every write appends to `history[]` automatically.
 
 What is **not** enforced in code (the lighter model): caps, ordering, and approval gates. Those stay as prose in the job cookbooks — `db_counter` tells you the count and whether the cap is hit; the cookbook decides to stop. Approval = move into the spec's `approval_state` and wait for sign-off.
+
+**Listing is lean.** `db_query` is a list: it projects away `history[]` (unbounded audit). Tower list APIs do the same — inclusion projection for the card/table fields, never fetch-the-doc-then-strip. Need the transcript, prompt, or history? That's a detail read (`db_get`, `/chats/detail`), not a list page.
 
 New kind of state? You don't add tools or scripts — you **author a workflow spec** (`workflows/<name>.json`) defining the entity, its states, and allowed transitions. See `knowledge/reference/workflows.md` for the build-and-self-test flow.
 

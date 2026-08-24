@@ -90,9 +90,21 @@ def _serializable(document: dict) -> dict:
     }
 
 
+_LIST_PROJECTION = {
+    "_id": 0,
+    "profile_id": 1,
+    "backend": 1,
+    "pairing_code": 1,
+    "cdp_port": 1,
+    "purpose": 1,
+    "created_at": 1,
+    "updated_at": 1,
+}
+
+
 def list_profiles(*, db=None) -> list[dict]:
     database = _database(db)
-    rows = database[COLLECTION].find({"tenant_id": tenant_id()})
+    rows = database[COLLECTION].find({"tenant_id": tenant_id()}, _LIST_PROJECTION)
     return sorted((_serializable(row) for row in rows), key=lambda row: row["profile_id"])
 
 

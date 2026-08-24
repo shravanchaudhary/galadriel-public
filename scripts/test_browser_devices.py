@@ -69,6 +69,30 @@ class BrowserDevicesDefaultsTest(unittest.TestCase):
         self.assertEqual(devices[0]["source"], "database")
         self.assertTrue(devices[0]["configured"])
 
+    def test_status_listing_does_not_reread_each_profile(self) -> None:
+        """list_profiles already returned the rows — one Mongo read, not one per device."""
+        os.environ["BROWSER_BACKEND"] = "bce"
+        saved = [
+            {
+                "profile_id": f"device-{i}",
+                "backend": "bce",
+                "pairing_code": f"CODE-{i:04d}",
+                "purpose": "test",
+            }
+            for i in range(5)
+        ]
+        with mock.patch.object(
+            browser_devices.browser_profiles, "list_profiles", return_value=saved
+        ), mock.patch.object(
+            browser_devices.browser_profiles, "get"
+        ) as get_mock, mock.patch.object(
+            browser_devices, "_bce_status", return_value={"state": "offline", "online": False}
+        ):
+            devices = browser_devices.list_devices(include_status=True)
+        self.assertEqual(len(devices), 5)
+        self.assertEqual(devices[0]["state"], "offline")
+        get_mock.assert_not_called()
+
     def test_bce_browser_ask_to_pair_when_main_missing(self) -> None:
         os.environ["BROWSER_BACKEND"] = "bce"
         with mock.patch.object(browser_devices.browser_profiles, "get", return_value=None):

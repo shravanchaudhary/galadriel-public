@@ -1071,7 +1071,8 @@ TOOL_DEFINITIONS = [
         "name": "db_query",
         "description": (
             "List entity documents matching an optional filter — e.g. 'what is due "
-            "now?' or 'all leads in status queued'. Returns up to `limit` docs."
+            "now?' or 'all leads in status queued'. Returns up to `limit` lean docs "
+            "(history[] omitted). Use db_get for one full document."
         ),
         "input_schema": {
             "type": "object",

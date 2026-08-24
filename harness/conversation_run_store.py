@@ -623,6 +623,7 @@ def backfill_run_title(run_id: str) -> str | None:
         return run["title"]
     event = db[EVENTS].find_one(
         {"run_id": run_id, "visibility": "user", "role": "user"},
+        {"content": 1, "_id": 0},
         sort=[("sequence", 1)],
     )
     if event is None:
@@ -634,7 +635,8 @@ def backfill_run_title(run_id: str) -> str | None:
     return title
 
 
-# Fields needed by the Chats rail; excludes embedded system prompts.
+# Fields needed by the Chats rail. Inclusion projection — never pull
+# system_prompt_versions or other blobs and strip them in Python.
 _LIST_PROJECTION = {
     "_id": 0,
     "run_id": 1,
@@ -645,8 +647,6 @@ _LIST_PROJECTION = {
     "end_reason": 1,
     "llm_call_count": 1,
     "cost_total": 1,
-    "event_count": 1,
-    "token_total": 1,
     "title": 1,
 }
 
@@ -669,7 +669,11 @@ def runs_for_day(day: str) -> list[dict]:
         return []
     start = datetime.fromisoformat(f"{day}T00:00:00+00:00")
     end = datetime.fromisoformat(f"{day}T23:59:59.999999+00:00")
-    return list(db[RUNS].find({"started_at": {"$gte": start, "$lte": end}}).sort("started_at", -1))
+    return list(
+        db[RUNS]
+        .find({"started_at": {"$gte": start, "$lte": end}}, _LIST_PROJECTION)
+        .sort("started_at", -1)
+    )
 
 
 def count_runs() -> int:

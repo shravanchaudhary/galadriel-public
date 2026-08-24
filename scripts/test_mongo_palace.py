@@ -125,6 +125,17 @@ class MongoPalaceTests(unittest.TestCase):
             self.assertIn("deleted", mongo_palace.delete_drawer(drawer_id))
             self.assertIsNone(mongo_palace.get_drawer(drawer_id))
 
+    def test_list_drawers_uses_inclusion_projection(self):
+        collection = MagicMock()
+        collection.find.return_value = Cursor([])
+        collection.count_documents.return_value = 0
+        with patch.object(mongo_palace, "_collection", return_value=collection):
+            mongo_palace.list_drawers(room="diary", limit=50, offset=50)
+        collection.find.assert_called_once_with(
+            {"room": "diary"}, mongo_palace._LIST_PROJECTION,
+        )
+        self.assertNotIn("embedding", mongo_palace._LIST_PROJECTION)
+
     def test_kg_add_query_and_invalidate(self):
         kg = MagicMock()
         kg.find.return_value = Cursor([{

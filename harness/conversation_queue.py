@@ -25,6 +25,19 @@ except ImportError:  # Local unit tests may intentionally omit Mongo dependencie
 ITEMS = "conversation_inbox"
 CHANNELS = "conversation_inbox_channels"
 CLAIM_TTL = timedelta(seconds=30)
+# Queue rail / reorder. Inclusion — payload can hold images; do not fetch-then-strip.
+_LIST_PROJECTION = {
+    "_id": 0,
+    "id": 1,
+    "channel": 1,
+    "sequence": 1,
+    "source": 1,
+    "display_text": 1,
+    "state": 1,
+    "revision": 1,
+    "created_at": 1,
+    "updated_at": 1,
+}
 
 
 def _now() -> datetime:
@@ -427,6 +440,7 @@ class MongoConversationStore:
     def list_pending(self, channel: str) -> list[dict]:
         return [_public(i) for i in self.items.find(
             {"channel": channel, "state": "pending"},
+            _LIST_PROJECTION,
         ).sort("sequence", ASCENDING)]
 
     def get(self, item_id: str) -> dict | None:

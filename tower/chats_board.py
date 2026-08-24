@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -232,18 +233,20 @@ def _sort_key(item: dict):
     return _aware(item.get("started_at")) or datetime.min.replace(tzinfo=ZoneInfo("UTC"))
 
 
-def _run_title(row: dict) -> str:
+def _run_title(row: dict, *, backfill: bool = False) -> str:
     title = (row.get("title") or "").strip()
     if title:
         return title
-    run_id = row.get("run_id") or ""
-    if run_id:
-        try:
-            filled = conversation_run_store.backfill_run_title(run_id)
-            if filled:
-                return filled
-        except Exception:
-            pass
+    # Listing must not N+1 into events. Backfill only on the detail path.
+    if backfill:
+        run_id = row.get("run_id") or ""
+        if run_id:
+            try:
+                filled = conversation_run_store.backfill_run_title(run_id)
+                if filled:
+                    return filled
+            except Exception:
+                pass
     sources = row.get("sources") or []
     if sources:
         return ", ".join(sources)
@@ -339,7 +342,7 @@ def _load_main_detail(run_id: str) -> dict | None:
         "store": "run",
         "channel": "chat",
         "id": run_id,
-        "title": _run_title(run),
+        "title": _run_title(run, backfill=True),
         "state": run.get("state") or "unknown",
         "started_label": _fmt_time(run.get("started_at")),
         "date": _cet_date(run.get("started_at")),
@@ -477,10 +480,13 @@ def _public_item(item: dict) -> dict:
     }
 
 
-def _collect_items(kind: str, *, page: int = 1) -> tuple[list[dict], bool, bool, object | None]:
+def _collect_items(
+    kind: str, *, page: int = 1, need_active: bool = False,
+) -> tuple[list[dict], bool, bool, object | None]:
     """Return (page_items, has_more, db_configured, active_run).
 
     Uses limit+1 instead of count_documents — exact totals are an Atlas RTT tax.
+    List rows are projected at the store; this path must not fetch events.
     """
     main_ok = conversation_run_store.is_configured()
     tick_ok = worker_tick_store.is_configured()
@@ -488,7 +494,7 @@ def _collect_items(kind: str, *, page: int = 1) -> tuple[list[dict], bool, bool,
     page = max(1, int(page or 1))
     offset = (page - 1) * PAGE_SIZE
     fetch = PAGE_SIZE + 1
-    want_active = main_ok and kind in {"chat", "all"}
+    want_active = need_active and main_ok and kind in {"chat", "all"}
     active_f = (
         _LIST_POOL.submit(lambda: conversation_run_store.active_run(lean=True))
         if want_active else None
@@ -535,6 +541,32 @@ def _collect_items(kind: str, *, page: int = 1) -> tuple[list[dict], bool, bool,
     return page_items[:PAGE_SIZE], has_more, db_configured, active
 
 
+_nav_rail_cache: tuple[float, dict] | None = None
+_NAV_RAIL_TTL_SEC = 10.0
+
+
+def _nav_rail_vars() -> dict:
+    """Sidebar history rail, shared by every non-Chats page.
+
+    `_nav.html` renders this rail on every page with the sidebar, so without a
+    cache each page view costs a chats list query. The Chats pages themselves
+    bypass this and render their own live `sections`.
+    """
+    global _nav_rail_cache
+    if _nav_rail_cache is not None:
+        cached_at, cached_vars = _nav_rail_cache
+        if time.monotonic() - cached_at < _NAV_RAIL_TTL_SEC:
+            return cached_vars
+    items, has_more, db_configured, _active = _collect_items("chat", page=1)
+    rail = {
+        "sections": _group_sections(items),
+        "has_more": has_more,
+        "db_configured": db_configured,
+    }
+    _nav_rail_cache = (time.monotonic(), rail)
+    return rail
+
+
 def register_chats_board(app, agent=None):
     bp = Blueprint("chats_board", __name__)
 
@@ -551,12 +583,7 @@ def register_chats_board(app, agent=None):
         ):
             return out
         try:
-            items, has_more, db_configured, _active = _collect_items("chat", page=1)
-            out.update({
-                "sections": _group_sections(items),
-                "has_more": has_more,
-                "db_configured": db_configured,
-            })
+            out.update(_nav_rail_vars())
         except Exception:
             out.update({
                 "sections": [],
@@ -650,7 +677,9 @@ def register_chats_board(app, agent=None):
         selected_id = (request.args.get("id") or "").strip()
 
         # List shell only — names/meta. Transcript loads via GET /chats/detail.
-        items, has_more, db_configured, active = _collect_items(kind, page=1)
+        items, has_more, db_configured, active = _collect_items(
+            kind, page=1, need_active=True,
+        )
         if active and not (active.get("title") or "").strip():
             filled = conversation_run_store.backfill_run_title(active.get("run_id") or "")
             if filled:
