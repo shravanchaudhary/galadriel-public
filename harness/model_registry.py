@@ -42,8 +42,10 @@ TASKS: dict[str, tuple[str, str]] = {
     "slack_reply_gate": (BEDROCK_MANTLE, "glm-5"),
     # One-shot short title for a new conversation run.
     "chat_title": (BEDROCK_MANTLE, "glm-5"),
-    # Decomposes freeform `learn` content into kg/drawer/recall artifacts.
-    "learn_packaging": (BEDROCK_MANTLE, "glm-5"),
+    # Authors a stored memory's retrieval trigger — ~60 positive phrasings plus
+    # held-out probes (harness/recall_cues.py). Cue quality decides whether a
+    # memory is ever recalled at all, so this follows the active chat model.
+    "recall_cues": (BEDROCK_MANTLE, "glm-5"),
 }
 
 # Bedrock equivalents — drop any of these into TASKS to move a task onto Claude
@@ -60,8 +62,18 @@ BEDROCK_DEFAULTS: dict[str, tuple[str, str]] = {
 # these too, so a capped/broken side-provider (e.g. Gemini billing cap) can't
 # fail a task while the main conversation works fine. The TASKS pins remain
 # the fallback before the agent has registered its model.
+#
+# The task-end and periodic memory consolidators (harness/agent.py
+# run_task_consolidation; ambient reflection/goodnight) are NOT listed here —
+# they don't need a pin at all. Both run as full agent turns through
+# _respond_locked_inner on a channel (a disposable side channel, or
+# reflection/goodnight), which resolves its model via model_for_channel();
+# any channel with no explicit override already falls back to the live
+# main-channel model. Learning quality is deliberately not a place to save
+# tokens (see the multi-timescale learning architecture plan) — this fallback
+# already guarantees the active chat model with zero extra config.
 FOLLOW_ACTIVE_MODEL = frozenset({
-    "compaction", "chat_title", "learn_packaging", "slack_reply_gate",
+    "compaction", "chat_title", "slack_reply_gate", "recall_cues",
 })
 
 _active_model: str | None = None

@@ -1,0 +1,623 @@
+#!/usr/bin/env python3
+"""Tests for the shared memory-candidate pipeline (harness/consolidation.py)
+and its tool wiring — the multi-timescale learning architecture's Phase 2/3
+plumbing: validate/dedupe/commit, the typed `learn` tool, and the
+consolidation-only tools (propose_memory, grade_retrieval, flag_memory,
+read_episode_segment).
+
+Mongo is not configured in this environment, so tests either patch
+`consolidation._collection` directly (to exercise dedupe/telemetry logic
+deterministically) or rely on the module's own graceful degradation
+(persistence skipped, writes still happen) — both are real code paths in
+production depending on MONGO_URI.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import sys
+import tempfile
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from harness import consolidation  # noqa: E402
+from harness import learn as learn_mod  # noqa: E402
+from harness import tools  # noqa: E402
+from harness.agent import GaladrielAgent  # noqa: E402
+
+
+def _run(coro):
+    return asyncio.run(coro)
+
+
+# ─── clean_triplets ─────────────────────────────────────────────────────
+
+
+def test_clean_triplets_normalizes_lists_and_dicts() -> None:
+    raw = [
+        ["Alice", "works_on", "Project X"],
+        {"subject": "Bob", "predicate": "prefers", "object": "dark mode"},
+        ["bad", "only-two"],
+        ["", "empty-subject", "x"],
+        "not-a-list",
+    ]
+    out = consolidation.clean_triplets(raw)
+    assert out == [
+        ("Alice", "works_on", "Project X"),
+        ("Bob", "prefers", "dark mode"),
+    ], out
+
+
+def test_clean_triplets_caps_at_twenty() -> None:
+    raw = [["s", "p", str(i)] for i in range(30)]
+    out = consolidation.clean_triplets(raw)
+    assert len(out) == 20, len(out)
+
+
+def test_clean_triplets_rejects_non_list() -> None:
+    assert consolidation.clean_triplets("nope") == []
+    assert consolidation.clean_triplets(None) == []
+
+
+# ─── commit_candidate: validation ──────────────────────────────────────
+
+
+def test_commit_candidate_rejects_unknown_type() -> None:
+    result = _run(consolidation.commit_candidate(type="episodic", content="x"))
+    assert result["status"] == "error", result
+    assert "unknown type" in result["detail"]
+
+
+def test_commit_candidate_requires_content_or_triplets() -> None:
+    result = _run(consolidation.commit_candidate(type="semantic", content=""))
+    assert result["status"] == "error", result
+    assert "content or kg_triplets" in result["detail"]
+
+
+def test_commit_candidate_rejects_triplets_on_non_semantic() -> None:
+    result = _run(consolidation.commit_candidate(
+        type="procedural", content="x", kg_triplets=[["a", "b", "c"]],
+    ))
+    assert result["status"] == "error", result
+    assert "only valid for type=semantic" in result["detail"]
+
+
+# ─── commit_candidate: semantic / KG ────────────────────────────────────
+
+
+def test_commit_candidate_kg_path_calls_kg_add() -> None:
+    with patch("harness.palace.kg_query", return_value="(no facts)"), \
+         patch("harness.palace.kg_add", return_value="stored") as kg_add_mock, \
+         patch.object(consolidation, "_save_candidate", new=AsyncMock()):
+        result = _run(consolidation.commit_candidate(
+            type="semantic",
+            kg_triplets=[["Alice", "works_on", "Project X"]],
+            source="runtime",
+        ))
+    assert result["status"] == "committed", result
+    kg_add_mock.assert_called_once_with(
+        subject="Alice", predicate="works_on", object="Project X", valid_from=None,
+    )
+
+
+def test_commit_candidate_passes_valid_from_to_kg() -> None:
+    """A fact learned now but true for months must not be stamped as today."""
+    with patch("harness.palace.kg_query", return_value="(no facts)"), \
+         patch("harness.palace.kg_add", return_value="stored") as kg_add_mock, \
+         patch.object(consolidation, "_save_candidate", new=AsyncMock()):
+        result = _run(consolidation.commit_candidate(
+            type="semantic",
+            kg_triplets=[["Alice", "works_on", "Project X"]],
+            valid_from="2025-11-02",
+            source="task_consolidator",
+        ))
+    assert result["status"] == "committed", result
+    kg_add_mock.assert_called_once_with(
+        subject="Alice", predicate="works_on", object="Project X",
+        valid_from="2025-11-02",
+    )
+
+
+def test_commit_candidate_drops_malformed_valid_from_but_still_commits() -> None:
+    """Losing the memory over a bad optional date is worse than defaulting."""
+    saved = AsyncMock()
+    with patch("harness.palace.kg_query", return_value="(no facts)"), \
+         patch("harness.palace.kg_add", return_value="stored") as kg_add_mock, \
+         patch.object(consolidation, "_save_candidate", new=saved):
+        result = _run(consolidation.commit_candidate(
+            type="semantic",
+            kg_triplets=[["Alice", "works_on", "Project X"]],
+            valid_from="last November",
+            source="task_consolidator",
+        ))
+    assert result["status"] == "committed", result
+    assert "ignored valid_from" in result["detail"], result
+    assert kg_add_mock.call_args.kwargs["valid_from"] is None
+    assert saved.await_args.args[0]["valid_from"] is None
+
+
+def test_clean_valid_from_accepts_iso_only() -> None:
+    assert consolidation._clean_valid_from("2026-01-15") == ("2026-01-15", "")
+    assert consolidation._clean_valid_from("  2026-03-04 ")[0] == "2026-03-04"
+    assert consolidation._clean_valid_from(None) == (None, "")
+    assert consolidation._clean_valid_from("")[0] is None
+    for bad in ("yesterday", "15-01-2026", "2026-13-01"):
+        value, warning = consolidation._clean_valid_from(bad)
+        assert value is None and "not an ISO date" in warning, bad
+
+
+def test_commit_candidate_kg_dedup_skips_existing_triplet() -> None:
+    existing_text = "Alice --[works_on]-> `Project X`"
+    with patch("harness.palace.kg_query", return_value=existing_text), \
+         patch("harness.palace.kg_add") as kg_add_mock, \
+         patch.object(consolidation, "_save_candidate", new=AsyncMock()):
+        result = _run(consolidation.commit_candidate(
+            type="semantic",
+            kg_triplets=[["Alice", "works_on", "Project X"]],
+            source="runtime",
+        ))
+    assert result["status"] == "duplicate", result
+    kg_add_mock.assert_not_called()
+
+
+def test_commit_candidate_kg_partial_dedup_stores_only_new() -> None:
+    def fake_query(subject=None, predicate=None):
+        if predicate == "works_on":
+            return "Alice --[works_on]-> `Project X`"
+        return "(no facts)"
+
+    with patch("harness.palace.kg_query", side_effect=fake_query), \
+         patch("harness.palace.kg_add", return_value="stored") as kg_add_mock, \
+         patch.object(consolidation, "_save_candidate", new=AsyncMock()):
+        result = _run(consolidation.commit_candidate(
+            type="semantic",
+            kg_triplets=[
+                ["Alice", "works_on", "Project X"],
+                ["Alice", "prefers", "dark mode"],
+            ],
+            source="runtime",
+        ))
+    assert result["status"] == "committed", result
+    kg_add_mock.assert_called_once_with(
+        subject="Alice", predicate="prefers", object="dark mode", valid_from=None,
+    )
+
+
+# ─── commit_candidate: prose (drawer / procedural / preference) ────────
+
+
+def test_commit_candidate_semantic_prose_writes_drawer() -> None:
+    with patch.object(consolidation, "_is_prose_duplicate", new=AsyncMock(return_value=None)), \
+         patch("harness.palace.add_drawer", new=AsyncMock(return_value="filed")) as drawer_mock, \
+         patch.object(consolidation, "_save_candidate", new=AsyncMock()):
+        result = _run(consolidation.commit_candidate(
+            type="semantic", content="The user's dog is named Rex.", topic="user-pet",
+        ))
+    assert result["status"] == "committed", result
+    assert drawer_mock.await_args.kwargs["room"] == "knowledge"
+
+
+def test_commit_candidate_prose_duplicate_skips_write() -> None:
+    with patch.object(consolidation, "_is_prose_duplicate", new=AsyncMock(return_value="dupe-id-123")), \
+         patch("harness.palace.add_drawer", new=AsyncMock()) as drawer_mock, \
+         patch.object(consolidation, "_save_candidate", new=AsyncMock()) as save_mock:
+        result = _run(consolidation.commit_candidate(
+            type="semantic", content="Already known fact.",
+        ))
+    assert result["status"] == "duplicate", result
+    drawer_mock.assert_not_awaited()
+    saved_record = save_mock.await_args.args[0]
+    assert saved_record["duplicate_of"] == "dupe-id-123"
+
+
+def test_commit_candidate_procedural_writes_knowledge_file() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        prev_cwd = os.getcwd()
+        os.chdir(tmp)
+        try:
+            with patch.object(consolidation, "_is_prose_duplicate", new=AsyncMock(return_value=None)), \
+                 patch("harness.palace.add_drawer", new=AsyncMock(return_value="filed")), \
+                 patch.object(consolidation, "_save_candidate", new=AsyncMock()):
+                result = _run(consolidation.commit_candidate(
+                    type="procedural",
+                    content="When X fails, try Y instead.",
+                    topic="x-fails-use-y",
+                ))
+            assert result["status"] == "committed", result
+            written = list(Path("knowledge/procedures").glob("*.md"))
+            assert len(written) == 1, written
+            assert "When X fails, try Y instead." in written[0].read_text()
+        finally:
+            os.chdir(prev_cwd)
+
+
+def test_commit_candidate_procedural_avoids_filename_collision() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        prev_cwd = os.getcwd()
+        os.chdir(tmp)
+        try:
+            with patch.object(consolidation, "_is_prose_duplicate", new=AsyncMock(return_value=None)), \
+                 patch("harness.palace.add_drawer", new=AsyncMock(return_value="filed")), \
+                 patch.object(consolidation, "_save_candidate", new=AsyncMock()):
+                r1 = _run(consolidation.commit_candidate(
+                    type="procedural", content="First lesson.", topic="same-topic",
+                ))
+                r2 = _run(consolidation.commit_candidate(
+                    type="procedural", content="Second, different lesson.", topic="same-topic",
+                ))
+            assert r1["status"] == "committed" and r2["status"] == "committed"
+            written = sorted(p.name for p in Path("knowledge/procedures").glob("*.md"))
+            assert len(written) == 2, written
+            assert written[0] != written[1]
+        finally:
+            os.chdir(prev_cwd)
+
+
+def test_commit_candidate_preference_writes_daily_log() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        prev_cwd = os.getcwd()
+        os.chdir(tmp)
+        try:
+            with patch.object(consolidation, "_is_prose_duplicate", new=AsyncMock(return_value=None)), \
+                 patch("harness.palace.add_drawer", new=AsyncMock(return_value="filed")), \
+                 patch.object(consolidation, "_save_candidate", new=AsyncMock()):
+                result = _run(consolidation.commit_candidate(
+                    type="preference", content="Prefers terse replies.", topic="reply-length",
+                ))
+            assert result["status"] == "committed", result
+            logs = list(Path("memory").glob("*.md"))
+            assert len(logs) == 1, logs
+            text = logs[0].read_text()
+            assert "Prefers terse replies." in text
+            assert "[preference:reply-length]" in text
+        finally:
+            os.chdir(prev_cwd)
+
+
+# ─── read_episode_segment ───────────────────────────────────────────────
+
+
+def test_read_episode_segment_rejects_path_traversal() -> None:
+    for bad in ("../etc/passwd", "a/b", "a\\b", "..", ""):
+        result = _run(consolidation.read_episode_segment(bad))
+        assert result.startswith("[error]"), (bad, result)
+
+
+def test_read_episode_segment_reads_verbatim_content() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        archive_root = Path(tmp)
+        segment_id = "conversation_main_compact_2026-08-23T00-00-00"
+        conv_dir = archive_root / segment_id / "conversations"
+        conv_dir.mkdir(parents=True)
+        (conv_dir / "batch.md").write_text("USER: hello\nASSISTANT: hi there", encoding="utf-8")
+
+        with patch("harness.palace._archive_root", return_value=archive_root):
+            result = _run(consolidation.read_episode_segment(segment_id))
+        assert "USER: hello" in result
+        assert "ASSISTANT: hi there" in result
+
+
+def test_read_episode_segment_missing_segment_reports_not_available() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        with patch("harness.palace._archive_root", return_value=Path(tmp)):
+            result = _run(consolidation.read_episode_segment("does_not_exist"))
+        assert result.startswith("[not available]"), result
+
+
+# ─── learn tool (runtime, typed) ────────────────────────────────────────
+
+
+def test_learn_tool_forwards_to_commit_candidate() -> None:
+    fake_result = {"status": "committed", "memory_id": "abc", "detail": "drawer: filed"}
+    with patch.object(consolidation, "commit_candidate", new=AsyncMock(return_value=fake_result)) as commit_mock:
+        out = _run(learn_mod.learn(
+            type="semantic", content="Some fact.", topic="t1",
+        ))
+    assert out == "drawer: filed", out
+    commit_mock.assert_awaited_once_with(
+        type="semantic", content="Some fact.", kg_triplets=None, topic="t1",
+        valid_from=None, source="runtime",
+    )
+
+
+def test_learn_tool_surfaces_errors() -> None:
+    fake_result = {"status": "error", "memory_id": None, "detail": "unknown type"}
+    with patch.object(consolidation, "commit_candidate", new=AsyncMock(return_value=fake_result)):
+        out = _run(learn_mod.learn(type="bogus", content="x"))
+    assert out == "[error] unknown type", out
+
+
+# ─── tool schema + dispatch wiring ──────────────────────────────────────
+
+
+def test_new_tool_schemas_registered() -> None:
+    by_name = {t["name"]: t for t in tools.TOOL_DEFINITIONS}
+    for name in (
+        "learn", "propose_memory", "grade_retrieval", "flag_memory",
+        "read_episode_segment", "memory_utility_report",
+    ):
+        assert name in by_name, f"{name} missing from TOOL_DEFINITIONS"
+    assert by_name["learn"]["input_schema"]["required"] == ["type"]
+    assert by_name["propose_memory"]["input_schema"]["required"] == ["type"]
+    assert set(by_name["grade_retrieval"]["input_schema"]["required"]) == {"retrieval_id", "used"}
+    assert set(by_name["flag_memory"]["input_schema"]["required"]) == {"memory_key", "reason"}
+    assert by_name["read_episode_segment"]["input_schema"]["required"] == ["segment_id"]
+
+
+def test_execute_tool_dispatches_propose_memory() -> None:
+    fake_result = {"status": "committed", "memory_id": "m1", "detail": "ok"}
+    with patch.object(consolidation, "commit_candidate", new=AsyncMock(return_value=fake_result)) as commit_mock:
+        out = _run(tools.execute_tool("propose_memory", {
+            "type": "procedural", "content": "lesson", "confidence": 0.9,
+            "evidence_episode_ids": ["seg1"], "note": "n",
+        }))
+    assert out == "[committed] ok", out
+    _, kwargs = commit_mock.call_args
+    assert kwargs["type"] == "procedural"
+    assert kwargs["evidence"] == ["seg1"]
+    assert kwargs["source"] == "task_consolidator"
+
+
+def test_execute_tool_dispatches_grade_retrieval() -> None:
+    with patch.object(consolidation, "grade_retrieval", new=AsyncMock(return_value="graded")) as mock:
+        out = _run(tools.execute_tool("grade_retrieval", {
+            "retrieval_id": "r1", "used": True, "outcome": "helpful",
+        }))
+    assert out == "graded"
+    mock.assert_awaited_once_with("r1", True, "helpful", "")
+
+
+def test_execute_tool_dispatches_flag_memory() -> None:
+    with patch.object(consolidation, "flag_memory", new=AsyncMock(return_value="flagged")) as mock:
+        out = _run(tools.execute_tool("flag_memory", {
+            "memory_key": "kg:Alice/works_on", "reason": "user corrected",
+        }))
+    assert out == "flagged"
+    mock.assert_awaited_once_with("kg:Alice/works_on", "user corrected")
+
+
+def test_execute_tool_dispatches_read_episode_segment() -> None:
+    with patch.object(consolidation, "read_episode_segment", new=AsyncMock(return_value="verbatim text")) as mock:
+        out = _run(tools.execute_tool("read_episode_segment", {"segment_id": "seg1"}))
+    assert out == "verbatim text"
+    mock.assert_awaited_once_with("seg1")
+
+
+def test_execute_tool_dispatches_memory_utility_report() -> None:
+    with patch.object(consolidation, "memory_utility_report", new=AsyncMock(return_value="report")) as mock:
+        out = _run(tools.execute_tool("memory_utility_report", {"limit": 5}))
+    assert out == "report"
+    mock.assert_awaited_once_with(5)
+
+
+def test_execute_tool_dispatches_learn_with_type() -> None:
+    with patch.object(learn_mod, "learn", new=AsyncMock(return_value="ok")) as mock:
+        out = _run(tools.execute_tool("learn", {
+            "type": "preference", "content": "c", "topic": "t",
+        }))
+    assert out == "ok"
+    mock.assert_awaited_once_with(
+        type="preference", content="c", kg_triplets=None, topic="t", valid_from=None,
+    )
+
+
+# ─── phase 4: retrieval telemetry (palace_search/kg logging on the agent) ──
+
+
+def _bare_agent():
+    agent = GaladrielAgent.__new__(GaladrielAgent)
+    agent._session_id = {}
+    agent._session_segments = {}
+    return agent
+
+
+def test_tool_result_has_content_filters_sentinels() -> None:
+    has_content = GaladrielAgent._tool_result_has_content
+    assert has_content("**Palace search:** `x` real content") is True
+    assert has_content("No drawers matched `x`") is False
+    assert has_content("No KG facts match subject=`Alice`.") is False
+    assert has_content("No KG history for `Alice`.") is False
+    assert has_content("[palace error] BOOM") is False
+    assert has_content("[palace unavailable] no palace") is False
+    assert has_content("") is False
+    assert has_content(None) is False
+    assert has_content(["a", "list", "of", "blocks"]) is True
+
+
+def test_log_palace_retrieval_skips_empty_results() -> None:
+    agent = _bare_agent()
+    with patch.object(consolidation, "log_retrieval", new=AsyncMock()) as mock:
+        _run(agent._log_palace_retrieval(
+            "main", "palace_search", {"query": "q"}, "No drawers matched `q`",
+        ))
+    mock.assert_not_awaited()
+
+
+def test_log_palace_retrieval_logs_semantic_search() -> None:
+    agent = _bare_agent()
+    with patch.object(consolidation, "log_retrieval", new=AsyncMock(return_value="rid1")) as mock:
+        _run(agent._log_palace_retrieval(
+            "main", "palace_search",
+            {"query": "what did we decide", "room": "knowledge"},
+            "**Palace search:** `what did we decide`\n\n### 1. agent / knowledge\ncontent",
+        ))
+    mock.assert_awaited_once()
+    _, kwargs = mock.call_args
+    assert kwargs["memory_key"] == "drawer_search:knowledge"
+    assert kwargs["memory_kind"] == "drawer"
+    assert kwargs["query_or_cue"] == "what did we decide"
+    assert kwargs["session_id"] == agent._session_id["main"]
+
+
+def test_log_palace_retrieval_skips_recency_order() -> None:
+    agent = _bare_agent()
+    with patch.object(consolidation, "log_retrieval", new=AsyncMock()) as mock:
+        _run(agent._log_palace_retrieval(
+            "main", "palace_search",
+            {"order": "recency", "channel": "main"},
+            "**Recent sessions**\n\nsomething",
+        ))
+    mock.assert_not_awaited()
+
+
+def test_log_palace_retrieval_logs_kg_query() -> None:
+    agent = _bare_agent()
+    with patch.object(consolidation, "log_retrieval", new=AsyncMock()) as mock:
+        _run(agent._log_palace_retrieval(
+            "main", "palace_kg_query",
+            {"subject": "Alice", "predicate": "works_on"},
+            "Alice --[works_on]-> `Project X`",
+        ))
+    mock.assert_awaited_once()
+    _, kwargs = mock.call_args
+    assert kwargs["memory_key"] == "kg:Alice/works_on/*"
+    assert kwargs["memory_kind"] == "kg"
+
+
+def test_log_palace_retrieval_logs_kg_timeline() -> None:
+    agent = _bare_agent()
+    with patch.object(consolidation, "log_retrieval", new=AsyncMock()) as mock:
+        _run(agent._log_palace_retrieval(
+            "main", "palace_kg_timeline", {"entity": "Alice"},
+            "**KG timeline for `Alice`** (2 fact(s)):",
+        ))
+    mock.assert_awaited_once()
+    _, kwargs = mock.call_args
+    assert kwargs["memory_key"] == "kg_timeline:Alice"
+    assert kwargs["query_or_cue"] == "Alice"
+
+
+def test_log_retrieval_event_uses_stable_session_and_swallows_errors() -> None:
+    agent = _bare_agent()
+    with patch.object(consolidation, "log_retrieval", new=AsyncMock(side_effect=RuntimeError("boom"))):
+        _run(agent._log_retrieval_event(
+            "main", memory_key="recall:sys_1", memory_kind="recall", query_or_cue="hi",
+        ))  # must not raise
+    sid_first = agent._session_id["main"]
+    with patch.object(consolidation, "log_retrieval", new=AsyncMock(return_value="rid")) as mock:
+        _run(agent._log_retrieval_event(
+            "main", memory_key="recall:sys_1", memory_kind="recall", query_or_cue="hi again",
+        ))
+    sid_second = agent._session_id["main"]
+    assert sid_first == sid_second, "session id must stay stable across calls on the same channel"
+    assert mock.call_args.kwargs["session_id"] == sid_first
+
+
+# ─── agent toolset gating (RUNTIME_HIDDEN_TOOLS / CONSOLIDATION_TOOLS) ──
+
+
+def test_toolset_gating_constants_are_consistent() -> None:
+    from harness import agent as agent_mod
+
+    # Every consolidation-only authoring tool must be hidden from normal turns.
+    authoring_tools = {"propose_memory", "grade_retrieval", "flag_memory", "read_episode_segment"}
+    assert authoring_tools <= agent_mod.RUNTIME_HIDDEN_TOOLS
+    assert authoring_tools <= agent_mod.CONSOLIDATION_TOOLS
+    # learn must stay visible on normal turns (conservative runtime writer).
+    assert "learn" not in agent_mod.RUNTIME_HIDDEN_TOOLS
+    assert "learn" not in agent_mod.CONSOLIDATION_TOOLS
+    # Periodic-consolidator channels are exactly reflection + goodnight.
+    assert agent_mod.PERIODIC_CONSOLIDATOR_CHANNELS == frozenset({agent_mod.AMBIENT_CHANNEL_ID, "goodnight"})
+
+
+# ─── phase 5: periodic consolidator prompt (ambient reflection) ────────
+
+
+def test_reflection_prompt_uses_periodic_consolidator_contract() -> None:
+    from harness.loop_prompts import reflection_prompt
+
+    text = reflection_prompt("2026-08-23")
+    # Evidence-driven, not free-form noticing.
+    assert "memory_utility_report" in text
+    assert "BAD-TRIGGER" in text
+    assert "BAD-MEMORY" in text
+    assert "STALE" in text
+    assert "propose_memory" in text
+    assert "CROSS-EPISODE" in text
+    # The old open-ended "file anything you notice" instruction must be gone.
+    assert "If something is worth keeping, FILE it now" not in text
+    # Superseded by real usage telemetry — no more artificial self-retest.
+    assert "SPACED RETEST" not in text
+    # Recall-cue tuning mechanics are preserved (still needed reference material).
+    assert "positive_threshold" in text
+    assert "Stage-1" in text and "Stage-2" in text
+    # Experiential state is a separate system and must stay untouched.
+    assert "experience_report" in text
+    assert "knowledge/skills/experiential-reflection.md" in text
+
+
+def test_reflection_prompt_worker_audit_untouched() -> None:
+    from harness.loop_prompts import reflection_prompt
+
+    text = reflection_prompt("2026-08-23")
+    assert "PART 3" in text
+    part3 = text.split("PART 3", 1)[1]
+    assert "state/worker_control.md" in part3
+    assert "state/steering.md" in part3
+    assert "ALL GOOD / STEERED / PAUSED" in part3
+
+
+def test_goodnight_prompt_unchanged_episode_recap() -> None:
+    from harness.loop_prompts import goodnight_prompt
+
+    text = goodnight_prompt("2026-08-23")
+    assert "daily-recap-YYYY-MM-DD" in text
+    assert "room=" in text and "episodes" in text
+
+
+def main() -> int:
+    tests = [
+        test_clean_triplets_normalizes_lists_and_dicts,
+        test_clean_triplets_caps_at_twenty,
+        test_clean_triplets_rejects_non_list,
+        test_commit_candidate_rejects_unknown_type,
+        test_commit_candidate_requires_content_or_triplets,
+        test_commit_candidate_rejects_triplets_on_non_semantic,
+        test_commit_candidate_kg_path_calls_kg_add,
+        test_commit_candidate_passes_valid_from_to_kg,
+        test_commit_candidate_drops_malformed_valid_from_but_still_commits,
+        test_clean_valid_from_accepts_iso_only,
+        test_commit_candidate_kg_dedup_skips_existing_triplet,
+        test_commit_candidate_kg_partial_dedup_stores_only_new,
+        test_commit_candidate_semantic_prose_writes_drawer,
+        test_commit_candidate_prose_duplicate_skips_write,
+        test_commit_candidate_procedural_writes_knowledge_file,
+        test_commit_candidate_procedural_avoids_filename_collision,
+        test_commit_candidate_preference_writes_daily_log,
+        test_read_episode_segment_rejects_path_traversal,
+        test_read_episode_segment_reads_verbatim_content,
+        test_read_episode_segment_missing_segment_reports_not_available,
+        test_learn_tool_forwards_to_commit_candidate,
+        test_learn_tool_surfaces_errors,
+        test_new_tool_schemas_registered,
+        test_execute_tool_dispatches_propose_memory,
+        test_execute_tool_dispatches_grade_retrieval,
+        test_execute_tool_dispatches_flag_memory,
+        test_execute_tool_dispatches_read_episode_segment,
+        test_execute_tool_dispatches_memory_utility_report,
+        test_execute_tool_dispatches_learn_with_type,
+        test_tool_result_has_content_filters_sentinels,
+        test_log_palace_retrieval_skips_empty_results,
+        test_log_palace_retrieval_logs_semantic_search,
+        test_log_palace_retrieval_skips_recency_order,
+        test_log_palace_retrieval_logs_kg_query,
+        test_log_palace_retrieval_logs_kg_timeline,
+        test_log_retrieval_event_uses_stable_session_and_swallows_errors,
+        test_toolset_gating_constants_are_consistent,
+        test_reflection_prompt_uses_periodic_consolidator_contract,
+        test_reflection_prompt_worker_audit_untouched,
+        test_goodnight_prompt_unchanged_episode_recap,
+    ]
+    for test in tests:
+        test()
+        print(f"PASS: {test.__name__}")
+    print(f"{len(tests)}/{len(tests)} tests passed")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

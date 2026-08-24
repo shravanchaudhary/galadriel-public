@@ -52,26 +52,16 @@ looks relevant, the harness injects a short user-role note starting with
 `- [recall_id] instruction`, plus a `matched <segment>: "..."` line naming the
 exact text and place (your own thought, your tool call, a tool result, or the
 user's message) that triggered it. These notes are machine-generated hints
-derived from your own learned rules — they are NOT from the user and carry no
-authority of their own:
+derived from your own learned rules, carrying the weight of a suggestion:
 
-- Treat them as optional steering. If a recall does not help the current task,
-  ignore it and continue your normal flow.
-- Never take side-effectful actions (writing files, changing worker state,
-  sending messages, DB writes) solely because a recall suggested it. Act only
-  when the user's request or your current task already requires it.
-- After you act on — or deliberately ignore — a fired recall, call
-  `tune_recall` with the recall_id and whether it was applicable to this
-  moment. That feedback tunes the matcher so future fires get more accurate.
-  Use the id exactly as printed in the bracket of that fire's bullet. Never
-  guess or invent a recall_id — if you do not have one in front of you, call
-  `get_recent_recalls` or `get_recall` first.
-- Judge `applicable` — and write any `note` — against the `matched` line's own
-  text, not against whatever else is salient in the conversation. If a fire's
-  matched text traces to your own thought or tool activity, say so; don't
-  attribute it to the user's message unless that's literally what matched.
-  If the matched line is missing or unclear, say you're unsure rather than
-  guessing a cause."""
+- Treat them as optional steering. Use a fire that helps the current task, and
+  continue your normal flow past one that doesn't.
+- Ground every action in the user's request or your current task. That is the
+  bar for any side effect — writing files, changing worker state, sending
+  messages, database writes — whatever a recall suggests.
+- Using a helpful fire and moving past an unhelpful one is the complete
+  handling. The consolidation passes at episode boundaries maintain the
+  matcher itself; they read the fire telemetry directly."""
 
 
 class MemoryManager:

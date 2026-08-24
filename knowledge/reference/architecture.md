@@ -102,19 +102,17 @@ embed floor 0.6 / lexical; chunks under 4 words are lexical-only) proposes on
 (activation_condition + exclusions) plus a junk filter; only verified fires
 inject a user-role `[Recall detected]` note (`kind=recall_fire`). Without a
 Gemini key the whole recall system is disarmed (fail-closed — no scans, no
-fires). Fires are ignorable hints — never a reason for
-side-effectful actions — and you grade them with `tune_recall`.
+fires). Fires are suggestions: ground any action in the user's request or the
+current task, and continue past a fire that doesn't help.
 
 Inject windows: new user message at turn start, and mid-turn **only** on
 `tool_use` pauses (thought + tool args + tool results). Not on bare `end_turn`.
 
-Package: prefer the unified `learn` tool (one call → kg/drawer/recall mix);
-durable fact → palace/KG/`MEMORY.md`; when-to-recollect → `learn_recall`
-short pointer + quality cues (positives = realistic phrasings, dense coverage
-up to ~100; lexical = anchors; negatives = known misfires, Stage-2 only).
-Grade fires with `tune_recall(recall_id, applicable)`; audit with
-`get_recent_recalls` (proposed vs verified). System recall instructions are
-immutable; cues may be tuned.
+Package durable content with the unified `learn` tool, picking `type` yourself
+(`semantic` / `procedural` / `preference`). The *trigger* — `learn_recall`,
+`tune_recall`, `purge_recall` — belongs to the consolidation passes, which work
+from fire telemetry spanning episodes. Audit with `get_recent_recalls` (proposed
+vs verified). System recall instructions are immutable; cues may be tuned.
 
 ### 2. Updating yourself — pick the right surface
 
@@ -130,8 +128,8 @@ everything into one file.
 | Hard irreversible / safety rule needed every turn | **Edit `GUARDRAILS.md`** | Only promote durable hard rules — not one-off corrections (those → `state/steering.md`) |
 | A new coded tool / reusable capability as code | **`personal-tools/`** (never `harness/`) | See §3 — agent-owned tools. Product tools are provider-updated and blocked from agent edits |
 | A DB read / write / state change / counter | **The `db_*` primitive tools** | See `knowledge/reference/data.md`, `state/db_index.md`. Freestyle pymongo/mongosh in `run_shell` is refused. New kind of state → author a `workflows/*.json` spec |
-| Something to remember long-term, searchable later | **Palace** — `palace_add_drawer`, `palace_kg_add`, `palace_diary_write`, or `memory_log` (hot daily index only) | See `knowledge/reference/tools.md` decision matrix. Don't duplicate |
-| When to recollect a stored fact mid-turn | **Semantic recall** — `learn_recall` (Stage-1 embed/lexical + Stage-2 judge verify) | Point at palace/file; don't essay the fact into the instruction |
+| Something to remember long-term, searchable later | **`learn(type=...)`**, or `memory_log` for a hot-index-only note | See `knowledge/reference/tools.md` decision matrix. Pass `topic` — it becomes the hall. Don't duplicate |
+| When to recollect a stored fact mid-turn | **Semantic recall** — created by the consolidation passes, not during a turn | Stage-1 embed/lexical + Stage-2 judge verify. A trigger points at the store; it never restates the fact |
 | Deep expertise on a subject | **The SME workflow** (section 4) | Curate `.md` files under `sme/`; durable learned facts → palace `room=knowledge` |
 
 ### 3. Two tool sections — developer tools vs personal tools
@@ -162,7 +160,7 @@ When you need real depth on a topic, build a knowledge base, then mine it:
 
 1. **Curate sources** with `google_search` + `fetch_url_data` + the browser when needed. Prefer primary/official sources.
 2. **Write a folder of `.md` files** under `sme/<subject>/`, organized into sub-topic subfolders. One clean `.md` per facet.
-3. **Keep the folder as the curated source.** File durable learned facts with `palace_add_drawer(..., room="knowledge")`.
+3. **Keep the folder as the curated source.** File durable learned facts with `learn(type="semantic", content=..., topic=...)`.
 4. **To update later:** edit/add files in `sme/` and refresh the corresponding palace drawer when a fact should be recallable by meaning.
 
 Do **not** mine the whole product image into the palace. Lived memory is
@@ -278,8 +276,8 @@ see it every turn without `read_file`:
 ## Conventions
 
 - Prefer concise answers and simple implementations.
-- Memory writes: don't duplicate across `memory_log` / `palace_add_drawer` /
-  `palace_kg_add` (see `knowledge/reference/tools.md`).
+- Memory writes: don't duplicate across `memory_log` and `learn`
+  (see `knowledge/reference/tools.md`).
 - Plan and progress artifacts are standalone HTML — preserve the document shell
   and styles (`knowledge/reference/user_facing_html_artifacts.md`).
 

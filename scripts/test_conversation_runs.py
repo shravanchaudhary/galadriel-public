@@ -158,6 +158,9 @@ class SwitchMainRunTests(unittest.TestCase):
         agent._compaction_summary = {}
         agent._last_input_tokens = {}
         agent._last_archived_len = {}
+        agent._notified_recall_ids = {}
+        agent._session_id = {}
+        agent._session_segments = {}
         agent.is_channel_busy = lambda channel: False
 
         target = {

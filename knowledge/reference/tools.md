@@ -41,7 +41,7 @@ chart, UI mockup, or photo — look at it and answer from what you see.
 
 *Your verbatim semantic memory. The **complete chat history** (every message,
 archived on `/new`, compaction, and shutdown) lives here in `room=conversations`,
-alongside your diary and `palace_add_drawer` facts — all searchable by meaning.
+alongside your diary and the facts you file with `learn` — all searchable by meaning.
 Runs locally in ChromaDB + SQLite. **Zero API tokens spent, ever.** Results are
 your exact words, never paraphrased.*
 
@@ -60,8 +60,13 @@ your exact words, never paraphrased.*
   - `diary` — first-person reflection
 - **Wing** — top-level namespace. **All lived memory is the single `agent` wing —
   you never choose a wing.**
-- **Hall** — MemPalace's keyword auto-topic dimension. Halls are NOT project IDs;
-  put project names in the query text.
+- **Hall** — the sub-category inside a room, and the palace's only topical
+  clustering dimension. Two drawers in *different* rooms that share a hall are
+  linked, so the hall is what connects a procedure to the facts behind it. The
+  `topic` you pass to `learn` becomes the hall; omit it and the drawer lands in
+  `general`, clustered with nothing. Reuse an existing hall name whenever one
+  fits — `palace_taxonomy()` lists them. Halls are NOT project IDs; put project
+  names in the query text.
 
 ### When to reach for it
 
@@ -103,30 +108,38 @@ or truncated, grep the source file the result names.
 
 ### Decision matrix — where to record what
 
+During a normal turn you have exactly two memory writers: `memory_log` for
+scratch notes and `learn` for anything durable. Pick the `type` yourself.
+
 | What you want to save | Use | Becomes palace-searchable |
 |---|---|---|
 | A raw observation, progress tick, quick note | `memory_log(entry)` | Hot daily index only |
-| A durable verbatim fact | `palace_add_drawer(content, topic, room="knowledge")` | Immediately |
-| A daily recap / operational narrative | `palace_add_drawer(..., room="episodes")` | Immediately — goodnight uses this for `daily-recap-YYYY-MM-DD` |
-| A structured relational fact | `palace_kg_add(subject, predicate, object)` | Immediately via KG |
-| A reflection in your own voice | `palace_diary_write(entry, topic)` | Immediately into diary |
-| When to recollect a stored fact/rule (reactive trigger) | `learn_recall(...)` pointing at palace/file | No — injects a mid-turn recall-fire suggestion |
+| A durable fact worth re-reading later | `learn(type="semantic", content=..., topic=...)` | Immediately, as a `knowledge` drawer |
+| A structured relational fact | `learn(type="semantic", kg_triplets=[[s, p, o]], valid_from=...)` | Immediately via KG |
+| A reusable how-to, or the lesson from a failure | `learn(type="procedural", content=..., topic=...)` | Immediately — `knowledge/**` file plus a drawer |
+| How the user wants you to behave going forward | `learn(type="preference", content=...)` | Immediately — daily log plus a drawer |
 | Always-on lean fact every turn | `MEMORY.md` (stable block) | No — already in context |
 
-**Package learnings:** durable content → drawer/KG; when-to-recollect →
-`learn_recall` with quality cues (positives = realistic phrasings, lexical =
-high-precision anchors, negatives = near-misses that also feed Stage-2 judge
-few-shots, instruction = short pointer). `get_recent_recalls` shows proposed vs
-verified: FP inject → add `matched_chunk` to negatives; Stage-2 reject that
-should have fired → strengthen positives (ambient + silent learn passes).
+`learn` validates, dedupes against recent memories of the same type, writes, and
+records provenance. A near-duplicate is skipped rather than re-written, so
+re-teaching something is safe. Be conservative: use it for things you are
+confident are worth keeping, not for every detail of the task.
 
-For encode → retrieve-test → spaced retest when filing durable knowledge, follow
-`knowledge/skills/retrieval-practice.md` (INDEX id `retrieval-practice`): dig deep
-into palace/KG neighbors, file, retrieve-test once, then create/patch the pointer
-recall.
+**Recalls are maintained elsewhere.** The granular writers —
+`palace_add_drawer`, `palace_kg_add`, `palace_kg_invalidate`,
+`palace_diary_write`, `learn_recall`, `tune_recall`, `purge_recall` — belong to
+the consolidation passes that run at episode boundaries, and to Tower. They
+decide *when* a memory should resurface, working from fire telemetry that spans
+episodes. Within a turn, using a helpful fire and moving past an unhelpful one
+is the complete handling.
+
+For the encode → retrieve-test loop when filing durable knowledge, follow
+`knowledge/skills/retrieval-practice.md` (INDEX id `retrieval-practice`): dig
+into palace/KG neighbors first, file with `learn`, then query it back with a
+natural question as if you hadn't just written it.
 
 **Don't** duplicate. Daily-log lines are an index pointer — durable facts still
-need an explicit palace write.
+need an explicit `learn` call.
 
 ### Reading from the palace
 

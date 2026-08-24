@@ -8,9 +8,12 @@ Scheduled activities:
      heartbeat, it fires EXACTLY ONCE and clears itself only after delivery.
      This is the correct mechanism for "resume me after I restart myself".
   3. Morning (09:10 agent timezone, workdays only): morning greeting, calendar, coffers.
-  4. Ambient reflection (workday slots): the agent thinks, files anything worth
-     keeping to the palace, audits the background worker, and posts a brief
-     worker-status summary (pausing the worker if it is misbehaving).
+  4. Ambient reflection (workday slots): the periodic memory consolidator —
+     merges/dedupes, strengthens or weakens memory using retrieval telemetry
+     evidence, promotes repeated episode patterns to procedures, tunes recall
+     cues — plus audits the background worker and posts a brief worker-status
+     summary (pausing the worker if it is misbehaving). See
+     harness/consolidation.py and loop_prompts.reflection_prompt.
   5. Goodnight (21:00 agent timezone): wish good night and disable heartbeat (REST).
 
 Ambient reflection is opt-out: set GALADRIEL_REFLECTION=0 to disable.
@@ -786,16 +789,20 @@ class Scheduler:
             log.warning("Catch-up delivery failed; left for retry on next boot.")
 
     async def _reflection_routine(self):
-        """Ambient reflection + retro + worker audit — per slot in REFLECTION_TIMES, workdays.
+        """Ambient reflection + periodic memory consolidation + worker audit —
+        per slot in REFLECTION_TIMES, workdays.
 
-        The agent thinks privately, files anything worth keeping to the palace,
-        distills lessons, and AUDITS the background worker against the cookbooks
-        + guardrails.         It steers by appending to `state/steering.md` (which the
-        worker and morning planner read), and ALWAYS posts a brief worker-status
-        summary to the user (a forced-silent turn is unreliable, so the spoken
-        output is made useful instead). It additionally pauses the worker via
-        `state/worker_control.md` when it finds the worker doing something bad or
-        consistently misbehaving (PART 3).
+        The agent runs the periodic consolidator pass (merge/dedupe, strengthen
+        or weaken memory using retrieval-telemetry evidence from
+        memory_utility_report, promote repeated episode patterns to
+        procedures, tune recall cues — see loop_prompts.reflection_prompt),
+        and AUDITS the background worker against the cookbooks + guardrails.
+        It steers by appending to `state/steering.md` (which the worker and
+        morning planner read), and ALWAYS posts a brief worker-status summary
+        to the user (a forced-silent turn is unreliable, so the spoken output
+        is made useful instead). It additionally pauses the worker via
+        `state/worker_control.md` when it finds the worker doing something bad
+        or consistently misbehaving (PART 3).
         """
         log.info("Reflection routine starting...")
         # Mine the live user conversation(s) up to now BEFORE reflecting, so the
@@ -805,6 +812,17 @@ class Scheduler:
         # runs 4x/workday, so any active chat gets mined regularly regardless of
         # whether it ever hit the compaction threshold.
         await self._checkpoint_user_conversations()
+        # Promote preferences the user has restated enough times into the
+        # always-on prompt. Pure counting over the candidate records, so it
+        # runs before the turn rather than costing the consolidator a decision.
+        try:
+            from .consolidation import promote_preferences
+
+            promoted = await promote_preferences()
+            if promoted:
+                log.info(f"[Reflection] {promoted}")
+        except Exception as e:
+            log.warning(f"[Reflection] preference promotion failed: {e}")
         today = tower_settings.agent_today()
         await self._send_agent_message(
             prompt=_reflection_prompt(today),

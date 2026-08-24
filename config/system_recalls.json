@@ -359,7 +359,7 @@
     },
     {
         "recall_id": "sys_learn_recall",
-        "instruction": "The user is teaching something durable to reuse later. Prefer the unified `learn` tool: one call with `content` packages it into KG / palace drawer / semantic recall automatically (pass explicit artifacts to control packaging). Dig deep: link to existing palace/KG neighbors \u2014 do not essay the fact into a recall instruction. If tuning cues by hand: positive_examples = realistic phrasings (dense coverage helps, up to ~100); lexical_cues = high-precision anchors; negative_examples = known misfires (Stage-2 only); instruction = one-liner pointer. Grade fires with `tune_recall`. Use `get_recall` first if updating; `purge_recall` only for bad user recalls. System recall instructions stay immutable.",
+        "instruction": "The user is teaching something durable to reuse later. Call `learn` with an explicit `type`: `semantic` for what is true (pass kg_triplets for crisp entity/relationship facts, or content alone for durable prose), `procedural` for a reusable how-to lesson, `preference` for how to behave going forward. Write content that stands on its own months later, and pass `topic` so it files into the right hall next to related memories \u2014 check `palace_taxonomy` if unsure which one. Near-duplicates are skipped automatically, so re-teaching something is safe. Storing it is the whole job here; the consolidation passes decide when it should resurface later.",
         "positive_examples": [
             "please remember that I prefer dark mode",
             "can you remember my favorite fruit is mango",

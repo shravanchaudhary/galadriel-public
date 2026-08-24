@@ -77,15 +77,49 @@ LOOP_TICK_CHANNELS = frozenset({
     "wake", "heartbeat", "morning", AMBIENT_CHANNEL_ID, "goodnight", "completions",
 })
 
-EPHEMERAL_RECALL_TOOLS = frozenset({
-    "get_recall", "get_recent_recalls", "learn_recall", "purge_recall",
-    "tune_recall",
+# Tools available to the task-end consolidation pass (see
+# GaladrielAgent.run_task_consolidation) — judgment calls only, expressed as
+# structured tool calls; the harness does all counting/persistence
+# deterministically in the handlers. Recall management is folded in here
+# rather than kept as a separate pass.
+CONSOLIDATION_TOOLS = frozenset({
+    "propose_memory", "propose_recall", "grade_retrieval", "flag_memory",
+    "read_episode_segment",
+    "palace_search", "palace_kg_query", "palace_kg_timeline",
+    "get_recall", "get_recent_recalls", "learn_recall", "tune_recall", "purge_recall",
 })
 
 # Tools whose args/results are recall/learning meta-content (example phrases,
 # feedback notes, instructions). Scanning them makes the matcher fire on its
 # own bookkeeping, so they are excluded from the mid-turn recall scan corpus.
-RECALL_SCAN_EXCLUDED_TOOLS = EPHEMERAL_RECALL_TOOLS | frozenset({"learn"})
+RECALL_SCAN_EXCLUDED_TOOLS = CONSOLIDATION_TOOLS | frozenset({"learn"})
+
+# Granular memory writers + consolidator-authoring tools hidden from a normal
+# turn's toolset. `learn` is the one runtime-facing writer (conservative,
+# typed, routes through the same commit path as the consolidators — see
+# harness/consolidation.py); these remain fully functional for Tower (calls
+# palace.py directly), for the task-end consolidation pass (CONSOLIDATION_TOOLS),
+# and for the periodic consolidator (ambient reflection / goodnight — see
+# PERIODIC_CONSOLIDATOR_CHANNELS), just not offered to the model mid-task.
+RUNTIME_HIDDEN_TOOLS = frozenset({
+    "palace_add_drawer", "palace_kg_add", "palace_kg_invalidate",
+    "palace_diary_write", "learn_recall", "tune_recall", "purge_recall",
+    "propose_memory", "propose_recall", "grade_retrieval", "flag_memory",
+    "read_episode_segment", "memory_utility_report",
+})
+
+# Channels where the periodic consolidator runs (see the plan's timescale 4 —
+# ambient reflection/goodnight absorb cross-episode consolidation). These keep
+# the full toolset, including the writers RUNTIME_HIDDEN_TOOLS hides elsewhere.
+PERIODIC_CONSOLIDATOR_CHANNELS = frozenset({AMBIENT_CHANNEL_ID, "goodnight"})
+
+# Read tools whose non-empty results are utility-telemetry retrieval events
+# (see harness/consolidation.py phase 4). palace_search/kg results are
+# formatted markdown, not a list of item ids, so — unlike recall fires, which
+# link a precise recall_id — these log at query/room (or entity) granularity;
+# still enough for the task-end consolidator to grade "was this search useful"
+# and for repeat KG-entity lookups to accumulate real cross-episode stats.
+PALACE_RETRIEVAL_TOOLS = frozenset({"palace_search", "palace_kg_query", "palace_kg_timeline"})
 
 _STOPPED_ASSISTANT_NOTE = "(Stopped — turn cancelled.)"
 
@@ -218,24 +252,6 @@ def _recall_fire_message(matches: list[dict], fire_text: str) -> dict:
         "matched_recall_ids": [m.get("recall_id") for m in matches if m.get("recall_id")],
     }
 
-
-def _recall_fingerprint(recalls: list[dict]) -> dict[str, tuple]:
-    """Stable fingerprint of recall definitions for learn-diff after ephemeral pass."""
-    out: dict[str, tuple] = {}
-    for r in recalls:
-        rid = str(r.get("recall_id") or "")
-        if not rid:
-            continue
-        out[rid] = (
-            (r.get("instruction") or "").strip(),
-            (r.get("activation_condition") or "").strip(),
-            (r.get("exclusions") or "").strip(),
-            tuple(r.get("positive_examples") or []),
-            tuple(r.get("negative_examples") or []),
-            tuple(r.get("lexical_cues") or []),
-            bool(r.get("enabled", True)),
-        )
-    return out
 
 class TurnCancelled(Exception):
     """Raised when a channel turn is cancelled via request_stop()."""
@@ -774,6 +790,14 @@ class GaladrielAgent:
         # Recalls already injected into the live buffer. Lives across turns; cleared
         # only when the buffer resets (new conversation / summarization).
         self._notified_recall_ids: dict[str, set] = {}
+        # Learning-episode tracking: a session_id is stable for one channel from
+        # its first live message until the next episode boundary (/new, clear, or
+        # a worker tick reporting work). Compaction never ends a session — it only
+        # archives/mines and appends a segment pointer here, so task-end
+        # consolidation (on_episode_end) can later index everything the episode
+        # touched, including content already folded out of the live buffer.
+        self._session_id: dict[str, str] = {}
+        self._session_segments: dict[str, list[dict]] = {}
         if self._pending_run_recovery is not None:
             run, tail, checkpoint = self._pending_run_recovery
             self.conversations[MAIN_CHANNEL_ID] = list(tail)
@@ -939,6 +963,118 @@ class GaladrielAgent:
         self._last_warn_tier.pop(channel_id, None)
         self._output_ceiling_streak.pop(channel_id, None)
         self._notified_recall_ids.pop(channel_id, None)
+        self._session_id.pop(channel_id, None)
+        self._session_segments.pop(channel_id, None)
+
+    def _session_for(self, channel_id: str) -> str:
+        """Stable id for the channel's current learning episode, created lazily."""
+        sid = self._session_id.get(channel_id)
+        if not sid:
+            sid = uuid.uuid4().hex
+            self._session_id[channel_id] = sid
+            self._session_segments[channel_id] = []
+        return sid
+
+    def _record_session_segment(
+        self,
+        channel_id: str,
+        batch_dir: "Path | None",
+        *,
+        kind: str,
+        message_count: int,
+    ) -> None:
+        """Track one archived batch as part of the current episode, so task-end
+        consolidation can enumerate + drill into everything the episode touched
+        even after several compactions have folded it out of the live buffer.
+        """
+        self._session_for(channel_id)
+        self._session_segments.setdefault(channel_id, []).append({
+            "segment_id": batch_dir.name if batch_dir is not None else None,
+            "kind": kind,
+            "archived_at": datetime.now(timezone.utc).isoformat(),
+            "message_count": message_count,
+        })
+
+    async def _log_retrieval_event(
+        self,
+        channel_id: str,
+        *,
+        memory_key: str,
+        memory_kind: str,
+        query_or_cue: str,
+        rank: int = 1,
+    ) -> None:
+        """Fire-and-forget utility-telemetry hook (see harness/consolidation.py
+        phase 4): every time memory content is actually surfaced into a live
+        conversation — a recall fire, a palace_search/palace_kg_query result —
+        this stamps a retrieval_events record tagged with the CURRENT episode's
+        session_id, so the task-end consolidator can later list it in
+        [EPISODE_RETRIEVALS] and grade it. Never raises into the turn.
+        """
+        try:
+            from . import consolidation
+            await consolidation.log_retrieval(
+                memory_key=memory_key,
+                memory_kind=memory_kind,
+                channel_id=channel_id,
+                session_id=self._session_for(channel_id),
+                query_or_cue=query_or_cue,
+                rank=rank,
+            )
+        except Exception as e:
+            log.warning(f"Retrieval telemetry failed (channel={channel_id}): {e}")
+
+    @staticmethod
+    def _tool_result_has_content(result) -> bool:
+        """True when a palace read tool actually returned something, not one
+        of its own empty/error sentinels ("No drawers matched ...", "No KG
+        facts match ...", "[palace error] ...", etc.) — those aren't
+        retrievals worth telemetry.
+        """
+        if not isinstance(result, str):
+            return bool(result)
+        stripped = result.strip()
+        if not stripped:
+            return False
+        return not (stripped.startswith("[") or stripped.startswith("No "))
+
+    async def _log_palace_retrieval(
+        self, channel_id: str, tool_name: str, tool_input: dict, result,
+    ) -> None:
+        """Utility-telemetry hook for the palace_search/palace_kg_query/
+        palace_kg_timeline tools — see PALACE_RETRIEVAL_TOOLS and
+        _log_retrieval_event. Best-effort, never raises into the turn.
+        """
+        if not self._tool_result_has_content(result):
+            return
+        if tool_name == "palace_search":
+            if (tool_input.get("order") or "semantic") != "semantic":
+                return  # order=recency browses episodic archives, not durable memory.
+            scope = tool_input.get("room") or tool_input.get("wing") or tool_input.get("hall") or "all"
+            await self._log_retrieval_event(
+                channel_id,
+                memory_key=f"drawer_search:{scope}",
+                memory_kind="drawer",
+                query_or_cue=tool_input.get("query") or "",
+            )
+        elif tool_name == "palace_kg_query":
+            subject = tool_input.get("subject") or "*"
+            predicate = tool_input.get("predicate") or "*"
+            obj = tool_input.get("object") or "*"
+            await self._log_retrieval_event(
+                channel_id,
+                memory_key=f"kg:{subject}/{predicate}/{obj}",
+                memory_kind="kg",
+                query_or_cue=f"subject={subject} predicate={predicate} object={obj}",
+            )
+        elif tool_name == "palace_kg_timeline":
+            entity = tool_input.get("entity") or "?"
+            await self._log_retrieval_event(
+                channel_id,
+                memory_key=f"kg_timeline:{entity}",
+                memory_kind="kg",
+                query_or_cue=entity,
+            )
 
     async def _maybe_warn_context(self, response, channel_id: str):
         """Nudge the user toward /compact or /new when input context crosses
@@ -1321,24 +1457,25 @@ class GaladrielAgent:
         *,
         holding_lock: bool = False,
         full: bool = True,
-        learn: bool = True,
     ) -> dict:
         """Snapshot-compact a channel.
 
         Archives the summarized messages to the palace (durable write + synchronous
         mine — archival is mandatory and must finish before the next task, which
-        may recall from the palace, runs), runs a sync ephemeral recall learn+audit
-        on the live buffer, generates a cumulative structured snapshot that folds
-        in any prior snapshot, stores it (re-injected as a system block by
-        respond() until the next compaction), and drops the summarized messages.
+        may recall from the palace, runs), generates a cumulative structured
+        snapshot that folds in any prior snapshot, stores it (re-injected as a
+        system block by respond() until the next compaction), and drops the
+        summarized messages.
+
+        Compaction never runs memory consolidation/learning — it only archives
+        and mines to the palace. Learning happens at episode boundaries via
+        `on_episode_end` (see /new, worker "worked" ticks), so it never has to
+        run redundantly mid tool-cascade or block an in-flight turn.
 
         `full=True` — manual `/compact`, where the previous turn is finished and
         the user wants a clean slate — summarizes the whole buffer. `full=False`
         (automatic) keeps the tail from the last real user turn verbatim, so the
         instruction in flight is never summarized out from under the model.
-
-        `learn=False` skips the recall learn pass, which is too slow to run in
-        the middle of a tool cascade.
 
         Returns the compaction stats dict (with "compacted": bool).
         """
@@ -1366,13 +1503,16 @@ class GaladrielAgent:
         #    mine must complete before this returns: the next task may recall
         #    from the palace, and mining can take a while, so we cannot
         #    fire-and-forget. The tail stays live and is archived by a later
-        #    checkpoint, once it is complete.
+        #    checkpoint, once it is complete. The batch dir becomes a segment
+        #    pointer so task-end consolidation can later drill into this
+        #    specific verbatim slice via read_episode_segment.
+        batch_dir = None
         try:
             if run_recorder is not None:
-                from .memory_sync import stage_and_mine_main
-                await stage_and_mine_main(
-                    run_recorder.run_id, head, kind="compact", agent="compaction",
-                )
+                from .memory_sync import stage_main, mine_staged_main
+                batch_dir = await stage_main(run_recorder.run_id, head, kind="compact")
+                if batch_dir is not None:
+                    await mine_staged_main(batch_dir, agent="compaction", messages_count=len(head))
             else:
                 from . import palace
                 batch_dir = palace.archive_conversation_durable(
@@ -1382,22 +1522,9 @@ class GaladrielAgent:
                     await palace.mine_batch_dir(batch_dir, agent="compaction")
         except Exception as e:
             log.warning(f"Compaction archive failed (channel={channel_id}): {e}")
-
-        # 1b. Sync ephemeral recall learn+FP/FN audit on the live buffer.
-        #     Rolled back before snapshot; learn failure never blocks the drop.
-        learned_recall_ids: list[str] = []
-        if learn:
-            log.info(
-                f"[Compact] archive done; starting recall learn "
-                f"(channel={channel_id}, messages={len(messages)})"
-            )
-            learned_recall_ids = await self.run_ephemeral_recall_update(
-                channel_id, holding_lock=holding_lock,
-            )
+        self._record_session_segment(channel_id, batch_dir, kind="compact", message_count=len(head))
 
         # 2. Snapshot — fold in any prior snapshot for this channel.
-        #    Learned recall ids become pointers in the snapshot so facts already
-        #    stored via learn_recall are not re-embedded as prose.
         from .compaction import compact_to_snapshot
         prior = self._compaction_summary.get(channel_id, "")
         result = await compact_to_snapshot(
@@ -1405,7 +1532,7 @@ class GaladrielAgent:
             prior_snapshot=prior,
             channel_id=channel_id,
             run_id=getattr(run_recorder, "run_id", None),
-            learned_recall_ids=learned_recall_ids,
+            learned_recall_ids=[],
             **self._live_summarizer(channel_id),
         )
         self._compaction_summary[channel_id] = result["snapshot"]
@@ -2101,6 +2228,11 @@ class GaladrielAgent:
             for m in new_user_matches:
                 notified_recall_ids.add(m.get("recall_id"))
                 await _log_recall_fire(channel_id, m, scanned)
+                if not ephemeral:
+                    await self._log_retrieval_event(
+                        channel_id, memory_key=f"recall:{m.get('recall_id')}",
+                        memory_kind="recall", query_or_cue=scanned,
+                    )
             
             fire_text = generate_recall_fire_text(new_user_matches)
             log.info(f"User-message recall fire triggered: {fire_text!r}")
@@ -2132,13 +2264,17 @@ class GaladrielAgent:
             turn_tools = [
                 {k: v for k, v in t.items() if k != "cache_control"}
                 for t in turn_tools
-                if t.get("name") in EPHEMERAL_RECALL_TOOLS
+                if t.get("name") in CONSOLIDATION_TOOLS
             ]
             if turn_tools:
                 turn_tools[-1] = {
                     **turn_tools[-1],
                     "cache_control": {"type": "ephemeral"},
                 }
+        elif channel_id not in PERIODIC_CONSOLIDATOR_CHANNELS:
+            turn_tools = [
+                t for t in turn_tools if t.get("name") not in RUNTIME_HIDDEN_TOOLS
+            ]
 
         max_tokens_retries = 0  # Track consecutive max_tokens hits
         turn_thought = ""  # Accumulated thought deltas for the current API response
@@ -2147,7 +2283,6 @@ class GaladrielAgent:
         # byte-identical across the tool cascade. Stored history (`messages`)
         # stays original. Reset each turn / after compaction rebuilds.
         api_messages: list | None = None
-        first_api_call = True
 
         while True:
             self._check_cancelled(channel_id)
@@ -2162,9 +2297,9 @@ class GaladrielAgent:
             # truncated response. Measured input context is the only trigger —
             # older messages fold into a snapshot while the current user turn
             # and the work done for it stay verbatim (see compaction.partition).
-            # The learn pass only runs on the first call; mid-turn it is too slow
-            # to make the user wait for. Resilient: a failure leaves the buffer
-            # intact and the turn proceeds on the full context.
+            # Compaction only archives/mines here — never learns — so repeating
+            # it mid tool-cascade is cheap and safe. Resilient: a failure leaves
+            # the buffer intact and the turn proceeds on the full context.
             if (
                 (not ephemeral)
                 and self._last_input_tokens.get(channel_id, 0) > runtime["context"]
@@ -2174,7 +2309,6 @@ class GaladrielAgent:
                         channel_id,
                         holding_lock=True,
                         full=False,
-                        learn=first_api_call,
                     )
                     if compacted.get("compacted"):
                         # Fresh snapshot block; the blocks built earlier are stale.
@@ -2185,7 +2319,6 @@ class GaladrielAgent:
                         api_messages = None
                 except Exception as e:
                     log.warning(f"Compaction failed ({e}); proceeding with full context")
-            first_api_call = False
 
             # Guard against empty message list
             if not messages:
@@ -2675,11 +2808,14 @@ class GaladrielAgent:
 
                     # execute_tool never raises — missing args / tool bugs come
                     # back as "[tool error] …" so the model can correct + retry.
-                    if ephemeral and tool_name not in EPHEMERAL_RECALL_TOOLS:
+                    if ephemeral and tool_name not in CONSOLIDATION_TOOLS:
                         result = (
                             f"[blocked] tool `{tool_name}` is not available during "
-                            "the silent recall-update pass. Use get_recall, "
-                            "get_recent_recalls, learn_recall, or purge_recall."
+                            "the silent consolidation pass. Use propose_memory, "
+                            "grade_retrieval, flag_memory, read_episode_segment, "
+                            "palace_search, palace_kg_query, palace_kg_timeline, "
+                            "get_recall, get_recent_recalls, learn_recall, "
+                            "tune_recall, or purge_recall."
                         )
                     else:
                         result = await execute_tool(
@@ -2710,6 +2846,8 @@ class GaladrielAgent:
                         await self._audit_experience_snapshot(
                             experience_snapshot, tick_recorder, run_recorder,
                         )
+                    if not ephemeral and tool_name in PALACE_RETRIEVAL_TOOLS:
+                        await self._log_palace_retrieval(channel_id, tool_name, tool_input, result)
 
                     if (
                         is_new_file
@@ -2824,6 +2962,11 @@ class GaladrielAgent:
                         for m in new_matches:
                             notified_recall_ids.add(m.get("recall_id"))
                             await _log_recall_fire(channel_id, m, text_to_scan[:500])
+                            if not ephemeral:
+                                await self._log_retrieval_event(
+                                    channel_id, memory_key=f"recall:{m.get('recall_id')}",
+                                    memory_kind="recall", query_or_cue=text_to_scan[:500],
+                                )
 
                         fire_text = generate_recall_fire_text(new_matches)
                         log.info(f"Tool-use recall fire triggered: {fire_text!r}")
@@ -2903,6 +3046,11 @@ class GaladrielAgent:
         self._last_input_tokens.pop(MAIN_CHANNEL_ID, None)
         self._last_archived_len[MAIN_CHANNEL_ID] = 0
         self._notified_recall_ids.pop(MAIN_CHANNEL_ID, None)
+        # The live buffer just became a different run's messages entirely —
+        # any in-flight learning episode belonged to the parked run, not this
+        # one, so it must not be attributed to whatever runs next.
+        self._session_id.pop(MAIN_CHANNEL_ID, None)
+        self._session_segments.pop(MAIN_CHANNEL_ID, None)
         if checkpoint and checkpoint.get("summary"):
             self._compaction_summary[MAIN_CHANNEL_ID] = checkpoint["summary"]
         else:
@@ -2922,155 +3070,156 @@ class GaladrielAgent:
             "title": reactivated.get("title") or run.get("title"),
         }
 
-    async def run_ephemeral_recall_update(
+    async def run_task_consolidation(
         self,
         channel_id: str,
         *,
-        holding_lock: bool = False,
-        messages_snapshot: list | None = None,
-    ) -> list[str]:
-        """Silent learn+FP/FN audit; never persists the turn into history.
+        reason: str,
+        messages_snapshot: list,
+        session_id: str | None,
+        session_segments: list[dict],
+    ) -> None:
+        """Task-end memory consolidation: one agent turn on a disposable side
+        channel that reviews the episode just ended and proposes/grades memory
+        through structured tools (propose_memory, grade_retrieval, flag_memory,
+        read_episode_segment, plus recall management) — see CONSOLIDATION_TOOLS.
+        The model does judgment only; harness code does all counting and
+        persistence deterministically in the tool handlers (harness/tools.py)
+        and harness/consolidation.py.
 
-        Default: runs on the live channel buffer (compact / worker) for cache
-        reuse, then rolls messages back. Tool side effects (Mongo recalls)
-        remain.
+        Always runs on a fresh disposable side channel seeded with a snapshot
+        of the episode — never on the live buffer, never with rollback. A
+        snapshot has an identical prefix to the live buffer, so it costs
+        nothing in prompt-cache terms, and discarding the channel afterward is
+        the entire cleanup (no rollback bookkeeping to get wrong).
 
-        With ``messages_snapshot``, installs a deepcopy on a disposable side
-        channel so /new can learn after wiping ``main`` without blocking the
-        next user turn. Midloop compact intentionally skips this pass.
-
-        Returns recall_ids created or patched during the pass (for snapshot
-        pointers).
+        Called only from on_episode_end, i.e. at true episode boundaries.
+        compact_channel never calls this — mid-episode compaction only
+        archives/mines to the palace.
         """
         if not self.recall_enabled:
-            log.info(
-                f"[RecallUpdate] skip channel={channel_id} reason=recall_disabled"
-            )
-            return []
+            log.info(f"[Consolidate] skip channel={channel_id} reason=recall_disabled")
+            return
+        if not messages_snapshot:
+            log.info(f"[Consolidate] skip channel={channel_id} reason=empty_episode")
+            return
 
-        if messages_snapshot is not None and not messages_snapshot:
-            log.info(
-                f"[RecallUpdate] skip channel={channel_id} reason=empty_snapshot"
-            )
-            return []
-
-        side_channel: str | None = None
-        work_channel = channel_id
-        saved_episode = None
-        pre: list | None = None
-        before_fp: dict[str, tuple] = {}
-        learned_ids: list[str] = []
-        ok = False
-
+        side_channel = f"__consolidate_{channel_id}_{uuid.uuid4().hex[:8]}"
+        self.conversations[side_channel] = copy.deepcopy(messages_snapshot)
         try:
-            if messages_snapshot is not None:
-                side_channel = f"__closing_{channel_id}_{uuid.uuid4().hex[:8]}"
-                work_channel = side_channel
-                self.conversations[side_channel] = copy.deepcopy(messages_snapshot)
-                holding_lock = False
-
-            messages = self.conversations.get(work_channel)
-            if not messages:
-                log.info(
-                    f"[RecallUpdate] skip channel={channel_id} reason=empty_buffer"
-                )
-                return []
-
-            from .loop_prompts import recall_update_prompt
+            from .loop_prompts import task_consolidation_prompt
             from .recall import fetch_all_recalls
+            from . import consolidation
 
-            saved_episode = self._active_experience_episodes.get(work_channel)
-            n_fires = sum(1 for m in messages if _is_recall_fire_message(m))
-            log.info(
-                f"[RecallUpdate] start channel={channel_id} work={work_channel} "
-                f"messages={len(messages)} recall_fires={n_fires} "
-                f"holding_lock={holding_lock} snapshot={side_channel is not None}"
-            )
-
-            async def _run_once(live: list) -> None:
-                nonlocal pre, before_fp
-                pre = copy.deepcopy(live)
-                try:
-                    catalog = await fetch_all_recalls()
-                except Exception as e:
-                    log.warning(f"Ephemeral recall catalog fetch failed: {e}")
-                    catalog = []
-                before_fp = _recall_fingerprint(catalog)
-                appendix = self._build_recall_audit_appendix(live, catalog)
-                overlay = self._build_recall_catalog_overlay(catalog)
-                prompt = recall_update_prompt() + "\n\n" + appendix
-                await self._respond_locked_inner(
-                    prompt,
-                    work_channel,
-                    emit=None,
-                    overlay_context=overlay,
-                    tick_recorder=None,
-                    run_source="ephemeral_recall",
-                    request_context={
-                        "source": "ephemeral_recall",
-                        "trusted": True,
-                        "trust_reason": "system_recall_pass",
-                    },
-                    ephemeral=True,
-                )
-
-            if holding_lock:
-                live = self.conversations.get(work_channel)
-                if not live:
-                    log.info(
-                        f"[RecallUpdate] skip channel={channel_id} "
-                        f"reason=empty_after_lock"
-                    )
-                    return []
-                await _run_once(live)
-            else:
-                async with self._lock_for(work_channel):
-                    live = self.conversations.get(work_channel)
-                    if not live:
-                        log.info(
-                            f"[RecallUpdate] skip channel={channel_id} "
-                            f"reason=empty_after_lock"
-                        )
-                        return []
-                    await _run_once(live)
-            ok = True
             try:
-                after_catalog = await fetch_all_recalls()
-                after_fp = _recall_fingerprint(after_catalog)
-                learned_ids = sorted(
-                    rid for rid, fp in after_fp.items()
-                    if before_fp.get(rid) != fp
+                catalog = await fetch_all_recalls()
+            except Exception as e:
+                log.warning(f"[Consolidate] recall catalog fetch failed: {e}")
+                catalog = []
+            try:
+                episode_index = await consolidation.build_episode_index(
+                    channel_id=channel_id,
+                    session_id=session_id,
+                    session_segments=session_segments,
+                    compaction_summary=self._compaction_summary.get(channel_id, ""),
                 )
             except Exception as e:
-                log.warning(f"Ephemeral recall learn-diff failed: {e}")
+                log.warning(f"[Consolidate] episode index build failed: {e}")
+                episode_index = ""
+            try:
+                digest = await consolidation.recent_consolidation_digest()
+            except Exception as e:
+                log.warning(f"[Consolidate] digest build failed: {e}")
+                digest = ""
+
+            fire_appendix = self._build_recall_audit_appendix(messages_snapshot, catalog)
+            overlay = self._build_recall_catalog_overlay(catalog)
+            prompt = "\n\n".join(
+                part for part in (
+                    task_consolidation_prompt(), episode_index, fire_appendix, digest,
+                ) if part
+            )
+            log.info(
+                f"[Consolidate] start channel={channel_id} reason={reason} "
+                f"session={session_id} messages={len(messages_snapshot)} "
+                f"segments={len(session_segments)}"
+            )
+            started_ts = datetime.now(timezone.utc).timestamp()
+            await self._respond_locked_inner(
+                prompt,
+                side_channel,
+                emit=None,
+                overlay_context=overlay,
+                tick_recorder=None,
+                run_source="task_consolidation",
+                request_context={
+                    "source": "task_consolidation",
+                    "trusted": True,
+                    "trust_reason": "system_consolidation_pass",
+                },
+                ephemeral=True,
+            )
+            # The turn's conversation is discarded with the side channel; this
+            # is what survives it — a searchable record of what the pass
+            # actually committed, so "when did I learn that?" is answerable
+            # later without keeping the learner's own reasoning around.
+            try:
+                await consolidation.write_consolidation_summary(
+                    channel_id=channel_id,
+                    reason=reason,
+                    session_id=session_id,
+                    since_ts=started_ts,
+                )
+            except Exception as e:
+                log.warning(f"[Consolidate] summary write failed: {e}")
+            log.info(f"[Consolidate] done channel={channel_id} reason={reason}")
         except Exception as e:
             log.warning(
-                f"[RecallUpdate] failed channel={channel_id}: {e}",
-                exc_info=True,
+                f"[Consolidate] failed channel={channel_id}: {e}", exc_info=True,
             )
         finally:
-            if side_channel is not None:
-                self.conversations.pop(side_channel, None)
-                self._channel_locks.pop(side_channel, None)
-                self._notified_recall_ids.pop(side_channel, None)
-                self._turn_cancel.pop(side_channel, None)
-                self._active_experience_episodes.pop(side_channel, None)
-                self._last_input_tokens.pop(side_channel, None)
-                self._compaction_summary.pop(side_channel, None)
-            else:
-                msgs = self.conversations.get(work_channel)
-                if msgs is not None and pre is not None:
-                    msgs[:] = pre
-                if saved_episode is not None:
-                    self._active_experience_episodes[work_channel] = saved_episode
-                else:
-                    self._active_experience_episodes.pop(work_channel, None)
-            log.info(
-                f"[RecallUpdate] done channel={channel_id} work={work_channel} "
-                f"ok={ok} rolled_back={pre is not None and side_channel is None} "
-                f"learned={learned_ids}"
-            )
-        return learned_ids
+            self.conversations.pop(side_channel, None)
+            self._channel_locks.pop(side_channel, None)
+            self._notified_recall_ids.pop(side_channel, None)
+            self._turn_cancel.pop(side_channel, None)
+            self._active_experience_episodes.pop(side_channel, None)
+            self._last_input_tokens.pop(side_channel, None)
+            self._compaction_summary.pop(side_channel, None)
+            self._session_id.pop(side_channel, None)
+            self._session_segments.pop(side_channel, None)
+
+    async def on_episode_end(
+        self,
+        channel_id: str,
+        reason: str,
+        *,
+        messages_snapshot: list | None = None,
+        session_id: str | None = None,
+        session_segments: list[dict] | None = None,
+    ) -> None:
+        """Fire task-end memory consolidation for one finished episode.
+
+        The only two episode-boundary triggers in the system: `/new` / clear
+        (via pop_and_archive_history — the live buffer is already wiped by
+        the time the background postprocess calls this, so it passes the
+        pre-wipe snapshot + session explicitly to avoid racing a new episode
+        that may already be accumulating on the same channel_id) and a worker
+        tick that reports work done (reads the still-live buffer/session
+        directly). Compaction never calls this — see compact_channel.
+        """
+        if messages_snapshot is None:
+            messages_snapshot = copy.deepcopy(self.conversations.get(channel_id) or [])
+        if session_id is None:
+            session_id = self._session_id.pop(channel_id, None)
+        if session_segments is None:
+            session_segments = self._session_segments.pop(channel_id, [])
+        await self.run_task_consolidation(
+            channel_id,
+            reason=reason,
+            messages_snapshot=messages_snapshot,
+            session_id=session_id,
+            session_segments=session_segments or [],
+        )
 
     @staticmethod
     def _build_recall_catalog_overlay(catalog: list[dict]) -> str:
@@ -3129,12 +3278,16 @@ class GaladrielAgent:
         snapshot: list,
         *,
         batch_dir: Path | None = None,
+        session_id: str | None = None,
+        session_segments: list[dict] | None = None,
+        reason: str = "new",
     ) -> None:
-        """Background learn+mine after /new wiped the live buffer.
+        """Background consolidate+mine after /new wiped the live buffer.
 
         The verbatim batch is staged to disk before wipe (crash-safe). This
-        task only runs the slow recall learn + palace mine. Compaction and
-        worker ticks keep their sync learn path.
+        task only runs the slow task-end consolidation + palace mine.
+        Compaction and worker ticks never touch consolidation directly; the
+        worker awaits on_episode_end synchronously right after its own tick.
         """
         n = len(snapshot)
         log.info(
@@ -3142,12 +3295,15 @@ class GaladrielAgent:
             f"messages={n} batch={batch_dir.name if batch_dir else '-'}"
         )
         try:
-            await self.run_ephemeral_recall_update(
-                channel_id, messages_snapshot=snapshot,
+            await self.on_episode_end(
+                channel_id, reason,
+                messages_snapshot=snapshot,
+                session_id=session_id,
+                session_segments=session_segments,
             )
         except Exception as e:
             log.warning(
-                f"[NewChat] background recall learn failed "
+                f"[NewChat] background task consolidation failed "
                 f"(channel={channel_id}): {e}"
             )
 
@@ -3209,14 +3365,17 @@ class GaladrielAgent:
         task.add_done_callback(_done)
 
     async def pop_and_archive_history(self, channel_id: str = "default", reason: str = "new") -> int:
-        """Clear the channel immediately; learn+mine the prior chat in background.
+        """Clear the channel immediately; consolidate+mine the prior chat in background.
 
-        Used by Discord `/new` / `!new` / `!clear` and Tower `/api/clear`.
+        Used by Discord `/new` / `!new` / `!clear` and Tower `/api/clear`. This
+        is one of the two episode boundaries in the system (the other is a
+        worker tick reporting work done) — the point where task-end memory
+        consolidation (on_episode_end) fires for this episode.
         Returns the number of messages queued for archive (0 if already empty).
 
         Fast path (awaited): snapshot → durable stage to disk/outbox → wipe →
-        end active run. Slow path (create_task): recall learn + palace mine.
-        Compaction and worker ticks still await learn/mine synchronously.
+        end active run. Slow path (create_task): task-end consolidation +
+        palace mine. Compaction only archives/mines and never triggers this.
 
         Silent fallback if mempalace isn't installed: history is still cleared.
         """
@@ -3275,12 +3434,17 @@ class GaladrielAgent:
 
         self.conversations.pop(channel_id, None)
         conversation_store.delete_channel(self.working_dir, channel_id)
-        # Clear per-channel transient state alongside the history.
+        # Clear per-channel transient state alongside the history. The session
+        # is captured (not just dropped) so the background postprocess below
+        # can consolidate THIS episode even though a new one may start
+        # accumulating on the same channel_id before that background task runs.
         self._output_ceiling_streak.pop(channel_id, None)
         self._compaction_summary.pop(channel_id, None)
         self._last_input_tokens.pop(channel_id, None)
         self._last_archived_len.pop(channel_id, None)
         self._notified_recall_ids.pop(channel_id, None)
+        session_id = self._session_id.pop(channel_id, None)
+        session_segments = self._session_segments.pop(channel_id, [])
 
         if channel_id == MAIN_CHANNEL_ID:
             from .conversation_run_store import end_active_run
@@ -3289,6 +3453,8 @@ class GaladrielAgent:
         self._spawn_clear_postprocess(
             self._postprocess_cleared_history(
                 channel_id, snapshot, batch_dir=batch_dir,
+                session_id=session_id, session_segments=session_segments,
+                reason=reason,
             )
         )
         log.info(

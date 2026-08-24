@@ -181,12 +181,18 @@ def _stub_agent(messages: list) -> GaladrielAgent:
     agent._last_input_tokens = {MAIN_CHANNEL_ID: 400_000}
     agent._last_archived_len = {MAIN_CHANNEL_ID: 7}
     agent._notified_recall_ids = {MAIN_CHANNEL_ID: {"r-old", "r-live"}}
+    agent._session_id = {}
+    agent._session_segments = {}
     agent.experience = None  # _record_experience_event is best-effort
     return agent
 
 
 def _run_compaction(agent: GaladrielAgent, **kwargs) -> dict:
-    """Compact MAIN with the palace, recall learn, and the LLM stubbed out."""
+    """Compact MAIN with the palace and the LLM stubbed out.
+
+    Compaction never runs memory consolidation (see on_episode_end) so there
+    is nothing recall/learning-related left to stub here.
+    """
     snapshot = {
         "snapshot": "GOAL: ship it",
         "messages_before": 0,
@@ -194,10 +200,6 @@ def _run_compaction(agent: GaladrielAgent, **kwargs) -> dict:
         "tokens_after": 10,
     }
     with patch("harness.palace.archive_conversation_durable", return_value=None), \
-         patch.object(
-             GaladrielAgent, "run_ephemeral_recall_update",
-             new=AsyncMock(return_value=[]),
-         ), \
          patch.object(GaladrielAgent, "_live_summarizer", return_value={}), \
          patch(
              "harness.compaction.compact_to_snapshot",

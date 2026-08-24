@@ -27,6 +27,39 @@ from .phone_tools import (
     phone_tools_enabled,
 )
 
+# Shared by `learn` and `propose_memory` — both feed the same commit pipeline
+# (harness/consolidation.py), so their field semantics must not drift.
+#
+# `topic` becomes the drawer's hall, which is the palace's only topical
+# clustering dimension. Left empty it defaults to hall="general", where a
+# memory sits next to nothing and the whole grouping mechanism is wasted, so
+# the schema has to explain what the field actually buys.
+_TOPIC_HALL_DESCRIPTION = (
+    "Short kebab-case topic slug. This becomes the memory's HALL, which is how "
+    "it gets grouped with related memories, so choose it deliberately. The "
+    "palace has exactly one wing — `agent` — covering this whole system (every "
+    "channel and background run is the same agent). Inside it, rooms are broad "
+    "categories (conversations, knowledge, procedures, episodes) and halls are "
+    "the sub-category within a room. Two memories in DIFFERENT rooms that share "
+    "a hall become linked, so a well-chosen hall is what connects a procedure "
+    "to the facts behind it. Reuse an existing hall name whenever one fits — "
+    "call `palace_taxonomy` to see the current rooms and halls before inventing "
+    "a new one. Omitted, this falls back to hall `general`, which clusters with "
+    "nothing."
+)
+
+# kg_add stamps facts as true from today unless told otherwise, which is wrong
+# whenever a consolidator recovers a fact that has been true for a while.
+_VALID_FROM_DESCRIPTION = (
+    "Optional ISO date (YYYY-MM-DD) for when a semantic fact STARTED being "
+    "true, used only with kg_triplets. Defaults to today. Pass it whenever the "
+    "fact predates this conversation (e.g. a preference the user has clearly "
+    "held for months, or a decision made in an earlier episode) — otherwise "
+    "temporal knowledge-graph queries will place the fact at the wrong point "
+    "in time. Omit it when the fact genuinely became true just now, and never "
+    "guess a date you don't have evidence for."
+)
+
 TOOL_DEFINITIONS = [
     {
         "name": "run_shell",
@@ -53,24 +86,38 @@ TOOL_DEFINITIONS = [
     {
         "name": "learn",
         "description": (
-            "PREFERRED one-stop learning tool. Describe what you learned in "
-            "`content` (a preference, rule, strategy, mistake, project fact, "
-            "relationship, correction…) and the tool packages it into the right "
-            "artifact mix automatically: KG triplets (entity facts), a palace "
-            "drawer (durable prose), and/or a semantic recall (reactive "
-            "when-to-recollect trigger) — any combination, decided internally. "
-            "To control packaging yourself, pass explicit kg_triplets / drawer / "
-            "recall alongside content; explicit artifacts are written verbatim "
-            "and skip the internal decomposition. "
-            "Use the granular tools (palace_kg_add, palace_add_drawer, "
-            "learn_recall) only when you need their full parameter surface."
+            "Conservative, typed memory writer for explicit corrections and "
+            "clearly durable facts learned mid-task. You pick the type — there "
+            "is no internal model guessing the packaging:\n"
+            "  - semantic (what is true): pass kg_triplets for crisp "
+            "entity/relationship facts (people, projects, tools, stable "
+            "preferences), OR content alone for durable prose worth re-reading "
+            "later (becomes a palace drawer).\n"
+            "  - procedural (how to do something): a reusable step-by-step "
+            "lesson (becomes a knowledge/** file plus a palace drawer).\n"
+            "  - preference (how to behave for this user going forward): "
+            "becomes today's daily log plus a palace drawer. Restate it as "
+            "often as the user does — repetition is what earns a preference a "
+            "place in the always-on system prompt, and duplicates are counted, "
+            "not stored twice.\n"
+            "The write is deduped against recently stored memories of the same "
+            "type automatically (a near-duplicate is skipped, not re-written). "
+            "Be conservative — use this for things you're confident are worth "
+            "remembering, not every detail of the task. Recall triggers "
+            "(when something should be reactively resurfaced later) are not "
+            "part of this tool; those are tuned by the consolidation passes."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
+                "type": {
+                    "type": "string",
+                    "enum": ["semantic", "procedural", "preference"],
+                    "description": "What kind of memory this is. Required.",
+                },
                 "content": {
                     "type": "string",
-                    "description": "What was learned, with enough context to package it well. Required.",
+                    "description": "What was learned, with enough context to be useful on its own later. Required unless kg_triplets is given.",
                 },
                 "kg_triplets": {
                     "type": "array",
@@ -78,33 +125,18 @@ TOOL_DEFINITIONS = [
                         "type": "array",
                         "items": {"type": "string"},
                     },
-                    "description": "Optional explicit [subject, predicate, object] triplets to store in the knowledge graph.",
+                    "description": "[subject, predicate, object] triplets — only valid with type=semantic.",
                 },
-                "drawer": {
-                    "type": "object",
-                    "properties": {
-                        "topic": {"type": "string"},
-                        "room": {"type": "string"},
-                        "content": {"type": "string"},
-                    },
-                    "description": "Optional explicit palace drawer: {topic, room?, content}.",
+                "topic": {
+                    "type": "string",
+                    "description": _TOPIC_HALL_DESCRIPTION,
                 },
-                "recall": {
-                    "type": "object",
-                    "properties": {
-                        "recall_id": {"type": "string"},
-                        "instruction": {"type": "string"},
-                        "activation_condition": {"type": "string"},
-                        "exclusions": {"type": "string"},
-                        "positive_examples": {"type": "array", "items": {"type": "string"}},
-                        "negative_examples": {"type": "array", "items": {"type": "string"}},
-                        "lexical_cues": {"type": "array", "items": {"type": "string"}},
-                        "positive_threshold": {"type": "number"},
-                    },
-                    "description": "Optional explicit semantic recall (same fields as learn_recall).",
+                "valid_from": {
+                    "type": "string",
+                    "description": _VALID_FROM_DESCRIPTION,
                 },
             },
-            "required": ["content"],
+            "required": ["type"],
         },
     },
     {
@@ -266,6 +298,194 @@ TOOL_DEFINITIONS = [
                 },
             },
             "required": ["recall_id"],
+        },
+    },
+    {
+        "name": "propose_memory",
+        "description": (
+            "Consolidation-only: propose a memory candidate found while "
+            "reviewing an episode. Goes through the shared commit pipeline — "
+            "validated, deduped against recently committed memories of the same "
+            "type, then written with provenance. Not offered outside a "
+            "consolidation pass; use `learn` instead during normal task work."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "type": {
+                    "type": "string",
+                    "enum": ["semantic", "procedural", "preference"],
+                    "description": "What kind of memory this is.",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "The memory content, self-contained enough to be useful later. Required unless kg_triplets is given.",
+                },
+                "kg_triplets": {
+                    "type": "array",
+                    "items": {"type": "array", "items": {"type": "string"}},
+                    "description": "[subject, predicate, object] triplets — only valid with type=semantic.",
+                },
+                "topic": {
+                    "type": "string",
+                    "description": _TOPIC_HALL_DESCRIPTION,
+                },
+                "valid_from": {
+                    "type": "string",
+                    "description": _VALID_FROM_DESCRIPTION,
+                },
+                "evidence_episode_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "segment_id(s) (or the session_id) this candidate is grounded in.",
+                },
+                "confidence": {
+                    "type": "number",
+                    "description": "0-1 confidence this is worth keeping.",
+                },
+                "note": {
+                    "type": "string",
+                    "description": "Optional short reasoning, kept for provenance/audit.",
+                },
+            },
+            "required": ["type"],
+        },
+    },
+    {
+        "name": "propose_recall",
+        "description": (
+            "Consolidation-only: build a tested retrieval trigger for a memory "
+            "that has none, or replace the cues on one that misfires. A model "
+            "pass authors ~60 realistic positive phrasings, lexical anchors, "
+            "negatives, activation_condition and exclusions, then proves them "
+            "against held-out probes run through the real matcher (Stage-1 plus "
+            "the Stage-2 judge). Failures drive a bounded repair round. You "
+            "describe the memory; the pass handles cue authoring, which is not "
+            "something to hand-write inside a consolidation turn. Use "
+            "`learn_recall` instead when you already know the exact cue arrays "
+            "you want written."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "memory": {
+                    "type": "string",
+                    "description": "The memory this trigger should surface, stated in full. The cue pass sees only this text, so include the context that makes it recognisable.",
+                },
+                "type": {
+                    "type": "string",
+                    "enum": ["semantic", "procedural", "preference"],
+                    "description": "What kind of memory it is. Shapes the phrasings generated.",
+                },
+                "topic": {
+                    "type": "string",
+                    "description": "Optional topic slug, for context only.",
+                },
+            },
+            "required": ["memory"],
+        },
+    },
+    {
+        "name": "grade_retrieval",
+        "description": (
+            "Consolidation-only: grade one retrieval event listed in this "
+            "pass's [EPISODE_RETRIEVALS] appendix. used=false means retrieved "
+            "but ignored (retrieval_count is already logged; nothing else "
+            "changes). used=true bumps use_count and, by outcome, "
+            "helpful_count or harmful_count, and stamps last_used. Call once "
+            "per retrieval_id listed — this is what lets consolidation tell "
+            "apart a bad memory from a memory with a too-broad trigger."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "retrieval_id": {
+                    "type": "string",
+                    "description": "From the [EPISODE_RETRIEVALS] appendix.",
+                },
+                "used": {
+                    "type": "boolean",
+                    "description": "Did the transcript show this actually influenced behavior (quoted, followed, acted on)?",
+                },
+                "outcome": {
+                    "type": "string",
+                    "enum": ["helpful", "harmful", "neutral"],
+                    "description": "Only meaningful when used=true: did following it work out?",
+                },
+                "note": {
+                    "type": "string",
+                    "description": "Optional short reason.",
+                },
+            },
+            "required": ["retrieval_id", "used"],
+        },
+    },
+    {
+        "name": "flag_memory",
+        "description": (
+            "Consolidation-only: mark an existing memory as contradicted or "
+            "corrected by this episode — the strongest single signal for the "
+            "periodic consolidator to rewrite, invalidate, or archive it. "
+            "Independent of whether the memory was even retrieved this "
+            "episode. Use the memory_key as surfaced in search/retrieval "
+            "output (a memory_id, `recall:<id>`, or KG subject/predicate/object)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "memory_key": {
+                    "type": "string",
+                    "description": "The memory's key, as surfaced in search/retrieval output.",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Short reason it's wrong, stale, or contradicted.",
+                },
+            },
+            "required": ["memory_key", "reason"],
+        },
+    },
+    {
+        "name": "read_episode_segment",
+        "description": (
+            "Consolidation-only: read the verbatim archived text of one "
+            "segment listed in the [EPISODE_INDEX] appendix (a specific "
+            "compacted chunk of this episode). Use selectively — only where "
+            "the summary hints at something learnable (a correction, failure, "
+            "or strategy change); most segments never need this."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "segment_id": {
+                    "type": "string",
+                    "description": "From the [EPISODE_INDEX] appendix.",
+                },
+            },
+            "required": ["segment_id"],
+        },
+    },
+    {
+        "name": "memory_utility_report",
+        "description": (
+            "Periodic-consolidation evidence: harness-computed retrieval/use "
+            "statistics grouped into bad-trigger memories (high retrieval, "
+            "rarely used, fine on the rare uses -> narrow the recall cue or "
+            "drawer summary, don't touch the content), bad-memory candidates "
+            "(harmful use and/or a user correction -> rewrite, invalidate, or "
+            "delete), and stale memories (unused 90+ days -> consider "
+            "archiving). Read-only — act with the existing tools (tune_recall, "
+            "learn_recall, palace_kg_invalidate, palace_add_drawer, "
+            "purge_recall)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "description": "Max rows per category (default 15).",
+                },
+            },
         },
     },
     {
@@ -1406,10 +1626,11 @@ async def _execute_tool_impl(
     elif name == "learn":
         from .learn import learn as _unified_learn
         return await _unified_learn(
+            type=inputs.get("type", ""),
             content=inputs.get("content", ""),
             kg_triplets=inputs.get("kg_triplets"),
-            drawer=inputs.get("drawer"),
-            recall=inputs.get("recall"),
+            topic=inputs.get("topic"),
+            valid_from=inputs.get("valid_from"),
         )
     elif name == "learn_recall":
         return await _learn_recall(
@@ -1433,6 +1654,56 @@ async def _execute_tool_impl(
         return await _get_recall(recall_id=inputs.get("recall_id"))
     elif name == "purge_recall":
         return await _purge_recall(inputs["recall_id"])
+    elif name == "propose_memory":
+        from . import consolidation
+        result = await consolidation.commit_candidate(
+            type=inputs.get("type", ""),
+            content=inputs.get("content", ""),
+            kg_triplets=inputs.get("kg_triplets"),
+            topic=inputs.get("topic"),
+            valid_from=inputs.get("valid_from"),
+            evidence=inputs.get("evidence_episode_ids"),
+            confidence=inputs.get("confidence"),
+            source="task_consolidator",
+            note=inputs.get("note", ""),
+        )
+        return f"[{result['status']}] {result['detail']}"
+    elif name == "propose_recall":
+        from . import recall_cues
+        result = await recall_cues.create_recall_for_memory(
+            inputs.get("memory", ""),
+            memory_type=inputs.get("type", "semantic"),
+            topic=inputs.get("topic"),
+        )
+        scores = result.get("scores")
+        suffix = ""
+        if scores:
+            suffix = (
+                f" Holdout: fired for {_pct(scores.get('recall_rate'))} of "
+                f"{scores.get('probes_positive')} phrasings that should match, "
+                f"{_pct(scores.get('fp_rate'))} of {scores.get('probes_negative')} "
+                "look-alikes that should not."
+            )
+        return f"[{result['status']}] {result.get('detail', '')}{suffix}"
+    elif name == "grade_retrieval":
+        from . import consolidation
+        return await consolidation.grade_retrieval(
+            inputs.get("retrieval_id", ""),
+            bool(inputs.get("used")),
+            inputs.get("outcome", "neutral"),
+            inputs.get("note", ""),
+        )
+    elif name == "flag_memory":
+        from . import consolidation
+        return await consolidation.flag_memory(
+            inputs.get("memory_key", ""), inputs.get("reason", ""),
+        )
+    elif name == "read_episode_segment":
+        from . import consolidation
+        return await consolidation.read_episode_segment(inputs.get("segment_id", ""))
+    elif name == "memory_utility_report":
+        from . import consolidation
+        return await consolidation.memory_utility_report(inputs.get("limit", 15) or 15)
     elif name == "write_file":
         return await _write_file(inputs["path"], inputs["content"])
     elif name == "browser":
@@ -2273,6 +2544,10 @@ def _tail_file(path: Path) -> str:
 # accept on max() over the array so unbounded growth can only loosen matching.
 # tune_recall evicts the least-recently-used cue (see recall.evict_lru_cues).
 _MAX_EXAMPLES_PER_RECALL = 100
+
+
+def _pct(value) -> str:
+    return "n/a" if value is None else f"{value * 100:.0f}%"
 
 
 def _normalize_cue_list(values, *, lexical: bool = False) -> list[str]:

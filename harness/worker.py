@@ -185,19 +185,19 @@ class WorkerLoop:
             worker_status=status,
             notification=note,
         )
-        # Sync silent recall learn+audit only when this tick reported work.
-        # Gate uses the existing WORKER_STATUS tag — no extra LLM.
+        # Sync task-end consolidation only when this tick reported work — the
+        # tick itself is the episode boundary (each tick already starts from a
+        # clean buffer via reset_channel above). Gate uses the existing
+        # WORKER_STATUS tag — no extra LLM.
         if status == "worked":
-            log.info("[Worker] status=worked — starting recall learn pass")
+            log.info("[Worker] status=worked — starting task consolidation")
             try:
-                await self.agent.run_ephemeral_recall_update(
-                    WORKER_CHANNEL, holding_lock=False,
-                )
+                await self.agent.on_episode_end(WORKER_CHANNEL, "worker_tick")
             except Exception as e:
-                log.warning(f"Worker ephemeral recall update failed: {e}")
+                log.warning(f"Worker task consolidation failed: {e}")
         else:
             log.info(
-                f"[Worker] status={status} — skipping recall learn pass"
+                f"[Worker] status={status} — skipping task consolidation"
             )
         # Rising edge into a work burst (idle/paused → working): ping once so the
         # user sees the worker pick up a task. Subsequent worked ticks in the same
