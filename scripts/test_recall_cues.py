@@ -236,7 +236,7 @@ def test_committed_memory_schedules_a_trigger() -> None:
             await consolidation.commit_candidate(
                 type="semantic", content="A durable fact.", topic="t",
             )
-            for task in list(consolidation._TRIGGER_TASKS):
+            for task in list(consolidation._POST_COMMIT_TASKS):
                 await task
 
     _run(main())

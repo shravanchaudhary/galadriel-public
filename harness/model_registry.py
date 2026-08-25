@@ -46,6 +46,10 @@ TASKS: dict[str, tuple[str, str]] = {
     # held-out probes (harness/recall_cues.py). Cue quality decides whether a
     # memory is ever recalled at all, so this follows the active chat model.
     "recall_cues": (BEDROCK_MANTLE, "glm-5"),
+    # Decides how a new memory relates to its nearest neighbours
+    # (harness/memory_graph.py). A wrong DEPENDS_ON injects an irrelevant
+    # memory every time its partner fires, so this follows the active model too.
+    "memory_edges": (BEDROCK_MANTLE, "glm-5"),
 }
 
 # Bedrock equivalents — drop any of these into TASKS to move a task onto Claude
@@ -73,7 +77,7 @@ BEDROCK_DEFAULTS: dict[str, tuple[str, str]] = {
 # tokens (see the multi-timescale learning architecture plan) — this fallback
 # already guarantees the active chat model with zero extra config.
 FOLLOW_ACTIVE_MODEL = frozenset({
-    "compaction", "chat_title", "slack_reply_gate", "recall_cues",
+    "compaction", "chat_title", "slack_reply_gate", "recall_cues", "memory_edges",
 })
 
 _active_model: str | None = None

@@ -823,6 +823,18 @@ class Scheduler:
                 log.info(f"[Reflection] {promoted}")
         except Exception as e:
             log.warning(f"[Reflection] preference promotion failed: {e}")
+        # Weaken memory-graph edges whose target keeps getting injected and
+        # never used — a wrong edge otherwise costs prompt budget on every fire
+        # of its partner, forever. Deterministic counting, same as above.
+        try:
+            from . import memory_graph
+
+            await memory_graph.ensure_indexes()
+            decayed = await memory_graph.decay_unhelpful_edges()
+            if decayed:
+                log.info(f"[Reflection] {decayed}")
+        except Exception as e:
+            log.warning(f"[Reflection] edge decay failed: {e}")
         today = tower_settings.agent_today()
         await self._send_agent_message(
             prompt=_reflection_prompt(today),

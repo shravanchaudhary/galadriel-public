@@ -177,26 +177,33 @@ async def commit_candidate(
         "created_at_ts": _now().timestamp(),
     })
     if status == "committed":
-        _schedule_trigger(memory_id, type_, content, triplets, topic)
+        _schedule_post_commit(memory_id, type_, content, triplets, topic)
     return {"status": status, "memory_id": memory_id, "detail": detail}
 
 
-def _schedule_trigger(
+def _schedule_post_commit(
     memory_id: str,
     type_: str,
     content: str,
     triplets: list[tuple[str, str, str]],
     topic: str | None,
 ) -> None:
-    """Fire-and-forget the cue-generation pass for a freshly committed memory.
+    """Fire-and-forget the packaging work a freshly committed memory still needs:
+    the retrieval trigger that makes it findable, and the typed edges that make
+    it reachable through its neighbours.
 
     Deliberately not awaited. `learn` is called mid-task by the main agent, and
-    a model round-trip plus a holdout test would put seconds of latency into
-    the user's turn to build something the user is not waiting for. A failure
-    here leaves the memory stored and triggerless, which the periodic
-    consolidator can see from the candidate record and backfill.
+    model round-trips would put seconds of latency into the user's turn to build
+    something the user is not waiting for. A failure here leaves the memory
+    stored but triggerless or unconnected, which the periodic consolidator can
+    see from the candidate record and backfill.
+
+    Both passes share the eligibility gate. Episodic memories are excluded as
+    *sources*: they are the most numerous kind and rarely the thing another
+    memory hangs off. They remain edge *targets* — the shortlist spans every
+    type, so a lesson can still record what episode caused it.
     """
-    if type_ not in RECALL_ELIGIBLE_TYPES or not _autogen_enabled():
+    if type_ not in RECALL_ELIGIBLE_TYPES:
         return
     text = content or _render_triplets(triplets)
     if not text:
@@ -205,20 +212,76 @@ def _schedule_trigger(
         loop = asyncio.get_running_loop()
     except RuntimeError:
         return
-    task = loop.create_task(_generate_trigger(memory_id, type_, text, topic))
-    _TRIGGER_TASKS.add(task)
-    task.add_done_callback(_TRIGGER_TASKS.discard)
+    if _autogen_enabled():
+        _spawn(loop, _generate_trigger(memory_id, type_, text, topic))
+    if _edges_enabled():
+        _spawn(loop, _classify_edges(memory_id, type_, text))
+
+
+def _spawn(loop, coro) -> None:
+    task = loop.create_task(coro)
+    _POST_COMMIT_TASKS.add(task)
+    task.add_done_callback(_POST_COMMIT_TASKS.discard)
 
 
 # create_task keeps only a weak reference, so a task nobody holds can be
 # garbage-collected mid-flight.
-_TRIGGER_TASKS: set = set()
+_POST_COMMIT_TASKS: set = set()
 
 
 def _autogen_enabled() -> bool:
     return (os.environ.get("RECALL_CUE_AUTOGEN") or "1").strip().lower() not in (
         "0", "false", "no",
     )
+
+
+def _edges_enabled() -> bool:
+    return (os.environ.get("MEMORY_EDGE_AUTOGEN") or "1").strip().lower() not in (
+        "0", "false", "no",
+    )
+
+
+async def _classify_edges(
+    memory_id: str, type_: str, text: str, *, source: str = "task_consolidator",
+) -> int:
+    """Relate a new memory to its nearest committed neighbours, if it relates.
+
+    Zero edges is the expected outcome for most memories and is not an error,
+    which is why the pass stamps `edges.classified_at` on the candidate: without
+    it, "no edges" and "never classified" are indistinguishable, and a backfill
+    would have to re-run every memory that legitimately has none.
+    """
+    from . import memory_graph
+
+    try:
+        neighbours = await shortlist_neighbours(text, exclude_id=memory_id)
+        edges, written = [], 0
+        if neighbours:
+            edges = await memory_graph.classify_edges(
+                memory_id, text, memory_type=type_, neighbours=neighbours,
+            )
+            written = await memory_graph.add_edges(memory_id, edges, source=source)
+    except Exception as e:
+        log.warning("Edge classification crashed for memory %s: %s", memory_id, e)
+        return 0
+    if written:
+        log.info(
+            "[Edges] memory=%s wrote=%d %s",
+            memory_id, written,
+            ", ".join(f"{e['relation']}->{e['to']}" for e in edges),
+        )
+    coll = await _collection(CANDIDATES_COLLECTION)
+    if coll is not None:
+        try:
+            await coll.update_one(
+                {"memory_id": memory_id},
+                {"$set": {"edges": {
+                    "classified_at": _now(), "written": written, "source": source,
+                }}},
+            )
+        except Exception as e:
+            log.warning("Could not record edge outcome for %s: %s", memory_id, e)
+    return written
 
 
 def _render_triplets(triplets: list[tuple[str, str, str]]) -> str:
@@ -360,6 +423,106 @@ async def _is_prose_duplicate(type_: str, content: str) -> str | None:
         if doc.get("content") == matched_text:
             return doc.get("memory_id")
     return None
+
+
+# Neighbours offered to the edge classifier. The bound is the whole design:
+# unbounded, relating a new memory to the corpus is O(new x all) model
+# comparisons. Embedding shortlists first, so exactly one model call sees a
+# handful of plausible partners.
+_EDGE_SHORTLIST_SIZE = 8
+
+
+async def shortlist_neighbours(
+    content: str, *, exclude_id: str | None = None, limit: int = _EDGE_SHORTLIST_SIZE,
+) -> list[dict]:
+    """The committed memories most similar to `content`, as edge candidates.
+
+    Deliberately spans every memory type. The canonical edge is cross-type — a
+    procedural lesson depending on a semantic fact — so filtering by type the
+    way `_is_prose_duplicate` does would hide exactly the edges worth having.
+
+    Similarity only selects who gets *considered*; the model decides whether any
+    functional relation exists, and "none" is a common, correct answer.
+    """
+    coll = await _collection(CANDIDATES_COLLECTION)
+    if coll is None or not (content or "").strip():
+        return []
+    try:
+        since_ts = _now().timestamp() - _DEDUPE_WINDOW_DAYS * 86400
+        cursor = coll.find(
+            {"status": "committed", "created_at_ts": {"$gte": since_ts}},
+            {"memory_id": 1, "content": 1, "type": 1},
+        ).sort("created_at_ts", -1).limit(_DEDUPE_POOL_SIZE)
+        pool = [doc async for doc in cursor]
+    except Exception as e:
+        log.warning(f"Edge shortlist query failed: {e}")
+        return []
+
+    pool = [
+        doc for doc in pool
+        if (doc.get("content") or "").strip() and doc.get("memory_id") != exclude_id
+    ]
+    if not pool:
+        return []
+    try:
+        from .recall import _top_k_cosine, get_encoder
+        best = _top_k_cosine(
+            get_encoder(), content, [doc["content"] for doc in pool], limit,
+        )
+    except Exception as e:
+        log.warning(f"Edge shortlist scoring failed: {e}")
+        return []
+
+    by_content = {doc["content"]: doc for doc in pool}
+    out = []
+    for text in best:
+        doc = by_content.get(text)
+        if doc:
+            out.append({
+                "memory_id": doc.get("memory_id"),
+                "content": doc.get("content"),
+                "type": doc.get("type"),
+            })
+    return out
+
+
+async def memory_ids_for_recalls(recall_ids: list[str]) -> list[str]:
+    """The memories whose triggers are these recalls — the expansion seeds.
+
+    A recall fire tells us a recall matched, not which memory it stands for.
+    `trigger.recall_id` is stamped on the candidate when its trigger is built,
+    so this is the reverse of that link.
+    """
+    coll = await _collection(CANDIDATES_COLLECTION)
+    ids = [rid for rid in (recall_ids or []) if rid]
+    if coll is None or not ids:
+        return []
+    try:
+        cursor = coll.find(
+            {"trigger.recall_id": {"$in": ids}, "status": "committed"},
+            {"_id": 0, "memory_id": 1},
+        )
+        return [doc["memory_id"] async for doc in cursor if doc.get("memory_id")]
+    except Exception as e:
+        log.warning(f"Seed lookup failed for recalls {ids}: {e}")
+        return []
+
+
+async def memory_texts(memory_ids: list[str]) -> dict[str, dict]:
+    """memory_id -> {content, type, topic} for the ids given. Projected."""
+    coll = await _collection(CANDIDATES_COLLECTION)
+    ids = [mid for mid in (memory_ids or []) if mid]
+    if coll is None or not ids:
+        return {}
+    try:
+        cursor = coll.find(
+            {"memory_id": {"$in": ids}},
+            {"_id": 0, "memory_id": 1, "content": 1, "type": 1, "topic": 1},
+        )
+        return {doc["memory_id"]: doc async for doc in cursor if doc.get("memory_id")}
+    except Exception as e:
+        log.warning(f"Memory text lookup failed: {e}")
+        return {}
 
 
 async def _commit_drawer(content: str, topic: str | None, *, room: str) -> tuple[str, dict, str]:

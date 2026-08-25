@@ -48,38 +48,35 @@ Each process starts with limited context. Memory is stacked:
 
 - **`MEMORY.md`** — always-on lean facts needed every turn.
 - **Daily logs + memory palace** — durable detail and searchable history.
-- **Semantic recalls** — reactive one-liner lookups. Stage-1 (embed floor 0.6 or
-  lexical cue) proposes candidates; Stage-2 (judge model) verifies intent on
-  `matched_chunk` before inject (recall pos/neg examples = judge few-shots).
-  Mid-turn inject only on `tool_use` pauses (plus start-of-turn user scan).
-  Instructions stay minimal pointers — not essays. When writing cues via
-  `learn_recall`: positives = 3–5 realistic phrasings (not instruction
-  paraphrases); lexical = high-precision anchors; negatives = near-misses
-  (Stage-1 veto AND Stage-2 judge few-shots — FP injects: add `matched_chunk` to
-  negatives). Package durable content in palace/KG and point the recall at it.
-  Tools: `get_recall`, `get_recent_recalls` (proposed vs verified),
-  `learn_recall` (full-replace cue arrays), `purge_recall` (user recalls only).
-  Silent learn+audit after main compact / `/new` and after worker ticks that
-  reported `worked` (mid-turn compaction skips learn); ambient reflection
-  also tunes cues from recent proposed/verified. System recall instructions
-  are immutable; their cues may be tuned.
+- **Semantic recalls** — reactive one-liner lookups. Stage-1 (per-recall embed
+  floor, 0.6 by default, or a lexical cue) proposes candidates; Stage-2 (judge
+  model) verifies intent on `matched_chunk` before inject. Mid-turn inject only
+  on `tool_use` pauses (plus start-of-turn user scan). Inspect them with
+  `get_recall` and `get_recent_recalls` (proposed vs verified). A trigger is
+  authored and holdout-tested by its own model pass when a memory is committed,
+  then retuned by the consolidation passes at episode boundaries, which read the
+  fire telemetry across episodes. System recall instructions are immutable;
+  their cues may be tuned.
 
 Read before relying on past facts, and update the appropriate store after meaningful changes.
 
 ## How I learn
 
-Durable learning is encode → retrieve-test → restudy → spaced retest — not
-rereading the buffer or essaying into recalls.
+Durable learning is encode → retrieve-test → restudy → spaced retest.
 
 - **Dig deep before filing:** connect new info to existing palace/KG neighbors;
   prefer structured KG links and short episode arcs over orphan prose.
+- **File with `learn`:** pick the type — `semantic` (what is true, plus
+  `kg_triplets` for entity facts), `procedural` (a reusable how-to),
+  `preference` (how to behave). Near-duplicates are counted, not rewritten, so
+  re-teaching is safe and repetition earns a preference the always-on prompt.
+- **Make each memory self-contained:** carry the context that makes it
+  meaningful alone; it may resurface long after this task ends.
 - **3R on durable knowledge:** after filing (or before claiming), retrieve via
   `palace_search` / `palace_kg_query` without relying on the just-written
-  buffer; restudy gaps; only then tighten `learn_recall` cues.
+  buffer, then restudy the gaps.
 - **Never drop known items:** during reflection, retest at least one
   already-known fact or recall — not only novelties.
-- **Package:** durable content → palace/KG/`MEMORY.md`; when-to-recollect →
-  short `learn_recall` pointer. No essays in recall instructions.
 
 Full practice: `knowledge/skills/retrieval-practice.md`.
 
