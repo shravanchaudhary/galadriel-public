@@ -61,7 +61,13 @@ derived from your own learned rules, carrying the weight of a suggestion:
   messages, database writes — whatever a recall suggests.
 - Using a helpful fire and moving past an unhelpful one is the complete
   handling. The consolidation passes at episode boundaries maintain the
-  matcher itself; they read the fire telemetry directly."""
+  matcher itself; they read the fire telemetry directly.
+
+A fire may carry extra memories beneath it under a heading: context the rule
+needs, related material, or memories that disagree. These come from recorded
+links between your own memories — read them as part of the same hint. A
+conflict heading means the disagreement is unresolved; say so rather than
+quietly picking a side."""
 
 
 class MemoryManager:

@@ -114,6 +114,32 @@ Package durable content with the unified `learn` tool, picking `type` yourself
 from fire telemetry spanning episodes. Audit with `get_recent_recalls` (proposed
 vs verified). System recall instructions are immutable; cues may be tuned.
 
+### 1c. Memory graph (what comes with a fire)
+
+Matching answers *when* a memory is relevant. It cannot answer what has to come
+*with* it: a memory that reads "use method B" is inert without "for library X",
+and a memory whose only claim to relevance is structural never surfaces at all,
+because nothing in the conversation resembles it.
+
+So committed memories carry typed edges to each other (`memory_edges`), written
+by a classifier in the background after a commit — never during your turn. The
+vocabulary is fixed because each relation is a traversal *behaviour*:
+`DEPENDS_ON` and `RECALL_BEFORE` are always followed and injected first,
+`RECALL_WITH` only if budget allows, `SUPERSEDES` is resolved so a replaced
+memory never arrives as live context, `CONTRADICTS` surfaces both sides flagged,
+and `CAUSED_BY` is provenance rather than operating context. The classifier's
+own wording for a relation is kept alongside it as a free-text `label`.
+
+When a recall fires, traversal runs from the memory that recall stands for —
+depth 2, a few memories total, cycle-guarded — and appends them under the
+`[Recall detected]` note, prerequisites first and deepest-first, so a chain
+reads foundation → intermediate → the rule that fired. Expanded memories log to
+`retrieval_events` like any other surfaced memory, so they are graded and edges
+whose target is never used decay and are eventually pruned.
+
+`scripts/memory_graph_density.py` reports how much graph exists; below roughly
+10% coverage expansion is dead weight and the classifier is the thing to fix.
+
 ### 2. Updating yourself — pick the right surface
 
 When something needs to change, match it to the correct surface. Do **not** dump

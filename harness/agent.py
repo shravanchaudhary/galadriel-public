@@ -1024,6 +1024,56 @@ class GaladrielAgent:
         except Exception as e:
             log.warning(f"Retrieval telemetry failed (channel={channel_id}): {e}")
 
+    async def _expand_recall_fire(
+        self,
+        channel_id: str,
+        matches: list[dict],
+        fire_prompt: str,
+        *,
+        query: str,
+        ephemeral: bool,
+    ) -> str:
+        """Append graph-reached memories to a recall fire, if any exist.
+
+        The recall answered *when* something is relevant. This answers what has
+        to come with it: a memory whose meaning depends on a prior memory, or a
+        rule that must be in mind before acting. Bounded and best-effort — a
+        failure here leaves the fire exactly as it was.
+
+        Expanded memories log to `retrieval_events` like any other surfaced
+        memory, so the task-end consolidator grades them too and we can tell
+        whether expansion earns its prompt budget.
+        """
+        try:
+            from . import memory_graph
+
+            recall_ids = [m.get("recall_id") for m in matches if m.get("recall_id")]
+            bundle = await memory_graph.expand_from_recalls(recall_ids)
+            if not bundle:
+                return fire_prompt
+            text = memory_graph.format_bundle(bundle)
+            if not text:
+                return fire_prompt
+        except Exception as e:
+            log.warning(f"Recall expansion failed (channel={channel_id}): {e}")
+            return fire_prompt
+
+        log.info(
+            "[Expansion] %d memory/memories for recalls %s: %s",
+            len(bundle), recall_ids,
+            ", ".join(f"{i['relation']}:{i['memory_id']}" for i in bundle),
+        )
+        if not ephemeral:
+            for rank, item in enumerate(bundle, start=1):
+                await self._log_retrieval_event(
+                    channel_id,
+                    memory_key=f"memory:{item['memory_id']}",
+                    memory_kind="graph_expansion",
+                    query_or_cue=query,
+                    rank=rank,
+                )
+        return f"{fire_prompt}\n\n{text}"
+
     @staticmethod
     def _tool_result_has_content(result) -> bool:
         """True when a palace read tool actually returned something, not one
@@ -2237,6 +2287,10 @@ class GaladrielAgent:
             fire_text = generate_recall_fire_text(new_user_matches)
             log.info(f"User-message recall fire triggered: {fire_text!r}")
             fire_prompt = f"[Recall detected]\n{fire_text}"
+            fire_prompt = await self._expand_recall_fire(
+                channel_id, new_user_matches, fire_prompt,
+                query=scanned, ephemeral=ephemeral,
+            )
             messages.append(_recall_fire_message(new_user_matches, fire_prompt))
             if tick_recorder is not None:
                 await tick_recorder.record_message(messages[-1])
@@ -2971,6 +3025,10 @@ class GaladrielAgent:
                         fire_text = generate_recall_fire_text(new_matches)
                         log.info(f"Tool-use recall fire triggered: {fire_text!r}")
                         fire_prompt = f"[Recall detected]\n{fire_text}"
+                        fire_prompt = await self._expand_recall_fire(
+                            channel_id, new_matches, fire_prompt,
+                            query=text_to_scan[:500], ephemeral=ephemeral,
+                        )
                         messages.append(_recall_fire_message(new_matches, fire_prompt))
                         if tick_recorder is not None:
                             await tick_recorder.record_message(messages[-1])
