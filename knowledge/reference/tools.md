@@ -79,6 +79,37 @@ your exact words, never paraphrased.*
 Rule of thumb: stable block → already in context. Dynamic block → still in context.
 **Old operational history → palace it.**
 
+### Conversation memory vs learned memory
+
+Two corpora, two questions.
+
+| | Conversation memory | Learned memory |
+|---|---|---|
+| Holds | every message, verbatim, plus recaps and diary | rules, procedures, facts, preferences |
+| Answers | *what happened, when, in whose words* | *what do I know, how should I act* |
+| Search | `palace_search` | `memory(query=…)` |
+| Open one | `memory(id=…)` — verbatim, no links | `memory(id=…)` — with its linked context |
+| Size | the whole archive | a small curated set |
+
+```python
+palace_search(query="the migration we ran", room="conversations")  # what happened
+memory(query="how do I deploy this")   # what I know -> ids + one-liners
+memory(id="4b722518")                  # open it: full text, what it rests on, what links to it
+```
+
+Opening a learned memory brings whatever it would be wrong without along with
+it, and lists everything else as ids you can open with the same call — so you
+walk as far as the task needs and no further. A recall fire names the memory it
+stands for; open it when the turn actually needs it.
+
+Both live in the one `agent` wing, so a `palace_search` can surface a learned
+memory. When it does the hit is marked **LEARNED** — open it rather than reading
+the drawer, because the drawer text arrives without its prerequisites.
+
+Searching conversation history for something already learned means re-deriving
+from transcripts what was distilled for you. A conversation is evidence *for* a
+memory, not a memory.
+
 ### How to call `palace_search`
 
 ```python

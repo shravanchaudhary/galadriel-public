@@ -301,6 +301,47 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "memory",
+        "description": (
+            "Search and open LEARNED MEMORY: what you have distilled and kept "
+            "because it should change how you act later — rules, procedures, "
+            "durable facts, preferences. Ask it 'what do I know about X'.\n"
+            "This is a different corpus from CONVERSATION MEMORY, which is the "
+            "verbatim record of what was said and done and is searched with "
+            "`palace_search`. Use that one for episodic questions ('when did "
+            "I…', 'what did they say'); use this one for anything you are "
+            "supposed to apply.\n"
+            "  - `memory(query=...)`: find learned memories by meaning. Returns "
+            "ids and one-line summaries, not content.\n"
+            "  - `memory(id=...)`: open one. Returns its full text, the "
+            "memories it would be wrong without (inline), and a list of what "
+            "else it links to — both what it rests on and what rests on it.\n"
+            "Ids come from a `memory(query=...)` result, from the `id=` on a "
+            "palace_search hit, from a procedure file's footer, or from a "
+            "recall fire that named one. Walk the graph by calling this again "
+            "with a linked id; nothing is loaded until you ask for it. Opening "
+            "an archived conversation drawer by its id works too — it just has "
+            "no curated links."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "description": "Open this memory (or archived drawer) by id.",
+                },
+                "query": {
+                    "type": "string",
+                    "description": "Find learned memories by meaning. Ignored when `id` is given.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max results for a query. Default 5.",
+                },
+            },
+        },
+    },
+    {
         "name": "propose_memory",
         "description": (
             "Consolidation-only: propose a memory candidate found while "
@@ -346,6 +387,23 @@ TOOL_DEFINITIONS = [
                 "note": {
                     "type": "string",
                     "description": "Optional short reasoning, kept for provenance/audit.",
+                },
+                "supersedes_memory_id": {
+                    "type": "string",
+                    "description": (
+                        "The memory_id this candidate REPLACES as the active "
+                        "rule (accepts the bare id or the `memory:<id>` form "
+                        "used in the reports). Pass it only when the episode "
+                        "shows the old rule stopped applying — the user "
+                        "changed it, the system it described was migrated, the "
+                        "decision was reversed. A memory that says the same "
+                        "thing again is reinforcement, not replacement, and "
+                        "the pipeline already counts that. The replaced memory "
+                        "stays in the record as history and stays readable, but "
+                        "every path that surfaces it — search, open, and the "
+                        "recall fire that points at it — marks it replaced and "
+                        "names the rule that took over."
+                    ),
                 },
             },
             "required": ["type"],
@@ -751,11 +809,22 @@ TOOL_DEFINITIONS = [
     {
         "name": "palace_search",
         "description": (
-            "Search the verbatim memory palace (MemPalace). "
-            "Default (order=semantic): natural-language similarity search. "
-            "For 'what did we just discuss' / 'previous conversation' use "
+            "Search CONVERSATION MEMORY: the verbatim record of what was said "
+            "and done, archived session by session. This is the corpus for "
+            "'what happened', 'when did I', 'what were their exact words' — "
+            "episodic questions about the past.\n"
+            "It is NOT where you look up what you have LEARNED. For a rule, a "
+            "procedure, a durable fact or a preference — anything meant to be "
+            "reused rather than recalled as history — use `memory(query=…)`, "
+            "which searches only curated learned memory and hands back ids you "
+            "can open for the context linked to them.\n"
+            "Default (order=semantic): natural-language similarity search. For "
+            "'what did we just discuss' / 'previous conversation' use "
             "order=recency with room=conversations (optionally channel=main). "
-            "Zero API cost — runs locally against ChromaDB."
+            "Hits carry `id=` — pass one to `memory(id=…)` to open it. A hit "
+            "marked LEARNED is a curated memory that happens to live here too; "
+            "open it rather than reading the drawer, so its prerequisites come "
+            "with it. Zero API cost — runs locally."
         ),
         "input_schema": {
             "type": "object",
@@ -1213,10 +1282,15 @@ TOOL_DEFINITIONS.extend(PHONE_TOOL_DEFINITIONS)
 # any stray palace call short-circuits. Useful for controlled coding sessions
 # where you want full command over what the agent knows. Non-palace tools
 # (shell / file / memory_log) are unaffected.
+# `memory` belongs here for the same reason the palace tools do: it reads stored
+# memory, and an amnesiac session that still has one door into the archive is
+# not amnesiac. It reaches drawers directly (`memory_access._open_verbatim`) as
+# well as the curated store.
 _PALACE_TOOL_NAMES = frozenset({
     "palace_search", "palace_add_drawer", "palace_wake_up", "palace_taxonomy",
     "palace_kg_add", "palace_kg_query", "palace_kg_invalidate",
     "palace_kg_timeline", "palace_diary_write", "palace_diary_read",
+    "memory",
 })
 
 
@@ -1655,6 +1729,14 @@ async def _execute_tool_impl(
         return await _get_recall(recall_id=inputs.get("recall_id"))
     elif name == "purge_recall":
         return await _purge_recall(inputs["recall_id"])
+    elif name == "memory":
+        from . import memory_access
+        if (inputs.get("id") or "").strip():
+            text, _ = await memory_access.open_memory(inputs["id"])
+            return text
+        return await memory_access.find(
+            inputs.get("query", ""), limit=int(inputs.get("limit") or 5),
+        )
     elif name == "propose_memory":
         from . import consolidation
         result = await consolidation.commit_candidate(
@@ -1667,6 +1749,7 @@ async def _execute_tool_impl(
             confidence=inputs.get("confidence"),
             source="task_consolidator",
             note=inputs.get("note", ""),
+            supersedes_memory_id=inputs.get("supersedes_memory_id"),
         )
         return f"[{result['status']}] {result['detail']}"
     elif name == "propose_recall":
@@ -1745,9 +1828,9 @@ async def _execute_tool_impl(
             f"(state version {snapshot['version']})."
         )
     elif name == "palace_search":
-        from . import palace
+        from . import memory_access, palace
         order = inputs.get("order") or "semantic"
-        return await asyncio.get_running_loop().run_in_executor(
+        result = await asyncio.get_running_loop().run_in_executor(
             None,
             lambda: palace.search(
                 query=inputs.get("query") or "",
@@ -1759,6 +1842,9 @@ async def _execute_tool_impl(
                 channel=inputs.get("channel"),
             ),
         )
+        # Both corpora live in one store, so a conversation search can surface a
+        # learned memory. Say which is which rather than leaving them identical.
+        return await memory_access.label_curated(result)
     elif name == "palace_add_drawer":
         from . import palace
         return await palace.add_drawer(

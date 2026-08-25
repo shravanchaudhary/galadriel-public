@@ -69,7 +69,8 @@ the first two tiers automatically; the palace you query on demand.
 | **L2 — dynamic block** | Yesterday + today's daily logs, wake-up snapshot, timestamp, active-project banner | system prompt, rebuilt each call | not cached, small | Recent context; what happened today |
 | **Shared experiential workspace** | Bounded interoceptive state + most salient change | agent-owned dynamic block, every stream in `influence` mode | not cached, small | Causal attention, calibration, continuity, and reflection |
 | **L2.5 — file knowledge** | `knowledge/INDEX.md` → procedures / skills / reference | `read_file` on demand | tokens only when loaded | Known procedures and deep reference |
-| **L3 — memory palace** | Verbatim drawers in the `agent` wing | `palace_search` / `palace_kg_*` / `palace_diary_*` | **0 tokens**, local | Richer detail + older history by meaning |
+| **L3a — conversation memory** | Verbatim drawers: what was said and done | `palace_search` / `palace_diary_*` | **0 tokens**, local | What happened, when, in whose exact words |
+| **L3b — learned memory** | Curated memories + their typed links | `memory` / `palace_kg_*` | **0 tokens**, local | What you know and are supposed to apply |
 
 **Daily logs are an INDEX, not the record.** The `memory/*.md` files (and their L2
 injection) hold only a *short truncated preview* of each thing the user said that
@@ -78,19 +79,48 @@ the palace** (`room=conversations`), archived on `/new`, compaction, and shutdow
 When you need the *exact wording* of something said earlier, **`palace_search`
 it** — never grep `memory/*.md` expecting the full message.
 
-**One wing, four rooms.** All lived memory is the single `agent` wing:
-- `conversations` — verbatim chat archives
-- `knowledge` — durable reusable / personal learned facts
-- `episodes` — daily recaps and operational narratives
-- `diary` — first-person reflection
+#### Two memories, and how to tell them apart
+
+They answer different questions, and asking the wrong one is the common mistake.
+
+**Conversation memory** is the verbatim record — every message, archived session
+by session, plus daily recaps and diary. It is *episodic*: it tells you what
+happened and when. Reach for it when the question is about the past.
+
+> "Did I ever run that migration?" · "What were their exact words?" ·
+> "What did we decide last Tuesday?"
+
+`palace_search`. Rooms `conversations`, `episodes`, `diary`.
+
+**Learned memory** is what was distilled *out* of those conversations and kept
+because it should change how you act later — rules, procedures, durable facts,
+preferences. It is *semantic and procedural*: it tells you what you know. Reach
+for it when the question is about how to act now.
+
+> "How do I deploy this?" · "What does the user prefer here?" ·
+> "What do I know about the trading engine?"
+
+`memory(query=…)` to find, `memory(id=…)` to open. Rooms `knowledge`,
+`procedures`, `preferences`, plus the knowledge graph.
+
+The distinction is the *kind of thing stored*, not where it physically lives:
+both are drawers in the one `agent` wing, so a `palace_search` can surface a
+learned memory. When it does, the hit is marked **LEARNED** — open it with
+`memory(id=…)` instead of reading the drawer, because opening brings what it
+depends on with it and a raw drawer read does not.
+
+A conversation is *evidence for* a memory, not a memory. Nothing in
+conversation memory carries typed links, and it never will: the graph relates
+things the system decided it had learned.
 
 Leave `wing=None` on `palace_search` and let write tools default. Halls remain
-MemPalace's auto-topic dimension — not project IDs.
+the auto-topic dimension — not project IDs.
 
 Rules of thumb:
 - **In the stable/dynamic block already?** Just read it — no tool call.
 - **Known procedure / failure?** `knowledge/INDEX.md` → matching entry → palace only if richer detail is needed.
-- **Older operational history, a past decision, a number, the exact words of a past message?** `palace_search` FIRST, never guess (SOUL.md Palace Protocol). The daily log only has the truncated index.
+- **Older operational history, a past decision, a number, the exact words of a past message?** That is conversation memory: `palace_search` FIRST, never guess (SOUL.md Palace Protocol). The daily log only has the truncated index.
+- **A rule, procedure, preference or durable fact you are meant to apply?** That is learned memory: `memory(query=…)`, then `memory(id=…)` on the hit. Searching conversation history for it makes you re-derive from transcripts something already distilled.
 - **Only the four allowlisted files are L1.** Put reusable procedures under `knowledge/` and index them.
 - **Reactive when-to-recollect** is semantic recalls (below), not palace search and not L1 essays.
 
@@ -114,7 +144,7 @@ Package durable content with the unified `learn` tool, picking `type` yourself
 from fire telemetry spanning episodes. Audit with `get_recent_recalls` (proposed
 vs verified). System recall instructions are immutable; cues may be tuned.
 
-### 1c. Memory graph (what comes with a fire)
+### 1c. Memory graph (what comes with a memory)
 
 Matching answers *when* a memory is relevant. It cannot answer what has to come
 *with* it: a memory that reads "use method B" is inert without "for library X",
@@ -123,22 +153,45 @@ because nothing in the conversation resembles it.
 
 So committed memories carry typed edges to each other (`memory_edges`), written
 by a classifier in the background after a commit — never during your turn. The
-vocabulary is fixed because each relation is a traversal *behaviour*:
-`DEPENDS_ON` and `RECALL_BEFORE` are always followed and injected first,
-`RECALL_WITH` only if budget allows, `SUPERSEDES` is resolved so a replaced
-memory never arrives as live context, `CONTRADICTS` surfaces both sides flagged,
-and `CAUSED_BY` is provenance rather than operating context. The classifier's
-own wording for a relation is kept alongside it as a free-text `label`.
+vocabulary is fixed because each relation is a *behaviour*: `DEPENDS_ON` and
+`RECALL_BEFORE` are what a reader inlines, `RECALL_WITH`, `CONTRADICTS` and
+`CAUSED_BY` are navigation, and `SUPERSEDES` resolves so a replaced memory never
+presents itself as current. The classifier's own wording is kept alongside as a
+free-text `label`.
 
-When a recall fires, traversal runs from the memory that recall stands for —
-depth 2, a few memories total, cycle-guarded — and appends them under the
-`[Recall detected]` note, prerequisites first and deepest-first, so a chain
-reads foundation → intermediate → the rule that fired. Expanded memories log to
-`retrieval_events` like any other surfaced memory, so they are graded and edges
-whose target is never used decay and are eventually pruned.
+**Activation is not retrieval.** A recall fire says something here may matter
+and names the memory it stands for; it carries no memory content, because
+whether this turn actually needs it is your judgement, not the harness's. Follow
+it with `memory(id=…)` when it matters and ignore it when it doesn't.
 
-`scripts/memory_graph_density.py` reports how much graph exists; below roughly
-10% coverage expansion is dead weight and the classifier is the thing to fix.
+`memory()` is the one way in. `memory(query=…)` finds learned memories by
+meaning; `memory(id=…)` opens one and returns its full text, whatever it would
+be wrong without (inline), and a bounded list of everything else it links to —
+both what it rests on and what rests on it — as ids you can open with the same
+call. Nothing loads until you ask for it, so a memory with a thousand
+neighbours costs the same as one with three.
+
+One identity throughout: a memory's `memory_id` is also its palace drawer id and
+is stamped in its procedure file, so a `palace_search` hit, a `cat`, and a graph
+edge all name the same thing. Archived conversation drawers open through
+`memory(id=…)` too — they are verbatim history with no curated links, which is
+the distinction: raw conversation is evidence *for* a memory, not a memory.
+
+Opening a memory logs it to `retrieval_events`, so "fired 20 times, opened
+twice" is readable evidence about a trigger, and edges whose target keeps
+arriving unused decay and are eventually pruned.
+
+`SUPERSEDES` has one writer, and it is not the classifier: a consolidator
+passing `supersedes_memory_id` to `propose_memory` when an episode shows a rule
+was retired. Similarity cannot establish replacement — two memories making the
+same claim is reinforcement, which is what earns a preference its place in the
+prompt. A replaced memory stays in the record and says so when opened.
+
+`scripts/memory_graph_density.py` reports what the graph is worth: how many
+edges a reader would follow, how many memories they reach from, how often
+expansion happened, and how much of it was graded useful. Deliberately no
+precision figure — nothing labels which relations really hold, so read a sample
+of `DEPENDS_ON` edges rather than trusting a percentage.
 
 ### 2. Updating yourself — pick the right surface
 

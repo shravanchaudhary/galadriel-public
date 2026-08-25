@@ -4,7 +4,7 @@ from __future__ import annotations
 
 
 UNTRUSTED_READ_ONLY_TOOLS = {
-    "read_file", "palace_search", "palace_taxonomy", "palace_kg_query",
+    "read_file", "memory", "palace_search", "palace_taxonomy", "palace_kg_query",
     "palace_kg_timeline", "palace_diary_read", "google_search",
     "fetch_url_data", "db_get", "db_query", "run_shell", "wait",
 }
