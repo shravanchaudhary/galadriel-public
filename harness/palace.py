@@ -887,6 +887,7 @@ async def add_drawer(
     topic: str | None = None,
     wing: str = DEFAULT_WING,
     room: str | None = None,
+    drawer_id: str | None = None,
 ) -> str:
     """File a verbatim drawer into the palace immediately.
 
@@ -899,6 +900,13 @@ async def add_drawer(
     daily recaps / operational narratives. mempalace's `detect_room` reads
     room from the folder path first (Priority 1), so we place the .md inside
     a subfolder named after the room.
+
+    ``drawer_id`` names the drawer instead of letting one be minted. The
+    learning pipeline passes its ``memory_id`` so a curated memory and its
+    drawer share one identity: a palace hit then carries the id the graph,
+    telemetry and `memory()` all use, with nothing to reconcile. Honoured on
+    the Mongo/DocumentDB backend only — the Chroma path files a .md and lets
+    the external miner mint chunk ids, which this cannot reach into.
     """
     if not content or not content.strip():
         return "[palace add] empty content — nothing filed."
@@ -907,6 +915,7 @@ async def add_drawer(
         try:
             _documentdb().upsert_drawer(
                 content,
+                drawer_id=drawer_id,
                 wing=wing,
                 room=resolved_room,
                 hall=topic or "general",
@@ -917,6 +926,7 @@ async def add_drawer(
             return (
                 f"Filed to palace: wing=`{wing}`, room=`{resolved_room}`"
                 + (f", topic=`{topic}`" if topic else "")
+                + (f", id=`{drawer_id}`" if drawer_id else "")
             )
         except Exception as e:
             return f"[palace add] {type(e).__name__}: {e}"

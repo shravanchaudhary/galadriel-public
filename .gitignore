@@ -1,6 +1,7 @@
 .env
 .galadriel-local/
 .cursor/
+project-agent-kb/
 infra/terraform/.terraform/
 infra/terraform/*.tfstate*
 infra/terraform/.replika-provisioner.zip

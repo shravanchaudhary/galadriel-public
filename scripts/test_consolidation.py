@@ -569,8 +569,103 @@ def test_goodnight_prompt_unchanged_episode_recap() -> None:
     assert "room=" in text and "episodes" in text
 
 
+# ─── Telemetry defects ──────────────────────────────────────────────────
+
+
+def test_stale_bin_survives_a_naive_stored_timestamp() -> None:
+    """Mongo hands back naive datetimes; `_now()` is aware. Subtracting the two
+    raised, and because it sits outside the query's try block it took the whole
+    utility report down — the periodic consolidator's only evidence source.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    naive_old = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=200)
+    docs = [{
+        "memory_key": "memory:abc", "retrieval_count": 9, "use_count": 4,
+        "harmful_count": 0, "user_correction_count": 0, "last_used": naive_old,
+    }]
+
+    class _Stats:
+        def find(self, *a, **kw):
+            async def gen():
+                for d in docs:
+                    yield d
+            return gen()
+
+    with patch.object(consolidation, "_collection", new=AsyncMock(return_value=_Stats())):
+        out = _run(consolidation.memory_utility_report())
+    assert "MEMORY_UTILITY_REPORT" in out
+    assert "memory:abc" in out, "a 200-day-old row belongs in the stale bin"
+
+
+def test_a_failed_grade_write_does_not_move_the_counters() -> None:
+    """The graded flag is what makes grading idempotent. Bumping before it is
+    stored lets a retry count the same use twice."""
+    bumped = []
+
+    class _Events:
+        async def find_one(self, *a, **kw):
+            return {"retrieval_id": "r1", "memory_key": "memory:abc",
+                    "memory_kind": "graph_expansion", "graded": False}
+
+        async def update_one(self, *a, **kw):
+            raise RuntimeError("write failed")
+
+    with patch.object(consolidation, "_collection", new=AsyncMock(return_value=_Events())), \
+         patch.object(consolidation, "_bump_stats",
+                      new=AsyncMock(side_effect=lambda *a, **kw: bumped.append(a))):
+        out = _run(consolidation.grade_retrieval("r1", True, "helpful"))
+    assert out.startswith("[error]")
+    assert bumped == []
+
+
+def test_flag_memory_refuses_a_key_nothing_produced() -> None:
+    """The bad-memory bin has no retrieval gate, so an invented key would sit in
+    the consolidator's evidence forever."""
+    class _Empty:
+        async def find_one(self, *a, **kw):
+            return None
+
+    with patch.object(consolidation, "_collection", new=AsyncMock(return_value=_Empty())):
+        out = _run(consolidation.flag_memory("the trading thing", "wrong"))
+    assert out.startswith("[error]")
+    assert "does not name anything" in out
+
+
+def test_flag_memory_namespaces_a_bare_memory_id() -> None:
+    """Retrieval telemetry writes `memory:<id>`. Flagging the bare id would open
+    a second stats doc and split the correction away from the retrieval history.
+    """
+    bumped = []
+
+    class _Candidates:
+        async def find_one(self, query, *a, **kw):
+            return {"_id": 1} if query.get("memory_id") == "abc123" else None
+
+    with patch.object(consolidation, "_collection", new=AsyncMock(return_value=_Candidates())), \
+         patch.object(consolidation, "_bump_stats",
+                      new=AsyncMock(side_effect=lambda key, *a, **kw: bumped.append(key))):
+        out = _run(consolidation.flag_memory("abc123", "contradicted"))
+    assert bumped == ["memory:abc123"], bumped
+    assert "memory:abc123" in out
+
+
+def test_flag_memory_passes_a_namespaced_key_through() -> None:
+    bumped = []
+    with patch.object(consolidation, "_bump_stats",
+                      new=AsyncMock(side_effect=lambda key, *a, **kw: bumped.append(key))):
+        out = _run(consolidation.flag_memory("recall:sys_identity", "too broad"))
+    assert bumped == ["recall:sys_identity"]
+    assert "recall:sys_identity" in out
+
+
 def main() -> int:
     tests = [
+        test_stale_bin_survives_a_naive_stored_timestamp,
+        test_a_failed_grade_write_does_not_move_the_counters,
+        test_flag_memory_refuses_a_key_nothing_produced,
+        test_flag_memory_namespaces_a_bare_memory_id,
+        test_flag_memory_passes_a_namespaced_key_through,
         test_clean_triplets_normalizes_lists_and_dicts,
         test_clean_triplets_caps_at_twenty,
         test_clean_triplets_rejects_non_list,

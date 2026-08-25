@@ -224,11 +224,18 @@ def search_markdown(query="", wing=None, room=None, hall=None, k=5, order=None, 
         return "No drawers matched the requested palace query."
     lines = ["**Palace search (DocumentDB):**", ""]
     for index, row in enumerate(rows, 1):
-        lines.extend([
-            f"### {index}. {row.get('wing', '?')} / {row.get('room', '?')} / hall={row.get('hall', '?')}",
-            (row.get("text") or "").strip(),
-            "",
-        ])
+        # The id was always stored and never shown. Printing it is what lets the
+        # agent open a hit with memory(id=...), and lets the harness attribute a
+        # retrieval to one drawer instead of to the search scope. For a curated
+        # memory this id IS its memory_id — the learning pipeline files the
+        # drawer under it (see palace.add_drawer's drawer_id).
+        # The recency branch returns raw documents keyed `_id`; the semantic
+        # branch returns `_without_embedding` rows keyed `id`.
+        identifier = row.get("id") or row.get("_id") or ""
+        header = f"### {index}. {row.get('wing', '?')} / {row.get('room', '?')} / hall={row.get('hall', '?')}"
+        if identifier:
+            header += f" / id=`{identifier}`"
+        lines.extend([header, (row.get("text") or "").strip(), ""])
     return "\n".join(lines).rstrip()
 
 

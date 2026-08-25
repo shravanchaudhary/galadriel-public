@@ -448,6 +448,10 @@ class Scheduler:
             asyncio.ensure_future(_reconcile_conversation_runs())
         except Exception as e:
             log.warning(f"Could not reconcile conversation run state: {e}")
+        # Index the memory/graph collections before the first turn can query
+        # them. Every gateway (Discord, Slack, Tower-only) reaches start(),
+        # so this is the one place that runs on every boot.
+        asyncio.ensure_future(self._ensure_memory_indexes())
 
         # Always start morning + goodnight watchers (times re-read each poll)
         self._morning_task = asyncio.ensure_future(self._cron_loop(
@@ -509,6 +513,22 @@ class Scheduler:
             log.info("Downtime catch-up: morning planning missed today — will run shortly after boot.")
 
         log.info("Scheduler running.")
+
+    async def _ensure_memory_indexes(self):
+        """Startup index pass for the learning pipeline and the memory graph.
+
+        Both are idempotent no-ops without a database, so this is safe on a
+        tenant that has not been given Mongo. Failures are logged and dropped:
+        a missing index degrades query speed, and refusing to boot over it
+        would be worse than serving slow.
+        """
+        try:
+            from . import consolidation, memory_graph
+
+            await consolidation.ensure_indexes()
+            await memory_graph.ensure_indexes()
+        except Exception as e:
+            log.warning(f"Memory index creation failed at startup: {e}")
 
     # ── One-shot Wake Loop ───────────────────────────────────────
 
@@ -829,7 +849,6 @@ class Scheduler:
         try:
             from . import memory_graph
 
-            await memory_graph.ensure_indexes()
             decayed = await memory_graph.decay_unhelpful_edges()
             if decayed:
                 log.info(f"[Reflection] {decayed}")

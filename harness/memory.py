@@ -63,11 +63,9 @@ derived from your own learned rules, carrying the weight of a suggestion:
   handling. The consolidation passes at episode boundaries maintain the
   matcher itself; they read the fire telemetry directly.
 
-A fire may carry extra memories beneath it under a heading: context the rule
-needs, related material, or memories that disagree. These come from recorded
-links between your own memories — read them as part of the same hint. A
-conflict heading means the disagreement is unresolved; say so rather than
-quietly picking a side."""
+A fire may name the memory it stands for. Open it with `memory(id=...)` when
+the turn actually needs it — the fire is the nudge, not the memory, and opening
+one brings whatever it rests on along with it."""
 
 
 class MemoryManager:

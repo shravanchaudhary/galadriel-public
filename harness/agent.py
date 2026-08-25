@@ -84,7 +84,7 @@ LOOP_TICK_CHANNELS = frozenset({
 # rather than kept as a separate pass.
 CONSOLIDATION_TOOLS = frozenset({
     "propose_memory", "propose_recall", "grade_retrieval", "flag_memory",
-    "read_episode_segment",
+    "read_episode_segment", "memory",
     "palace_search", "palace_kg_query", "palace_kg_timeline",
     "get_recall", "get_recent_recalls", "learn_recall", "tune_recall", "purge_recall",
 })
@@ -119,7 +119,9 @@ PERIODIC_CONSOLIDATOR_CHANNELS = frozenset({AMBIENT_CHANNEL_ID, "goodnight"})
 # link a precise recall_id — these log at query/room (or entity) granularity;
 # still enough for the task-end consolidator to grade "was this search useful"
 # and for repeat KG-entity lookups to accumulate real cross-episode stats.
-PALACE_RETRIEVAL_TOOLS = frozenset({"palace_search", "palace_kg_query", "palace_kg_timeline"})
+PALACE_RETRIEVAL_TOOLS = frozenset({
+    "palace_search", "palace_kg_query", "palace_kg_timeline", "memory",
+})
 
 _STOPPED_ASSISTANT_NOTE = "(Stopped — turn cancelled.)"
 
@@ -1024,55 +1026,79 @@ class GaladrielAgent:
         except Exception as e:
             log.warning(f"Retrieval telemetry failed (channel={channel_id}): {e}")
 
-    async def _expand_recall_fire(
+    async def _build_recall_fire(
         self,
         channel_id: str,
         matches: list[dict],
-        fire_prompt: str,
         *,
         query: str,
         ephemeral: bool,
+        origin: str,
     ) -> str:
-        """Append graph-reached memories to a recall fire, if any exist.
+        """The injected text for a recall fire: the matched instructions, plus
+        the id of the memory each one stands for.
 
-        The recall answered *when* something is relevant. This answers what has
-        to come with it: a memory whose meaning depends on a prior memory, or a
-        rule that must be in mind before acting. Bounded and best-effort — a
-        failure here leaves the fire exactly as it was.
+        A fire is activation, not retrieval. It says something here may matter
+        and points at where it lives; it deliberately carries no memory content,
+        because deciding whether to go and read it is the model's judgement and
+        pre-loading it would make that decision for them. What the id buys is
+        that acting on the judgement costs one `memory(id=...)` call instead of
+        a guess about which room to search — and it gives the consolidator a
+        clean join between "this fired" and "this was opened".
 
-        Expanded memories log to `retrieval_events` like any other surfaced
-        memory, so the task-end consolidator grades them too and we can tell
-        whether expansion earns its prompt budget.
+        Both fire sites go through here — a user message and a mid-turn tool
+        result differ only in what was scanned.
         """
+        from .recall import generate_recall_fire_text
+
+        fire_text = generate_recall_fire_text(matches)
+        log.info(f"{origin} recall fire triggered: {fire_text!r}")
+        return f"[Recall detected]\n{fire_text}{await self._fire_memory_ids(matches)}"
+
+    @staticmethod
+    async def _fire_memory_ids(matches: list[dict]) -> str:
+        """`recall_id -> memory_id` for whichever matches are memory-backed.
+
+        Hand-authored recalls have no backing memory and get nothing; their
+        instruction is already the whole payload. Best-effort — a lookup failure
+        costs the shortcut, never the fire.
+        """
+        try:
+            from . import consolidation
+
+            backing = await consolidation.memory_ids_by_recall(
+                [m.get("recall_id") for m in matches if m.get("recall_id")],
+            )
+        except Exception as e:
+            log.warning(f"Recall-to-memory lookup failed: {e}")
+            return ""
+        if not backing:
+            return ""
+        # A recall outlives the memory it was built for: the situation it
+        # describes still occurs after the rule is retired. Naming the retired
+        # memory would send the agent to read a rule that no longer applies, so
+        # the pointer follows the replacement.
         try:
             from . import memory_graph
 
-            recall_ids = [m.get("recall_id") for m in matches if m.get("recall_id")]
-            bundle = await memory_graph.expand_from_recalls(recall_ids)
-            if not bundle:
-                return fire_prompt
-            text = memory_graph.format_bundle(bundle)
-            if not text:
-                return fire_prompt
+            retired = await memory_graph.replacements(list(backing.values()))
         except Exception as e:
-            log.warning(f"Recall expansion failed (channel={channel_id}): {e}")
-            return fire_prompt
-
-        log.info(
-            "[Expansion] %d memory/memories for recalls %s: %s",
-            len(bundle), recall_ids,
-            ", ".join(f"{i['relation']}:{i['memory_id']}" for i in bundle),
-        )
-        if not ephemeral:
-            for rank, item in enumerate(bundle, start=1):
-                await self._log_retrieval_event(
-                    channel_id,
-                    memory_key=f"memory:{item['memory_id']}",
-                    memory_kind="graph_expansion",
-                    query_or_cue=query,
-                    rank=rank,
+            log.warning(f"Supersession check failed on a fire: {e}")
+            retired = {}
+        lines = []
+        for recall_id, memory_id in backing.items():
+            current = retired.get(memory_id)
+            if current:
+                lines.append(
+                    f"  [{recall_id}] pointed at memory `{memory_id}`, which has "
+                    f"been replaced by `{current}` — open that one"
                 )
-        return f"{fire_prompt}\n\n{text}"
+            else:
+                lines.append(f"  [{recall_id}] is the trigger for memory `{memory_id}`")
+        return (
+            "\nOpen with memory(id=…) if this turn actually needs it:\n"
+            + "\n".join(lines)
+        )
 
     @staticmethod
     def _tool_result_has_content(result) -> bool:
@@ -1117,6 +1143,36 @@ class GaladrielAgent:
                 memory_kind="kg",
                 query_or_cue=f"subject={subject} predicate={predicate} object={obj}",
             )
+        elif tool_name == "memory":
+            # Opening a memory is the moment it actually enters context — the
+            # event a recall fire only *suggests*. Logged under the memory's own
+            # id, so "fired 20 times, opened twice" becomes readable evidence
+            # about the trigger rather than about the memory.
+            opened = (tool_input.get("id") or "").strip()
+            if not opened:
+                return
+            opened = opened.split("memory:", 1)[-1]
+            await self._log_retrieval_event(
+                channel_id,
+                memory_key=f"memory:{opened}",
+                memory_kind="memory_open",
+                query_or_cue=tool_input.get("query") or opened,
+            )
+            # Prerequisites arrived because an edge pointed at them, so they are
+            # logged as graph expansions — that is the only telemetry edge decay
+            # reads, and it must mean "an edge put this here", nothing else.
+            from . import memory_access
+
+            for rank, reached in enumerate(
+                await memory_access.inlined_prerequisite_ids(opened), start=1,
+            ):
+                await self._log_retrieval_event(
+                    channel_id,
+                    memory_key=f"memory:{reached}",
+                    memory_kind="graph_expansion",
+                    query_or_cue=f"opened {opened}",
+                    rank=rank,
+                )
         elif tool_name == "palace_kg_timeline":
             entity = tool_input.get("entity") or "?"
             await self._log_retrieval_event(
@@ -2214,7 +2270,7 @@ class GaladrielAgent:
         # user_message is appended untouched, so the daily log records the real
         # message exactly once — compaction never double-logs. Context size is
         # managed solely by compaction (no routine message-count trim).
-        from .recall import fetch_all_recalls, scan_text_for_recalls, generate_recall_fire_text
+        from .recall import fetch_all_recalls, scan_text_for_recalls
         # Empty catalog short-circuits scan_text_for_recalls, so this one gate
         # covers both the turn-start scan and the mid-turn tool_use scan.
         active_recalls = (
@@ -2284,12 +2340,9 @@ class GaladrielAgent:
                         memory_kind="recall", query_or_cue=scanned,
                     )
             
-            fire_text = generate_recall_fire_text(new_user_matches)
-            log.info(f"User-message recall fire triggered: {fire_text!r}")
-            fire_prompt = f"[Recall detected]\n{fire_text}"
-            fire_prompt = await self._expand_recall_fire(
-                channel_id, new_user_matches, fire_prompt,
-                query=scanned, ephemeral=ephemeral,
+            fire_prompt = await self._build_recall_fire(
+                channel_id, new_user_matches,
+                query=scanned, ephemeral=ephemeral, origin="User-message",
             )
             messages.append(_recall_fire_message(new_user_matches, fire_prompt))
             if tick_recorder is not None:
@@ -3022,12 +3075,10 @@ class GaladrielAgent:
                                     memory_kind="recall", query_or_cue=text_to_scan[:500],
                                 )
 
-                        fire_text = generate_recall_fire_text(new_matches)
-                        log.info(f"Tool-use recall fire triggered: {fire_text!r}")
-                        fire_prompt = f"[Recall detected]\n{fire_text}"
-                        fire_prompt = await self._expand_recall_fire(
-                            channel_id, new_matches, fire_prompt,
+                        fire_prompt = await self._build_recall_fire(
+                            channel_id, new_matches,
                             query=text_to_scan[:500], ephemeral=ephemeral,
+                            origin="Tool-use",
                         )
                         messages.append(_recall_fire_message(new_matches, fire_prompt))
                         if tick_recorder is not None:

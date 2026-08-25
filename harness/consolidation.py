@@ -63,6 +63,21 @@ _STALE_DAYS = 90
 RECALL_ELIGIBLE_TYPES = frozenset({"semantic", "procedural", "preference"})
 
 
+def _as_aware(value):
+    """A stored datetime, made comparable with `_now()`.
+
+    Everything here writes `datetime.now(timezone.utc)`, but the Mongo client is
+    built without `tz_aware`, so it hands the same value back naive — and
+    subtracting the two raises. The rest of the pipeline dodges this by
+    comparing `created_at_ts` floats; the one place that compares datetimes
+    directly is the stale bin, which crashed the whole utility report the first
+    time any retrieval was graded used.
+    """
+    if isinstance(value, datetime) and value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -100,6 +115,43 @@ async def _collection(name: str):
         return None
 
 
+async def ensure_indexes() -> None:
+    """Indexes for the queries the learning pipeline runs on every turn.
+
+    Idempotent and best-effort, called at startup (`Scheduler.start`) rather
+    than from the periodic pass: a process that boots and immediately serves a
+    turn would otherwise resolve recall seeds and stamp retrieval telemetry
+    with collection scans until the first reflection happened to run.
+    """
+    candidates = await _collection(CANDIDATES_COLLECTION)
+    if candidates is not None:
+        try:
+            # Provenance/edge lookups by id, and the update after every commit.
+            await candidates.create_index([("memory_id", 1)])
+            # Recall fire -> seed memory, on the turn path.
+            await candidates.create_index([("trigger.recall_id", 1)])
+            # The edge classifier's candidate pool.
+            await candidates.create_index([("status", 1), ("created_at_ts", -1)])
+        except Exception as e:
+            log.warning(f"Candidate index creation failed: {e}")
+
+    events = await _collection(RETRIEVAL_EVENTS_COLLECTION)
+    if events is not None:
+        try:
+            await events.create_index([("retrieval_id", 1)])
+            await events.create_index([("session_id", 1), ("ts", 1)])
+        except Exception as e:
+            log.warning(f"Retrieval event index creation failed: {e}")
+
+    stats = await _collection(STATS_COLLECTION)
+    if stats is not None:
+        try:
+            # Upserted once per surfaced memory, so this is the hottest write.
+            await stats.create_index([("memory_key", 1)])
+        except Exception as e:
+            log.warning(f"Memory stats index creation failed: {e}")
+
+
 # ─── Candidate pipeline ────────────────────────────────────────────────
 
 
@@ -114,6 +166,7 @@ async def commit_candidate(
     confidence: float | None = None,
     source: str = "runtime",
     note: str = "",
+    supersedes_memory_id: str | None = None,
 ) -> dict:
     """Validate -> dedupe -> write -> record provenance.
 
@@ -121,6 +174,13 @@ async def commit_candidate(
     "runtime" (the `learn` tool), "task_consolidator", "periodic_consolidator",
     or "tower". Returns {"status": "committed"|"duplicate"|"error",
     "memory_id": str, "detail": str}.
+
+    `supersedes_memory_id` states that this memory replaces an existing one as
+    the active rule. It is the only path that writes a SUPERSEDES edge, and it
+    is deliberately an assertion rather than an inference: near-identical
+    content means the same claim was made twice, which is reinforcement, and
+    retiring a rule for being restated would be exactly backwards. Offered on
+    the consolidation tool surface only.
     """
     type_ = (type or "").strip().lower()
     if type_ not in MEMORY_TYPES:
@@ -149,11 +209,17 @@ async def commit_candidate(
                     f"duplicate of existing memory {duplicate_of} — not re-written",
                 )
             elif type_ == "semantic":
-                status, destination, detail = await _commit_drawer(content, topic, room="knowledge")
+                status, destination, detail = await _commit_drawer(
+                    content, topic, room="knowledge", memory_id=memory_id,
+                )
             elif type_ == "procedural":
-                status, destination, detail = await _commit_procedural(content, topic)
+                status, destination, detail = await _commit_procedural(
+                    content, topic, memory_id=memory_id,
+                )
             else:
-                status, destination, detail = await _commit_preference(content, topic)
+                status, destination, detail = await _commit_preference(
+                    content, topic, memory_id=memory_id,
+                )
     except Exception as e:
         status, destination, detail = "error", {}, f"{type(e).__name__}: {e}"
     if date_warning:
@@ -177,8 +243,63 @@ async def commit_candidate(
         "created_at_ts": _now().timestamp(),
     })
     if status == "committed":
+        if supersedes_memory_id:
+            detail = f"{detail} ({await _record_supersession(memory_id, supersedes_memory_id)})"
         _schedule_post_commit(memory_id, type_, content, triplets, topic)
+    elif supersedes_memory_id:
+        detail = (
+            f"{detail} (no replacement recorded: nothing was committed to "
+            "supersede with)"
+        )
     return {"status": status, "memory_id": memory_id, "detail": detail}
+
+
+async def _record_supersession(new_id: str, raw_old_id: str) -> str:
+    """Write `new SUPERSEDES old`, or say why it could not be written.
+
+    The old memory is left exactly where it is. Supersession changes what
+    counts as current, not what happened: deleting the replaced memory would
+    destroy the record of why the rule changed. What changes is how it is
+    presented — every reader path resolves the edge through
+    `memory_graph.replacements()`, so a retired rule is still findable and
+    openable but never reads as the one in force (`memory_access.find`,
+    `open_memory`, and the recall fire's pointer).
+
+    Authoritative, so it overrides whatever the classifier may have guessed
+    about this pair — a stated replacement is better evidence than an inferred
+    dependency.
+    """
+    from . import memory_graph
+
+    old_id = str(raw_old_id or "").strip()
+    if old_id.startswith("memory:"):
+        old_id = old_id.split("memory:", 1)[-1].strip()
+    if not old_id or old_id == new_id:
+        return "supersedes_memory_id ignored: not a different memory"
+    coll = await _collection(CANDIDATES_COLLECTION)
+    if coll is None:
+        return "supersession not recorded: no database"
+    try:
+        target = await coll.find_one(
+            {"memory_id": old_id, "status": "committed"}, {"_id": 0, "memory_id": 1},
+        )
+    except Exception as e:
+        log.warning(f"Supersession target lookup failed for {old_id}: {e}")
+        return "supersession not recorded: lookup failed"
+    if target is None:
+        return f"supersedes_memory_id {old_id} is not a committed memory — no replacement recorded"
+
+    edges = memory_graph.clean_edges(
+        [{"to": old_id, "relation": "SUPERSEDES", "label": "replaces", "strength": 1.0}],
+        from_id=new_id, allow_forbidden=True,
+    )
+    written = await memory_graph.add_edges(
+        new_id, edges, source="explicit_replacement", authoritative=True,
+    )
+    if not written:
+        return f"replacement of {old_id} could not be recorded"
+    log.info("[Supersedes] %s replaces %s", new_id, old_id)
+    return f"recorded as replacing memory {old_id}, which stays in the record as history"
 
 
 def _schedule_post_commit(
@@ -430,6 +551,13 @@ async def _is_prose_duplicate(type_: str, content: str) -> str | None:
 # comparisons. Embedding shortlists first, so exactly one model call sees a
 # handful of plausible partners.
 _EDGE_SHORTLIST_SIZE = 8
+# Safety bound on the candidate pool, not a retention policy — it exists so a
+# runaway corpus cannot turn one commit into an unbounded read. It drops the
+# oldest, which is the wrong end for this purpose, so hitting it is logged
+# rather than absorbed: a silently truncated pool reads as "considered
+# everything". The fix when it starts biting is a vector index on the
+# collection, not a bigger number here.
+_EDGE_POOL_CAP = 5000
 
 
 async def shortlist_neighbours(
@@ -437,7 +565,14 @@ async def shortlist_neighbours(
 ) -> list[dict]:
     """The committed memories most similar to `content`, as edge candidates.
 
-    Deliberately spans every memory type. The canonical edge is cross-type — a
+    Spans the whole history on purpose. Dedupe looks at a recent window because
+    it is asking "did I just write this?"; this asks "what does this rest on?",
+    and the answer is routinely a foundational memory from months ago — that
+    long reach is the reason the graph exists. Reusing the dedupe window here
+    would make the graph unable to connect anything old, at write time, before
+    traversal ever gets a say.
+
+    Spans every memory type too. The canonical edge is cross-type — a
     procedural lesson depending on a semantic fact — so filtering by type the
     way `_is_prose_duplicate` does would hide exactly the edges worth having.
 
@@ -448,68 +583,141 @@ async def shortlist_neighbours(
     if coll is None or not (content or "").strip():
         return []
     try:
-        since_ts = _now().timestamp() - _DEDUPE_WINDOW_DAYS * 86400
         cursor = coll.find(
-            {"status": "committed", "created_at_ts": {"$gte": since_ts}},
-            {"memory_id": 1, "content": 1, "type": 1},
-        ).sort("created_at_ts", -1).limit(_DEDUPE_POOL_SIZE)
+            {"status": "committed"},
+            {"memory_id": 1, "content": 1, "type": 1, "embedding": 1},
+        ).sort("created_at_ts", -1).limit(_EDGE_POOL_CAP + 1)
         pool = [doc async for doc in cursor]
     except Exception as e:
         log.warning(f"Edge shortlist query failed: {e}")
         return []
 
+    if len(pool) > _EDGE_POOL_CAP:
+        log.warning(
+            "Edge shortlist pool hit its %d-memory cap; the oldest %d+ committed "
+            "memories were not considered as relation targets.",
+            _EDGE_POOL_CAP, len(pool) - _EDGE_POOL_CAP,
+        )
+        pool = pool[:_EDGE_POOL_CAP]
     pool = [
         doc for doc in pool
         if (doc.get("content") or "").strip() and doc.get("memory_id") != exclude_id
     ]
     if not pool:
         return []
+
     try:
-        from .recall import _top_k_cosine, get_encoder
-        best = _top_k_cosine(
-            get_encoder(), content, [doc["content"] for doc in pool], limit,
-        )
+        from .recall import get_encoder, top_k_vector_indices
+
+        encoder = get_encoder()
+        query_vector = ((await _encode(encoder, [content])) or [None])[0]
+        if query_vector is None:
+            return []
+        vectors = await _pool_vectors(coll, pool, encoder, len(query_vector))
+        best = top_k_vector_indices(query_vector, vectors, limit)
     except Exception as e:
         log.warning(f"Edge shortlist scoring failed: {e}")
         return []
 
-    by_content = {doc["content"]: doc for doc in pool}
-    out = []
-    for text in best:
-        doc = by_content.get(text)
-        if doc:
-            out.append({
-                "memory_id": doc.get("memory_id"),
-                "content": doc.get("content"),
-                "type": doc.get("type"),
-            })
-    return out
+    return [{
+        "memory_id": pool[i].get("memory_id"),
+        "content": pool[i].get("content"),
+        "type": pool[i].get("type"),
+    } for i in best]
 
 
-async def memory_ids_for_recalls(recall_ids: list[str]) -> list[str]:
-    """The memories whose triggers are these recalls — the expansion seeds.
+async def _encode(encoder, texts: list[str]):
+    """Embed off the event loop.
 
-    A recall fire tells us a recall matched, not which memory it stands for.
-    `trigger.recall_id` is stamped on the candidate when its trigger is built,
-    so this is the reverse of that link.
+    The encoder is CPU-bound and this path is no longer background-only — the
+    `memory` tool reaches it on a live turn, where a synchronous encode of a few
+    hundred texts would stall every other coroutine in the process.
+    """
+    return await asyncio.get_running_loop().run_in_executor(None, encoder, texts)
+
+
+async def _pool_vectors(coll, pool: list[dict], encoder, dim: int) -> list:
+    """One vector per pool memory, encoding and storing whatever is missing.
+
+    Without stored vectors, ranking the whole history means re-encoding the
+    whole history on every commit, which is what would force a window back in.
+    So the first pass that sees a memory pays for its embedding once and writes
+    it back; every later pass is a dot product. Self-healing, so no migration
+    and no backfill script to remember to run.
+
+    A vector of the wrong width is treated as missing: the encoder is
+    configurable (`RECALL_ENCODER`) and switching it changes the dimension, at
+    which point every stored vector is stale rather than wrong.
+    """
+    vectors = [None] * len(pool)
+    missing: list[int] = []
+    for i, doc in enumerate(pool):
+        stored = doc.get("embedding")
+        if isinstance(stored, list) and len(stored) == dim:
+            vectors[i] = stored
+        else:
+            missing.append(i)
+    if not missing:
+        return vectors
+
+    fresh = (await _encode(encoder, [pool[i]["content"] for i in missing])) or []
+    for i, vector in zip(missing, fresh):
+        vectors[i] = vector
+    # Ranking already has what it needs; storing is the optimisation for next
+    # time. So a write failure stops the writing (a broken store fails for all
+    # of them) and never the shortlist.
+    for i in missing:
+        if vectors[i] is None:
+            continue
+        try:
+            await coll.update_one(
+                {"memory_id": pool[i].get("memory_id")},
+                {"$set": {"embedding": list(vectors[i])}},
+            )
+        except Exception as e:
+            log.warning(f"Could not store memory embeddings: {e}")
+            break
+    return vectors
+
+
+async def memory_ids_by_recall(recall_ids: list[str]) -> dict[str, str]:
+    """recall_id -> memory_id for the memories these recalls stand for.
+
+    A recall fire tells us a recall matched, not which memory it is the trigger
+    for. `trigger.recall_id` is stamped on the candidate when its trigger is
+    built, so this is the reverse of that link — the graph uses it to find its
+    expansion seeds, and the consolidator to name what a fire surfaced.
     """
     coll = await _collection(CANDIDATES_COLLECTION)
     ids = [rid for rid in (recall_ids or []) if rid]
     if coll is None or not ids:
-        return []
+        return {}
     try:
         cursor = coll.find(
             {"trigger.recall_id": {"$in": ids}, "status": "committed"},
-            {"_id": 0, "memory_id": 1},
+            {"_id": 0, "memory_id": 1, "trigger": 1},
         )
-        return [doc["memory_id"] async for doc in cursor if doc.get("memory_id")]
+        return {
+            doc["trigger"]["recall_id"]: doc["memory_id"]
+            async for doc in cursor
+            if doc.get("memory_id") and (doc.get("trigger") or {}).get("recall_id")
+        }
     except Exception as e:
         log.warning(f"Seed lookup failed for recalls {ids}: {e}")
-        return []
+        return {}
+
+
+async def memory_ids_for_recalls(recall_ids: list[str]) -> list[str]:
+    """The memories these recalls stand for — the graph's expansion seeds."""
+    return list((await memory_ids_by_recall(recall_ids)).values())
 
 
 async def memory_texts(memory_ids: list[str]) -> dict[str, dict]:
-    """memory_id -> {content, type, topic} for the ids given. Projected."""
+    """memory_id -> {content, type, topic, kg_triplets} for the ids given.
+
+    Triplets come along because a semantic memory committed as KG facts stores
+    no prose at all, and a reader handed its id has nothing else to show.
+    """
     coll = await _collection(CANDIDATES_COLLECTION)
     ids = [mid for mid in (memory_ids or []) if mid]
     if coll is None or not ids:
@@ -517,7 +725,8 @@ async def memory_texts(memory_ids: list[str]) -> dict[str, dict]:
     try:
         cursor = coll.find(
             {"memory_id": {"$in": ids}},
-            {"_id": 0, "memory_id": 1, "content": 1, "type": 1, "topic": 1},
+            {"_id": 0, "memory_id": 1, "content": 1, "type": 1, "topic": 1,
+             "kg_triplets": 1},
         )
         return {doc["memory_id"]: doc async for doc in cursor if doc.get("memory_id")}
     except Exception as e:
@@ -525,13 +734,29 @@ async def memory_texts(memory_ids: list[str]) -> dict[str, dict]:
         return {}
 
 
-async def _commit_drawer(content: str, topic: str | None, *, room: str) -> tuple[str, dict, str]:
+async def _commit_drawer(
+    content: str, topic: str | None, *, room: str, memory_id: str,
+) -> tuple[str, dict, str]:
+    """File the drawer under the memory's own id, so the two are one thing.
+
+    A palace hit then carries the id that `memory()`, the typed graph and
+    retrieval telemetry all address — no second identifier to reconcile, and no
+    marker text smuggled into the content to carry it.
+    """
     from . import palace
-    result = await palace.add_drawer(content=content, topic=topic, wing="agent", room=room)
-    return "committed", {"kind": "drawer", "room": room, "topic": topic}, f"drawer: {result}"
+    result = await palace.add_drawer(
+        content=content, topic=topic, wing="agent", room=room, drawer_id=memory_id,
+    )
+    return (
+        "committed",
+        {"kind": "drawer", "room": room, "topic": topic, "drawer_id": memory_id},
+        f"drawer: {result}",
+    )
 
 
-async def _commit_procedural(content: str, topic: str | None) -> tuple[str, dict, str]:
+async def _commit_procedural(
+    content: str, topic: str | None, *, memory_id: str,
+) -> tuple[str, dict, str]:
     """Write knowledge/procedures/<slug>.md + an INDEX.md row (the reusable,
     re-readable reference), and a palace drawer in room=procedures so
     palace_search can also surface it. This is how repeated episode patterns
@@ -548,9 +773,13 @@ async def _commit_procedural(content: str, topic: str | None) -> tuple[str, dict
         path = proc_dir / f"{candidate_slug}.md"
         slug = candidate_slug
     trigger = (topic or (content.splitlines()[0] if content else "")).strip()[:120] or "See content."
+    # The id goes in the file because a procedure is read by `cat` as often as
+    # by a palace search, and a read the harness never sees still has to tell
+    # the agent (and the consolidator grading the transcript) which memory it is.
     path.write_text(
         f"# {slug}\n\n{content}\n\n---\n"
-        f"_Filed by memory consolidation ({_now().date().isoformat()})._\n",
+        f"_Filed by memory consolidation ({_now().date().isoformat()}) — "
+        f"memory:{memory_id}._\n",
         encoding="utf-8",
     )
     try:
@@ -559,10 +788,13 @@ async def _commit_procedural(content: str, topic: str | None) -> tuple[str, dict
         log.warning(f"knowledge/INDEX.md update failed for {slug}: {e}")
 
     from . import palace
-    drawer_result = await palace.add_drawer(content=content, topic=slug, wing="agent", room="procedures")
+    drawer_result = await palace.add_drawer(
+        content=content, topic=slug, wing="agent", room="procedures", drawer_id=memory_id,
+    )
     return (
         "committed",
-        {"kind": "knowledge_file", "path": str(path), "topic": slug},
+        {"kind": "knowledge_file", "path": str(path), "topic": slug,
+         "drawer_id": memory_id},
         f"procedural: wrote {path} + INDEX.md row; drawer: {drawer_result}",
     )
 
@@ -579,7 +811,9 @@ def _append_index_row(index_path: Path, id_: str, trigger: str, path: str) -> No
         f.write(row)
 
 
-async def _commit_preference(content: str, topic: str | None) -> tuple[str, dict, str]:
+async def _commit_preference(
+    content: str, topic: str | None, *, memory_id: str,
+) -> tuple[str, dict, str]:
     """Preferences go to today's daily log (hot, already-loaded context) and a
     palace drawer (durable, searchable) — never a direct MEMORY.md edit here.
     That stable prompt file is on every turn, so a single statement is not
@@ -597,9 +831,15 @@ async def _commit_preference(content: str, topic: str | None) -> tuple[str, dict
     except Exception as e:
         log.warning(f"Preference daily-log write failed: {e}")
         logged = False
-    drawer_result = await palace.add_drawer(content=content, topic=topic, wing="agent", room="preferences")
+    drawer_result = await palace.add_drawer(
+        content=content, topic=topic, wing="agent", room="preferences", drawer_id=memory_id,
+    )
     prefix = "logged + " if logged else ""
-    return "committed", {"kind": "daily_log+drawer", "topic": topic}, f"preference: {prefix}drawer: {drawer_result}"
+    return (
+        "committed",
+        {"kind": "daily_log+drawer", "topic": topic, "drawer_id": memory_id},
+        f"preference: {prefix}drawer: {drawer_result}",
+    )
 
 
 # ─── Preference promotion into the always-on prompt ───────────────────────
@@ -806,6 +1046,12 @@ async def _episode_retrieval_summary(session_id: str | None) -> str:
         return ""
     if not events:
         return ""
+    # A recall fire is logged under the recall that matched, but a correction
+    # has to name the memory behind it — the same link the graph seeds from.
+    backing = await memory_ids_by_recall([
+        str(e.get("memory_key", "")).split("recall:", 1)[-1]
+        for e in events if str(e.get("memory_key", "")).startswith("recall:")
+    ])
     lines = [
         "[EPISODE_RETRIEVALS] Memory surfaced during this episode — grade each "
         "with grade_retrieval(retrieval_id, used, outcome):",
@@ -815,9 +1061,12 @@ async def _episode_retrieval_summary(session_id: str | None) -> str:
         if len(q) > 120:
             q = q[:117] + "..."
         graded = " [already graded]" if e.get("graded") else ""
+        key = str(e.get("memory_key", ""))
+        memory_id = backing.get(key.split("recall:", 1)[-1]) if key.startswith("recall:") else None
+        origin = f" memory_id={memory_id}" if memory_id else ""
         lines.append(
             f"- retrieval_id={e.get('retrieval_id')} kind={e.get('memory_kind')} "
-            f"memory_key={e.get('memory_key')} query=\"{q}\"{graded}"
+            f"memory_key={key}{origin} query=\"{q}\"{graded}"
         )
     return "\n".join(lines)
 
@@ -846,7 +1095,10 @@ async def recent_consolidation_digest(limit: int = 10) -> str:
         content = (d.get("content") or "").replace("\n", " ").strip()
         if len(content) > 140:
             content = content[:137] + "..."
-        lines.append(f"- {d.get('status')} [{d.get('type')}] via {d.get('source')}: {content}")
+        lines.append(
+            f"- {d.get('status')} [{d.get('type')}] memory_id={d.get('memory_id')} "
+            f"via {d.get('source')}: {content}"
+        )
     return "\n".join(lines)
 
 
@@ -1035,6 +1287,10 @@ async def grade_retrieval(retrieval_id: str, used: bool, outcome: str, note: str
         elif outcome_ == "harmful":
             inc["harmful_count"] = 1
 
+    # The graded flag is what makes this idempotent — the guard above refuses a
+    # second grade of the same id. So the counters may only move once that flag
+    # is safely stored: bumping first would let a retry double-count every
+    # use/helpful/harmful on a write that never landed.
     try:
         await events.update_one(
             {"retrieval_id": retrieval_id},
@@ -1045,6 +1301,7 @@ async def grade_retrieval(retrieval_id: str, used: bool, outcome: str, note: str
         )
     except Exception as e:
         log.warning(f"Retrieval grade write failed: {e}")
+        return f"[error] could not record the grade for {retrieval_id}: {e}"
     if inc or set_fields:
         await _bump_stats(
             event["memory_key"], inc, set_fields=set_fields,
@@ -1053,18 +1310,69 @@ async def grade_retrieval(retrieval_id: str, used: bool, outcome: str, note: str
     return f"Graded retrieval {retrieval_id}: used={used_} outcome={outcome_}."
 
 
+# Namespaces `log_retrieval` stamps. A flag against anything else is either a
+# typo or an invented key, and because the bad-memory bin has no retrieval gate,
+# such a row would sit in the consolidator's evidence permanently.
+_KEY_NAMESPACES = ("memory:", "recall:", "drawer_search:", "kg:", "kg_timeline:")
+
+
+async def _resolve_memory_key(memory_key: str) -> tuple[str | None, str]:
+    """(canonical key, error). Refuses a key nothing could ever have produced.
+
+    A bare memory id is accepted and namespaced: the tool description invites
+    one, but retrieval telemetry writes `memory:<id>`, so taking it literally
+    would open a second stats doc and split a memory's correction count away
+    from its retrieval history.
+    """
+    key = (memory_key or "").strip()
+    if not key:
+        return None, "[error] memory_key is required."
+    if key.startswith(_KEY_NAMESPACES):
+        return key, ""
+
+    candidates = await _collection(CANDIDATES_COLLECTION)
+    if candidates is not None:
+        try:
+            if await candidates.find_one({"memory_id": key}, {"_id": 1}):
+                return f"memory:{key}", ""
+        except Exception as e:
+            log.warning(f"flag_memory key lookup failed: {e}")
+            return f"memory:{key}", ""
+
+    # Not a known memory and not a namespaced key. It may still be a real
+    # telemetry row (a KG tuple keyed before these namespaces existed), so
+    # accept it if the stats or events collections have already seen it.
+    for name, field in (
+        (STATS_COLLECTION, "memory_key"), (RETRIEVAL_EVENTS_COLLECTION, "memory_key"),
+    ):
+        coll = await _collection(name)
+        if coll is None:
+            continue
+        try:
+            if await coll.find_one({field: key}, {"_id": 1}):
+                return key, ""
+        except Exception as e:
+            log.warning(f"flag_memory key lookup failed: {e}")
+    return None, (
+        f"[error] {key!r} does not name anything this system has surfaced. Use a "
+        "memory_id from a report or search result, or a key exactly as it "
+        "appears in [EPISODE_RETRIEVALS] (memory:<id>, recall:<id>, kg:<s>/<p>/<o>)."
+    )
+
+
 async def flag_memory(memory_key: str, reason: str) -> str:
     """Deterministic counter update behind the consolidator's flag_memory tool
     call — the strongest single signal (an explicit user contradiction this
     episode), independent of whether the memory was even retrieved.
     """
-    if not memory_key:
-        return "[error] memory_key is required."
+    key, error = await _resolve_memory_key(memory_key)
+    if key is None:
+        return error
     await _bump_stats(
-        memory_key, {"user_correction_count": 1},
+        key, {"user_correction_count": 1},
         set_fields={"last_flagged": _now(), "last_flag_reason": (reason or "")[:300]},
     )
-    return f"Flagged {memory_key}: {reason or 'corrected'} (user_correction_count +1)."
+    return f"Flagged {key}: {reason or 'corrected'} (user_correction_count +1)."
 
 
 async def _bump_stats(
@@ -1123,27 +1431,33 @@ async def memory_utility_report(limit: int = 15) -> str:
         retrieval = int(d.get("retrieval_count", 0) or 0)
         use = int(d.get("use_count", 0) or 0)
         harmful = int(d.get("harmful_count", 0) or 0)
+        helpful = int(d.get("helpful_count", 0) or 0)
         corrections = int(d.get("user_correction_count", 0) or 0)
-        last_used = d.get("last_used")
+        last_used = _as_aware(d.get("last_used"))
         use_ratio = (use / retrieval) if retrieval else None
         # Bad trigger: fires a lot, rarely used, but what little use there was
         # wasn't harmful — the content is fine, the cue is too broad.
         if retrieval >= 5 and use_ratio is not None and use_ratio < 0.15 and harmful == 0:
-            bad_trigger.append((key, retrieval, use, use_ratio))
+            bad_trigger.append((key, retrieval, use, use_ratio, helpful))
         if harmful > 0 or corrections > 0:
             bad_memory.append((key, harmful, corrections))
         if retrieval > 0 and (last_used is None or (now - last_used).days > _STALE_DAYS):
-            stale.append((key, retrieval, last_used))
+            stale.append((key, retrieval, last_used, helpful))
 
     lines = [
         "[MEMORY_UTILITY_REPORT] Harness-computed retrieval/use evidence "
         "(counts and ratios only — verify actual content before acting on any row).",
         "",
         f"Bad-trigger candidates (high retrieval, rarely used, never harmful when used "
-        f"-> narrow the recall cue / drawer summary, do NOT touch the content), top {limit}:",
+        f"-> narrow the recall cue / drawer summary, do NOT touch the content). "
+        f"helpful>0 means the content earned its keep when it did land, so fix the "
+        f"cue and leave the memory alone. Top {limit}:",
     ]
-    for key, retrieval, use, use_ratio in sorted(bad_trigger, key=lambda x: -x[1])[:limit]:
-        lines.append(f"- {key}: retrieved={retrieval} used={use} use_ratio={use_ratio:.2f}")
+    for key, retrieval, use, use_ratio, helpful in sorted(bad_trigger, key=lambda x: -x[1])[:limit]:
+        lines.append(
+            f"- {key}: retrieved={retrieval} used={use} use_ratio={use_ratio:.2f} "
+            f"helpful={helpful}"
+        )
     if not bad_trigger:
         lines.append("(none)")
     lines.append("")
@@ -1160,9 +1474,11 @@ async def memory_utility_report(limit: int = 15) -> str:
         f"Stale candidates (retrieved before, unused {_STALE_DAYS}+ days "
         f"-> consider archiving), top {limit}:"
     )
-    for key, retrieval, last_used in sorted(stale, key=lambda x: -x[1])[:limit]:
+    for key, retrieval, last_used, helpful in sorted(stale, key=lambda x: -x[1])[:limit]:
         when = last_used.isoformat() if last_used else "never used"
-        lines.append(f"- {key}: retrieval_count={retrieval} last_used={when}")
+        lines.append(
+            f"- {key}: retrieval_count={retrieval} last_used={when} helpful={helpful}"
+        )
     if not stale:
         lines.append("(none)")
     return "\n".join(lines)

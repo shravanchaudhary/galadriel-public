@@ -112,7 +112,7 @@ async def main() -> int:
     print(f"\n{'Would write' if args.dry_run else 'Wrote'} {total} edge(s).")
     if not args.dry_run:
         print()
-        print(await memory_graph.density_report())
+        print(await memory_graph.graph_report())
     return 0
 
 

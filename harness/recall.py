@@ -577,6 +577,36 @@ def _max_cosine(encoder, text: str, examples: list[str]) -> float | None:
     return None if hit is None else hit[0]
 
 
+def top_k_vector_indices(query_vector, vectors: list, k: int) -> list[int]:
+    """Indices of the k vectors closest to `query_vector` by cosine, best first.
+
+    Takes vectors rather than text so a caller that has already stored its
+    embeddings does not have to re-encode a corpus to rank it. [] on any
+    failure, which callers treat as "no candidates".
+    """
+    if not vectors or k <= 0:
+        return []
+    try:
+        query = np.asarray(query_vector, dtype=np.float64)
+        q_norm = np.linalg.norm(query)
+        if q_norm == 0:
+            return []
+        scored: list[tuple[float, int]] = []
+        for index, raw in enumerate(vectors):
+            if raw is None:
+                continue
+            vec = np.asarray(raw, dtype=np.float64)
+            v_norm = np.linalg.norm(vec)
+            if v_norm == 0 or vec.shape != query.shape:
+                continue
+            scored.append((float(np.dot(query, vec) / (q_norm * v_norm)), index))
+        scored.sort(key=lambda pair: pair[0], reverse=True)
+        return [index for _, index in scored[:k]]
+    except Exception as e:
+        log.warning(f"Failed to rank vectors: {e}")
+        return []
+
+
 def _top_k_cosine(encoder, text: str, examples: list[str], k: int) -> list[str]:
     """The k examples most cosine-similar to text, best first. [] on any failure."""
     cleaned = [e.strip() for e in examples if isinstance(e, str) and e.strip()]
