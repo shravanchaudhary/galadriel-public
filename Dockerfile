@@ -97,8 +97,7 @@ ENV MEMPALACE_PATH=/data/.mempalace/palace \
     TOWER_HOST=0.0.0.0 \
     TOWER_PORT=8080 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    RECALL_SLM_VERIFY=1
+    PYTHONUNBUFFERED=1
 
 # Tower form/session auth (TOWER_AUTH_*) protects the UI when enabled. Prefer
 # binding to localhost or an authenticated edge; see docker-compose.yml.

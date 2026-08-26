@@ -39,11 +39,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-# Stage-1 only: this benchmark never calls the judge, so a placeholder key is
-# enough to keep recall_system_armed() true (it only checks presence, see
-# harness/recall.recall_system_armed) without needing a real Gemini key.
-os.environ.setdefault("RECALL_SLM_VERIFY", "1")
-os.environ.setdefault("GEMINI_API_KEY", "eval-placeholder")
+# Stage-1 only: this benchmark never calls the judge, so switch Stage-2 off
+# to keep recall_system_armed() true. Arming follows the selected judge
+# model's provider credential, so a placeholder key no longer arms anything.
+os.environ.setdefault("RECALL_JUDGE_VERIFY", "0")
 
 from eval.chunk_dataset import build_chunk_dataset, chunk_dataset_stats  # noqa: E402
 from eval.common import (  # noqa: E402

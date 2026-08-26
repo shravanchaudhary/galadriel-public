@@ -25,7 +25,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-os.environ["RECALL_SLM_VERIFY"] = "1"
+# Stage-1 only: no judge is called here, so switch Stage-2 off rather than
+# faking a provider credential — arming follows the judge model's provider.
+os.environ["RECALL_JUDGE_VERIFY"] = "0"
 
 from harness.recall import (  # noqa: E402
     DEFAULT_POSITIVE_THRESHOLD,

@@ -998,15 +998,53 @@ class _RecordingEdges:
     def __init__(self):
         self.updates = []
         self.pruned = []
+        self.reads = []
         self.deleted = 0
+        # The stored edges. Decay reads the rows it is about to delete so the
+        # maintenance record can name them.
+        self._doomed = [
+            {"from": "dependent", "to": "bad", "relation": "DEPENDS_ON",
+             "label": "needs it", "strength": 0.1, "source": "task_consolidator"},
+            # Same target, still strong: must be weakened but never pruned or
+            # recorded, so a read that ignores the strength scope fails here.
+            {"from": "other", "to": "bad", "relation": "RECALL_WITH",
+             "label": "goes with", "strength": 0.6, "source": "task_consolidator"},
+        ]
 
     async def update_many(self, query, update):
         self.updates.append((query, update))
 
+    def find(self, query, projection=None):
+        # Honour the same scope delete_many will use, and go through the same
+        # store, so a read placed AFTER the delete would return nothing and the
+        # ordering this pins can actually fail.
+        rows = [r for r in self._doomed if self._in_scope(r, query)]
+        self.reads.append(query)
+
+        async def gen():
+            for row in rows:
+                yield row
+        return gen()
+
+    @staticmethod
+    def _in_scope(row, query) -> bool:
+        to = (query.get("to") or {}).get("$in")
+        if to is not None and row.get("to") not in to:
+            return False
+        rels = (query.get("relation") or {}).get("$in")
+        if rels is not None and row.get("relation") not in rels:
+            return False
+        below = (query.get("strength") or {}).get("$lt")
+        if below is not None and not (row.get("strength", 0.5) < below):
+            return False
+        return True
+
     async def delete_many(self, query):
         self.pruned.append(query)
-        self.deleted = 1
-        return type("R", (), {"deleted_count": 1})()
+        gone = [r for r in self._doomed if self._in_scope(r, query)]
+        self._doomed = [r for r in self._doomed if r not in gone]
+        self.deleted = len(gone)
+        return type("R", (), {"deleted_count": len(gone)})()
 
 
 def _arrivals(memory_id, *, times, used, kind="graph_expansion", graded=True):
@@ -1023,15 +1061,20 @@ def _arrivals(memory_id, *, times, used, kind="graph_expansion", graded=True):
     return rows
 
 
-def _decay(rows):
+def _decay(rows, *, records=None):
     edges = _RecordingEdges()
     events = _FakeEvents(rows)
 
     async def fake_consolidation_collection(name):
         return events
 
+    async def fake_record(kind, detail):
+        if records is not None:
+            records.append((kind, detail))
+
     with patch.object(memory_graph, "_collection", new=AsyncMock(return_value=edges)), \
-         patch.object(consolidation, "_collection", fake_consolidation_collection):
+         patch.object(consolidation, "_collection", fake_consolidation_collection), \
+         patch.object(consolidation, "record_maintenance", fake_record):
         report = _run(memory_graph.decay_unhelpful_edges())
     return edges, report, events
 
@@ -1046,6 +1089,31 @@ def test_decay_weakens_edges_into_an_unused_memory() -> None:
     )
     assert update["$inc"]["strength"] < 0
     assert "pruned" in report
+
+
+def test_decay_records_the_edges_it_deleted() -> None:
+    """A prune is the only destructive act here, and a count cannot tell a
+    healthy trim from a mistuned threshold stripping the graph. The rows go in
+    the maintenance ledger complete enough to put back."""
+    records = []
+    edges, _report, _events = _decay(
+        _arrivals("bad", times=10, used=0), records=records,
+    )
+    kinds = [k for k, _ in records]
+    assert kinds == ["decay"], f"expected one decay record, got {kinds}"
+    detail = records[0][1]
+    assert detail["unhelpful_targets"] == ["bad"]
+    assert detail["edges_pruned"] == 1
+    pruned = detail["pruned_edges"]
+    assert len(pruned) == 1, "only edges actually deleted belong in the record"
+    assert pruned[0]["from"] == "dependent" and pruned[0]["to"] == "bad", (
+        "a pruned edge must be recoverable from its own record"
+    )
+    assert pruned[0]["relation"] == "DEPENDS_ON"
+    assert pruned[0]["strength"] == 0.1 and pruned[0]["label"] == "needs it", (
+        "the record must carry enough of the edge to restore it"
+    )
+    assert edges.reads, "the doomed rows must be read before they are deleted"
 
 
 def test_decay_ignores_a_memory_that_gets_used() -> None:
@@ -1093,6 +1161,56 @@ def test_decay_waits_for_enough_evidence() -> None:
     """One unused injection is noise, not a verdict on the edge."""
     edges, report, events = _decay(_arrivals("new", times=2, used=0))
     assert edges.updates == [] and report == ""
+
+
+def test_a_failed_classifier_call_is_recorded_not_silently_empty() -> None:
+    """An empty edge list is the normal answer for most memories, so a failed
+    call is stamped on the candidate as written=0 exactly like a real one.
+    Without a record, a backfill cannot tell which memories were never
+    successfully classified — and the provider branch fails for all of them at
+    once."""
+    records = []
+
+    async def fake_record(kind, detail):
+        records.append((kind, detail))
+
+    class _Boom:
+        async def create_message(self, **kw):
+            raise RuntimeError("provider exploded")
+
+    from harness import model_registry
+
+    neighbours = [{"memory_id": "n1", "type": "semantic", "content": "a fact"}]
+
+    # The call fails.
+    with patch.object(consolidation, "record_maintenance", fake_record), \
+         patch.object(model_registry, "get_provider", lambda task: _Boom()):
+        edges = _run(memory_graph.classify_edges(
+            "m1", "new memory", memory_type="semantic", neighbours=neighbours,
+        ))
+    assert edges == [], "a failed call must not invent edges"
+    assert [k for k, _ in records] == ["classify_failure"], (
+        f"the failed call must be recorded, got {records}"
+    )
+    assert records[0][1]["memory_id"] == "m1"
+
+    # The provider cannot even be resolved — the branch that fails for every
+    # memory at once, and the one the first remediation pass missed.
+    records.clear()
+
+    def _no_provider(task):
+        raise RuntimeError("no credentials")
+
+    with patch.object(consolidation, "record_maintenance", fake_record), \
+         patch.object(model_registry, "get_provider", _no_provider):
+        edges = _run(memory_graph.classify_edges(
+            "m2", "new memory", memory_type="semantic", neighbours=neighbours,
+        ))
+    assert edges == []
+    assert [k for k, _ in records] == ["classify_failure"], (
+        f"an unresolvable provider must be recorded too, got {records}"
+    )
+    assert "provider_unavailable" in records[0][1]["reason"]
 
 
 def main() -> int:
@@ -1147,6 +1265,8 @@ def main() -> int:
         test_a_failed_backing_lookup_leaves_the_fire_intact,
         test_every_recall_fire_site_goes_through_the_builder,
         test_decay_weakens_edges_into_an_unused_memory,
+        test_decay_records_the_edges_it_deleted,
+        test_a_failed_classifier_call_is_recorded_not_silently_empty,
         test_decay_ignores_a_memory_that_gets_used,
         test_decay_ignores_arrivals_no_edge_caused,
         test_decay_ignores_arrivals_nobody_graded,

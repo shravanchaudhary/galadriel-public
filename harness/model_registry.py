@@ -156,8 +156,20 @@ def get_provider(task: str, api_key: str | None = None) -> BaseModelProvider:
     return build_provider(name, api_key=api_key)
 
 
-def _provider_key_present(provider: str) -> bool:
-    """True when the configured provider has a usable credential in the env."""
+# Tenant BYOM lookups are a Mongo read plus a KMS decrypt with no cache of
+# their own, so the answer is remembered here for callers that must not block.
+_TENANT_KEY_CACHE: dict[str, bool] = {}
+
+
+def provider_key_present(provider: str, *, allow_lookup: bool = True) -> bool:
+    """True when the configured provider has a usable credential.
+
+    `allow_lookup=False` restricts the check to env/ambient signals and the
+    warmed BYOM cache, doing no I/O at all — required for callers on the agent
+    loop, where `provider_credentials.get` would block it on PyMongo and KMS.
+    Warm the cache with `warm_provider_keys()` at startup so those callers see
+    a tenant's stored key rather than defaulting to "absent".
+    """
     if provider == OLLAMA:
         return True  # local — no API key
     if os.environ.get(_ENV_KEY[provider]):
@@ -172,13 +184,41 @@ def _provider_key_present(provider: str) -> bool:
     ):
         return True
     if os.environ.get("REPLIKA_TENANT_ID"):
+        if not allow_lookup:
+            return _TENANT_KEY_CACHE.get(provider, False)
         try:
             from . import provider_credentials
 
-            return bool(provider_credentials.get(provider))
+            present = bool(provider_credentials.get(provider))
         except Exception:
-            return False
+            present = False
+        _TENANT_KEY_CACHE[provider] = present
+        return present
     return False
+
+
+def invalidate_provider_key_cache(provider: str | None = None) -> None:
+    """Forget a cached BYOM answer after the stored credential changes.
+
+    Recall arming reads this cache without doing I/O, so a key saved at runtime
+    would otherwise leave the system disarmed until the next process restart.
+    """
+    if provider is None:
+        _TENANT_KEY_CACHE.clear()
+        return
+    for name in (provider, f"{provider}_anthropic", f"{provider}_mantle"):
+        _TENANT_KEY_CACHE.pop(name, None)
+
+
+def warm_provider_keys(providers=None) -> None:
+    """Populate the BYOM cache. Blocking — call it off the event loop."""
+    if not os.environ.get("REPLIKA_TENANT_ID"):
+        return
+    for provider in providers or (GEMINI, BEDROCK_ANTHROPIC, BEDROCK_MANTLE):
+        try:
+            provider_key_present(provider, allow_lookup=True)
+        except Exception:
+            _TENANT_KEY_CACHE.setdefault(provider, False)
 
 
 def required_env_keys() -> set[str]:
@@ -200,7 +240,7 @@ def missing_env_keys() -> list[str]:
     """
     missing = []
     for provider in {provider for provider, _ in TASKS.values()}:
-        if not _provider_key_present(provider):
+        if not provider_key_present(provider):
             if provider == GEMINI:
                 missing.append("GEMINI_API_KEY (or GOOGLE_API_KEY)")
             elif provider == OLLAMA:

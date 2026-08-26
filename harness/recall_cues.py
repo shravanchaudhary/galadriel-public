@@ -482,10 +482,12 @@ async def build_tested_recall(
 
     scores = await test_cues(cues, catalog=catalog)
     best = (cues, scores)
+    rounds = 0
 
     for attempt in range(_MAX_REPAIR_ROUNDS):
         if meets_bar(scores):
             break
+        rounds = attempt + 1
         log.info(
             "[CueTest] repair round %d/%d — recall=%.2f fp=%.2f",
             attempt + 1, _MAX_REPAIR_ROUNDS,
@@ -515,6 +517,26 @@ async def build_tested_recall(
             best = (revised, revised_scores)
 
     final_cues, final_scores = best if not meets_bar(scores) else (cues, scores)
+    if final_scores is not None:
+        # A set that ships after failed repairs is still the best available, but
+        # it is NOT a passing set — without this, a below-bar trigger is stored
+        # indistinguishably from one that cleared the bar, and "what fraction
+        # of memories earned a working trigger" has no answer.
+        # `passed` must distinguish three states, not two: cleared the bar,
+        # failed it, or was never measured. meets_bar() answers True for a
+        # measurement it cannot read, so reusing it directly would stamp a
+        # scoreless run as a pass. (A fully disarmed matcher returns None and
+        # skips this block entirely; this guards the partial case, where a
+        # probe set produced counts but no rates.)
+        measured = (
+            final_scores.get("recall_rate") is not None
+            or final_scores.get("fp_rate") is not None
+        )
+        final_scores = {
+            **final_scores,
+            "passed": meets_bar(final_scores) if measured else None,
+            "repair_rounds": rounds,
+        }
     return final_cues, final_scores
 
 
@@ -594,6 +616,8 @@ def _public_scores(scores: dict | None) -> dict | None:
         "fp_rate": scores.get("fp_rate"),
         "probes_positive": scores.get("probes_positive"),
         "probes_negative": scores.get("probes_negative"),
+        "passed": scores.get("passed"),
+        "repair_rounds": scores.get("repair_rounds"),
     }
 
 

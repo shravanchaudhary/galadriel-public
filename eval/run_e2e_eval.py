@@ -5,8 +5,9 @@ Drives `scan_text_for_recalls` then `filter_matches_with_judge` rather than
 scoring (chunk, recall) pairs in isolation. Attributes every false negative to
 either candidate selection (Stage-1 miss) or verification (Stage-2 reject).
 Leave-one-out drops the exact eval chunk from positive_examples so cue_audit
-self-matches cannot inflate results. Requires GEMINI_API_KEY (the judge's
-production provider).
+self-matches cannot inflate results. Requires a credential for whichever
+provider serves RECALL_JUDGE_MODEL; note this module's own judge helper is
+still pinned to Gemini, unlike production.
 
 Usage:
   venv/bin/python -m eval.run_e2e_eval --leave-one-out
@@ -29,7 +30,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-os.environ.setdefault("RECALL_SLM_VERIFY", "1")
+os.environ.setdefault("RECALL_JUDGE_VERIFY", "1")
 
 from eval.common import (  # noqa: E402
     classification_metrics,
@@ -209,11 +210,11 @@ def run_case(
 
     reason = None
     if recall_id in rejected_by_id:
-        reason = rejected_by_id[recall_id].get("slm_reason")
+        reason = rejected_by_id[recall_id].get("judge_reason")
     elif predicted:
         for m in verified:
             if m.get("recall_id") == recall_id:
-                reason = m.get("slm_reason")
+                reason = m.get("judge_reason")
                 break
 
     return {
@@ -225,7 +226,7 @@ def run_case(
         "predicted": predicted,
         "stage1_hit": stage1_hit,
         "fn_stage": fn_stage,
-        "slm_reason": reason,
+        "judge_reason": reason,
         "proposed_ids": sorted(x for x in proposed_ids if x),
         "verified_ids": sorted(x for x in verified_ids if x),
         "latency_ms": round(latency * 1000, 1),

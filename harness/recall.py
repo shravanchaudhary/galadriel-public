@@ -1047,10 +1047,10 @@ def generate_recall_fire_text(matched_recalls: list[dict]) -> str:
     return "\n".join(fire_lines)
 
 
-def _slm_verify_enabled() -> bool:
-    """Master Stage-2 on/off switch (name predates the judge; still gates it)."""
-    raw = (os.environ.get("RECALL_SLM_VERIFY") or "1").strip().lower()
-    return raw not in ("0", "false", "no", "off")
+def _judge_verify_enabled() -> bool:
+    """Master Stage-2 on/off switch."""
+    raw = os.environ.get("RECALL_JUDGE_VERIFY") or "1"
+    return raw.strip().lower() not in ("0", "false", "no", "off")
 
 
 def _judge_model_for_status() -> str:
@@ -1066,7 +1066,7 @@ def _judge_model_for_status() -> str:
 def get_recall_status() -> dict:
     """Status payload for Tower UI / API (Stage-2 is judge-only)."""
     return {
-        "enabled": _slm_verify_enabled(),
+        "enabled": _judge_verify_enabled(),
         "judge_model": _judge_model_for_status(),
         "armed": recall_system_armed(),
     }
@@ -1098,21 +1098,56 @@ _DISARM_LOGGED = False
 def recall_system_armed() -> bool:
     """Master switch: a recall system without its verifier must not run at all.
 
-    Armed when a Gemini key is present; otherwise disarm (fail-closed).
-    RECALL_SLM_VERIFY=0 is a deliberate operator choice to disable Stage-2
-    entirely; that path stays armed since there is nothing to verify.
+    Armed when the credential for the SELECTED judge model's provider is
+    present; otherwise disarm (fail-closed). The judge is provider-generic and
+    defaults to a Bedrock model, so this must follow `RECALL_JUDGE_MODEL` — a
+    vendor-specific key check disarmed the whole system whenever that one
+    vendor's key was absent, no matter which provider actually serves the
+    judge. RECALL_JUDGE_VERIFY=0 is a deliberate operator choice to disable
+    Stage-2 entirely; that path stays armed since there is nothing to verify.
     """
     global _DISARM_LOGGED
-    if not _slm_verify_enabled():
+    if not _judge_verify_enabled():
         return True
-    armed = bool((os.environ.get("GEMINI_API_KEY") or "").strip())
+    from . import model_registry, tower_settings
+    from .recall_judge import peek_judge_model
+
+    try:
+        # No I/O on this path: it gates every scan, and the agent calls
+        # scan_text_for_recalls inline on the event loop. Env wins, then
+        # whatever the judge's own async path has already cached, then the
+        # documented default — a Tower override applies from the next scan
+        # after the judge refreshes that cache.
+        # Each candidate is validated the way the judge validates it. An
+        # unlisted name resolves to the Ollama provider, which needs no
+        # credential, so an unnormalized value would arm the system OPEN on
+        # exactly the typo that stops the judge working.
+        model = next(
+            (
+                m for m in (
+                    tower_settings.normalize_recall_judge_model(
+                        os.environ.get("RECALL_JUDGE_MODEL")
+                    ),
+                    tower_settings.normalize_recall_judge_model(peek_judge_model()),
+                )
+                if m
+            ),
+            tower_settings.DEFAULT_RECALL_JUDGE_MODEL,
+        )
+        provider = model_registry.provider_for_model(model)
+        armed = model_registry.provider_key_present(provider, allow_lookup=False)
+    except Exception as e:
+        log.warning("Recall arming check failed (%s); treating as disarmed", e)
+        model, provider, armed = "?", "?", False
     if armed:
         _DISARM_LOGGED = False
     elif not _DISARM_LOGGED:
         log.error(
-            "Recall system DISARMED: judge mode configured but GEMINI_API_KEY "
-            "is missing. No recalls will be scanned or injected until a key "
-            "is available."
+            "Recall system DISARMED: judge model %s needs a %s credential and "
+            "none is available. No recalls will be scanned or injected until "
+            "one is.",
+            model,
+            provider,
         )
         _DISARM_LOGGED = True
     return armed
@@ -1120,7 +1155,7 @@ def recall_system_armed() -> bool:
 
 _CHANNEL_PREFIX_RE = re.compile(r"^\[[^\]]+\]:\s*")
 
-# Bare tool / markup noise from tool-output scanning — reject without generative SLM.
+# Bare tool / markup noise from tool-output scanning — reject without a judge call.
 _STAGE2_BARE_TOOLS: frozenset[str] = frozenset(
     {
         "read_file",
@@ -1172,7 +1207,8 @@ def _judge_provider(model: str, passed):
 
     The judge model is configured independently of the agent's, so the caller's
     provider is not necessarily the right one — a Claude or Ollama agent with a
-    Gemini judge would post a Gemini model name to the wrong API. `passed` is an
+    judge on another provider would post that model name to the wrong API.
+    `passed` is an
     explicit override for tests; production callers leave it None.
     """
     if passed is not None:
@@ -1198,17 +1234,17 @@ async def filter_matches_with_judge(
     provider=None,
     usage_callback=None,
 ) -> tuple[list[dict], list[dict]]:
-    """Batched Gemini entailment judge. Fail-closed: an unreachable provider or
+    """Batched LLM entailment judge. Fail-closed: an unreachable provider or
     a structurally unusable judgment rejects the batch rather than injecting
     unverified candidates."""
     if not matches:
         return [], []
-    if not _slm_verify_enabled():
+    if not _judge_verify_enabled():
         out = []
         for m in matches:
             enriched = dict(m)
-            enriched["slm_verified"] = True
-            enriched["slm_reason"] = "stage2_disabled"
+            enriched["judge_verified"] = True
+            enriched["judge_reason"] = "stage2_disabled"
             out.append(enriched)
         return out, []
 
@@ -1221,8 +1257,8 @@ async def filter_matches_with_judge(
     rejected: list[dict] = []
     for match in ordered[cap:]:
         enriched = dict(match)
-        enriched["slm_verified"] = False
-        enriched["slm_reason"] = f"stage2_candidate_cap:{cap}"
+        enriched["judge_verified"] = False
+        enriched["judge_reason"] = f"stage2_candidate_cap:{cap}"
         rejected.append(enriched)
 
     candidates = ordered[:cap]
@@ -1231,8 +1267,8 @@ async def filter_matches_with_judge(
         chunk = match.get("matched_chunk") or ""
         if _is_stage2_junk(_strip_channel_prefix(chunk)):
             enriched = dict(match)
-            enriched["slm_verified"] = False
-            enriched["slm_reason"] = "stage2_junk"
+            enriched["judge_verified"] = False
+            enriched["judge_reason"] = "stage2_junk"
             rejected.append(enriched)
             log.info(
                 "[Stage2 Reject] route=%r reason=stage2_junk chunk=%r",
@@ -1252,8 +1288,8 @@ async def filter_matches_with_judge(
         out = list(pre_judge_rejected)
         for m in live:
             enriched = dict(m)
-            enriched["slm_verified"] = False
-            enriched["slm_reason"] = f"judge_unavailable:{reason}"
+            enriched["judge_verified"] = False
+            enriched["judge_reason"] = f"judge_unavailable:{reason}"
             out.append(enriched)
         return [], out
 
@@ -1305,12 +1341,12 @@ async def filter_matches_with_judge(
             rid = match.get("recall_id")
             enriched = dict(match)
             if rid in applicable:
-                enriched["slm_verified"] = True
-                enriched["slm_reason"] = "judge:applicable"
+                enriched["judge_verified"] = True
+                enriched["judge_reason"] = "judge:applicable"
                 verified.append(enriched)
             else:
-                enriched["slm_verified"] = False
-                enriched["slm_reason"] = "judge:none"
+                enriched["judge_verified"] = False
+                enriched["judge_reason"] = "judge:none"
                 judge_rejected.append(enriched)
                 log.info(
                     "[Stage2 Reject] route=%r reason=judge:none chunk=%r",
@@ -1416,8 +1452,10 @@ async def load_cue_usage(recall_id: str) -> dict:
 async def sync_cue_usage(recall_id: str, cues, *, touch=()) -> None:
     """Stamp new/touched cues with now; drop entries for cues no longer stored.
 
-    `cues` must be the full tracked set (positives + negatives) — anything
-    missing from it is pruned.
+    `cues` must be the full tracked set (positives + negatives + lexical) —
+    anything missing from it is pruned. Lexical cues belong in that set because
+    a lexical hit is what the fire path stamps for a lexical match; leaving
+    them out silently deleted those stamps on the next write.
     """
     db = get_db()
     if db is None or not recall_id:
@@ -1441,6 +1479,37 @@ async def sync_cue_usage(recall_id: str, cues, *, touch=()) -> None:
         )
     except Exception as e:
         log.warning("cue usage write failed for %s: %s", recall_id, e)
+
+
+def winning_cue(match: dict) -> str | None:
+    """The stored cue this match actually fired on, for usage stamping.
+
+    Lexical and fuzzy hits already name their cue. A semantic hit does not:
+    Stage-1 accepts on max cosine over `positive_examples`, so the argmax over
+    that array IS the cue that won, and this is the only place the winner is
+    still recoverable. Runs on verified fires only — at most a handful per turn
+    — never on the Stage-1 scan path, where it would cost an encode per chunk.
+
+    Without this, nothing stamps cue usage on a real fire, and `evict_lru_cues`
+    silently ranks by write time instead of by which cues earn their place.
+    """
+    if not isinstance(match, dict):
+        return None
+    cue = (match.get("lexical_cue") or "").strip()
+    if cue:
+        return cue
+    chunk = (match.get("matched_chunk") or "").strip()
+    positives = match.get("positive_examples") or []
+    if not chunk or not positives:
+        return None
+    try:
+        hit = _argmax_cosine(get_encoder(), chunk, positives)
+    except Exception as e:
+        log.warning(
+            "winning-cue resolution failed for %s: %s", match.get("recall_id"), e
+        )
+        return None
+    return None if hit is None else hit[1]
 
 
 async def touch_cue_usage(recall_id: str, cues) -> None:

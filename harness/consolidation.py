@@ -44,6 +44,12 @@ log = logging.getLogger("galadriel.consolidation")
 CANDIDATES_COLLECTION = "memory_candidates"
 RETRIEVAL_EVENTS_COLLECTION = "retrieval_events"
 STATS_COLLECTION = "memory_stats"
+# Third ledger, alongside candidates (what was written) and retrieval_events
+# (what surfaced): what the harness did to the store on its own initiative.
+# Those acts are the ones with no other durable trace — a pruned edge and an
+# evicted preference leave nothing behind to count, and a log line ages out of
+# retention long before a week of behaviour can be judged from it.
+MAINTENANCE_COLLECTION = "memory_maintenance"
 
 MEMORY_TYPES = ("semantic", "procedural", "preference")
 
@@ -54,6 +60,10 @@ _DEDUPE_POOL_SIZE = 200
 _DEDUPE_WINDOW_DAYS = 30
 # Staleness floor for the periodic-consolidator utility report.
 _STALE_DAYS = 90
+# Graded surfacings a memory needs before the utility report will judge its
+# trigger. Grades arrive only when an episode ends, so a low bar on raw
+# retrievals indicted memories in long-running chats that were never measured.
+_MIN_GRADED_FOR_BIN = 5
 
 # Memory types that earn a retrieval trigger on commit. A stored memory with
 # no trigger is inert — reachable only when the agent happens to search for it
@@ -140,6 +150,9 @@ async def ensure_indexes() -> None:
         try:
             await events.create_index([("retrieval_id", 1)])
             await events.create_index([("session_id", 1), ("ts", 1)])
+            # Graded-event rollups (the utility backfill, and any per-memory
+            # audit) would otherwise scan the whole collection.
+            await events.create_index([("memory_key", 1), ("graded", 1)])
         except Exception as e:
             log.warning(f"Retrieval event index creation failed: {e}")
 
@@ -150,6 +163,14 @@ async def ensure_indexes() -> None:
             await stats.create_index([("memory_key", 1)])
         except Exception as e:
             log.warning(f"Memory stats index creation failed: {e}")
+
+    maintenance = await _collection(MAINTENANCE_COLLECTION)
+    if maintenance is not None:
+        try:
+            # Read as "what happened to the store lately", by kind or in order.
+            await maintenance.create_index([("kind", 1), ("ts", -1)])
+        except Exception as e:
+            log.warning(f"Maintenance index creation failed: {e}")
 
 
 # ─── Candidate pipeline ────────────────────────────────────────────────
@@ -242,6 +263,13 @@ async def commit_candidate(
         "created_at": _now(),
         "created_at_ts": _now().timestamp(),
     })
+    # One line per outcome, so a tail of the log shows whether the agent is
+    # learning at all. The durable answers live in `memory_candidates`; this is
+    # the liveness signal for watching a deploy, not the record.
+    log.info(
+        "[Commit] status=%s memory=%s type=%s source=%s topic=%s",
+        status, memory_id, type_, source, topic or "-",
+    )
     if status == "committed":
         if supersedes_memory_id:
             detail = f"{detail} ({await _record_supersession(memory_id, supersedes_memory_id)})"
@@ -909,9 +937,15 @@ async def promotable_preferences(
     return ready
 
 
-def render_promotion_section(entries: list[dict]) -> str:
-    """The managed block, trimmed to the entry and character budget."""
-    lines, used = [], 0
+def fitting_promotions(entries: list[dict]) -> tuple[list[dict], list[str]]:
+    """(entries that fit, lines to render). Both caps applied, in one place.
+
+    The character budget usually binds before the entry count does, so the
+    audit has to ask this rather than assume the first _PROMOTION_MAX_ENTRIES
+    were promoted — otherwise the entries the char cap dropped get recorded as
+    promoted and the eviction list comes back empty.
+    """
+    fitted, lines, used = [], [], 0
     for entry in entries[:_PROMOTION_MAX_ENTRIES]:
         text = entry["content"]
         if len(text) > 200:
@@ -919,8 +953,15 @@ def render_promotion_section(entries: list[dict]) -> str:
         line = f"- {text}"
         if used + len(line) > _PROMOTION_MAX_CHARS:
             break
+        fitted.append(entry)
         lines.append(line)
         used += len(line)
+    return fitted, lines
+
+
+def render_promotion_section(entries: list[dict]) -> str:
+    """The managed block, trimmed to the entry and character budget."""
+    _, lines = fitting_promotions(entries)
     if not lines:
         return ""
     return "\n".join([_PROMOTION_HEADING, _PROMOTION_BEGIN, *lines, _PROMOTION_END])
@@ -974,6 +1015,17 @@ async def promote_preferences(
     except Exception as e:
         log.warning(f"MEMORY.md promotion write failed: {e}")
         return ""
+    # Which preferences hold the block, and which qualified but did not fit.
+    # Eviction is otherwise invisible: the entry simply stops being in the file,
+    # with nothing anywhere saying it was ever promoted or why it left.
+    fitted, _ = fitting_promotions(entries)
+    promoted = [e["memory_id"] for e in fitted]
+    await record_maintenance("promotion", {
+        "eligible": len(entries),
+        "promoted": promoted,
+        "evicted": [e["memory_id"] for e in entries if e["memory_id"] not in promoted],
+        "min_confirmations": min_confirmations,
+    })
     return (
         f"promoted {len(section.splitlines()) - 3 if section else 0} preference(s) "
         f"into MEMORY.md (>= {min_confirmations} confirmations)"
@@ -1277,8 +1329,14 @@ async def grade_retrieval(retrieval_id: str, used: bool, outcome: str, note: str
         outcome_ = "neutral"
     used_ = bool(used)
 
-    inc: dict[str, int] = {}
-    set_fields: dict = {}
+    # graded_count moves on EVERY grade, used or not: it is the denominator the
+    # utility bins divide by. retrieval_count counts surfacings, which happen
+    # whether or not an episode ever ends to grade them, so dividing by it made
+    # a long-running chat look like a broken trigger — the memory kept firing
+    # while its use_count sat frozen for want of a grading pass, not for want
+    # of usefulness.
+    inc: dict[str, int] = {"graded_count": 1}
+    set_fields: dict = {"last_graded": _now()}
     if used_:
         inc["use_count"] = 1
         set_fields["last_used"] = _now()
@@ -1302,11 +1360,10 @@ async def grade_retrieval(retrieval_id: str, used: bool, outcome: str, note: str
     except Exception as e:
         log.warning(f"Retrieval grade write failed: {e}")
         return f"[error] could not record the grade for {retrieval_id}: {e}"
-    if inc or set_fields:
-        await _bump_stats(
-            event["memory_key"], inc, set_fields=set_fields,
-            memory_kind=event.get("memory_kind"),
-        )
+    await _bump_stats(
+        event["memory_key"], inc, set_fields=set_fields,
+        memory_kind=event.get("memory_kind"),
+    )
     return f"Graded retrieval {retrieval_id}: used={used_} outcome={outcome_}."
 
 
@@ -1407,6 +1464,90 @@ async def _bump_stats(
 # ─── Periodic-consolidator evidence (phase 5) ──────────────────────────
 
 
+async def backfill_graded_counts() -> int:
+    """Give pre-existing stats docs the graded counters the bins now divide by.
+
+    `graded_count` was introduced after the fact, so without this every memory
+    recorded before it is invisible to `memory_utility_report` — and the stale
+    bin would never recover on its own, because a dormant memory is exactly the
+    one that never surfaces again to earn a fresh grade. `retrieval_events`
+    already carries the per-event `graded` flag, so the counts are recoverable.
+
+    One aggregation over graded events, not a query per key: the per-key form
+    was two unindexed scans each, which on a mature tenant is a full-collection
+    read per memory before the process can serve a turn.
+
+    Idempotent: only docs with no `graded_count` are touched, so a second run
+    is a no-op and a doc the live path has already counted is left alone.
+    """
+    stats = await _collection(STATS_COLLECTION)
+    events = await _collection(RETRIEVAL_EVENTS_COLLECTION)
+    if stats is None or events is None:
+        return 0
+    try:
+        missing = await stats.distinct(
+            "memory_key", {"graded_count": {"$exists": False}},
+        )
+    except Exception as e:
+        log.warning(f"Graded-count backfill scan failed: {e}")
+        return 0
+    if not missing:
+        return 0
+    wanted = set(missing)
+    totals: dict[str, tuple[int, object]] = {}
+    try:
+        cursor = events.aggregate([
+            {"$match": {"graded": True, "memory_key": {"$in": list(wanted)}}},
+            {"$group": {
+                "_id": "$memory_key",
+                "graded": {"$sum": 1},
+                "last": {"$max": "$ts"},
+            }},
+        ])
+        async for row in cursor:
+            totals[row["_id"]] = (int(row.get("graded") or 0), row.get("last"))
+    except Exception as e:
+        log.warning(f"Graded-count aggregation failed: {e}")
+        return 0
+
+    patched = 0
+    for key in wanted:
+        graded, last = totals.get(key, (0, None))
+        fields: dict = {"graded_count": graded}
+        # The stale bin ages off `last_used or last_graded`, so a backfilled
+        # doc with neither would sit outside every bin forever.
+        if last:
+            fields["last_graded"] = last
+        try:
+            result = await stats.update_one(
+                {"memory_key": key, "graded_count": {"$exists": False}},
+                {"$set": fields},
+            )
+            # A live grade landing mid-backfill creates the field first and
+            # wins; count only what this pass actually wrote.
+            patched += int(getattr(result, "modified_count", 0) or 0)
+        except Exception as e:
+            log.warning(f"Graded-count backfill failed for {key}: {e}")
+    log.info("[Backfill] graded_count set on %d memory_stats doc(s)", patched)
+    return patched
+
+
+async def record_maintenance(kind: str, detail: dict) -> None:
+    """Append one harness-maintenance record. Never raises into a caller.
+
+    Destructive maintenance stores enough to reconstruct what it removed, not
+    just how much: a mistuned decay threshold that strips the graph over a week
+    is only recoverable if the pruned edges themselves were written down.
+    """
+    coll = await _collection(MAINTENANCE_COLLECTION)
+    if coll is None:
+        return
+    try:
+        await coll.insert_one({"kind": kind, "ts": _now(), **detail})
+    except Exception as e:
+        log.warning(f"Maintenance record ({kind}) failed: {e}")
+
+
 async def memory_utility_report(limit: int = 15) -> str:
     """Harness-computed evidence for the periodic consolidator: bad-trigger
     (content is fine, cue is too broad) vs bad-memory (harmful/corrected
@@ -1429,34 +1570,45 @@ async def memory_utility_report(limit: int = 15) -> str:
     for d in docs:
         key = d.get("memory_key")
         retrieval = int(d.get("retrieval_count", 0) or 0)
+        graded = int(d.get("graded_count", 0) or 0)
         use = int(d.get("use_count", 0) or 0)
         harmful = int(d.get("harmful_count", 0) or 0)
         helpful = int(d.get("helpful_count", 0) or 0)
         corrections = int(d.get("user_correction_count", 0) or 0)
         last_used = _as_aware(d.get("last_used"))
-        use_ratio = (use / retrieval) if retrieval else None
-        # Bad trigger: fires a lot, rarely used, but what little use there was
-        # wasn't harmful — the content is fine, the cue is too broad.
-        if retrieval >= 5 and use_ratio is not None and use_ratio < 0.15 and harmful == 0:
-            bad_trigger.append((key, retrieval, use, use_ratio, helpful))
+        last_graded = _as_aware(d.get("last_graded"))
+        use_ratio = (use / graded) if graded else None
+        # Bad trigger: surfaced a lot, rarely used when we actually looked, and
+        # what little use there was wasn't harmful — content is fine, cue is
+        # too broad. Gated on graded evidence: an ungraded surfacing is an
+        # unmeasured one, and counting it as unused indicts a memory for its
+        # episode never ending.
+        if graded >= _MIN_GRADED_FOR_BIN and use_ratio is not None and use_ratio < 0.15 and harmful == 0:
+            bad_trigger.append((key, retrieval, graded, use, use_ratio, helpful))
         if harmful > 0 or corrections > 0:
             bad_memory.append((key, harmful, corrections))
-        if retrieval > 0 and (last_used is None or (now - last_used).days > _STALE_DAYS):
+        # Stale: measured, and nothing useful has happened for a long time.
+        # `last_used or last_graded` is the reference point — without the
+        # fallback a never-used memory graded five minutes ago read as stale
+        # immediately, which is the bad-trigger signature, not an aged-out one.
+        reference = last_used or last_graded
+        if graded > 0 and reference is not None and (now - reference).days > _STALE_DAYS:
             stale.append((key, retrieval, last_used, helpful))
 
     lines = [
         "[MEMORY_UTILITY_REPORT] Harness-computed retrieval/use evidence "
         "(counts and ratios only — verify actual content before acting on any row).",
         "",
-        f"Bad-trigger candidates (high retrieval, rarely used, never harmful when used "
+        f"Bad-trigger candidates (graded often, rarely used, never harmful when used "
         f"-> narrow the recall cue / drawer summary, do NOT touch the content). "
         f"helpful>0 means the content earned its keep when it did land, so fix the "
-        f"cue and leave the memory alone. Top {limit}:",
+        f"cue and leave the memory alone. use_ratio is over GRADED surfacings, "
+        f"not raw ones. Top {limit}:",
     ]
-    for key, retrieval, use, use_ratio, helpful in sorted(bad_trigger, key=lambda x: -x[1])[:limit]:
+    for key, retrieval, graded, use, use_ratio, helpful in sorted(bad_trigger, key=lambda x: -x[2])[:limit]:
         lines.append(
-            f"- {key}: retrieved={retrieval} used={use} use_ratio={use_ratio:.2f} "
-            f"helpful={helpful}"
+            f"- {key}: retrieved={retrieval} graded={graded} used={use} "
+            f"use_ratio={use_ratio:.2f} helpful={helpful}"
         )
     if not bad_trigger:
         lines.append("(none)")
@@ -1471,7 +1623,7 @@ async def memory_utility_report(limit: int = 15) -> str:
         lines.append("(none)")
     lines.append("")
     lines.append(
-        f"Stale candidates (retrieved before, unused {_STALE_DAYS}+ days "
+        f"Stale candidates (graded before, nothing useful in {_STALE_DAYS}+ days "
         f"-> consider archiving), top {limit}:"
     )
     for key, retrieval, last_used, helpful in sorted(stale, key=lambda x: -x[1])[:limit]:

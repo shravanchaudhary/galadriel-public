@@ -136,7 +136,7 @@ def _is_recall_fire_message(msg: dict) -> bool:
 async def _log_proposed_recall(
     channel_id: str, match: dict, text_scanned: str, *, injected: bool,
 ) -> None:
-    """Log every Stage-1 candidate (verified or SLM-rejected) to proposed_recalls."""
+    """Log every Stage-1 candidate (verified or judge-rejected) to proposed_recalls."""
     try:
         from .db_ops import get_db
         from .recall import PROPOSED_RECALLS_COLLECTION
@@ -152,10 +152,11 @@ async def _log_proposed_recall(
             "match_source": match.get("match_source"),
             "segment_source": match.get("segment_source"),
             "lexical_cue": match.get("lexical_cue"),
+            "matched_example": match.get("matched_example"),
             "matched_chunk": (match.get("matched_chunk") or "")[:500],
             "text_scanned": (text_scanned or "")[:500],
-            "slm_verified": bool(match.get("slm_verified", injected)),
-            "slm_reason": match.get("slm_reason") or "",
+            "judge_verified": bool(match.get("judge_verified", injected)),
+            "judge_reason": match.get("judge_reason") or "",
             "injected": bool(injected),
         }
         await db[PROPOSED_RECALLS_COLLECTION].insert_one(doc)
@@ -178,10 +179,11 @@ async def _log_recall_fire(channel_id: str, match: dict, text_scanned: str) -> N
             "match_source": match.get("match_source"),
             "segment_source": match.get("segment_source"),
             "lexical_cue": match.get("lexical_cue"),
+            "matched_example": match.get("matched_example"),
             "matched_chunk": (match.get("matched_chunk") or "")[:500],
             "text_scanned": (text_scanned or "")[:500],
-            "slm_verified": bool(match.get("slm_verified", True)),
-            "slm_reason": match.get("slm_reason") or "",
+            "judge_verified": bool(match.get("judge_verified", True)),
+            "judge_reason": match.get("judge_reason") or "",
         }
         await db["recall_fires"].insert_one(doc)
     except Exception as e:
@@ -219,7 +221,7 @@ async def _verify_and_select_recalls(
     """Stage-2 filter: log all proposals; return only verified matches."""
     if not matches:
         return []
-    from .recall import filter_matches_with_judge, touch_cue_usage
+    from .recall import filter_matches_with_judge, touch_cue_usage, winning_cue
 
     # Network I/O — stay on the event loop (no to_thread hop). The judge
     # resolves its own provider from its own model, which is configured
@@ -236,9 +238,18 @@ async def _verify_and_select_recalls(
     for m in rejected:
         await _log_proposed_recall(channel_id, m, text_scanned, injected=False)
     for m in verified:
+        # Resolve BEFORE logging so the proposal record names the cue that won.
+        # The old `matched_example` field was set by the embedding Stage-2
+        # that Stage-2-as-judge replaced, so this stamp silently stopped
+        # happening and cue LRU order decayed into write order.
+        # Encoding the positive array to find the argmax is CPU-bound and this
+        # runs mid-turn, before the fire is injected — keep it off the loop.
+        cue = await asyncio.to_thread(winning_cue, m)
+        if cue:
+            m["matched_example"] = cue
         await _log_proposed_recall(channel_id, m, text_scanned, injected=True)
-        if m.get("matched_example"):
-            await touch_cue_usage(m.get("recall_id"), [m["matched_example"]])
+        if cue:
+            await touch_cue_usage(m.get("recall_id"), [cue])
     return verified
 
 
@@ -713,6 +724,9 @@ class GaladrielAgent:
         self.headroom_enabled = tower_settings.get_headroom_enabled()
         # Semantic recall scanning/injection (Tower toggle). Default on.
         self.recall_enabled = tower_settings.get_recall_enabled()
+        # Task-end memory consolidation (Tower toggle). Default on, and
+        # independent of recall_enabled — see set_learning_enabled.
+        self.learning_enabled = tower_settings.get_learning_enabled()
         # An explicitly-passed max_tokens pins every channel (tests, embedders).
         # Otherwise each channel gets its own model's documented output ceiling.
         self._max_tokens_pinned = max_tokens
@@ -1437,10 +1451,10 @@ class GaladrielAgent:
     def set_recall_enabled(self, enabled: bool) -> None:
         """Enable/disable semantic recall and persist in MongoDB.
 
-        Off idles the whole subsystem on the next turn: no scan, no inject, and
-        no ephemeral learn pass (which costs a full LLM call per compact / /new
-        / worked worker tick). Stored recalls and the Tower test page are
-        untouched, so switching back on resumes against the same catalog.
+        Off idles retrieval on the next turn: no scan, no inject. Learning is
+        NOT affected — that is set_learning_enabled. Stored recalls and the
+        Tower test page are untouched, so switching back on resumes against
+        the same catalog.
         """
         self.recall_enabled = bool(enabled)
         try:
@@ -1452,6 +1466,33 @@ class GaladrielAgent:
             )
         log.info(
             f"Semantic recall {'ENABLED' if self.recall_enabled else 'DISABLED'}"
+        )
+
+    def set_learning_enabled(self, enabled: bool) -> None:
+        """Enable/disable task-end memory consolidation and persist it.
+
+        Off skips the consolidator turn at every episode boundary (it costs a
+        full LLM call per /new and per worked worker tick). Committed memories,
+        recalls and telemetry are untouched, so switching back on resumes
+        against the same store — only the episodes that ended while it was off
+        go ungraded and unmined.
+
+        Separate from set_recall_enabled because they answer different
+        questions: with recall off and learning on, memories are still written
+        and are still reachable by an explicit memory(query=...); with learning
+        off and recall on, the existing store keeps working but stops growing.
+        Collapsing them made either measurement impossible.
+        """
+        self.learning_enabled = bool(enabled)
+        try:
+            tower_settings.set_learning_enabled(self.learning_enabled)
+        except RuntimeError:
+            log.warning(
+                "Memory learning toggle changed but not persisted — "
+                "MongoDB not configured"
+            )
+        log.info(
+            f"Memory learning {'ENABLED' if self.learning_enabled else 'DISABLED'}"
         )
 
     def set_experiential_enabled(self, enabled: bool) -> None:
@@ -3187,6 +3228,7 @@ class GaladrielAgent:
         messages_snapshot: list,
         session_id: str | None,
         session_segments: list[dict],
+        compaction_summary: str = "",
     ) -> None:
         """Task-end memory consolidation: one agent turn on a disposable side
         channel that reviews the episode just ended and proposes/grades memory
@@ -3206,8 +3248,8 @@ class GaladrielAgent:
         compact_channel never calls this — mid-episode compaction only
         archives/mines to the palace.
         """
-        if not self.recall_enabled:
-            log.info(f"[Consolidate] skip channel={channel_id} reason=recall_disabled")
+        if not self.learning_enabled:
+            log.info(f"[Consolidate] skip channel={channel_id} reason=learning_disabled")
             return
         if not messages_snapshot:
             log.info(f"[Consolidate] skip channel={channel_id} reason=empty_episode")
@@ -3230,7 +3272,7 @@ class GaladrielAgent:
                     channel_id=channel_id,
                     session_id=session_id,
                     session_segments=session_segments,
-                    compaction_summary=self._compaction_summary.get(channel_id, ""),
+                    compaction_summary=compaction_summary,
                 )
             except Exception as e:
                 log.warning(f"[Consolidate] episode index build failed: {e}")
@@ -3243,9 +3285,20 @@ class GaladrielAgent:
 
             fire_appendix = self._build_recall_audit_appendix(messages_snapshot, catalog)
             overlay = self._build_recall_catalog_overlay(catalog)
+            # Learning runs with recall off. Say so rather than leaving the pass
+            # to infer it from an empty fire list — silence reads as "nothing
+            # matched", and it would spend the turn tuning cues that nothing
+            # is scanning.
+            recall_note = "" if self.recall_enabled else (
+                "[RECALL_DISABLED] Recall scanning is switched off, so no fires "
+                "happened this episode and cue tuning changes nothing until it "
+                "is switched back on. Still propose and grade memories — they "
+                "stay reachable through memory(query=...)."
+            )
             prompt = "\n\n".join(
                 part for part in (
-                    task_consolidation_prompt(), episode_index, fire_appendix, digest,
+                    task_consolidation_prompt(), recall_note, episode_index,
+                    fire_appendix, digest,
                 ) if part
             )
             log.info(
@@ -3305,6 +3358,7 @@ class GaladrielAgent:
         messages_snapshot: list | None = None,
         session_id: str | None = None,
         session_segments: list[dict] | None = None,
+        compaction_summary: str | None = None,
     ) -> None:
         """Fire task-end memory consolidation for one finished episode.
 
@@ -3322,12 +3376,15 @@ class GaladrielAgent:
             session_id = self._session_id.pop(channel_id, None)
         if session_segments is None:
             session_segments = self._session_segments.pop(channel_id, [])
+        if compaction_summary is None:
+            compaction_summary = self._compaction_summary.get(channel_id, "")
         await self.run_task_consolidation(
             channel_id,
             reason=reason,
             messages_snapshot=messages_snapshot,
             session_id=session_id,
             session_segments=session_segments or [],
+            compaction_summary=compaction_summary or "",
         )
 
     @staticmethod
@@ -3389,6 +3446,7 @@ class GaladrielAgent:
         batch_dir: Path | None = None,
         session_id: str | None = None,
         session_segments: list[dict] | None = None,
+        compaction_summary: str | None = None,
         reason: str = "new",
     ) -> None:
         """Background consolidate+mine after /new wiped the live buffer.
@@ -3409,6 +3467,7 @@ class GaladrielAgent:
                 messages_snapshot=snapshot,
                 session_id=session_id,
                 session_segments=session_segments,
+                compaction_summary=compaction_summary,
             )
         except Exception as e:
             log.warning(
@@ -3544,11 +3603,14 @@ class GaladrielAgent:
         self.conversations.pop(channel_id, None)
         conversation_store.delete_channel(self.working_dir, channel_id)
         # Clear per-channel transient state alongside the history. The session
-        # is captured (not just dropped) so the background postprocess below
-        # can consolidate THIS episode even though a new one may start
-        # accumulating on the same channel_id before that background task runs.
+        # and the compaction summary are captured (not just dropped) so the
+        # background postprocess below can consolidate THIS episode even though
+        # a new one may start accumulating on the same channel_id before that
+        # background task runs. Dropping the summary left the consolidator with
+        # segment ids and no account of what was folded out of them, which is
+        # exactly the signal it uses to decide which segment is worth reading.
         self._output_ceiling_streak.pop(channel_id, None)
-        self._compaction_summary.pop(channel_id, None)
+        compaction_summary = self._compaction_summary.pop(channel_id, "")
         self._last_input_tokens.pop(channel_id, None)
         self._last_archived_len.pop(channel_id, None)
         self._notified_recall_ids.pop(channel_id, None)
@@ -3563,7 +3625,7 @@ class GaladrielAgent:
             self._postprocess_cleared_history(
                 channel_id, snapshot, batch_dir=batch_dir,
                 session_id=session_id, session_segments=session_segments,
-                reason=reason,
+                compaction_summary=compaction_summary, reason=reason,
             )
         )
         log.info(

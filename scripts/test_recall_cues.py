@@ -438,6 +438,41 @@ class _FakeCursor:
         return gen()
 
 
+def test_shipped_cue_set_records_whether_it_actually_passed() -> None:
+    """build_tested_recall ships the best attempt even when repairs failed, so
+    without an explicit flag a below-bar trigger is stored indistinguishably
+    from one that cleared the bar."""
+    failing = {"recall_rate": 0.2, "fp_rate": 0.9,
+               "missed": [("a phrasing that should fire", [])],
+               "false_fires": ["a phrasing that should not"]}
+    cues = {"instruction": "i", "activation_condition": "c",
+            "positive_examples": ["p"], "lexical_cues": ["l"]}
+
+    with patch.object(recall_cues, "generate_cues", new=AsyncMock(return_value=cues)), \
+         patch.object(recall_cues, "test_cues", new=AsyncMock(return_value=failing)), \
+         patch("harness.recall.fetch_all_recalls", new=AsyncMock(return_value=[])):
+        _, scores = _run(recall_cues.build_tested_recall("m"))
+    assert scores["passed"] is False, "a set below the bar must not report passed"
+    assert scores["repair_rounds"] == recall_cues._MAX_REPAIR_ROUNDS
+
+
+def test_an_unmeasured_cue_set_is_neither_passed_nor_failed() -> None:
+    """test_cues returns None when the matcher is disarmed. meets_bar() calls
+    that good enough to ship (nothing to repair), but recording it as a pass
+    would invent a measurement that never happened."""
+    cues = {"instruction": "i", "activation_condition": "c",
+            "positive_examples": ["p"], "lexical_cues": ["l"]}
+    unmeasured = {"recall_rate": None, "fp_rate": None,
+                  "probes_positive": 0, "probes_negative": 0}
+
+    with patch.object(recall_cues, "generate_cues", new=AsyncMock(return_value=cues)), \
+         patch.object(recall_cues, "test_cues", new=AsyncMock(return_value=unmeasured)), \
+         patch("harness.recall.fetch_all_recalls", new=AsyncMock(return_value=[])):
+        _, scores = _run(recall_cues.build_tested_recall("m"))
+    assert scores["passed"] is None, f"unmeasured must stay None, got {scores['passed']!r}"
+    assert recall_cues._public_scores(scores)["passed"] is None
+
+
 def main() -> int:
     tests = [
         test_parse_json_object_handles_fenced_output,
@@ -467,6 +502,8 @@ def main() -> int:
         test_empty_promotion_clears_the_managed_block,
         test_summary_skips_an_episode_that_learned_nothing,
         test_summary_records_what_was_committed_and_why,
+        test_shipped_cue_set_records_whether_it_actually_passed,
+        test_an_unmeasured_cue_set_is_neither_passed_nor_failed,
     ]
     for test in tests:
         test()

@@ -1,7 +1,13 @@
-"""Bounded Gemini entailment judge for recall Stage-2 (paid tier).
+"""Bounded LLM entailment judge for recall Stage-2 (paid tier).
 
-One batched multiple-choice call per scan: given a chunk and up to three
-candidate activation conditions, return which recall ids apply (or none).
+Provider-generic: the judge model is chosen independently of the agent's model
+(`RECALL_JUDGE_MODEL` / Tower), and whichever provider serves it is resolved
+per call — no vendor is baked in here.
+
+One batched multiple-choice call per scan — "batched" meaning several
+candidates multiplexed into ONE ordinary real-time request, never a provider
+batch API: given a chunk and up to three candidate activation conditions,
+return which recall ids apply (or none).
 Modeled on harness.consequence_appraiser — classifier only, never the acting
 agent. Input is deliberately starved of conversation/instruction bodies so the
 judge cannot compress or rewrite agent intelligence.
@@ -55,6 +61,11 @@ No markdown and no additional keys."""
 
 _MODEL_CACHE: tuple[float, str] | None = None
 _MODEL_TTL_SECONDS = 15.0
+# Last model this process actually resolved, kept without a TTL. The arming
+# gate cannot do I/O and cannot wait for the TTL cache, which only the judge
+# fills — and the judge runs downstream of arming, so a TTL-only peek would
+# leave the gate permanently on the default model's provider.
+_LAST_RESOLVED_MODEL: str | None = None
 
 
 def invalidate_judge_model_cache() -> None:
@@ -63,13 +74,29 @@ def invalidate_judge_model_cache() -> None:
     _MODEL_CACHE = None
 
 
+def peek_judge_model() -> str | None:
+    """The cached judge model, or None — never does I/O.
+
+    `resolve_judge_model` falls through to a blocking PyMongo read on a cache
+    miss, which is fine from the judge's own async path but not from the scan
+    gate that runs on every turn. Callers on that path take what is already
+    known and accept a default until the cache is warm.
+    """
+    if _MODEL_CACHE is not None and time.monotonic() - _MODEL_CACHE[0] < _MODEL_TTL_SECONDS:
+        return _MODEL_CACHE[1]
+    # Falling back to the last resolved value rather than None: an expired TTL
+    # means "not re-checked recently", not "no longer configured", and treating
+    # it as unknown made arming flip to the default model's provider every 15s.
+    return _LAST_RESOLVED_MODEL
+
+
 def resolve_judge_model() -> str:
     """Judge model from env / Tower, TTL-cached (one Mongo read per scan otherwise).
 
     `tower_settings.DEFAULT_RECALL_JUDGE_MODEL` is the only place the judge
     default is defined — do not add another constant here.
     """
-    global _MODEL_CACHE
+    global _MODEL_CACHE, _LAST_RESOLVED_MODEL
     now = time.monotonic()
     if _MODEL_CACHE is not None and now - _MODEL_CACHE[0] < _MODEL_TTL_SECONDS:
         return _MODEL_CACHE[1]
@@ -80,6 +107,7 @@ def resolve_judge_model() -> str:
     except Exception:
         model = tower_settings.DEFAULT_RECALL_JUDGE_MODEL
     _MODEL_CACHE = (now, model)
+    _LAST_RESOLVED_MODEL = model
     return model
 
 

@@ -32,6 +32,7 @@ EXPERIENTIAL_STATE_DOC_ID = "experiential_state"
 WORKER_IDLE_DOC_ID = "worker_idle_interval"
 TIMEZONE_DOC_ID = "agent_timezone"
 RECALL_ENABLED_DOC_ID = "recall_enabled"
+LEARNING_ENABLED_DOC_ID = "learning_enabled"
 RECALL_JUDGE_MODEL_DOC_ID = "recall_judge_model"
 COMPACT_THRESHOLD_DOC_ID = "compact_threshold"
 THINKING_EFFORT_DOC_ID = "thinking_effort"
@@ -40,12 +41,12 @@ MODEL_RUNTIME_DOC_ID = "model_runtime"
 DEFAULT_AGENT_TIMEZONE = "Europe/Stockholm"
 _AVAILABLE_TIMEZONES = available_timezones()
 
-# Judge model for the paid tier — any AGENT_MODEL_OPTIONS entry. Measured on the
-# 208-case leave-one-out set 2026-08-18: flash and flash-lite both P=0.916
-# R=0.952 F1=0.933, identical case-level verdicts, ~1.3 s/scan. Flash-lite is
-# ~3.8x cheaper on the judge payload, so it is the default.
-# Cheapest model that scored 100% on the judge eval (see
-# knowledge/reference/bedrock_providers.md): ~$0.05/1k calls at p90 1.1s.
+# Judge model for the paid tier — any JUDGE_MODEL_OPTIONS entry (the judge never
+# calls a tool, so no-tool models stay eligible). Cheapest model that scored 100%
+# on the accuracy-vs-cost judge eval (knowledge/reference/bedrock_providers.md):
+# ~$0.05/1k calls at p90 1.1s. Superseded 2026-08-18 measurement on the earlier
+# Gemini-only judge, kept for reference: gemini-2.5-flash and -flash-lite both
+# P=0.916 R=0.952 F1=0.933, identical case-level verdicts, ~1.3 s/scan.
 DEFAULT_RECALL_JUDGE_MODEL = "gpt-oss-20b"
 
 # Idle-poll minutes when the worker has nothing to do (default 10).
@@ -298,6 +299,53 @@ def set_recall_enabled(enabled: bool) -> None:
         {"_id": _doc_id(RECALL_ENABLED_DOC_ID)},
         {
             "_id": _doc_id(RECALL_ENABLED_DOC_ID),
+            "tenant_id": _tenant_id(),
+            "enabled": bool(enabled),
+            "updated_at": datetime.now(timezone.utc),
+        },
+        upsert=True,
+    )
+
+
+def get_learning_enabled() -> bool:
+    """Return whether memory consolidation is enabled (default True).
+
+    Separate from the recall toggle on purpose: recall is how a memory comes
+    back, learning is whether one is written at all. Turning off retrieval to
+    measure its value used to silently stop the agent learning too, which made
+    the two impossible to evaluate independently.
+    """
+    db = _db()
+    if db is None:
+        return True
+    doc = db[COLLECTION].find_one(
+        {"_id": _doc_id(LEARNING_ENABLED_DOC_ID), "tenant_id": _tenant_id()}
+    )
+    if not doc or "enabled" not in doc:
+        # Never set, so inherit the recall toggle this used to be gated on and
+        # persist that answer once. Defaulting to True would silently switch
+        # the paid consolidation pass back on for every tenant that had turned
+        # recall off; re-deriving it on every boot instead would make learning
+        # depend on when the process last restarted. Writing it here settles
+        # the migration on first read, after which the two are independent.
+        inherited = get_recall_enabled()
+        try:
+            set_learning_enabled(inherited)
+        except Exception:
+            pass
+        return inherited
+    return bool(doc["enabled"])
+
+
+def set_learning_enabled(enabled: bool) -> None:
+    """Persist the default-on memory-consolidation toggle."""
+    db = _db()
+    if db is None:
+        raise RuntimeError("MONGO_URI / MONGO_DB not configured")
+    db[COLLECTION].replace_one(
+        {"_id": _doc_id(LEARNING_ENABLED_DOC_ID)},
+        {
+            "_id": _doc_id(LEARNING_ENABLED_DOC_ID),
             "tenant_id": _tenant_id(),
             "enabled": bool(enabled),
             "updated_at": datetime.now(timezone.utc),

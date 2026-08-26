@@ -489,7 +489,10 @@ async def classify_edges(
         provider = model_registry.get_provider("memory_edges")
         model = model_registry.model_for("memory_edges")
     except Exception as e:
+        # The branch that fails for every memory at once, so it is the one most
+        # worth recording — a silent [] here reads as "nothing to link".
         log.warning("Edge classifier provider unavailable: %s", e)
+        await _record_classify_failure(memory_id, "?", f"provider_unavailable: {e}")
         return []
 
     listing = "\n".join(
@@ -509,7 +512,12 @@ async def classify_edges(
             thinking=False,
         )
     except Exception as e:
+        # An empty edge list is the expected answer for most memories, so a
+        # failed call looks exactly like "nothing to link" once it is stamped
+        # on the candidate. Record the failure so a backfill can tell the two
+        # apart instead of trusting a zero.
         log.warning("Edge classification failed: %s", e)
+        await _record_classify_failure(memory_id, model, str(e))
         return []
 
     text = " ".join(
@@ -521,12 +529,22 @@ async def classify_edges(
 
     payload = _parse_json_object(text)
     if not payload:
+        log.warning("Edge classification returned unparseable output for %s", memory_id)
+        await _record_classify_failure(memory_id, model, "unparseable_output")
         return []
     known = {n.get("memory_id") for n in neighbours}
     edges = clean_edges(payload.get("edges"), from_id=memory_id)
     # A model that invents an id would otherwise create an edge to nothing,
     # which traversal cannot detect and nobody would ever notice.
     return [edge for edge in edges if edge["to"] in known]
+
+
+async def _record_classify_failure(memory_id: str, model: str, reason: str) -> None:
+    from . import consolidation
+
+    await consolidation.record_maintenance("classify_failure", {
+        "memory_id": memory_id, "model": model, "reason": reason[:300],
+    })
 
 
 # ─── Supersession ──────────────────────────────────────────────────────────
@@ -652,7 +670,16 @@ async def decay_unhelpful_edges() -> str:
     # has no telemetry at all, and then report it as decayed.
     scope = {"to": {"$in": unhelpful}, "relation": {"$in": sorted(_FOLLOWED)}}
     try:
-        await edges.update_many(scope, {"$inc": {"strength": -_DECAY_STEP}})
+        weakened = await edges.update_many(scope, {"$inc": {"strength": -_DECAY_STEP}})
+        # Read the doomed edges before deleting them. A prune is the only
+        # destructive act in the learning system, and a count alone cannot tell
+        # a healthy trim from a mistuned threshold quietly stripping the graph
+        # — so the rows themselves go into the maintenance ledger, complete
+        # enough to put back.
+        doomed = [
+            {k: d.get(k) for k in ("from", "to", "relation", "label", "strength", "source")}
+            async for d in edges.find({**scope, "strength": {"$lt": _DECAY_PRUNE_BELOW}})
+        ]
         pruned = await edges.delete_many(
             {**scope, "strength": {"$lt": _DECAY_PRUNE_BELOW}},
         )
@@ -660,6 +687,15 @@ async def decay_unhelpful_edges() -> str:
         log.warning(f"Edge decay write failed: {e}")
         return ""
     await _mark_counted(events, counted)
+    from . import consolidation
+
+    await consolidation.record_maintenance("decay", {
+        "unhelpful_targets": unhelpful,
+        "arrivals_counted": len(counted),
+        "edges_weakened": getattr(weakened, "modified_count", 0),
+        "edges_pruned": pruned.deleted_count,
+        "pruned_edges": doomed,
+    })
     return (
         f"Edge decay: weakened edges into {len(unhelpful)} unhelpful memory/memories, "
         f"pruned {pruned.deleted_count}."

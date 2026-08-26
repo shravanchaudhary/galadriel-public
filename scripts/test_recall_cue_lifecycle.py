@@ -5,13 +5,14 @@ Covers the guards that keep cue arrays from growing into looser matching:
   - evict_lru_cues drops cues that never won a Stage-2 match, not the oldest-added
   - cue_is_saturated rejects near-duplicate appends that max() would ignore
   - recall_system_armed disarms the whole pipeline (fail-closed) when the
-    Stage-2 judge has no GEMINI_API_KEY
+    Stage-2 judge has no provider credential
 """
 
 from __future__ import annotations
 
 import os
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -19,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-os.environ["RECALL_SLM_VERIFY"] = "1"
+os.environ["RECALL_JUDGE_VERIFY"] = "1"
 
 from harness.recall import (  # noqa: E402
     cue_is_saturated,
@@ -27,6 +28,7 @@ from harness.recall import (  # noqa: E402
     evict_lru_cues,
     recall_system_armed,
     scan_text_for_recalls,
+    winning_cue,
 )
 
 
@@ -99,9 +101,63 @@ def test_saturation_skips_near_duplicates() -> None:
     print("ok saturation_skips_near_duplicates")
 
 
+def _arming_env(**overrides):
+    """Env snapshot/restore for the credential vars arming actually reads."""
+    keys = ("GEMINI_API_KEY", "GOOGLE_API_KEY", "AWS_BEARER_TOKEN_BEDROCK",
+            "AWS_ACCESS_KEY_ID", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+            "REPLIKA_TENANT_ID", "RECALL_JUDGE_MODEL")
+    saved = {k: os.environ.get(k) for k in keys}
+    for k in keys:
+        os.environ.pop(k, None)
+    for k, v in overrides.items():
+        if v is not None:
+            os.environ[k] = v
+    sys.modules["harness.recall"]._DISARM_LOGGED = False
+    return saved
+
+
+def _restore_env(saved) -> None:
+    for k, v in saved.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
+    sys.modules["harness.recall"]._DISARM_LOGGED = False
+
+
+def test_armed_follows_the_selected_judges_provider() -> None:
+    """The whole point of provider-generic arming: a Bedrock judge with a
+    Bedrock credential must arm with NO Gemini key present. The old check read
+    GEMINI_API_KEY regardless of judge model and disarmed everything."""
+    saved = _arming_env(
+        RECALL_JUDGE_MODEL="gpt-oss-20b",
+        AWS_BEARER_TOKEN_BEDROCK="bedrock-key",
+    )
+    try:
+        _assert(recall_system_armed(),
+                "a Bedrock judge with a Bedrock key must arm without a Gemini key")
+    finally:
+        _restore_env(saved)
+
+
+def test_disarmed_when_the_selected_judges_provider_has_no_key() -> None:
+    """Mirror image: a Gemini judge is not armed by someone else's credential."""
+    saved = _arming_env(
+        RECALL_JUDGE_MODEL="gemini-2.5-flash",
+        AWS_BEARER_TOKEN_BEDROCK="bedrock-key",
+    )
+    try:
+        _assert(not recall_system_armed(),
+                "a Bedrock key must not arm a Gemini judge")
+    finally:
+        _restore_env(saved)
+    print("ok arming_follows_the_judge_provider")
+
+
 def test_disarmed_without_judge_key() -> None:
-    """No GEMINI_API_KEY in judge mode → whole system off, Stage-1 included."""
-    saved = os.environ.pop("GEMINI_API_KEY", None)
+    """No credential for the judge model's provider → whole system off,
+    Stage-1 included."""
+    saved = _arming_env(RECALL_JUDGE_MODEL="gpt-oss-20b")
     try:
         _assert(not recall_system_armed(), "system must disarm without a judge key")
         matches = scan_text_for_recalls(
@@ -115,8 +171,7 @@ def test_disarmed_without_judge_key() -> None:
         )
         _assert(matches == [], "Stage-1 must not propose while disarmed")
     finally:
-        if saved is not None:
-            os.environ["GEMINI_API_KEY"] = saved
+        _restore_env(saved)
     print("ok disarmed_without_judge_key")
 
 
@@ -166,6 +221,133 @@ def test_judge_sees_similar_negatives() -> None:
     print("ok judge_sees_similar_negatives")
 
 
+def test_winning_cue_names_the_lexical_cue_that_hit() -> None:
+    """A lexical match already knows what won; do not re-derive it."""
+    cue = winning_cue({
+        "recall_id": "t1", "match_source": "lexical",
+        "lexical_cue": "save this as a rule",
+        "matched_chunk": "please save this as a rule for me",
+        "positive_examples": ["something else entirely"],
+    })
+    _assert(cue == "save this as a rule", f"expected the lexical cue, got {cue!r}")
+
+
+def test_winning_cue_resolves_the_argmax_positive_for_a_semantic_hit() -> None:
+    """Stage-1 accepts on max cosine over positive_examples, so the argmax IS
+    the cue that fired. Nothing else records it, and without this the fire path
+    stamps no usage at all — which is how LRU order silently became write order.
+    """
+    cue = winning_cue({
+        "recall_id": "t2", "match_source": "semantic",
+        "matched_chunk": "can you deploy the service to staging now",
+        "positive_examples": [
+            "what is the weather like tomorrow",
+            "push the build out to the staging environment",
+            "remind me to call my dentist",
+        ],
+    })
+    _assert(
+        cue == "push the build out to the staging environment",
+        f"argmax positive should win, got {cue!r}",
+    )
+
+
+def test_winning_cue_returns_none_when_there_is_nothing_to_resolve() -> None:
+    """No chunk or no stored positives means no honest answer; a wrong stamp
+    would credit a cue that did not fire."""
+    _assert(winning_cue({"recall_id": "t3", "matched_chunk": ""}) is None,
+            "empty chunk must not resolve a cue")
+    _assert(winning_cue({"recall_id": "t3", "matched_chunk": "hello",
+                         "positive_examples": []}) is None,
+            "no positives must not resolve a cue")
+    _assert(winning_cue({}) is None, "an empty match must not resolve a cue")
+    print("ok winning_cue_resolves_the_real_winner")
+
+
+def test_over_cap_replace_drops_least_recently_used_not_the_head() -> None:
+    """A full-array replace over the cap used to keep the LAST N submitted,
+    which is arbitrary — it can delete exactly the cues that keep winning."""
+    from harness.tools import _MAX_EXAMPLES_PER_RECALL, _normalize_cue_list
+
+    now = datetime.now(timezone.utc)
+    hot = "the cue that keeps winning"
+    submitted = [hot] + [f"filler cue number {i}" for i in range(_MAX_EXAMPLES_PER_RECALL)]
+    usage = {cue_key(hot): now}
+
+    kept = _normalize_cue_list(submitted, usage=usage)
+    _assert(len(kept) == _MAX_EXAMPLES_PER_RECALL, f"cap not applied: {len(kept)}")
+    _assert(hot in kept, "the recently-used cue must survive an over-cap replace")
+
+    blind = _normalize_cue_list(submitted)
+    _assert(hot not in blind, "fixture must be one a position-based trim gets wrong")
+
+
+def test_dropped_cue_note_names_only_cues_that_had_earned_use() -> None:
+    """Arrays are full replacements, so a forgotten cue is deleted silently.
+    Report the ones with usage history; pruning a never-used cue is the point
+    of the tool, not a mistake worth warning about."""
+    from harness.tools import _dropped_cue_note
+
+    now = datetime.now(timezone.utc)
+    doc = {"positive_examples": ["earned its place", "never once matched"]}
+    updates = {"positive_examples": ["something new"]}
+    usage = {cue_key("earned its place"): now}
+
+    note = _dropped_cue_note(doc, updates, usage)
+    _assert("earned its place" in note, f"used cue not reported: {note!r}")
+    _assert("never once matched" not in note, f"unused cue should be quiet: {note!r}")
+    _assert(_dropped_cue_note(doc, {}, usage) == "",
+            "no patched array means nothing to warn about")
+    print("ok cue_replace_guardrails")
+
+
+def test_arming_uses_the_tower_judge_once_it_has_been_resolved() -> None:
+    """The branch the agent actually takes: no env override, judge configured
+    in Tower. Arming may not do I/O, so it reads what resolve_judge_model last
+    saw — and if that is never warmed it silently falls back to the DEFAULT
+    model's provider and disarms a correctly-configured tenant. Worse, a
+    disarmed gate stops the judge running, and the judge is the only thing that
+    would have warmed the cache, so the disarm locks itself in.
+    """
+    import harness.recall_judge as rj
+
+    saved = _arming_env(GEMINI_API_KEY="g")   # judge provider credential only
+    saved_cache = (rj._MODEL_CACHE, rj._LAST_RESOLVED_MODEL)
+    try:
+        rj._MODEL_CACHE = None
+        rj._LAST_RESOLVED_MODEL = None
+        _assert(not recall_system_armed(),
+                "cold cache with no Bedrock credential should not arm")
+
+        # What the startup warm does: resolve once, off the loop.
+        rj._MODEL_CACHE = (time.monotonic(), "gemini-2.5-flash")
+        rj._LAST_RESOLVED_MODEL = "gemini-2.5-flash"
+        sys.modules["harness.recall"]._DISARM_LOGGED = False
+        _assert(recall_system_armed(),
+                "a warmed Tower judge must arm on its own provider's key")
+
+        # TTL expiry must not silently swing arming back to the default model.
+        rj._MODEL_CACHE = (time.monotonic() - rj._MODEL_TTL_SECONDS - 1, "gemini-2.5-flash")
+        _assert(recall_system_armed(),
+                "an expired TTL means not-rechecked, not no-longer-configured")
+    finally:
+        rj._MODEL_CACHE, rj._LAST_RESOLVED_MODEL = saved_cache
+        _restore_env(saved)
+
+
+def test_an_unlisted_judge_model_does_not_arm_the_system_open() -> None:
+    """Unlisted names resolve to the Ollama provider, which needs no
+    credential — so an unvalidated value would fail OPEN in a system whose
+    whole contract is fail-closed."""
+    saved = _arming_env(RECALL_JUDGE_MODEL="totally-made-up-model")
+    try:
+        _assert(not recall_system_armed(),
+                "a bogus judge model must not arm the system")
+    finally:
+        _restore_env(saved)
+    print("ok arming_cache_and_validation")
+
+
 def main() -> int:
     test_cue_key_stable()
     test_evict_prefers_never_used()
@@ -173,8 +355,17 @@ def main() -> int:
     test_unstamped_insert_is_its_own_victim()
     test_evict_noop_under_cap()
     test_saturation_skips_near_duplicates()
+    test_armed_follows_the_selected_judges_provider()
+    test_disarmed_when_the_selected_judges_provider_has_no_key()
     test_disarmed_without_judge_key()
+    test_arming_uses_the_tower_judge_once_it_has_been_resolved()
+    test_an_unlisted_judge_model_does_not_arm_the_system_open()
     test_judge_sees_similar_negatives()
+    test_winning_cue_names_the_lexical_cue_that_hit()
+    test_winning_cue_resolves_the_argmax_positive_for_a_semantic_hit()
+    test_winning_cue_returns_none_when_there_is_nothing_to_resolve()
+    test_over_cap_replace_drops_least_recently_used_not_the_head()
+    test_dropped_cue_note_names_only_cues_that_had_earned_use()
     print("ok recall_cue_lifecycle")
     return 0
 

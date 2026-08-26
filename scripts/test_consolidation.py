@@ -581,8 +581,9 @@ def test_stale_bin_survives_a_naive_stored_timestamp() -> None:
 
     naive_old = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=200)
     docs = [{
-        "memory_key": "memory:abc", "retrieval_count": 9, "use_count": 4,
-        "harmful_count": 0, "user_correction_count": 0, "last_used": naive_old,
+        "memory_key": "memory:abc", "retrieval_count": 9, "graded_count": 6,
+        "use_count": 4, "harmful_count": 0, "user_correction_count": 0,
+        "last_used": naive_old,
     }]
 
     class _Stats:
@@ -659,6 +660,199 @@ def test_flag_memory_passes_a_namespaced_key_through() -> None:
     assert "recall:sys_identity" in out
 
 
+def test_ungraded_surfacings_do_not_indict_a_trigger() -> None:
+    """retrieval_count bumps on every surfacing; grades only arrive when an
+    episode ends. Dividing by raw retrievals put memories in BAD-TRIGGER for
+    living in a chat that never hit /new — measured nothing, blamed anyway."""
+    docs = [{
+        "memory_key": "memory:never_graded", "retrieval_count": 40,
+        "graded_count": 0, "use_count": 0, "harmful_count": 0,
+        "user_correction_count": 0, "last_used": None,
+    }]
+
+    class _Stats:
+        def find(self, *a, **kw):
+            async def gen():
+                for d in docs:
+                    yield d
+            return gen()
+
+    with patch.object(consolidation, "_collection", new=AsyncMock(return_value=_Stats())):
+        out = _run(consolidation.memory_utility_report())
+    assert "never_graded" not in out, (
+        "an unmeasured memory must not appear in any evidence bin"
+    )
+
+
+def test_a_genuinely_measured_bad_trigger_is_still_reported() -> None:
+    """The graded gate must not mute the bin it exists to keep honest."""
+    docs = [{
+        "memory_key": "memory:bad_cue", "retrieval_count": 40,
+        "graded_count": 20, "use_count": 1, "harmful_count": 0,
+        "user_correction_count": 0, "last_used": None,
+    }]
+
+    class _Stats:
+        def find(self, *a, **kw):
+            async def gen():
+                for d in docs:
+                    yield d
+            return gen()
+
+    with patch.object(consolidation, "_collection", new=AsyncMock(return_value=_Stats())):
+        out = _run(consolidation.memory_utility_report())
+    assert "bad_cue" in out and "graded=20" in out
+    assert "use_ratio=0.05" in out, "the ratio must be over graded, not retrieved"
+
+
+def test_bad_trigger_needs_enough_graded_evidence() -> None:
+    """One unlucky graded miss is not a broken trigger."""
+    docs = [{
+        "memory_key": "memory:barely", "retrieval_count": 9,
+        "graded_count": consolidation._MIN_GRADED_FOR_BIN - 1, "use_count": 0,
+        "harmful_count": 0, "user_correction_count": 0, "last_used": None,
+    }]
+
+    class _Stats:
+        def find(self, *a, **kw):
+            async def gen():
+                for d in docs:
+                    yield d
+            return gen()
+
+    with patch.object(consolidation, "_collection", new=AsyncMock(return_value=_Stats())):
+        out = _run(consolidation.memory_utility_report())
+    assert "barely" not in out
+
+
+def test_promotion_audit_follows_the_character_budget() -> None:
+    """The char cap usually binds before the entry cap. Recording the first N
+    entries as promoted would log exactly the ones the budget evicted."""
+    # Distinguishable content: identical strings would make the "evicted entries
+    # are absent from the file" check pass no matter what was written.
+    entries = [
+        {"memory_id": f"m{i}", "content": f"pref-{i:02d} " + ("x" * 180),
+         "confirmations": 3, "last_confirmed_ts": float(100 - i)}
+        for i in range(consolidation._PROMOTION_MAX_ENTRIES)
+    ]
+    fitted, lines = consolidation.fitting_promotions(entries)
+    section = consolidation.render_promotion_section(entries)
+    assert len(fitted) == len(lines) == len(
+        [ln for ln in section.splitlines() if ln.startswith("- ")]
+    ), "the audit's idea of promoted must equal what was actually rendered"
+    assert len(fitted) < len(entries), (
+        "this fixture is only meaningful when the char budget bites"
+    )
+
+    # And end to end: what promote_preferences records must match the file it
+    # wrote, not the entry cap alone.
+    records = []
+
+    async def fake_record(kind, detail):
+        records.append((kind, detail))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        cwd = os.getcwd()
+        os.chdir(tmp)
+        try:
+            Path("config").mkdir()
+            Path("config/MEMORY.md").write_text("# hand written\n", encoding="utf-8")
+            with patch.object(consolidation, "promotable_preferences",
+                              new=AsyncMock(return_value=entries)), \
+                 patch.object(consolidation, "record_maintenance", fake_record):
+                _run(consolidation.promote_preferences())
+            written = Path("config/MEMORY.md").read_text(encoding="utf-8")
+        finally:
+            os.chdir(cwd)
+
+    assert records and records[0][0] == "promotion", f"no promotion record: {records}"
+    detail = records[0][1]
+    assert len(detail["promoted"]) == len(fitted)
+    assert len(detail["evicted"]) == len(entries) - len(fitted), (
+        "entries the char budget dropped belong in evicted, not promoted"
+    )
+    assert detail["evicted"], "the fixture must actually evict something"
+    for memory_id in detail["evicted"]:
+        entry = next(e for e in entries if e["memory_id"] == memory_id)
+        assert entry["content"][:8] not in written, (
+            "an entry recorded as evicted must not be in the written file"
+        )
+
+
+def test_graded_counters_move_on_every_grade_not_only_on_use() -> None:
+    """graded_count is the denominator, so an ignored retrieval must still
+    count as a measurement — otherwise ignoring a memory hides the evidence
+    that its trigger is wrong."""
+    bumped = {}
+
+    async def fake_bump(key, inc, set_fields=None, memory_kind=None):
+        bumped["inc"] = inc
+        bumped["set"] = set_fields or {}
+
+    events = AsyncMock()
+    events.find_one = AsyncMock(return_value={
+        "retrieval_id": "r1", "memory_key": "memory:x", "graded": False,
+    })
+    events.update_one = AsyncMock()
+    with patch.object(consolidation, "_collection", new=AsyncMock(return_value=events)), \
+         patch.object(consolidation, "_bump_stats", new=fake_bump):
+        out = _run(consolidation.grade_retrieval("r1", used=False, outcome="neutral"))
+    assert not out.startswith("[error]"), out
+    assert bumped["inc"].get("graded_count") == 1
+    assert "use_count" not in bumped["inc"], "an ignored retrieval is not a use"
+    assert "last_graded" in bumped["set"]
+
+
+def test_clearing_a_chat_hands_the_compaction_summary_to_the_consolidator() -> None:
+    """/new pops per-channel state before the background pass runs, so the
+    summary has to be captured like the session already was. Without it the
+    consolidator gets segment ids and no account of what is in them — the exact
+    signal its prompt tells it to use when choosing what to drill into."""
+    agent = GaladrielAgent.__new__(GaladrielAgent)
+    seen = {}
+
+    async def fake_on_episode_end(channel_id, reason, **kwargs):
+        seen.update(kwargs)
+
+    agent.on_episode_end = fake_on_episode_end
+    # With no staged batch dir this method falls back to archiving the snapshot
+    # straight into the palace, which on a developer machine is the real one.
+    from harness import palace
+
+    with patch.object(palace, "archive_conversation", new=AsyncMock()) as archived:
+        _run(agent._postprocess_cleared_history(
+            "main", [{"role": "user", "content": "hi"}],
+            batch_dir=None, session_id="s1", session_segments=[{"id": "seg1"}],
+            compaction_summary="earlier: the user corrected the deploy step",
+        ))
+    assert archived.await_count == 1, "the archive fallback should still run"
+    assert seen.get("compaction_summary") == (
+        "earlier: the user corrected the deploy step"
+    ), f"the summary must reach the consolidator, got {seen.get('compaction_summary')!r}"
+    assert seen.get("session_id") == "s1"
+
+
+def test_episode_end_passes_the_summary_through_to_the_pass() -> None:
+    """The last hop: on_episode_end -> run_task_consolidation."""
+    agent = GaladrielAgent.__new__(GaladrielAgent)
+    seen = {}
+
+    async def fake_run(channel_id, **kwargs):
+        seen.update(kwargs)
+
+    agent.run_task_consolidation = fake_run
+    agent._compaction_summary = {}
+    agent._session_id = {}
+    agent._session_segments = {}
+    _run(agent.on_episode_end(
+        "main", "new",
+        messages_snapshot=[{"role": "user", "content": "hi"}],
+        session_id="s1", session_segments=[],
+        compaction_summary="folded summary",
+    ))
+    assert seen.get("compaction_summary") == "folded summary"
+
+
 def main() -> int:
     tests = [
         test_stale_bin_survives_a_naive_stored_timestamp,
@@ -706,6 +900,13 @@ def main() -> int:
         test_reflection_prompt_uses_periodic_consolidator_contract,
         test_reflection_prompt_worker_audit_untouched,
         test_goodnight_prompt_unchanged_episode_recap,
+        test_ungraded_surfacings_do_not_indict_a_trigger,
+        test_a_genuinely_measured_bad_trigger_is_still_reported,
+        test_bad_trigger_needs_enough_graded_evidence,
+        test_promotion_audit_follows_the_character_budget,
+        test_graded_counters_move_on_every_grade_not_only_on_use,
+        test_clearing_a_chat_hands_the_compaction_summary_to_the_consolidator,
+        test_episode_end_passes_the_summary_through_to_the_pass,
     ]
     for test in tests:
         test()
