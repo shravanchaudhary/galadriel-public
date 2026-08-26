@@ -465,7 +465,7 @@ def probe_competing() -> None:
     """
     import os
 
-    os.environ.setdefault("RECALL_SLM_VERIFY", "1")
+    os.environ.setdefault("RECALL_JUDGE_VERIFY", "0")
     from harness import recall as hr
 
     catalog = list(hr._load_system_recalls())

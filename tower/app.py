@@ -862,6 +862,14 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
         # missing KMS/Mongo — env-configured keys still show as configured.
         return jsonify({"providers": provider_credentials.list_summaries()})
 
+    def _invalidate_provider_key_cache(provider: str) -> None:
+        # Recall arming answers from this cache without doing I/O, so a key
+        # saved or removed here has to reach it or the change is invisible
+        # until the process restarts.
+        from harness import model_registry
+
+        model_registry.invalidate_provider_key_cache(provider)
+
     @app.route("/api/provider-keys/<provider>", methods=["PUT"])
     def api_provider_key_put(provider: str):
         from harness import provider_credentials
@@ -872,6 +880,7 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
                 (request.json or {}).get("api_key", ""),
             )
             agent._provider_cache.pop(provider, None)
+            _invalidate_provider_key_cache(provider)
             return jsonify(result), 201
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
@@ -886,6 +895,7 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
         try:
             deleted = provider_credentials.delete(provider)
             agent._provider_cache.pop(provider, None)
+            _invalidate_provider_key_cache(provider)
             return jsonify({"provider": provider, "configured": False, "deleted": deleted})
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
@@ -965,6 +975,27 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
             return jsonify({"error": str(e)}), 500
         return jsonify({
             "enabled": bool(agent.recall_enabled),
+            "persisted": tower_settings.is_configured(),
+        })
+
+    @app.route("/api/learning-enabled", methods=["GET"])
+    def api_learning_enabled_get():
+        return jsonify({
+            "enabled": bool(getattr(agent, "learning_enabled", True)),
+            "persisted": tower_settings.is_configured(),
+        })
+
+    @app.route("/api/learning-enabled", methods=["POST"])
+    def api_learning_enabled_set():
+        data = request.json or {}
+        if "enabled" not in data:
+            return jsonify({"error": "Missing 'enabled' field"}), 400
+        try:
+            agent.set_learning_enabled(bool(data.get("enabled")))
+        except Exception as e:
+            return jsonify({"error": str(e)}), 500
+        return jsonify({
+            "enabled": bool(agent.learning_enabled),
             "persisted": tower_settings.is_configured(),
         })
 
@@ -1072,6 +1103,7 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
             filter_matches_with_judge,
             get_recall_status,
             scan_text_for_recalls,
+            winning_cue,
         )
 
         def _serializable(match: dict) -> dict:
@@ -1090,6 +1122,16 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
                 segments=[{"text": text, "source": "user"}],
             )
             verified, rejected = _run_async(filter_matches_with_judge(proposed))
+            # Same resolution the live fire path stamps, so the test page shows
+            # which stored cue actually won rather than a field nothing sets.
+            # Skipped when the caller picked a non-default encoder: winning_cue
+            # scores with the configured one, so the answer would name a cue
+            # that this scan's encoder never ranked highest.
+            if not model:
+                for match in verified:
+                    cue = winning_cue(match)
+                    if cue:
+                        match["matched_example"] = cue
             return jsonify({
                 "status": "ok",
                 "armed": bool(status.get("armed")),

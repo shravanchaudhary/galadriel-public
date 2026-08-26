@@ -128,11 +128,11 @@ Rules of thumb:
 
 Palace tools are **pull**. Semantic recalls are **push**: Stage-1 (positive-only:
 embed floor 0.6 / lexical; chunks under 4 words are lexical-only) proposes on
-`matched_chunk`; Stage-2 verifies with a batched Gemini entailment judge
+`matched_chunk`; Stage-2 verifies with a batched LLM entailment judge
 (activation_condition + exclusions) plus a junk filter; only verified fires
 inject a user-role `[Recall detected]` note (`kind=recall_fire`). Without a
-Gemini key the whole recall system is disarmed (fail-closed — no scans, no
-fires). Fires are suggestions: ground any action in the user's request or the
+credential for the selected judge model's provider the whole recall system is
+disarmed (fail-closed — no scans, no fires). Fires are suggestions: ground any action in the user's request or the
 current task, and continue past a fire that doesn't help.
 
 Inject windows: new user message at turn start, and mid-turn **only** on

@@ -517,17 +517,17 @@ Palace search is **pull** (the model decides to look something up). Semantic rec
 
 **Package rule:** durable content → palace / KG / `MEMORY.md`; when-to-recollect → `learn_recall` pointing at that store (or the unified `learn` tool, which packages kg/drawer/recall in one call). Cue quality: positives = realistic phrasings (dense coverage up to ~100); lexical = high-precision anchors; negatives = known misfires (Stage-2 counter-signal only). Fire feedback → `tune_recall(recall_id, applicable)` appends the fired chunk to positives or negatives automatically.
 
-**Learn passes:** silent learn+audit after main compact / `/new` and after worker ticks that reported `worked` (compaction that fires mid-turn skips learn — too slow to make the user wait). Ambient reflection also tunes cues from recent proposed/verified events.
+**Learning passes (multi-timescale):** the agent writes high-confidence memories mid-task with `learn`; a task-end consolidator turn runs at each true episode boundary — `/new` / clear, and worker ticks that reported `worked` — recovering what it missed and grading every retrieval; commit-time passes give each memory a holdout-tested trigger and typed graph edges; ambient reflection then works cross-episode from `memory_utility_report`'s evidence bins. Compaction never learns, it only archives and mines. Recall and learning have separate Tower toggles (`/api/recall-enabled`, `/api/learning-enabled`): turning retrieval off no longer stops memories being written. `scripts/memory_health.py` prints a week of it — commits by source, trigger pass-rate, grade spread, fired-vs-opened.
 
 **Ops / env**
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `RECALL_SLM_VERIFY` | `1` | Set `0` to disable Stage-2 (Stage-1 only; more false injects). Name predates the judge. |
+| `RECALL_JUDGE_VERIFY` | `1` | Set `0` to disable Stage-2 (Stage-1 only; more false injects). |
 | `RECALL_JUDGE_MODEL` | `gpt-oss-20b` | Any model from `tower_settings.JUDGE_MODEL_OPTIONS`. |
 | `RECALL_STAGE2_MAX_CANDIDATES` | `3` | Stage-1 proposals verified per pass, best positive first. |
 
-The judge needs only `GEMINI_API_KEY` (or the credentials for whichever provider serves `RECALL_JUDGE_MODEL`) and disarms the whole system without it. Collections: `proposed_recalls` (every Stage-1 candidate) and `recall_fires` (verified injects). Event kind is `recall_fire` (legacy `nudge` / `is_nudge` markers are gone).
+The judge needs the credentials for whichever provider serves `RECALL_JUDGE_MODEL`, and disarms the whole system without them. Collections: `proposed_recalls` (every Stage-1 candidate) and `recall_fires` (verified injects). Event kind is `recall_fire` (legacy `nudge` / `is_nudge` markers are gone).
 
 ---
 

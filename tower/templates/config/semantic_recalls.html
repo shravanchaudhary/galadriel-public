@@ -13,7 +13,7 @@
 <section class="settings-section">
     <div class="settings-section-head">
         <h2 class="settings-section-title">Semantic Recalls</h2>
-        <p class="settings-section-desc">Recalls fire when semantic score ≥ that recall's positive_threshold (default 0.6) or a lexical/fuzzy cue hits — Stage-1 is positive-only. Min-words and structured-chunk gates apply to tool output only. Negatives are Stage-2 counter-signal from tune_recall. Stage-2 tier: paid Gemini judge (default) or free local cross-encoder.</p>
+        <p class="settings-section-desc">Recalls fire when semantic score ≥ that recall's positive_threshold (default 0.6) or a lexical/fuzzy cue hits — Stage-1 is positive-only. Min-words and structured-chunk gates apply to tool output only. Negatives are Stage-2 counter-signal from tune_recall. Stage-2 is an LLM entailment judge on the model selected below.</p>
     </div>
     
     <div class="settings-rows" style="margin-bottom: 1rem; border: 1px solid var(--border-subtle); border-radius: 6px; padding: 1rem;">
@@ -86,7 +86,7 @@
     <div class="settings-row" style="flex-direction: column; align-items: flex-start; gap: 0.5rem; margin-bottom: 1rem;" id="recall-judge-model-row">
         <label for="recall-judge-model">Judge model</label>
         <select id="recall-judge-model" style="padding: 0.25rem;" onchange="saveJudgeModel()"></select>
-        <p class="settings-row-hint" id="recall-judge-model-status">Stronger models honour exclusions better; flash-lite is cheapest.</p>
+        <p class="settings-row-hint" id="recall-judge-model-status">Stronger models honour exclusions better; gpt-oss-20b is the accuracy-vs-cost default.</p>
     </div>
     
     <div class="settings-row" style="flex-direction: column; align-items: flex-start; gap: 0.5rem; margin-bottom: 1rem;">
@@ -488,7 +488,7 @@ function setArmedLine(armed, judgeModel) {
         el.textContent = `Recall armed · Stage-2 judge${judgeNote}`;
         el.style.color = '';
     } else {
-        el.textContent = 'Recall is DISARMED — Stage-2 judge unavailable (needs GEMINI_API_KEY). Nothing will scan or inject.';
+        el.textContent = 'Recall is DISARMED — no credential for the selected judge model\u2019s provider. Nothing will scan or inject.';
         el.style.color = 'var(--danger)';
     }
 }
@@ -590,13 +590,13 @@ async function testRecalls() {
                 ? '<span class="muted">Nothing proposed. Stage-1 found no cue over its positive_threshold among the RRF-fused candidates.</span>'
                 : '<span style="color: var(--danger)">Recall is disarmed — nothing was scanned.</span>';
         } else {
-            const fired = data.matches.filter(m => m.slm_verified).length;
+            const fired = data.matches.filter(m => m.judge_verified).length;
             const summary = `<div class="settings-row-hint" style="margin-bottom: 0.75rem;">${fired} of ${data.matches.length} proposal(s) would fire.</div>`;
             matchesDiv.innerHTML = summary + data.matches.map(m => {
                 const pos = (m.positive_score != null) ? Number(m.positive_score).toFixed(3) : 'n/a';
                 const src = esc(m.match_source || 'semantic');
                 const cue = m.lexical_cue ? ` · cue “${esc(m.lexical_cue)}”` : '';
-                const badge = m.slm_verified
+                const badge = m.judge_verified
                     ? '<span style="color: var(--success); font-weight: 600;">FIRES</span>'
                     : '<span style="color: var(--danger); font-weight: 600;">REJECTED</span>';
                 // judge:applicable / judge:none just restate the FIRES/REJECTED
@@ -604,12 +604,12 @@ async function testRecalls() {
                 // knowledge/reference/bedrock_providers.md). Other tags
                 // (stage2_junk, stage2_disabled, judge_unavailable:*,
                 // stage2_candidate_cap:N) still say something the badge doesn't.
-                const genericReason = m.slm_reason === 'judge:applicable' || m.slm_reason === 'judge:none';
-                const reason = (m.slm_reason && !genericReason)
-                    ? `<div class="muted" style="font-size: 0.8rem;">reason: ${esc(m.slm_reason)}</div>`
+                const genericReason = m.judge_reason === 'judge:applicable' || m.judge_reason === 'judge:none';
+                const reason = (m.judge_reason && !genericReason)
+                    ? `<div class="muted" style="font-size: 0.8rem;">reason: ${esc(m.judge_reason)}</div>`
                     : '';
                 const won = m.matched_example
-                    ? `<div class="muted" style="font-size: 0.8rem;">Stage-2 matched cue: “${esc(m.matched_example)}”</div>`
+                    ? `<div class="muted" style="font-size: 0.8rem;">winning cue: “${esc(m.matched_example)}”</div>`
                     : '';
                 const chunk = m.matched_chunk
                     ? `<div class="muted" style="font-size: 0.8rem;">chunk: “${esc(String(m.matched_chunk).slice(0, 160))}”</div>`

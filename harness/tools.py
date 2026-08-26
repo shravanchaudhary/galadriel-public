@@ -1557,15 +1557,15 @@ async def _get_recent_recalls(hours_ago: int = 24) -> str:
             cue_s = f" cue={cue!r}" if cue else ""
             if n.get("_log_source") == "recall_fires":
                 status = "verified"
-            elif n.get("injected") or n.get("slm_verified"):
+            elif n.get("injected") or n.get("judge_verified"):
                 status = "proposed+verified"
             else:
                 status = "proposed+rejected"
-            slm = n.get("slm_reason") or ""
-            slm_s = f" slm={slm}" if slm else ""
+            reason = n.get("judge_reason") or ""
+            reason_s = f" judge={reason}" if reason else ""
             lines = [
                 f"[{n.get('timestamp')}] status={status} channel={channel} recall={r_id} "
-                f"source={src}{seg_s} pos={float(pos):.3f} neg={neg_s}{cue_s}{slm_s}"
+                f"source={src}{seg_s} pos={float(pos):.3f} neg={neg_s}{cue_s}{reason_s}"
             ]
             if matched:
                 lines.append(f"matched_chunk: {matched}")
@@ -1739,6 +1739,16 @@ async def _execute_tool_impl(
         )
     elif name == "propose_memory":
         from . import consolidation
+        from .agent import PERIODIC_CONSOLIDATOR_CHANNELS
+        # Same tool, two writers: the ephemeral task-end pass and the periodic
+        # consolidator channels. Stamping both "task_consolidator" made the
+        # provenance field unable to answer which pass produced a memory —
+        # and left "periodic_consolidator" a value only queries used.
+        source = (
+            "periodic_consolidator"
+            if channel_id in PERIODIC_CONSOLIDATOR_CHANNELS
+            else "task_consolidator"
+        )
         result = await consolidation.commit_candidate(
             type=inputs.get("type", ""),
             content=inputs.get("content", ""),
@@ -1747,7 +1757,7 @@ async def _execute_tool_impl(
             valid_from=inputs.get("valid_from"),
             evidence=inputs.get("evidence_episode_ids"),
             confidence=inputs.get("confidence"),
-            source="task_consolidator",
+            source=source,
             note=inputs.get("note", ""),
             supersedes_memory_id=inputs.get("supersedes_memory_id"),
         )
@@ -2637,7 +2647,13 @@ def _pct(value) -> str:
     return "n/a" if value is None else f"{value * 100:.0f}%"
 
 
-def _normalize_cue_list(values, *, lexical: bool = False) -> list[str]:
+def _clean_cue_list(values, *, lexical: bool = False) -> list[str]:
+    """Strip, normalize and dedupe one submitted cue array. No cap applied.
+
+    Kept separate from the cap so a caller can tell the two losses apart:
+    dropping a blank or a duplicate is housekeeping, while dropping a cue to
+    the cap is a decision the caller may want to make itself.
+    """
     from harness.recall import normalize_lexical_cue
     out = []
     seen = set()
@@ -2651,22 +2667,104 @@ def _normalize_cue_list(values, *, lexical: bool = False) -> list[str]:
             continue
         seen.add(s)
         out.append(s)
-    return out[-_MAX_EXAMPLES_PER_RECALL:]
+    return out
 
 
-def _cue_field_or_error(values, field_name: str, *, lexical: bool = False):
+def _normalize_cue_list(values, *, lexical: bool = False, usage: dict | None = None) -> list[str]:
+    """Clean, dedupe and cap one submitted cue array.
+
+    Over the cap, drop by least-recently-used rather than by position: a plain
+    tail slice discards whichever cues the model happened to list first, which
+    on a full-array replace is arbitrary and can delete the very cues that keep
+    winning matches.
+    """
+    from harness.recall import evict_lru_cues
+    out = _clean_cue_list(values, lexical=lexical)
+    if len(out) <= _MAX_EXAMPLES_PER_RECALL:
+        return out
+    return evict_lru_cues(out, usage or {}, _MAX_EXAMPLES_PER_RECALL)
+
+
+def _cue_field_or_error(values, field_name: str, *, lexical: bool = False, usage: dict | None = None):
     """Normalize a provided cue array; error if empty after normalize.
 
     Returns (normalized_list, None) or (None, error_string).
     Caller must only invoke when ``values is not None``.
     """
-    normalized = _normalize_cue_list(values, lexical=lexical)
+    normalized = _normalize_cue_list(values, lexical=lexical, usage=usage)
     if not normalized:
         return None, (
             f"[error] {field_name} cannot be empty when provided — "
             f"pass at least one non-empty string, or omit the field."
         )
     return normalized, None
+
+
+_DROP_REPORT_LIMIT = 3
+
+
+def _dropped_cue_note(doc: dict, updates: dict, usage: dict) -> str:
+    """Warn when a full-array replace dropped cues that had earned usage.
+
+    Cue arrays are whole-array replacements, so a model that paraphrases or
+    forgets a cue while resubmitting deletes it, and `sync_cue_usage` then
+    prunes that cue's history — a valid write, silently lossy. Nothing else
+    notices, so say it in the tool result where the caller can still fix it.
+    Only cues with a usage stamp are reported: dropping a cue that never once
+    won a match is ordinary pruning, which is what this tool is for.
+    """
+    from harness.recall import cue_key
+
+    notes = []
+    for field in ("positive_examples", "negative_examples", "lexical_cues"):
+        if field not in updates:
+            continue
+        kept = {c for c in updates[field]}
+        dropped = [
+            c for c in (doc.get(field) or [])
+            if isinstance(c, str) and c not in kept and usage.get(cue_key(c))
+        ]
+        if not dropped:
+            continue
+        shown = ", ".join(f"{c[:40]!r}" for c in dropped[:_DROP_REPORT_LIMIT])
+        more = f" (+{len(dropped) - _DROP_REPORT_LIMIT} more)" if len(dropped) > _DROP_REPORT_LIMIT else ""
+        notes.append(f"{len(dropped)} used {field} dropped: {shown}{more}")
+    if not notes:
+        return ""
+    return (
+        " [note] " + "; ".join(notes)
+        + ". Arrays are full replacements — if that was unintentional, "
+        "get_recall and resubmit with them included."
+    )
+
+
+def _capped_cue_note(raw: dict, updates: dict) -> str:
+    """Warn when the cap discarded part of what the caller actually submitted.
+
+    `_normalize_cue_list` silently trims to `_MAX_EXAMPLES_PER_RECALL`, so an
+    over-long array looks like it was stored whole. The caller is the only one
+    who can decide which cues to keep, and it cannot decide what it is not told.
+    """
+    notes = []
+    for field, submitted in raw.items():
+        if field not in updates or not isinstance(submitted, list):
+            continue
+        # Compare against what survived cleaning, not against the raw list:
+        # _normalize_cue_list also drops blanks, non-strings and duplicates,
+        # and blaming the cap for those sends the caller to trim an array that
+        # was never over it.
+        cleaned = _clean_cue_list(submitted, lexical=(field == "lexical_cues"))
+        over_cap = len(cleaned) - len(updates[field])
+        if over_cap > 0:
+            notes.append(
+                f"{over_cap} {field} beyond the {_MAX_EXAMPLES_PER_RECALL} cap"
+            )
+    if not notes:
+        return ""
+    return (
+        " [note] dropped " + "; ".join(notes)
+        + " (least-recently-used first). Trim the array yourself to choose."
+    )
 
 
 def _unknown_recall_error(rid: str, recalls: list[dict], *, hint: str = "") -> str:
@@ -2731,23 +2829,31 @@ async def _patch_system_recall_cues(
     from pathlib import Path
     from harness.recall import (
         invalidate_semantic_router,
+        load_cue_usage,
         normalize_recall_thresholds,
         sync_cue_usage,
     )
 
+    usage = await load_cue_usage(recall_id)
     updates = {}
     if positive_examples is not None:
-        pos, err = _cue_field_or_error(positive_examples, "positive_examples")
+        pos, err = _cue_field_or_error(
+            positive_examples, "positive_examples", usage=usage
+        )
         if err:
             return err
         updates["positive_examples"] = pos
     if negative_examples is not None:
-        neg, err = _cue_field_or_error(negative_examples, "negative_examples")
+        neg, err = _cue_field_or_error(
+            negative_examples, "negative_examples", usage=usage
+        )
         if err:
             return err
         updates["negative_examples"] = neg
     if lexical_cues is not None:
-        lex, err = _cue_field_or_error(lexical_cues, "lexical_cues", lexical=True)
+        lex, err = _cue_field_or_error(
+            lexical_cues, "lexical_cues", lexical=True, usage=usage
+        )
         if err:
             return err
         updates["lexical_cues"] = lex
@@ -2764,10 +2870,12 @@ async def _patch_system_recall_cues(
         sys_recalls = json.load(f)
 
     found = None
+    before = {}
     for r in sys_recalls:
         if r.get("recall_id") != recall_id:
             continue
         found = r
+        before = dict(r)
         r.update(updates)
         normalize_recall_thresholds(r)
         break
@@ -2779,9 +2887,20 @@ async def _patch_system_recall_cues(
     invalidate_semantic_router()
     await sync_cue_usage(
         recall_id,
-        (found.get("positive_examples") or []) + (found.get("negative_examples") or []),
+        (found.get("positive_examples") or [])
+        + (found.get("negative_examples") or [])
+        + (found.get("lexical_cues") or []),
     )
-    return f"Updated cue arrays on system recall '{recall_id}'."
+    raw = {
+        "positive_examples": positive_examples,
+        "negative_examples": negative_examples,
+        "lexical_cues": lexical_cues,
+    }
+    return (
+        f"Updated cue arrays on system recall '{recall_id}'."
+        + _dropped_cue_note(before, updates, usage)
+        + _capped_cue_note(raw, updates)
+    )
 
 
 async def _learn_recall(
@@ -2855,6 +2974,8 @@ async def _learn_recall(
         if not doc:
             return f"[error] User recall '{rid}' not found."
 
+        from .recall import load_cue_usage
+        usage = await load_cue_usage(rid)
         updates = {}
         if instr is not None:
             if not instr:
@@ -2865,17 +2986,23 @@ async def _learn_recall(
         if excl is not None:
             updates["exclusions"] = excl
         if positive_examples is not None:
-            pos, err = _cue_field_or_error(positive_examples, "positive_examples")
+            pos, err = _cue_field_or_error(
+                positive_examples, "positive_examples", usage=usage
+            )
             if err:
                 return err
             updates["positive_examples"] = pos
         if negative_examples is not None:
-            neg, err = _cue_field_or_error(negative_examples, "negative_examples")
+            neg, err = _cue_field_or_error(
+                negative_examples, "negative_examples", usage=usage
+            )
             if err:
                 return err
             updates["negative_examples"] = neg
         if lexical_cues is not None:
-            lex, err = _cue_field_or_error(lexical_cues, "lexical_cues", lexical=True)
+            lex, err = _cue_field_or_error(
+                lexical_cues, "lexical_cues", lexical=True, usage=usage
+            )
             if err:
                 return err
             updates["lexical_cues"] = lex
@@ -2900,10 +3027,20 @@ async def _learn_recall(
         await sync_cue_usage(
             rid,
             list(updates.get("positive_examples", doc.get("positive_examples") or []))
-            + list(updates.get("negative_examples", doc.get("negative_examples") or [])),
+            + list(updates.get("negative_examples", doc.get("negative_examples") or []))
+            + list(updates.get("lexical_cues", doc.get("lexical_cues") or [])),
         )
         changed = ", ".join(sorted(k for k in updates if k != "updated_at"))
-        return f"Updated recall '{rid}' ({changed})."
+        raw = {
+            "positive_examples": positive_examples,
+            "negative_examples": negative_examples,
+            "lexical_cues": lexical_cues,
+        }
+        return (
+            f"Updated recall '{rid}' ({changed})."
+            + _dropped_cue_note(doc, updates, usage)
+            + _capped_cue_note(raw, updates)
+        )
 
     # ── Create path (agent must supply instruction + all cue arrays) ────────
     if not instr:
@@ -2964,7 +3101,7 @@ async def _learn_recall(
     try:
         result = await db["recalls"].insert_one(doc)
         invalidate_semantic_router()
-        await sync_cue_usage(str(result.inserted_id), pos + neg)
+        await sync_cue_usage(str(result.inserted_id), pos + neg + lex)
         return (
             f"Created new recall with ID '{result.inserted_id}' "
             f"({len(pos)} pos, {len(lex)} lexical, {len(neg)} neg, "
@@ -3034,6 +3171,9 @@ async def _tune_recall(recall_id: str, applicable: bool, note: str | None = None
     other_field = "negative_examples" if applicable else "positive_examples"
     examples = [e for e in (recall.get(field) or []) if isinstance(e, str) and e.strip()]
     others = [e for e in (recall.get(other_field) or []) if isinstance(e, str) and e.strip()]
+    # sync_cue_usage prunes every cue missing from the set it is given, so the
+    # untouched arrays have to ride along or their stamps are deleted here.
+    lexical = [e for e in (recall.get("lexical_cues") or []) if isinstance(e, str) and e.strip()]
     duplicate = any(e.strip().casefold() == chunk.casefold() for e in examples)
     saturated, nearest = (False, None) if duplicate else cue_is_saturated(chunk, examples)
     if not duplicate and not saturated:
@@ -3057,7 +3197,7 @@ async def _tune_recall(recall_id: str, applicable: bool, note: str | None = None
             if applicable:
                 # Positives feed the router; negatives are Stage-2-only.
                 invalidate_semantic_router()
-        await sync_cue_usage(rid, examples + others, touch=[chunk])
+        await sync_cue_usage(rid, examples + others + lexical, touch=[chunk])
 
     verdict = "applicable" if applicable else "misfire"
     try:

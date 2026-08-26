@@ -522,13 +522,29 @@ class Scheduler:
         a missing index degrades query speed, and refusing to boot over it
         would be worse than serving slow.
         """
+        # Arming first, and before anything slow: recall_system_armed() reads
+        # these two caches instead of doing I/O per scan, and until they are
+        # warm it resolves the DEFAULT judge model's provider — which disarms
+        # scanning outright on a tenant whose judge is served by someone else.
+        # A disarmed gate also stops the judge running, and the judge is what
+        # would otherwise fill the model cache, so a cold start locks itself.
+        try:
+            from . import model_registry
+            from .recall_judge import resolve_judge_model
+
+            await asyncio.to_thread(resolve_judge_model)
+            await asyncio.to_thread(model_registry.warm_provider_keys)
+        except Exception as e:
+            log.warning(f"Recall arming warm-up failed: {e}")
+
         try:
             from . import consolidation, memory_graph
 
             await consolidation.ensure_indexes()
             await memory_graph.ensure_indexes()
+            await consolidation.backfill_graded_counts()
         except Exception as e:
-            log.warning(f"Memory index creation failed at startup: {e}")
+            log.warning(f"Memory startup pass failed: {e}")
 
     # ── One-shot Wake Loop ───────────────────────────────────────
 

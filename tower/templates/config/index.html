@@ -44,7 +44,7 @@
         <div class="settings-row">
             <div class="settings-row-main">
                 <span class="settings-row-label">Semantic recall</span>
-                <span class="settings-row-hint">Scan turns for stored recalls, inject matches, and run the learn pass. Off leaves stored recalls and the test page untouched.</span>
+                <span class="settings-row-hint">Scan turns for stored recalls and inject matches. Off leaves stored recalls, learning and the test page untouched.</span>
             </div>
             <div class="toggle-row settings-row-control">
                 <label class="toggle-switch">
@@ -55,6 +55,24 @@
                 </label>
                 <span id="recall-status" class="heartbeat-status {{ 'status-on' if recall_enabled else 'status-off' }}">
                     {{ 'ON' if recall_enabled else 'Off' }}
+                </span>
+            </div>
+        </div>
+
+        <div class="settings-row">
+            <div class="settings-row-main">
+                <span class="settings-row-label">Memory learning</span>
+                <span class="settings-row-hint">Run the consolidation pass at the end of each task, writing what was learned. Off keeps existing memories readable but stops new ones being written.</span>
+            </div>
+            <div class="toggle-row settings-row-control">
+                <label class="toggle-switch">
+                    <input type="checkbox" id="learning-toggle"
+                        {% if learning_enabled %}checked{% endif %}
+                        onchange="toggleLearning()">
+                    <span class="toggle-slider"></span>
+                </label>
+                <span id="learning-status" class="heartbeat-status {{ 'status-on' if learning_enabled else 'status-off' }}">
+                    {{ 'ON' if learning_enabled else 'Off' }}
                 </span>
             </div>
         </div>
@@ -441,6 +459,31 @@ async function toggleRecall() {
         toggle.checked = !toggle.checked;
         if (window.towerToast) window.towerToast(err.message || 'Failed to toggle semantic recall', { type: 'error' });
         else alert(err.message || 'Failed to toggle semantic recall');
+    }
+}
+
+async function toggleLearning() {
+    const toggle = document.getElementById('learning-toggle');
+    const enabled = toggle.checked;
+    try {
+        const res = await fetch('/api/learning-enabled', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ enabled }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+            throw new Error(data.error || 'Failed to set memory learning');
+        }
+        const status = document.getElementById('learning-status');
+        status.textContent = data.enabled ? 'ON' : 'Off';
+        status.className = 'heartbeat-status ' + (data.enabled ? 'status-on' : 'status-off');
+        toggle.checked = !!data.enabled;
+    } catch (err) {
+        console.error('Failed to toggle memory learning:', err);
+        toggle.checked = !toggle.checked;
+        if (window.towerToast) window.towerToast(err.message || 'Failed to toggle memory learning', { type: 'error' });
+        else alert(err.message || 'Failed to toggle memory learning');
     }
 }
 

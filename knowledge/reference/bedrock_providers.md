@@ -420,7 +420,7 @@ latency and availability tradeoff is the wrong one to make inside a 6s budget.
 The JSON schema used to be `{"applicable":[...],"reasons":{"id":"why"}}`. The
 `reasons` text isn't reasoning tokens (`thinking=False` already zeros those out
 where the model allows it) — it's ordinary output tokens the judge spent
-writing a sentence justifying each verdict, surfaced only as `slm_reason` on
+writing a sentence justifying each verdict, surfaced only as `judge_reason` on
 the semantic-recalls debug page. Nothing in the actual recall pipeline reads
 it (`harness/recall.py` only used it to decorate a log line). Schema is now
 `{"applicable":[...]}` — membership in the list is the verdict, no

@@ -1,9 +1,8 @@
 """Held-out labeled (recall_id, chunk, expected) cases for the recall e2e eval.
 
 Pure data, no harness imports — kept separate so `eval/dataset.py` can load it
-without pulling in `harness.recall`'s heavy deps. Originally lived inline in
-`scripts/test_slm_recall_verification.py` (removed with the local-GGUF Stage-2
-SLM path); split out here so the eval dataset keeps its held-out slice.
+without pulling in `harness.recall`'s heavy deps. Split out from the old
+Stage-2 verification test so the eval dataset keeps its held-out slice.
 """
 
 from __future__ import annotations
