@@ -59,11 +59,17 @@ def _browser_transcribe_credentials() -> dict:
     }
 
 
-def _image_blocks_from_payload(images: list) -> tuple[list, str | None]:
+def _image_blocks_from_payload(images: list, model: str) -> tuple[list, str | None]:
     """Validate base64 chat-upload images and return (image blocks, error).
-    Media type is sniffed from magic bytes, not trusted from the client."""
+    Media type is sniffed from magic bytes, not trusted from the client.
+
+    A text-only `model` refuses the upload outright — the composer already
+    disables its attach button, so this catches scripted clients and a model
+    switched between page load and send."""
     from discord_bot.bot import sniff_image_media_type
 
+    if images and not model_catalog.supports_vision(model):
+        return [], f"{model} cannot read images — switch models to attach one"
     if len(images) > MAX_CHAT_IMAGES:
         return [], f"Too many images (max {MAX_CHAT_IMAGES})"
     blocks = []
@@ -254,7 +260,9 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
     def api_chat():
         data = request.json or {}
         message = data.get("message", "").strip()
-        image_blocks, img_err = _image_blocks_from_payload(data.get("images") or [])
+        image_blocks, img_err = _image_blocks_from_payload(
+            data.get("images") or [], agent.model_for_channel(MAIN_CHANNEL_ID)
+        )
         if img_err:
             return jsonify({"error": img_err}), 400
         user_message = _build_chat_message(message, image_blocks)
@@ -368,7 +376,9 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
         """
         data = request.json or {}
         message = data.get("message", "").strip()
-        image_blocks, img_err = _image_blocks_from_payload(data.get("images") or [])
+        image_blocks, img_err = _image_blocks_from_payload(
+            data.get("images") or [], agent.model_for_channel(MAIN_CHANNEL_ID)
+        )
         if img_err:
             return jsonify({"error": img_err}), 400
         user_message = _build_chat_message(message, image_blocks)

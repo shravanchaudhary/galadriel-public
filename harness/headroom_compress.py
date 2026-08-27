@@ -92,25 +92,15 @@ def _placeholder_for_image(path_hint: str | None) -> dict:
     return {"type": "text", "text": text}
 
 
-def prune_old_screenshots(
-    messages: list[dict],
-    *,
-    keep_last: int = KEEP_LAST_SCREENSHOTS,
-) -> tuple[list[dict], ScreenshotPruneStats]:
-    """Return a deep copy with all but the last ``keep_last`` images replaced.
+def _image_refs(messages: list[dict]) -> list[tuple[int, tuple]]:
+    """(msg_idx, location) for every image block, in chronological order.
 
     Walks Anthropic-style content: top-level ``image`` blocks and ``image``
-    blocks nested inside ``tool_result`` list content. Does not mutate the
-    input list. When ``keep_last <= 0``, every image is replaced.
+    blocks nested inside ``tool_result`` list content. location is
+    ("top", block_idx) or ("tool_result", block_idx, inner_idx).
     """
-    if not messages:
-        return messages, ScreenshotPruneStats()
-
-    out = copy.deepcopy(messages)
-    # Collect (msg_idx, location) for every image in chronological order.
-    # location is ("top", block_idx) or ("tool_result", block_idx, inner_idx).
     refs: list[tuple[int, tuple]] = []
-    for mi, msg in enumerate(out):
+    for mi, msg in enumerate(messages):
         content = msg.get("content")
         if not isinstance(content, list):
             continue
@@ -128,6 +118,70 @@ def prune_old_screenshots(
             for ii, ib in enumerate(inner):
                 if isinstance(ib, dict) and ib.get("type") == "image":
                     refs.append((mi, ("tool_result", bi, ii)))
+    return refs
+
+
+def _replace_images(
+    messages: list[dict],
+    refs: list[tuple[int, tuple]],
+    text: str | None = None,
+) -> None:
+    """Swap each referenced image for a text block, in place.
+
+    Lengths never change, so the indices in `refs` stay valid throughout.
+    With no `text`, each image gets the screenshot placeholder (path hint
+    included where the tool result carries one).
+    """
+    for mi, loc in refs:
+        content = messages[mi]["content"]
+        if loc[0] == "top":
+            _, bi = loc
+            content[bi] = (
+                {"type": "text", "text": text} if text
+                else _placeholder_for_image(None)
+            )
+        else:
+            _, bi, ii = loc
+            inner = content[bi]["content"]
+            inner[ii] = (
+                {"type": "text", "text": text} if text
+                else _placeholder_for_image(_path_hint_from_blocks(inner))
+            )
+
+
+def strip_images(messages: list[dict], *, reason: str) -> tuple[list[dict], int]:
+    """Return a deep copy with EVERY image block replaced by `reason` text.
+
+    The vision gate for text-only models (harness/model_catalog.supports_vision).
+    Applied to the API-bound copy only, so the pixels survive in the stored
+    conversation and reappear if the channel moves back to a seeing model.
+    """
+    if not messages:
+        return messages, 0
+    out = copy.deepcopy(messages)
+    refs = _image_refs(out)
+    if not refs:
+        return out, 0
+    _replace_images(out, refs, reason)
+    return out, len(refs)
+
+
+def prune_old_screenshots(
+    messages: list[dict],
+    *,
+    keep_last: int = KEEP_LAST_SCREENSHOTS,
+) -> tuple[list[dict], ScreenshotPruneStats]:
+    """Return a deep copy with all but the last ``keep_last`` images replaced.
+
+    Walks Anthropic-style content: top-level ``image`` blocks and ``image``
+    blocks nested inside ``tool_result`` list content. Does not mutate the
+    input list. When ``keep_last <= 0``, every image is replaced.
+    """
+    if not messages:
+        return messages, ScreenshotPruneStats()
+
+    out = copy.deepcopy(messages)
+    refs = _image_refs(out)
 
     total = len(refs)
     keep = max(0, int(keep_last))
@@ -137,19 +191,7 @@ def prune_old_screenshots(
         )
 
     drop = refs[:-keep] if keep else refs
-    # Replace oldest first; indices stay valid because we replace in place
-    # (same list lengths).
-    for mi, loc in drop:
-        content = out[mi]["content"]
-        if loc[0] == "top":
-            _, bi = loc
-            content[bi] = _placeholder_for_image(None)
-        else:
-            _, bi, ii = loc
-            tool_block = content[bi]
-            inner = tool_block["content"]
-            hint = _path_hint_from_blocks(inner)
-            inner[ii] = _placeholder_for_image(hint)
+    _replace_images(out, drop)
 
     pruned = len(drop)
     kept = total - pruned

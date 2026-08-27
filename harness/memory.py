@@ -29,6 +29,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from . import model_catalog
+
 # Files that are ALWAYS in the stable block, in this exact order. Adding a
 # config markdown file does not make it prompt context; this tuple is the only
 # stable-file contract.
@@ -66,6 +68,27 @@ derived from your own learned rules, carrying the weight of a suggestion:
 A fire may name the memory it stands for. Open it with `memory(id=...)` when
 the turn actually needs it — the fire is the nudge, not the memory, and opening
 one brings whatever it rests on along with it."""
+
+
+def _model_capability_section(model: str) -> str:
+    """One short block telling the agent which model it is and what that model
+    can take as input. The vision line is the first of three gates against the
+    "Model does not support image modality" 400 — the Tower composer hides its
+    upload button for a blind model, and harness/agent.py strips any image that
+    reaches the request anyway."""
+    if model_catalog.supports_vision(model):
+        vision = (
+            "It reads images: browser screenshots and uploaded images reach "
+            "you as vision input."
+        )
+    else:
+        vision = (
+            "It cannot read images. Screenshots and uploaded images never "
+            "reach you — they are replaced by a text placeholder. Take a "
+            "screenshot only when a human needs to see one, and read pages "
+            "as text instead (`browser read_page` / `get_page_text`)."
+        )
+    return f"# Runtime Model\n\nYou are running on `{model}`. {vision}"
 
 
 class MemoryManager:
@@ -115,8 +138,13 @@ class MemoryManager:
 
     # ── Stable / dynamic split ──────────────────────────────────
 
-    def build_stable_text(self) -> str:
-        """Assemble the cacheable portion of the system prompt."""
+    def build_stable_text(self, model: str | None = None) -> str:
+        """Assemble the cacheable portion of the system prompt.
+
+        `model` adds the running model's capability note. It belongs in the
+        stable block — it only changes when the model changes, and a model
+        switch invalidates the prompt cache anyway.
+        """
         parts: list[str] = []
 
         for fname in STABLE_FILES:
@@ -130,6 +158,9 @@ class MemoryManager:
                     parts.append(f"# Active Vision\n\n{vision}")
 
         parts.append(RECALL_STABLE_SECTION)
+
+        if model:
+            parts.append(_model_capability_section(model))
 
         if not parts:
             return "You are Replika, a helpful personal AI assistant."
@@ -206,7 +237,7 @@ class MemoryManager:
 
     # ── Public API for agent.py ─────────────────────────────────
 
-    def build_system_blocks(self) -> list[dict]:
+    def build_system_blocks(self, model: str | None = None) -> list[dict]:
         """Return the system prompt as two content blocks with cache control.
 
         [0] Stable — cached (cache_control: ephemeral).
@@ -217,7 +248,7 @@ class MemoryManager:
         return [
             {
                 "type": "text",
-                "text": self.build_stable_text(),
+                "text": self.build_stable_text(model),
                 "cache_control": {"type": "ephemeral"},
             },
             {

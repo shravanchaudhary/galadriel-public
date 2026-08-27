@@ -1785,7 +1785,9 @@ class GaladrielAgent:
         changes `_compaction_summary` and the blocks built before the loop
         would otherwise be stale (snapshot missing or duplicated).
         """
-        system_blocks = self.memory.build_system_blocks()
+        system_blocks = self.memory.build_system_blocks(
+            self.model_for_channel(channel_id)
+        )
 
         experiential_workspace = self.experience.workspace_block(channel_id)
         if experiential_workspace:
@@ -2530,6 +2532,21 @@ class GaladrielAgent:
                 headroom_metrics["images_kept"] = prune_stats.images_kept
                 headroom_metrics["images_pruned"] = prune_stats.images_pruned
 
+            # Last gate before the wire: a text-only model must never be
+            # handed an image block. The UI hides the upload and the system
+            # prompt says so, but history can also arrive from a seeing model
+            # the channel used earlier — and one stale image 400s every turn
+            # until it ages out.
+            if not model_catalog.supports_vision(channel_model):
+                messages_for_api, blinded = headroom_compress.strip_images(
+                    messages_for_api,
+                    reason=f"[image omitted — {channel_model} cannot read images]",
+                )
+                if blinded:
+                    log.info(
+                        f"Vision gate | model={channel_model} stripped={blinded}"
+                    )
+
             # Attach cache_control to the last block of the last message.
             # This advances the messages-cache breakpoint as the conversation
             # grows, giving hits within tool_use cascades.
@@ -3025,6 +3042,24 @@ class GaladrielAgent:
                             else b
                             for b in result
                         ]
+                        if not model_catalog.supports_vision(channel_model):
+                            # Blind model: swap the pixels for a note now, so
+                            # megabytes of base64 never enter stored history and
+                            # the model is told what to do instead of inferring
+                            # it from a silent gap.
+                            result = [
+                                {
+                                    "type": "text",
+                                    "text": (
+                                        f"[image not attached — {channel_model} "
+                                        "cannot read images. The file is on disk "
+                                        "at the path above; read the page as text "
+                                        "instead.]"
+                                    ),
+                                }
+                                if b.get("type") == "image" else b
+                                for b in result
+                            ]
                         texts = [b.get("text", "") for b in result if b.get("type") == "text"]
                         n_images = sum(1 for b in result if b.get("type") == "image")
                         result_display = "\n".join(t for t in texts if t)

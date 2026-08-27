@@ -410,6 +410,35 @@ window.ChatLive = (function () {
         });
     }
 
+    // Vision gate. `model_labels[].vision` comes from model_catalog; a model
+    // that cannot read images gets its composer attach buttons disabled rather
+    // than a rejection after the fact.
+    let imagesAllowed = true;
+    let blindModel = '';
+
+    function applyVisionGate(data) {
+        const row = (data.model_labels || []).find((m) => m.value === data.model);
+        imagesAllowed = !row || row.vision !== false;
+        blindModel = imagesAllowed ? '' : data.model;
+        for (const btn of document.querySelectorAll('[data-image-attach]')) {
+            btn.disabled = !imagesAllowed;
+            btn.title = imagesAllowed
+                ? 'Attach image (or paste one)'
+                : `${data.model} can't read images — switch models to attach one`;
+        }
+    }
+
+    /** False when the selected model is text-only. */
+    function canAttachImages() {
+        return imagesAllowed;
+    }
+
+    /** Toast + reject an attachment the current model could not read. */
+    function rejectImageAttach() {
+        const msg = `${blindModel || 'This model'} can't read images — switch models to attach one`;
+        if (window.towerToast) window.towerToast(msg, { type: 'error' }); else alert(msg);
+    }
+
     function persistHint(data, ready, missing) {
         return data && data.persisted ? ready : missing;
     }
@@ -438,6 +467,7 @@ window.ChatLive = (function () {
         for (const el of groups.efforts) {
             fillSelect(el, effortItems, data.effort, effortTitle);
         }
+        applyVisionGate(data);
         return data;
     }
 
@@ -567,6 +597,8 @@ window.ChatLive = (function () {
 
     return {
         RENDER_OPTS,
+        canAttachImages,
+        rejectImageAttach,
         hydrate,
         toBottom,
         streamChat,

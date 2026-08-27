@@ -29,6 +29,14 @@ rate is the vendor's own and is unverified against AWS.
 Availability here was verified against Bedrock on 2026-08-20, not read off a
 docs page — see `knowledge/reference/bedrock_providers.md` for the transcript
 and for the two models that were deliberately excluded.
+
+`supports_vision` is the exception that IS read off a page, deliberately: the
+Bedrock model card's "Input Modalities" table is what the endpoint enforces,
+and it disagrees with the vendors. Devstral 2 123B is advertised by Mistral as
+accepting images and Bedrock serves it text-only; GLM-5 likewise. Scraped from
+the per-model cards under docs.aws.amazon.com/bedrock/.../model-card-*.html on
+2026-08-26. Only three Mantle models take images: Kimi K2.5, Mistral Large 3,
+Gemma 3 27B. Every Claude and Gemini entry does.
 """
 
 from dataclasses import dataclass
@@ -57,6 +65,10 @@ class Model:
     supports_tools: bool = True
     supports_thinking: bool = True
     supports_temperature: bool = True
+    # Image blocks in the request. False is the safe default: a model that
+    # cannot see does not degrade, it 400s ("Model does not support image
+    # modality") and keeps 400ing until the image ages out of history.
+    supports_vision: bool = False
     # False when reasoning cannot be switched off at all, only turned down to
     # the model's floor. Judges and gates ask for no reasoning; this decides
     # whether they get it or the cheapest legal setting instead.
@@ -118,6 +130,7 @@ def _mantle(
     key, label, wire_id, score, input_rate, output_rate, context, *,
     max_output=_M_OUT,
     supports_tools=True, supports_thinking=True, can_disable_thinking=True,
+    supports_vision=False,
 ):
     return Model(
         key=key,
@@ -135,6 +148,7 @@ def _mantle(
         supports_tools=supports_tools,
         supports_thinking=supports_thinking,
         can_disable_thinking=can_disable_thinking,
+        supports_vision=supports_vision,
     )
 
 
@@ -154,6 +168,7 @@ def _claude(key, label, wire_id, score, input_rate, output_rate, context, max_ou
         context=context,
         max_output=max_output,
         cache_minimum=cache_minimum,
+        supports_vision=True,
     )
 
 
@@ -173,6 +188,7 @@ def _gemini(key, label, score, input_rate, output_rate, cache_minimum, *,
         context=_G_CTX,
         max_output=max_output,
         cache_minimum=cache_minimum,
+        supports_vision=True,
     )
 
 
@@ -214,7 +230,7 @@ MODELS: tuple[Model, ...] = (
     # ─── Open models, via bedrock-mantle chat completions ────────────
     _mantle("glm-5", "GLM-5", "zai.glm-5", 52.4, 1.00, 3.20, _CTX_198K),
     _mantle("kimi-k2.5", "Kimi K2.5", "moonshotai.kimi-k2.5", 43.2, 0.60, 3.00,
-            _CTX_256K),
+            _CTX_256K, supports_vision=True),
     _mantle("minimax-m2.5", "MiniMax M2.5", "minimax.minimax-m2.5", 42.2, 0.30, 1.20,
             _CTX_192K),
     _mantle("deepseek-v3.2", "DeepSeek V3.2", "deepseek.v3.2", 39.6, 0.62, 1.85,
@@ -239,7 +255,8 @@ MODELS: tuple[Model, ...] = (
     _mantle("gpt-oss-120b", "GPT-OSS 120B", "openai.gpt-oss-120b", 18.7, 0.15, 0.60,
             _CTX_128K, can_disable_thinking=False),
     _mantle("mistral-large-3", "Mistral Large 3",
-            "mistral.mistral-large-3-675b-instruct", 12.0, 0.50, 1.50, _CTX_256K),
+            "mistral.mistral-large-3-675b-instruct", 12.0, 0.50, 1.50, _CTX_256K,
+            supports_vision=True),
     _mantle("qwen3-coder-30b-a3b", "Qwen3 Coder 30B A3B",
             "qwen.qwen3-coder-30b-a3b-instruct", 10.1, 0.15, 0.60, _CTX_256K),
     _mantle("nemotron-nano-3-30b", "Nemotron 3 Nano 30B A3B",
@@ -251,7 +268,7 @@ MODELS: tuple[Model, ...] = (
     # ceiling is a real 8_192, unlike the rest.
     _mantle("gemma-3-27b", "Gemma 3 27B", "google.gemma-3-27b-it", 3.8, 0.23, 0.38,
             _CTX_128K, max_output=8_192,
-            supports_tools=False, supports_thinking=False),
+            supports_tools=False, supports_thinking=False, supports_vision=True),
     # The plain gpt-oss weights, NOT the `-safeguard` variants Bedrock also
     # lists — those are safety classifiers, not general-purpose models.
     _mantle("gpt-oss-20b", "GPT-OSS 20B", "openai.gpt-oss-20b", 3.1, 0.07, 0.30,
@@ -270,6 +287,16 @@ def wire_id(model: str) -> str:
     """Provider-facing model id. Falls back to the name for Ollama tags."""
     entry = get(model)
     return entry.wire_id if entry else model
+
+
+def supports_vision(model: str) -> bool:
+    """True when `model` accepts image blocks in the request.
+
+    Unlisted names (local Ollama tags) answer False: an unknown model that
+    cannot see fails the whole turn, while one that can only loses the pixels.
+    """
+    entry = get(model)
+    return bool(entry and entry.supports_vision)
 
 
 def provider_for(model: str) -> str:
@@ -299,8 +326,9 @@ def labels(models) -> list[dict]:
         entry = get(key)
         if entry is None:
             rows.append({"value": key, "label": key, "score": None,
-                         "provider": OLLAMA})
+                         "provider": OLLAMA, "vision": False})
         else:
             rows.append({"value": key, "label": entry.display,
-                         "score": entry.score, "provider": entry.provider})
+                         "score": entry.score, "provider": entry.provider,
+                         "vision": entry.supports_vision})
     return rows

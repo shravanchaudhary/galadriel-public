@@ -2177,9 +2177,16 @@ body.wfc-resizing * { cursor: inherit !important; }
     flex-shrink: 0;
 }
 
-.composer-icon-btn:hover {
+.composer-icon-btn:hover:not(:disabled) {
     color: var(--text);
     background: var(--accent-soft);
+}
+
+/* Disabled (e.g. attach-image on a text-only model): no hover lift, no
+   pointer. The title attribute still says why. */
+.composer-icon-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
 }
 
 .voice-dictation-btn[data-voice-state="connecting"],
