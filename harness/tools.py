@@ -92,7 +92,8 @@ TOOL_DEFINITIONS = [
             "  - semantic (what is true): pass kg_triplets for crisp "
             "entity/relationship facts (people, projects, tools, stable "
             "preferences), OR content alone for durable prose worth re-reading "
-            "later (becomes a palace drawer).\n"
+            "later (becomes a palace drawer). Either one alone is enough — "
+            "kg_triplets does NOT also require content.\n"
             "  - procedural (how to do something): a reusable step-by-step "
             "lesson (becomes a knowledge/** file plus a palace drawer).\n"
             "  - preference (how to behave for this user going forward): "
@@ -105,7 +106,11 @@ TOOL_DEFINITIONS = [
             "Be conservative — use this for things you're confident are worth "
             "remembering, not every detail of the task. Recall triggers "
             "(when something should be reactively resurfaced later) are not "
-            "part of this tool; those are tuned by the consolidation passes."
+            "part of this tool; those are tuned by the consolidation passes.\n"
+            "ONE CALL STORES ONE TOPIC. kg_triplets is a single flat array of "
+            "[subject, predicate, object] string triplets — not a map, not "
+            "groups, and not several arrays run together. To record several "
+            "topics, make several calls."
         ),
         "input_schema": {
             "type": "object",
@@ -125,7 +130,14 @@ TOOL_DEFINITIONS = [
                         "type": "array",
                         "items": {"type": "string"},
                     },
-                    "description": "[subject, predicate, object] triplets — only valid with type=semantic.",
+                    "description": (
+                        "Flat array of [subject, predicate, object] string "
+                        "triplets, e.g. [[\"Ada\",\"role\",\"CTO\"],"
+                        "[\"Ada\",\"city\",\"Berlin\"]]. One topic per call; up to "
+                        "50 triplets, and anything beyond that is reported back "
+                        "rather than silently dropped. Only valid with "
+                        "type=semantic."
+                    ),
                 },
                 "topic": {
                     "type": "string",
@@ -171,7 +183,10 @@ TOOL_DEFINITIONS = [
             "positives/negatives for you); use learn_recall for full edits. "
             "Package: durable content → palace drawer/KG; when-to-recollect → this recall. "
             "System recalls (sys_*): cue arrays and thresholds may be replaced; "
-            "instruction / activation_condition / exclusions changes are rejected."
+            "instruction / activation_condition / exclusions changes are rejected. "
+            "positive_examples / negative_examples / lexical_cues are arrays of "
+            "plain strings and are FULL replacements — send the complete list "
+            "you want stored, as an array value rather than as a quoted string."
         ),
         "input_schema": {
             "type": "object",
@@ -365,7 +380,14 @@ TOOL_DEFINITIONS = [
                 "kg_triplets": {
                     "type": "array",
                     "items": {"type": "array", "items": {"type": "string"}},
-                    "description": "[subject, predicate, object] triplets — only valid with type=semantic.",
+                    "description": (
+                        "Flat array of [subject, predicate, object] string "
+                        "triplets, e.g. [[\"Ada\",\"role\",\"CTO\"],"
+                        "[\"Ada\",\"city\",\"Berlin\"]]. One topic per call; up to "
+                        "50 triplets, and anything beyond that is reported back "
+                        "rather than silently dropped. Only valid with "
+                        "type=semantic."
+                    ),
                 },
                 "topic": {
                     "type": "string",
@@ -1749,13 +1771,22 @@ async def _execute_tool_impl(
             if channel_id in PERIODIC_CONSOLIDATOR_CHANNELS
             else "task_consolidator"
         )
+        # kg_triplets is diagnosed inside commit_candidate; evidence has no
+        # validator of its own, and a JSON-string argument would be stored as
+        # one opaque blob that no later reader can match an episode id against.
+        evidence = inputs.get("evidence_episode_ids")
+        if evidence is not None:
+            from .tool_args import as_str_list
+            evidence, evidence_error = as_str_list(evidence, "evidence_episode_ids")
+            if evidence_error:
+                return f"[error] {evidence_error}"
         result = await consolidation.commit_candidate(
             type=inputs.get("type", ""),
             content=inputs.get("content", ""),
             kg_triplets=inputs.get("kg_triplets"),
             topic=inputs.get("topic"),
             valid_from=inputs.get("valid_from"),
-            evidence=inputs.get("evidence_episode_ids"),
+            evidence=evidence,
             confidence=inputs.get("confidence"),
             source=source,
             note=inputs.get("note", ""),
@@ -2690,12 +2721,22 @@ def _cue_field_or_error(values, field_name: str, *, lexical: bool = False, usage
 
     Returns (normalized_list, None) or (None, error_string).
     Caller must only invoke when ``values is not None``.
+
+    Type problems are reported as type problems. Cue arrays are whole-array
+    replacements, so answering a JSON-string argument with "cannot be empty"
+    invited the model to resend the same wrong shape with more content in it.
     """
-    normalized = _normalize_cue_list(values, lexical=lexical, usage=usage)
+    from .tool_args import as_str_list
+
+    items, type_error = as_str_list(values, field_name)
+    if type_error:
+        return None, f"[error] {type_error}"
+    normalized = _normalize_cue_list(items, lexical=lexical, usage=usage)
     if not normalized:
         return None, (
-            f"[error] {field_name} cannot be empty when provided — "
-            f"pass at least one non-empty string, or omit the field."
+            f"[error] {field_name} had {len(items)} item(s) but none survived "
+            f"normalization — every entry was blank or a duplicate. Pass at "
+            f"least one non-empty string, or omit the field."
         )
     return normalized, None
 

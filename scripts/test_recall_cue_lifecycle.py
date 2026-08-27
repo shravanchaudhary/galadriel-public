@@ -348,6 +348,54 @@ def test_an_unlisted_judge_model_does_not_arm_the_system_open() -> None:
     print("ok arming_cache_and_validation")
 
 
+def test_cue_array_sent_as_a_string_is_named_as_a_type_problem() -> None:
+    """"Cannot be empty" invited the model to resend the same wrong shape.
+
+    Cue arrays are full replacements, so the stakes are higher than `learn`'s:
+    a caller told its array was "empty" naturally responds by sending a bigger
+    one, in the same JSON-string form that failed.
+    """
+    from harness.tools import _cue_field_or_error
+
+    values, err = _cue_field_or_error('["a", "b"]', "positive_examples")
+    assert err is None, err
+    assert values == ["a", "b"], values
+
+    _, err = _cue_field_or_error("not json at all", "positive_examples")
+    assert err and "not valid JSON" in err, err
+    assert "cannot be empty" not in err, err
+
+    _, err = _cue_field_or_error([1, 2], "lexical_cues")
+    assert err and "only strings" in err, err
+
+    _, err = _cue_field_or_error(["", "   "], "positive_examples")
+    assert err and "none survived normalization" in err, err
+
+
+def test_explorium_array_argument_is_not_iterated_per_character() -> None:
+    """A stringified array used to become a per-character validation error."""
+    import asyncio
+
+    from harness.explorium_tools import execute_explorium_tool
+
+    out = asyncio.run(execute_explorium_tool(
+        "explorium_business_events",
+        {"business_id": "x", "event_types": "not json"},
+    ))
+    assert "event_types" in out, out
+    assert "not valid JSON" in out, out
+    # The old path reported every character as an unknown event type.
+    assert "'n', 'o', 't'" not in out, out
+
+    # An empty optional filter was skipped by a falsiness check before this
+    # change and must still be skipped — coercion must not reject valid calls.
+    out = asyncio.run(execute_explorium_tool(
+        "explorium_business_events",
+        {"business_id": "x", "event_types": "", "days_back": 1},
+    ))
+    assert "empty string" not in out, out
+
+
 def main() -> int:
     test_cue_key_stable()
     test_evict_prefers_never_used()
@@ -366,6 +414,8 @@ def main() -> int:
     test_winning_cue_returns_none_when_there_is_nothing_to_resolve()
     test_over_cap_replace_drops_least_recently_used_not_the_head()
     test_dropped_cue_note_names_only_cues_that_had_earned_use()
+    test_cue_array_sent_as_a_string_is_named_as_a_type_problem()
+    test_explorium_array_argument_is_not_iterated_per_character()
     print("ok recall_cue_lifecycle")
     return 0
 

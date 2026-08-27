@@ -97,20 +97,70 @@ def _slugify(text: str, fallback: str) -> str:
     return slug[:60] or fallback
 
 
-def clean_triplets(raw) -> list[tuple[str, str, str]]:
-    """Normalize/validate raw [subject, predicate, object] triplets."""
+# One commit writes each triplet with its own dedupe read plus a palace write,
+# so the cost is linear and a cap only exists to bound a runaway generation —
+# there is no cliff here. The original cap was a bare `[:20]` with no name and
+# no rationale, and it silently discarded the overflow while reporting success:
+# the first real profile written through it submitted 21 facts and lost one
+# (`Metaforms | funding | $9M raised`) without a word. Anything dropped is now
+# reported to the caller, which is what makes a higher bound safe to allow.
+MAX_TRIPLETS_PER_COMMIT = 50
+
+
+def clean_triplets(raw) -> tuple[list[tuple[str, str, str]], str | None, str]:
+    """Normalize/validate raw [subject, predicate, object] triplets.
+
+    Returns `(triplets, error, note)`. `error` is set when the argument cannot
+    be read as triplets at all — the caller must surface it rather than treat
+    the field as absent. `note` reports what was accepted but not kept, so a
+    partial write never looks like a whole one.
+    """
+    from .tool_args import as_list
+
+    items, error = as_list(
+        raw, "kg_triplets",
+        multi_hint=(
+            "One learn/propose_memory call stores ONE topic: pass a single flat "
+            "array of [subject, predicate, object] triplets and issue a "
+            "separate call per topic."
+        ),
+    )
+    if error:
+        return [], error, ""
+
     out: list[tuple[str, str, str]] = []
-    if not isinstance(raw, list):
-        return out
-    for item in raw:
+    malformed = 0
+    for item in items:
         if isinstance(item, dict):
             item = [item.get("subject"), item.get("predicate"), item.get("object")]
         if not isinstance(item, (list, tuple)) or len(item) != 3:
+            malformed += 1
             continue
         s, p, o = (str(x).strip() for x in item)
         if s and p and o:
             out.append((s, p, o))
-    return out[:20]
+        else:
+            malformed += 1
+
+    if items and not out:
+        return [], (
+            f"kg_triplets had {len(items)} item(s) but none were usable — each "
+            f"must be [subject, predicate, object] with all three non-empty."
+        ), ""
+
+    notes = []
+    if malformed:
+        notes.append(f"{malformed} malformed item(s) skipped")
+    dropped = out[MAX_TRIPLETS_PER_COMMIT:]
+    if dropped:
+        shown = ", ".join(f"{s}|{p}|{o}" for s, p, o in dropped[:3])
+        notes.append(
+            f"kept {MAX_TRIPLETS_PER_COMMIT} of {len(out)}; dropped {len(dropped)} "
+            f"over the cap: {shown}"
+            + (f" and {len(dropped) - 3} more" if len(dropped) > 3 else "")
+            + " — re-send these in another call"
+        )
+    return out[:MAX_TRIPLETS_PER_COMMIT], None, "; ".join(notes)
 
 
 async def _collection(name: str):
@@ -210,9 +260,27 @@ async def commit_candidate(
             "detail": f"unknown type {type!r} — must be one of {MEMORY_TYPES}.",
         }
     content = (content or "").strip()
-    triplets = clean_triplets(kg_triplets) if kg_triplets else []
+    # Distinguish absent from unreadable. Folding a malformed argument into
+    # "not provided" is what told a model it had omitted a field it had just
+    # sent 3,900 characters of — see harness/tool_args.py.
+    triplets: list[tuple[str, str, str]] = []
+    triplet_note = ""
+    # Empty means absent, as it always did — `kg_triplets=""` alongside real
+    # content used to be ignored, and turning that into a hard error would
+    # break callers this change was supposed to help. Only a NON-empty value
+    # is worth diagnosing.
+    if kg_triplets:
+        triplets, triplet_error, triplet_note = clean_triplets(kg_triplets)
+        if triplet_error:
+            return {"status": "error", "memory_id": None, "detail": triplet_error}
     if not content and not triplets:
-        return {"status": "error", "memory_id": None, "detail": "content or kg_triplets is required."}
+        return {
+            "status": "error", "memory_id": None,
+            "detail": (
+                "nothing to store: pass content (prose) or kg_triplets (an "
+                "array of [subject, predicate, object]). Either alone is valid."
+            ),
+        }
     if triplets and type_ != "semantic":
         return {"status": "error", "memory_id": None, "detail": "kg_triplets is only valid for type=semantic."}
     valid_from, date_warning = _clean_valid_from(valid_from)
@@ -245,6 +313,8 @@ async def commit_candidate(
         status, destination, detail = "error", {}, f"{type(e).__name__}: {e}"
     if date_warning:
         detail = f"{detail} ({date_warning})"
+    if triplet_note:
+        detail = f"{detail} [{triplet_note}]"
 
     await _save_candidate({
         "memory_id": memory_id,

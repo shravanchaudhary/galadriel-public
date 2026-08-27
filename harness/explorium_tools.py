@@ -297,12 +297,39 @@ _HANDLERS = {
 EXPLORIUM_TOOL_NAMES = frozenset(_HANDLERS)
 
 
+def _array_params(name: str) -> list[str]:
+    """Parameters this tool declares as arrays, read from its own schema."""
+    for tool in EXPLORIUM_TOOL_DEFINITIONS:
+        if tool["name"] != name:
+            continue
+        props = (tool.get("input_schema") or {}).get("properties") or {}
+        return [k for k, p in props.items() if isinstance(p, dict) and p.get("type") == "array"]
+    return []
+
+
 async def execute_explorium_tool(name: str, inputs: dict) -> str:
     """Dispatch an explorium_* tool call. Returns a JSON string."""
     handler = _HANDLERS.get(name)
     if handler is None:
         return json.dumps({"error": f"Unknown explorium tool: {name}"})
-    return await handler(**(inputs or {}))
+    inputs = dict(inputs or {})
+    # A model can send an array argument as a JSON string. Left alone, these
+    # handlers iterate that string character by character — `event_types`
+    # becomes a per-character validation error naming letters as event types.
+    # Coerce from the tool's own schema so a new array parameter is covered
+    # without a second edit here.
+    from .tool_args import as_list
+
+    for field in _array_params(name):
+        # Empty means absent: these filters were previously skipped by a plain
+        # falsiness check, so erroring on "" would reject calls that worked.
+        if not inputs.get(field):
+            continue
+        items, error = as_list(inputs[field], field)
+        if error:
+            return json.dumps({"error": error})
+        inputs[field] = items
+    return await handler(**inputs)
 
 
 EXPLORIUM_TOOL_DEFINITIONS = [

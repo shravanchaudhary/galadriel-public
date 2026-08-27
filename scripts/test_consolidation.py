@@ -45,22 +45,62 @@ def test_clean_triplets_normalizes_lists_and_dicts() -> None:
         ["", "empty-subject", "x"],
         "not-a-list",
     ]
-    out = consolidation.clean_triplets(raw)
+    out, error, note = consolidation.clean_triplets(raw)
+    assert error is None, error
     assert out == [
         ("Alice", "works_on", "Project X"),
         ("Bob", "prefers", "dark mode"),
     ], out
+    assert "3 malformed" in note, note
 
 
-def test_clean_triplets_caps_at_twenty() -> None:
-    raw = [["s", "p", str(i)] for i in range(30)]
-    out = consolidation.clean_triplets(raw)
-    assert len(out) == 20, len(out)
+def test_clean_triplets_reports_what_the_cap_dropped() -> None:
+    """A partial write must not read as a whole one.
+
+    The original cap was a bare `out[:20]`: the first real profile through it
+    submitted 21 facts, lost `Metaforms | funding | $9M raised`, and reported
+    success. Anything over the cap is now named in the note so the caller can
+    re-send it.
+    """
+    n = consolidation.MAX_TRIPLETS_PER_COMMIT
+    raw = [["s", "p", str(i)] for i in range(n + 3)]
+    out, error, note = consolidation.clean_triplets(raw)
+    assert error is None, error
+    assert len(out) == n, len(out)
+    assert f"kept {n} of {n + 3}" in note, note
+    assert "s|p|%d" % n in note, note
 
 
-def test_clean_triplets_rejects_non_list() -> None:
-    assert consolidation.clean_triplets("nope") == []
-    assert consolidation.clean_triplets(None) == []
+def test_clean_triplets_accepts_a_json_string() -> None:
+    """A model that stringifies the argument still gets its data stored."""
+    out, error, _ = consolidation.clean_triplets('[["Ada", "role", "CTO"]]')
+    assert error is None, error
+    assert out == [("Ada", "role", "CTO")], out
+
+
+def test_clean_triplets_names_the_type_instead_of_claiming_absence() -> None:
+    """The failure that started this: a wrong type reported as a missing field.
+
+    `learn` answered "content or kg_triplets is required" to a 3,900-character
+    string argument, and the model concluded triplets were invalid without
+    content — then wrote twelve memories as prose. The error has to say what
+    actually arrived.
+    """
+    out, error, _ = consolidation.clean_triplets("nope")
+    assert out == []
+    assert error and "not valid JSON" in error, error
+
+    _, dict_error, _ = consolidation.clean_triplets({"a": 1})
+    assert dict_error and "must be an array" in dict_error, dict_error
+
+
+def test_clean_triplets_recognizes_several_payloads_run_together() -> None:
+    """The real payload's actual shape: groups concatenated into one argument."""
+    packed = '[["a","b","c"]], "topic2", [["d","e","f"]]'
+    out, error, _ = consolidation.clean_triplets(packed)
+    assert out == []
+    assert error and "concatenated" in error, error
+    assert "separate call per topic" in error, error
 
 
 # ─── commit_candidate: validation ──────────────────────────────────────
@@ -75,7 +115,39 @@ def test_commit_candidate_rejects_unknown_type() -> None:
 def test_commit_candidate_requires_content_or_triplets() -> None:
     result = _run(consolidation.commit_candidate(type="semantic", content=""))
     assert result["status"] == "error", result
-    assert "content or kg_triplets" in result["detail"]
+    # Says both are absent AND that either alone suffices — the previous
+    # wording let a model read "content or kg_triplets is required" as
+    # "kg_triplets needs content too".
+    assert "nothing to store" in result["detail"], result
+    assert "Either alone is valid" in result["detail"], result
+
+
+def test_empty_kg_triplets_still_means_absent_not_malformed() -> None:
+    """Diagnosing wrong types must not reject what used to work.
+
+    `kg_triplets=""` alongside real content was previously falsy and ignored.
+    A first cut at this change checked `is not None`, which turned that into a
+    hard error — the fix for a bad error message breaking valid calls.
+    """
+    for empty in ("", [], None):
+        result = _run(consolidation.commit_candidate(
+            type="semantic", content="", kg_triplets=empty,
+        ))
+        # "nothing to store" = read as absent. A type complaint would mean the
+        # empty value was mistaken for a malformed one.
+        assert "nothing to store" in result["detail"], (empty, result)
+        assert "not valid JSON" not in result["detail"], (empty, result)
+        assert "empty string" not in result["detail"], (empty, result)
+
+
+def test_commit_candidate_surfaces_a_bad_triplet_argument() -> None:
+    """A malformed argument must not be reported as an absent one."""
+    result = _run(consolidation.commit_candidate(
+        type="semantic", content="", kg_triplets='[["a","b","c"]], "x", [["d"]]',
+    ))
+    assert result["status"] == "error", result
+    assert "concatenated" in result["detail"], result
+    assert "nothing to store" not in result["detail"], result
 
 
 def test_commit_candidate_rejects_triplets_on_non_semantic() -> None:
@@ -861,10 +933,14 @@ def main() -> int:
         test_flag_memory_namespaces_a_bare_memory_id,
         test_flag_memory_passes_a_namespaced_key_through,
         test_clean_triplets_normalizes_lists_and_dicts,
-        test_clean_triplets_caps_at_twenty,
-        test_clean_triplets_rejects_non_list,
+        test_clean_triplets_reports_what_the_cap_dropped,
+        test_clean_triplets_accepts_a_json_string,
+        test_clean_triplets_names_the_type_instead_of_claiming_absence,
+        test_clean_triplets_recognizes_several_payloads_run_together,
         test_commit_candidate_rejects_unknown_type,
         test_commit_candidate_requires_content_or_triplets,
+        test_empty_kg_triplets_still_means_absent_not_malformed,
+        test_commit_candidate_surfaces_a_bad_triplet_argument,
         test_commit_candidate_rejects_triplets_on_non_semantic,
         test_commit_candidate_kg_path_calls_kg_add,
         test_commit_candidate_passes_valid_from_to_kg,
