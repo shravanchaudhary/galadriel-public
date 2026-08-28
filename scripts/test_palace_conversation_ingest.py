@@ -31,7 +31,7 @@ sys.path.insert(0, str(ROOT))
 os.environ.setdefault("MONGO_URI", "mongodb://localhost:1/unused")
 os.environ.setdefault("MONGO_DB", "unused")
 
-from harness import documentdb_palace as store  # noqa: E402
+from harness import mongo_palace as store  # noqa: E402
 from harness import palace  # noqa: E402
 from harness.palace_cursor import _claim  # noqa: E402
 
@@ -367,7 +367,7 @@ class ScoringTests(unittest.TestCase):
         self.assertFalse(
             hasattr(store, "MIN_SIMILARITY"),
             "similarity thresholds drift with the corpus — see the note in "
-            "documentdb_palace.py before adding one back",
+            "mongo_palace.py before adding one back",
         )
 
     def test_bm25_returns_normalized_and_raw(self):

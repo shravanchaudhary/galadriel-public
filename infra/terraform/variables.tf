@@ -31,7 +31,7 @@ variable "ecs_cluster_name" {
   default = "clodexa-stag-cluster"
 }
 variable "candidate_image_uri" {
-  description = "Immutable image URI for initial Fargate registration and the storage canary. CodePipeline owns live service image revisions."
+  description = "Immutable image URI for initial Fargate registration. CodePipeline owns live service image revisions."
   type        = string
   default     = null
 }
@@ -41,12 +41,12 @@ variable "runtime_base_image_uri" {
   default     = null
 }
 variable "palace_backend" {
-  description = "Memory storage backend: chroma, mongo, or documentdb."
+  description = "Palace vector search mode: documentdb for native HNSW, mongo for exact cosine + BM25."
   type        = string
-  default     = "chroma"
+  default     = "documentdb"
   validation {
-    condition     = contains(["chroma", "mongo", "documentdb"], var.palace_backend)
-    error_message = "palace_backend must be chroma, mongo, or documentdb."
+    condition     = contains(["mongo", "documentdb"], var.palace_backend)
+    error_message = "palace_backend must be mongo or documentdb."
   }
 }
 variable "fargate_ephemeral_storage_gib" {

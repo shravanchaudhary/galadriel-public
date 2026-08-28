@@ -971,7 +971,7 @@ class GaladrielAgent:
 
         Used by the background worker: each tick reconstructs state from the
         board (`state/progress/`, one file per day), the DB ledger, and
-        the palace (DATA.md), so carrying the prior tick's transcript forward
+        the palace (knowledge/reference/data.md), so carrying the prior tick's transcript forward
         only inflates input tokens and busts the prompt cache across the 10-min
         idle gap (the cache-miss cost blowup, finding #7). Durable continuity
         lives in those files, not in this buffer.

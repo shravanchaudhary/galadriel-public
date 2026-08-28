@@ -3,18 +3,20 @@
 
 from __future__ import annotations
 
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from flask import Flask
-
-from harness import loop_prompts
-from tower import todo_board
-
-
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from flask import Flask  # noqa: E402
+
+from harness import loop_prompts  # noqa: E402
+from tower import todo_board  # noqa: E402
+
 SAMPLE_HTML = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Daily</title>
 <style>body { color: CanvasText; }</style></head>

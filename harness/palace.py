@@ -1,6 +1,6 @@
 """Memory palace — semantic search + verbatim conversation archival.
 
-Storage is MongoDB / AWS DocumentDB only (``harness/documentdb_palace.py``).
+Storage is MongoDB / AWS DocumentDB only (``harness/mongo_palace.py``).
 The ChromaDB-backed ``mempalace`` library it originally wrapped is gone: its
 storage abstraction was not actually swappable (the backend registry had no
 callers, and its lexical search, repair tooling and knowledge graph all reached

@@ -1026,58 +1026,6 @@ resource "aws_ecs_task_definition" "replika_runtime_base" {
   }
 }
 
-resource "aws_ecs_task_definition" "clyra_canary" {
-  family                   = "${local.name}-storage-canary"
-  requires_compatibilities = ["FARGATE"]
-  network_mode             = "awsvpc"
-  cpu                      = "2048"
-  memory                   = "4096"
-  execution_role_arn       = aws_iam_role.execution.arn
-  task_role_arn            = aws_iam_role.task.arn
-  enable_fault_injection   = false
-  tags                     = {}
-  runtime_platform {
-    operating_system_family = "LINUX"
-    cpu_architecture        = "X86_64"
-  }
-  ephemeral_storage { size_in_gib = var.fargate_ephemeral_storage_gib }
-  volume {
-    name                = "state"
-    configure_at_launch = false
-    s3files_volume_configuration {
-      file_system_arn         = aws_s3files_file_system.clyra.arn
-      access_point_arn        = aws_s3files_access_point.clyra.arn
-      root_directory          = "/"
-      transit_encryption_port = 0
-    }
-  }
-  container_definitions = jsonencode([{
-    name       = "canary"
-    image      = local.candidate_image_uri
-    cpu        = 0
-    essential  = true
-    user       = "1000"
-    entryPoint = ["python", "/app/scripts/clyra_storage_acceptance.py"]
-    command    = ["--root", "/mnt/efs", "--palace", "/mnt/efs/data/.mempalace/palace"]
-    mountPoints = [
-      { sourceVolume = "state", containerPath = "/mnt/efs", readOnly = false },
-    ]
-    environment     = []
-    portMappings    = []
-    volumesFrom     = []
-    systemControls  = []
-    linuxParameters = { capabilities = { add = [], drop = ["ALL"] } }
-    logConfiguration = {
-      logDriver = "awslogs"
-      options = {
-        awslogs-group         = aws_cloudwatch_log_group.clyra.name
-        awslogs-region        = var.aws_region
-        awslogs-stream-prefix = "storage-canary"
-      }
-    }
-  }])
-}
-
 resource "aws_ecs_service" "clyra" {
   name                               = local.name
   cluster                            = data.aws_ecs_cluster.staging.arn

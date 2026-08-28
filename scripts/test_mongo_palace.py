@@ -4,7 +4,11 @@ import os
 import sys
 import types
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 
 if "pymongo" not in sys.modules:
     try:
@@ -15,7 +19,7 @@ if "pymongo" not in sys.modules:
         pymongo_stub.ReturnDocument = types.SimpleNamespace(AFTER="after")
         sys.modules["pymongo"] = pymongo_stub
 
-from harness import documentdb_palace as mongo_palace
+from harness import mongo_palace
 from harness import palace
 
 

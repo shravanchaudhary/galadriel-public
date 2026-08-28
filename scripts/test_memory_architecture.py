@@ -12,6 +12,10 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from dotenv import load_dotenv  # noqa: E402
+
+load_dotenv(ROOT / ".env")
+
 from harness.memory import MemoryManager, STABLE_FILES  # noqa: E402
 from harness.experiential_state import ExperienceManager  # noqa: E402
 

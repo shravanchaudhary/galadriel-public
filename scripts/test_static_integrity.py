@@ -35,7 +35,6 @@ sys.path.insert(0, str(ROOT))
 # collateral damage, narrow enough to stay fast and signal-only.
 WATCHED = [
     "harness/palace.py",
-    "harness/documentdb_palace.py",
     "harness/mongo_palace.py",
     "harness/palace_cursor.py",
     "harness/memory_sync.py",

@@ -4,11 +4,8 @@
 #   docker compose up -d --build
 #   docker compose logs -f
 #
-# First boot, seed the memory palace once (otherwise palace_* tools report
-# "palace unavailable" until there is something to search):
-#   The memory palace needs no init — it builds itself in MongoDB/DocumentDB
-#   on first write, using MONGO_URI / MONGO_DB from the environment.
-
+# The memory palace needs no init step — it builds itself in MongoDB/DocumentDB
+# on first write, using MONGO_URI / MONGO_DB from the environment.
 
 services:
   galadriel:

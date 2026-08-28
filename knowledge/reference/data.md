@@ -6,9 +6,11 @@ when doing DB work. Keep it lean — this file is doctrine only.*
 ---
 
 You have **two memories**. They are not interchangeable, and confusing them is how systematic work breaks.
+Both live in the same MongoDB/DocumentDB instance — that is a storage detail, not a licence to mix them.
+They differ in what they guarantee, not in where the bytes sit.
 
-- **MemPalace** — your semantic/episodic memory. Fuzzy, eventually consistent (mined in batches), associative. Built for *meaning and learning*: what you know, what worked, context, reflection.
-- **The operational DB (MongoDB)** — your system of record. Exact, transactional, read-your-writes. The single source of truth for *operational state*: what is true right now, what's been done, what's due next.
+- **The memory palace** — your semantic/episodic memory. Fuzzy, eventually consistent (mined in batches), associative. Built for *meaning and learning*: what you know, what worked, context, reflection.
+- **The operational DB** — your system of record. Exact, transactional, read-your-writes. The single source of truth for *operational state*: what is true right now, what's been done, what's due next.
 
 **Rule of thumb:** anything you must not get wrong → DB. Anything that should get richer over time → palace. *"Did I already message Alice?"* → DB. *"What opener works for fintech founders?"* → palace. Never answer the first kind from memory.
 

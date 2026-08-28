@@ -1,4 +1,4 @@
-"""Durable Mongo outbox linking main-conversation ranges to MemPalace."""
+"""Durable Mongo outbox linking main-conversation ranges to the palace."""
 
 from __future__ import annotations
 

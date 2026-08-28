@@ -9,7 +9,7 @@ what it costs, and how to verify it's working.
 Cached input tokens cost **~90% less** than regular input on both providers.
 
 **Simple memory rule:** stable core → deterministic file index
-(`knowledge/INDEX.md`) → MemPalace detail.
+(`knowledge/INDEX.md`) → memory-palace detail.
 
 **Anthropic (explicit caching):** three `cache_control` breakpoints on every API call:
 1. Last tool definition (caches the `tools` prefix).

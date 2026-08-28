@@ -104,11 +104,4 @@ PY
     fi
 done
 
-# MemPalace creates its own directory tree on demand. Initializing it here
-# makes first boot deterministic but remains safe when the palace exists.
-if command -v mempalace >/dev/null 2>&1 && [ ! -d "${MEMPALACE_PATH:-/data/.mempalace/palace}" ]; then
-    mempalace init --yes --no-llm /data \
-        || echo "MemPalace initialization deferred to application startup" >&2
-fi
-
 exec "$@"

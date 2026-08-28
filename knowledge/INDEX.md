@@ -18,5 +18,6 @@ when a technique becomes reusable; keep personal history in the memory palace.
 | tools | Choosing a tool, palace/DB record target, heartbeat/wake/reflection, or browser tabs | `knowledge/reference/tools.md` | `Replika tools decision matrix heartbeat wake reflection` |
 | data | Using operational data safely | `knowledge/reference/data.md` | `database tools system of record` |
 | workflows | Authoring a structured workflow | `knowledge/reference/workflows.md` | `workflow spec authoring` |
+| bedrock-providers | Adding or debugging a Bedrock model, endpoint, or reasoning/thinking config | `knowledge/reference/bedrock_providers.md` | `Bedrock mantle runtime provider reasoning` |
 | coding-principles | Making a small, verifiable file change | `knowledge/reference/coding_principles.md` | `coding principles surgical changes` |
 | user-facing-html | Updating the daily plan or progress artifact | `knowledge/reference/user_facing_html_artifacts.md` | `user-facing HTML artifact plan progress` |

@@ -14,7 +14,7 @@ Anthropic fallback: claude-haiku-4-5).
 This module only produces the snapshot text and decides where the cut goes. The
 agent stores the snapshot as its own system block ahead of the surviving tail
 (see agent.compact_channel + agent._assemble_system_blocks) and archives the
-verbatim conversation to the MemPalace first, so nothing is lost.
+verbatim conversation to the palace first, so nothing is lost.
 """
 
 import json

@@ -22,10 +22,6 @@ output "s3files_access_point_arn" {
   value = aws_s3files_access_point.clyra.arn
 }
 
-output "canary_task_definition_arn" {
-  value = aws_ecs_task_definition.clyra_canary.arn
-}
-
 output "fargate_task_definition_arn" {
   value = aws_ecs_task_definition.clyra_fargate.arn
 }

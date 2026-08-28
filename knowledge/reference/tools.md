@@ -37,13 +37,13 @@ chart, UI mockup, or photo — look at it and answer from what you see.
 
 ---
 
-## Memory Palace (MemPalace)
+## Memory Palace
 
 *Your verbatim semantic memory. The **complete chat history** (every message,
 archived on `/new`, compaction, and shutdown) lives here in `room=conversations`,
 alongside your diary and the facts you file with `learn` — all searchable by meaning.
-Runs locally in ChromaDB + SQLite. **Zero API tokens spent, ever.** Results are
-your exact words, never paraphrased.*
+Stored in MongoDB/DocumentDB and embedded locally. **Zero API tokens spent,
+ever.** Results are your exact words, never paraphrased.*
 
 > **Daily logs vs. the palace:** `memory/*.md` daily logs are a **short truncated
 > index** of what the user said each day — a pointer, not the full text. For the

@@ -18,7 +18,7 @@ One document per channel:
 the next claim rather than needing an explicit reset call.
 
 Chunk *numbering* deliberately does NOT live here. It is assigned by the miner
-(``documentdb_palace._reserve_chunk_numbers``), the only layer that knows how
+(``mongo_palace._reserve_chunk_numbers``), the only layer that knows how
 many chunks a batch actually produces — this layer only ever knew a message
 count, and reserving from that produced colliding numbers across checkpoints.
 

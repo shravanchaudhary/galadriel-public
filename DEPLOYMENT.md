@@ -42,8 +42,8 @@ code comes only from immutable ECR images.
 2. For AWS DocumentDB, set `PALACE_BACKEND=documentdb` and include
    `tls=true`, `replicaSet=rs0`, `retryWrites=false`, and
    `tlsCAFile=/etc/ssl/certs/rds-global-bundle.pem` in `MONGO_URI`.
-   `PALACE_BACKEND=mongo` uses the same adapter with exact cosine plus BM25
-   when native vector search is unavailable. `chroma` remains the default.
+   `PALACE_BACKEND=mongo` (the default) uses the same adapter with exact
+   cosine plus BM25 when native vector search is unavailable.
 3. Store the provisioning callback token in Secrets Manager and pass only its
    ARN as `replika_callback_token_secret_arn`. Customer provider keys are
    encrypted with KMS through the product UI; they do not belong in AppConfig.

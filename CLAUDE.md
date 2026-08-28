@@ -61,8 +61,9 @@ so the two never drift.
   them and report what you left untouched.
 - **Inspect AWS scope before mutating.** Stop if a plan touches anything unrelated, or
   destroys/rolls back live config. Never treat a tenant as disposable.
-- **`await` every DB call in the agent loop.** Motor only. PyMongo from async blocks the
-  loop.
+- **Know which Mongo driver you're touching.** There is no Motor here. Operational
+  DB → `harness/db_ops.py` (async, `await` it). Everything else is sync PyMongo;
+  embed/scan/batch work goes through `to_thread`. See `rules/db-async-safety.mdc`.
 - **Restart after implementing.** The running service does not hot-reload edited Python.
   Ship features incrementally and restart before continuing to the next one.
 
@@ -74,6 +75,7 @@ so the two never drift.
 | Deploy / pipeline / secrets | `rules/aws-deployment-pipeline.mdc`, `rules/staging-change-safety.mdc` |
 | Tenant provision / delete | `rules/replika-lifecycle-ops.mdc`, `rules/replika-managed-architecture.mdc` |
 | Any list/table endpoint | `rules/mongo-listing-projection.mdc`, `kb/mongo-listing.md` |
+| Local vs deployed behaviour | `kb/local-vs-aws-runtime.md` |
 | Models / providers / thinking | `kb/model-provider-byom.md`, `kb/runtime-context-effort.md` |
 | Debugging prod behavior | `rules/cloudwatch-debugging.mdc` |
 

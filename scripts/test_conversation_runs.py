@@ -175,7 +175,7 @@ class SwitchMainRunTests(unittest.TestCase):
         agent._output_ceiling_streak = {}
         agent._compaction_summary = {}
         agent._last_input_tokens = {}
-        agent._last_archived_len = {}
+        agent._conversation_ids = {}
         agent._notified_recall_ids = {}
         agent._session_id = {}
         agent._session_segments = {}
@@ -216,10 +216,21 @@ class SwitchMainRunTests(unittest.TestCase):
         self.assertTrue(save_mock.called)
 
     def test_switch_rejects_when_busy(self):
+        # get_run/active_run must be patched: switch_main_run resolves the run
+        # and returns early for a same-run select (allowed while busy) before it
+        # ever reaches the busy guard. Without the patches this raises
+        # ValueError("Conversation not found") and never tests the guard at all.
         agent = GaladrielAgent.__new__(GaladrielAgent)
         agent.is_channel_busy = lambda channel: True
-        with self.assertRaises(RuntimeError):
-            asyncio.run(agent.switch_main_run("run-b"))
+        with patch.object(
+            conversation_run_store, "get_run",
+            return_value={"run_id": "run-b", "channel_id": "main", "state": "ended"},
+        ), patch.object(
+            conversation_run_store, "active_run",
+            return_value={"run_id": "run-a", "channel_id": "main", "state": "active"},
+        ):
+            with self.assertRaises(RuntimeError):
+                asyncio.run(agent.switch_main_run("run-b"))
 
 
 class OverlayHistoryTests(unittest.TestCase):

@@ -63,6 +63,28 @@ def _assert(condition: bool, message: str) -> None:
         raise AssertionError(message)
 
 
+def _assert_authorized(response, label: str) -> None:
+    """`/` is a redirect to the chats landing, so 200 is not the pass signal.
+
+    Authorized: 200, or a redirect anywhere that is not the login page.
+    Unauthorized: a redirect to /login. Asserting a bare 302 would pass for
+    both, which is how these checks stopped testing anything.
+    """
+    location = response.headers.get("Location", "")
+    _assert(
+        response.status_code in (200, 302) and "/login" not in location,
+        f"{label}: expected authorized, got {response.status_code} -> {location or '(no redirect)'}",
+    )
+
+
+def _assert_bounced_to_login(response, label: str) -> None:
+    location = response.headers.get("Location", "")
+    _assert(
+        response.status_code == 302 and "/login" in location,
+        f"{label}: expected a bounce to /login, got {response.status_code} -> {location or '(no redirect)'}",
+    )
+
+
 # --- Public routes -----------------------------------------------------------
 app, client = _make_client()
 for path in ("/healthz", "/readyz", "/login"):
@@ -122,8 +144,12 @@ _assert("Secure" in set_cookie, "Secure cookie required when TOWER_COOKIE_SECURE
 _assert("test-token" not in set_cookie, "password must never appear in Set-Cookie")
 _assert("test-secret-key" not in set_cookie, "signing key must never appear in Set-Cookie")
 
+# "/" is a redirect to the chats landing, not a page. The security property is
+# that an authenticated session lands on the app, not back at /login.
 dash = client.get("/")
-_assert(dash.status_code == 200, f"session should allow dashboard, got {dash.status_code}")
+_assert_authorized(dash, "session should reach the app")
+landed = client.get("/", follow_redirects=True)
+_assert(landed.status_code == 200, f"session should land on a page, got {landed.status_code}")
 
 # Session-authenticated API fetch (credentials include cookies automatically)
 api_ok = client.post(
@@ -223,13 +249,13 @@ _assert(
 # --- Basic + Bearer header compatibility -------------------------------------
 _, client = _make_client(REPLIKA_COGNITO_DOMAIN=None)
 basic_ok = client.get("/", headers=_basic("clyra", "test-token"))
-_assert(basic_ok.status_code == 200, f"Basic auth should work, got {basic_ok.status_code}")
+_assert_authorized(basic_ok, "Basic auth should work")
 
 basic_bad = client.get("/", headers=_basic("clyra", "nope"))
-_assert(basic_bad.status_code == 302, "bad Basic should redirect HTML GET")
+_assert_bounced_to_login(basic_bad, "bad Basic")
 
 bearer_ok = client.get("/", headers={"Authorization": "Bearer test-token"})
-_assert(bearer_ok.status_code == 200, f"Bearer should work, got {bearer_ok.status_code}")
+_assert_authorized(bearer_ok, "Bearer should work")
 
 bearer_api = client.post(
     "/api/chat",
@@ -251,7 +277,7 @@ control_plane = client.get(
     base_url="https://app.replika.example",
     headers={"x-amzn-oidc-identity": "account-123"},
 )
-_assert(control_plane.status_code == 200, "ALB identity should enter control plane")
+_assert_authorized(control_plane, "ALB identity should enter control plane")
 shared_cookie = control_plane.headers.get("Set-Cookie", "")
 _assert(
     "Domain=replika.example" in shared_cookie,
@@ -260,7 +286,7 @@ _assert(
 
 os.environ["REPLIKA_TENANT_ID"] = "account-123"
 tenant = client.get("/", base_url="https://alice.replika.example")
-_assert(tenant.status_code == 200, "matching tenant should accept shared session")
+_assert_authorized(tenant, "matching tenant should accept shared session")
 
 os.environ["REPLIKA_TENANT_ID"] = "account-456"
 wrong_tenant = client.get(
@@ -313,7 +339,7 @@ _, client = _make_client(
     REPLIKA_CONTROL_PLANE_ONLY=None,
 )
 open_dash = client.get("/")
-_assert(open_dash.status_code == 200, f"auth-disabled / should be open, got {open_dash.status_code}")
+_assert_authorized(open_dash, "auth-disabled / should be open")
 
 
 # --- Readiness fails closed without signing key ------------------------------

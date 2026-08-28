@@ -34,7 +34,7 @@ from dotenv import load_dotenv
 
 load_dotenv(pathlib.Path(__file__).resolve().parent.parent / ".env")
 
-from harness import documentdb_palace as palace  # noqa: E402
+from harness import mongo_palace as palace  # noqa: E402
 
 CONVERSATION_ROOM = "conversations"
 RESCUE_DIRNAME = "rescued_orphan_drawers"

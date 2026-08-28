@@ -450,8 +450,8 @@ model/temperature/thinking, schema as the only variable:
 No accuracy loss on any model (the default's went up, within this sample's
 noise floor); individual verdict flips existed in both directions and netted
 to zero or a gain. Token and latency savings hold across all three, so the
-schema change is a straight win: same eval script at `/tmp/judge_reason_ablation.py`
-if this needs re-running against a different model set.
+schema change is a straight win. The ablation script was a scratch file and was
+not kept; re-deriving it is a few lines against `harness/recall_judge.py`.
 
 ### The bug this eval uncovered
 
@@ -556,7 +556,10 @@ Three things only surfaced once real turns ran through the harness, all fixed:
   sent no temperature, so roughly one call in four came back unparseable and was
   silently dropped. Now pinned to `temperature=0.0`.
 
-## 3. Implementation plan
+## 3. Implementation plan — landed 2026-08-20
+
+*Everything in this section shipped. It is kept as the decision record for
+why each provider is shaped the way it is, not as work to do.*
 
 ### 3.1 New provider: `harness/providers/bedrock_mantle_provider.py`
 
@@ -581,7 +584,7 @@ contract, structured like `gemini_provider.py`:
 - Client: `AsyncOpenAI(base_url=f"https://bedrock-mantle.{region}.api.aws/v1",
   api_key=<bedrock key>, max_retries=0)`.
 
-### 3.2 Rework `harness/providers/anthropic_provider.py` → Bedrock
+### 3.2 Rework the Anthropic provider → Bedrock (`harness/providers/bedrock_anthropic_provider.py`)
 
 Swap `AsyncAnthropic` for `AsyncAnthropicBedrock(aws_region=...)` and add the
 `thinking` / `temperature` handling the current provider throws away (it does

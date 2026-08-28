@@ -46,7 +46,7 @@ to rewrite in a managed deployment.
 | Knowledge index | `knowledge/INDEX.md` | Deterministic procedure/skill/reference lookup — not auto-loaded into L1 |
 | Memory (prompt) | `harness/memory.py` | Builds the stable + dynamic system blocks |
 | Experiential state | `harness/experiential_state.py` | One bounded, replayable state shared by every stream; default-on influence can be toggled in Tower and appraisal failures never block agent work |
-| Memory palace | `harness/palace.py` → MemPalace | Local verbatim semantic memory. **Zero API cost** to read/write |
+| Memory palace | `harness/palace.py` → `harness/mongo_palace.py` | Verbatim semantic memory in MongoDB/DocumentDB; embeddings computed locally. **Zero API cost** to read/write |
 | Browser | `browser` tool → browser-use CLI | Headed Chrome; profile + tab discipline matter |
 | Scheduler | `harness/scheduler.py` | Morning/goodnight, heartbeat, one-shot wake, ambient reflection |
 | Background worker | `harness/worker.py` | The same agent's `worker` stream on a work-conserving loop; opt-in via `GALADRIEL_WORKER=1`. See §5 |

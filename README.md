@@ -99,6 +99,11 @@ instead? See [Quick Start](#quick-start).
 
 ## 🟢 SIGNIFICANT CHANGE — 1.12: Persistent verbatim memory, at zero API cost
 
+> **Historical release note.** The *capability* below is current; the *storage* is
+> not. The palace no longer runs on the MemPalace library, ChromaDB or SQLite —
+> it is backed by MongoDB / DocumentDB with locally computed embeddings. See
+> [First-time setup](#first-time-setup) for how it actually works today.
+
 Galadriel just grew a memory palace. Not a vector-DB-as-a-service. Not a paid tier. A local, embedded, verbatim store of everything she has ever written — searchable by meaning, not just keywords — with **zero API tokens spent on retrieval**.
 
 The integration is built on [**MemPalace**](https://github.com/MemPalace/mempalace), an independent local-first memory library. MemPalace does the real work (storage, embeddings, knowledge graph, temporal reasoning, compression). This harness adds the wrappers that expose it to the agent as **10 new tools** (14 total, up from 4) and wires it into the lifecycle — conversations are archived before `/new` clears them, daily logs are mined at goodnight, and a compact wake-up snapshot rides in the dynamic block so she walks into every session with her own continuity.
@@ -322,7 +327,7 @@ These aren't abstract ideals — they are mechanically enforced via the `CLAUDE.
 git clone https://github.com/avasol/galadriel-public.git
 cd galadriel-public
 
-# 2. Install (includes mempalace — dependency of the memory palace)
+# 2. Install
 pip install -r requirements.txt
 
 # 3. Configure
