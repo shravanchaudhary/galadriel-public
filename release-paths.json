@@ -4,7 +4,6 @@
       "docker/**",
       "release-paths.json",
       "scripts/deploy_replika_fleet.py",
-      "phone_bridge/**",
       "tower/auth.py",
       "tower/slack_integration.py",
       "tower/templates/*",

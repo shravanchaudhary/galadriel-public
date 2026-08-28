@@ -51,7 +51,13 @@ code comes only from immutable ECR images.
    (`GEMINI_API_KEY` via `replika_runtime_provider_secret_arns`), not AppConfig.
 4. Copy `infra/terraform/staging.tfvars.example` to a secure location and fill
    in shared VPC, subnet, ALB, database/cache security-group, listener-priority,
-   and CodeConnection values. Never commit the populated file.
+   and CodeConnection values. Never commit the populated file. If the populated
+   file is ever lost, every value is recoverable without guessing: network IDs,
+   priorities, image URIs, and the CodeConnection ARN from
+   `infra/terraform/terraform.tfstate`; `secret_arns` from the live
+   `clyra-stag-fargate` task definition's `secrets`; and
+   `replika_runtime_provider_secret_arns` from the `clyra-stag-execution` role's
+   `replika-runtime-provider-secrets` inline policy.
 
 ## Infrastructure and deployment
 

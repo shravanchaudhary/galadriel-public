@@ -50,7 +50,9 @@ EXPECTED = {
     "tower/slack_runtime.py": {"runtime"},
     "tower/app.py": {"runtime"},
     "tower/templates/base.html": {"control", "runtime"},
-    "phone_bridge/router.py": {"control", "runtime"},
+    # Phone bridge is WIP and deliberately outside every release: editing it
+    # must trigger no pipeline until it ships.
+    "phone_bridge/router.py": set(),
     "android-app/app/build.gradle.kts": set(),
     "infra/terraform/main.tf": set(),
     "DEPLOYMENT.md": set(),

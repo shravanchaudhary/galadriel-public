@@ -1022,7 +1022,13 @@ resource "aws_ecs_task_definition" "replika_runtime_base" {
   ])
   lifecycle {
     # The runtime pipeline owns approved base image revisions after seeding.
-    ignore_changes = [container_definitions]
+    # `volume` is ignored because ECS never reports s3filesVolumeConfiguration
+    # back from DescribeTaskDefinition (the provisioner documents the same gap in
+    # infra/provisioner/handler.py `_bind_state_volume`, which is why it rebinds
+    # the volume per tenant). Without this, every refresh sees a bare `state`
+    # volume and forces a replacement, churning an identical base revision on
+    # each apply.
+    ignore_changes = [container_definitions, volume]
   }
 }
 
