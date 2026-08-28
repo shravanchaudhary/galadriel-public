@@ -14,10 +14,8 @@ class PersistedKnowledgeTests(unittest.TestCase):
             root = Path(temporary)
             defaults = root / "defaults"
             persisted = root / "persisted"
-            palace = root / "palace"
             (defaults / "knowledge").mkdir(parents=True)
             (persisted / "knowledge").mkdir(parents=True)
-            palace.mkdir()
             (defaults / "knowledge" / "new.md").write_text("seed", encoding="utf-8")
             (defaults / "knowledge" / "existing.md").write_text("image", encoding="utf-8")
             (persisted / "knowledge" / "existing.md").write_text("runtime", encoding="utf-8")
@@ -28,7 +26,6 @@ class PersistedKnowledgeTests(unittest.TestCase):
                 "GALADRIEL_DEFAULTS_ROOT": str(defaults),
                 "GALADRIEL_STORAGE_ROOT": str(persisted),
                 "GALADRIEL_APP_ROOT": str(repo),
-                "MEMPALACE_PATH": str(palace),
             }
             result = subprocess.run(
                 [str(repo / "docker" / "entrypoint.sh"), "true"],

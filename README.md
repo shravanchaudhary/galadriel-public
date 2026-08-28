@@ -80,11 +80,12 @@ docker compose up -d --build  # builds the image and starts the agent
 docker compose logs -f        # watch her wake up
 ```
 
-That's the whole install. The image bundles everything the memory palace needs
-(ChromaDB + embeddings), state persists on volumes, and the Tower web UI comes up on
+That's the whole install. The image bundles the local embedding stack the memory
+palace needs, drawers live in the MongoDB/DocumentDB you point `MONGO_URI` at, state
+persists on volumes, and the Tower web UI comes up on
 [http://127.0.0.1:8080](http://127.0.0.1:8080). Add a `DISCORD_BOT_TOKEN` to `.env` and
-she'll also greet you over Discord. Full details, first-boot palace seeding, and a
-security note are in [Run with Docker](#run-with-docker). Prefer a local Python install
+she'll also greet you over Discord. Full details and a security note are in
+[Run with Docker](#run-with-docker). Prefer a local Python install
 instead? See [Quick Start](#quick-start).
 
 > **Where to get an API key:** [Google AI Studio](https://aistudio.google.com/apikey) for Gemini
@@ -409,8 +410,8 @@ changes do not redirect a process that was started earlier.
 ## Run with Docker
 
 The fastest path to a running warden — no local Python, no venv. A two-stage
-image bundles everything (including the ChromaDB/onnxruntime stack the memory
-palace needs).
+image bundles everything (including the onnxruntime stack the memory palace
+uses to embed locally).
 
 ```bash
 git clone https://github.com/avasol/galadriel-public.git
@@ -420,11 +421,10 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
-**First boot — seed the palace once** (otherwise `palace_*` tools report
-`[palace unavailable]` until there's something to search):
-
-The palace needs no init — it builds itself in MongoDB/DocumentDB on the first
-write. Lived memory is filed by the harness; the repo is never mined.
+**First boot — nothing to do.** The palace needs no init: collections and
+indexes are created in MongoDB/DocumentDB on the first write. Lived memory is
+filed by the harness; the repo is never mined. Without `MONGO_URI` the `palace_*`
+tools report `[palace unavailable]` and everything else runs normally.
 
 ### What persists
 
