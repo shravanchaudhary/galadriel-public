@@ -845,6 +845,11 @@ def search_data(query: str, wing: str | None = None, room: str | None = None,
                                      search_meta=search_meta)
 
 
+def segment_text(segment_id: str) -> str:
+    """Verbatim text of one archived segment, read from the database."""
+    return _documentdb().segment_text(segment_id)
+
+
 def taxonomy_data() -> dict:
     """Structured wing → room → count + hall counts, for the Tower taxonomy
     view. Same underlying data as taxonomy(), returned as a dict instead of

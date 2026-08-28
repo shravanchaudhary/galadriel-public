@@ -1005,6 +1005,50 @@ def kg_invalidate(subject, predicate, object, ended=None) -> str:
 WAKE_UP_MAX_CHARS = 3000
 
 
+def segment_text(segment_id: str, limit: int = 400) -> str:
+    """Reassemble one archived segment from the drawers it produced.
+
+    The drawers are the durable copy: they carry `source_file` (which contains
+    the staging batch's directory name) and `chunk_number` (which orders them),
+    so a segment can be read back without the staged .md still existing. That
+    matters because the shutdown path deletes staged batches once mined, and on
+    Fargate the staging dir is not guaranteed across hosts at all.
+
+    Returns "" when the segment produced no drawers, so the caller can decide
+    whether to fall back to disk.
+    """
+    if not segment_id:
+        return ""
+    # Anchored to the batch directory, not to any path component: a bare
+    # "conversations" would otherwise match every segment's .md path and splice
+    # unrelated conversations together.
+    anchored = re.escape(segment_id)
+    rows = list(
+        _collection()
+        .find(
+            {"source_file": {"$regex": f"/{anchored}/(spans\\.json|conversations/)"}},
+            {"text": 1, "hall": 1, "chunk_number": 1, "chunk_index": 1},
+        )
+        .sort([("chunk_number", 1), ("chunk_index", 1)])
+        .limit(max(1, limit))
+    )
+    if not rows:
+        return ""
+    parts, last_hall = [], None
+    for row in rows:
+        text = (row.get("text") or "").strip()
+        if not text:
+            continue
+        hall = row.get("hall")
+        # Span text already opens with its own "## user"/"## assistant" heading;
+        # only add one when the chunk starts mid-span.
+        if hall and hall != last_hall and not text.startswith(f"## {hall}"):
+            parts.append(f"## {hall}")
+        last_hall = hall
+        parts.append(text)
+    return "\n\n".join(parts)
+
+
 def wake_up_text() -> str:
     """Standing palace digest for the dynamic system block.
 

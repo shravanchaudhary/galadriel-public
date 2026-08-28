@@ -21,6 +21,7 @@ from .documentdb_palace import (  # noqa: F401
     mine_directory,
     search_data,
     search_markdown,
+    segment_text,
     taxonomy_data,
     update_drawer,
     upsert_drawer,

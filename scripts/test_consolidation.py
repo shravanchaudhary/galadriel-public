@@ -359,6 +359,32 @@ def test_read_episode_segment_rejects_path_traversal() -> None:
         assert result.startswith("[error]"), (bad, result)
 
 
+def test_read_episode_segment_prefers_the_database() -> None:
+    """The DB is the record of truth; the staged .md is crash-safety scaffolding
+    that mine_pending_shutdown_archives deletes once mined."""
+    from harness import palace
+
+    with patch.object(palace, "segment_text", return_value="## user\n\nfrom the db"):
+        result = _run(consolidation.read_episode_segment("conversation_main_compact_x"))
+    assert "from the db" in result, result
+
+
+def test_read_episode_segment_falls_back_to_disk_when_the_db_is_down() -> None:
+    """An unreachable database must degrade to the staged file, not abort."""
+    from harness import palace
+
+    with tempfile.TemporaryDirectory() as tmp:
+        archive_root = Path(tmp)
+        segment_id = "conversation_main_compact_2026-08-23T00-00-00"
+        conv_dir = archive_root / segment_id / "conversations"
+        conv_dir.mkdir(parents=True)
+        (conv_dir / "batch.md").write_text("USER: hello", encoding="utf-8")
+        with patch.object(palace, "_archive_root", return_value=archive_root), \
+             patch.object(palace, "segment_text", side_effect=RuntimeError("no mongo")):
+            result = _run(consolidation.read_episode_segment(segment_id))
+    assert "USER: hello" in result, result
+
+
 def test_read_episode_segment_reads_verbatim_content() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         archive_root = Path(tmp)
@@ -967,6 +993,8 @@ def main() -> int:
         test_commit_candidate_preference_writes_daily_log,
         test_read_episode_segment_rejects_path_traversal,
         test_read_episode_segment_reads_verbatim_content,
+        test_read_episode_segment_prefers_the_database,
+        test_read_episode_segment_falls_back_to_disk_when_the_db_is_down,
         test_read_episode_segment_missing_segment_reports_not_available,
         test_learn_tool_forwards_to_commit_candidate,
         test_learn_tool_surfaces_errors,

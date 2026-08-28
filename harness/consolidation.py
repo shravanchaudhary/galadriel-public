@@ -1307,28 +1307,42 @@ async def write_consolidation_summary(
 
 
 async def read_episode_segment(segment_id: str) -> str:
-    """Verbatim drill-down into one archived compaction batch. Read-only,
-    consolidation-only. Segment ids come from the [EPISODE_INDEX] appendix —
-    compact_channel tags every archived batch (see
-    GaladrielAgent._record_session_segment) with its batch-dir name.
+    """Verbatim drill-down into one archived segment. Read-only, consolidation-only.
+
+    Segment ids come from the [EPISODE_INDEX] appendix — compact_channel tags
+    every archived batch (see GaladrielAgent._record_session_segment) with its
+    batch-dir name.
+
+    Reads the DATABASE first. The staged .md on disk is crash-safety scaffolding,
+    not the record of truth: `mine_pending_shutdown_archives` deletes each batch
+    once mined, and on Fargate the staging dir is per-host, so a segment archived
+    by one task is invisible to the next. The drawers carry `source_file` (which
+    embeds the batch dir name) and `chunk_number`, so the segment reassembles
+    from Mongo exactly. Disk remains a fallback for batches staged but not yet
+    mined — the one case where the file exists and the drawers do not.
     """
     segment_id = (segment_id or "").strip()
     if not segment_id or "/" in segment_id or "\\" in segment_id or ".." in segment_id:
         return "[error] invalid segment_id."
     try:
         from . import palace
-        conv_dir = palace._archive_root() / segment_id / palace.CONVERSATION_ROOM
-        if not conv_dir.is_dir():
+        try:
+            body = await asyncio.to_thread(palace.segment_text, segment_id)
+        except Exception as exc:
+            # The database is the record of truth, but an unreachable database
+            # must degrade to the staged file rather than abort the read.
+            log.warning("Segment read from the palace failed (%s); trying disk", exc)
+            body = ""
+        if not body:
+            conv_dir = palace._archive_root() / segment_id / palace.CONVERSATION_ROOM
+            if conv_dir.is_dir():
+                texts = [p.read_text(encoding="utf-8") for p in sorted(conv_dir.glob("*.md"))]
+                body = "\n\n".join(t for t in texts if t.strip())
+        if not body:
             return (
-                f"[not available] segment {segment_id} was not found on this host "
-                "(the archive may live on a different runtime instance, or was "
-                "already cleaned up)."
+                f"[not available] segment {segment_id} has no archived content "
+                "(it may have failed to mine, or belong to a different runtime)."
             )
-        texts = [p.read_text(encoding="utf-8") for p in sorted(conv_dir.glob("*.md"))]
-        texts = [t for t in texts if t.strip()]
-        if not texts:
-            return f"[not available] segment {segment_id} has no archived content."
-        body = "\n\n".join(texts)
         if len(body) > 20000:
             body = body[:20000] + "\n...[truncated]"
         return body
