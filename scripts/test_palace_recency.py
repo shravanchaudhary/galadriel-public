@@ -15,6 +15,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from dotenv import load_dotenv  # noqa: E402
+
+load_dotenv(ROOT / ".env")
+
 from harness import conversation_store, palace  # noqa: E402
 
 
@@ -22,10 +26,10 @@ def test_recency_main_conversations() -> bool:
     print("=== test: recency — room=conversations, channel=main ===")
     out = palace.search(order="recency", room="conversations", channel="main", k=5)
     print(out[:1200])
-    if "No recent sessions matched" in out:
+    if "NO_MATCH" in out:
         print("FAIL: no main conversation archives found")
         return False
-    if "order=`recency`" not in out:
+    if "most recent" not in out.lower():
         print("FAIL: missing recency header")
         return False
     # Most recent main archive should appear first
@@ -36,30 +40,46 @@ def test_recency_main_conversations() -> bool:
     return True
 
 
-def test_recency_finds_actions_page_chat() -> bool:
-    print("\n=== test: recency + text filter — planned actions ===")
-    out = palace.search(
-        order="recency",
-        room="conversations",
-        channel="main",
-        query="planned actions",
-        k=3,
-    )
-    print(out[:900])
-    if "planned actions" not in out.lower():
-        print("FAIL: expected 'planned actions' in results")
-        return False
-    if 'view": "actions"' in out or "how does planned actions work" in out.lower() or "planned actions" in out.lower():
-        print("PASS (actions-page exchange found)")
+def test_recency_text_filter_narrows() -> bool:
+    """The recency text filter must actually filter, in both directions.
+
+    This used to assert on one hard-coded phrase from a conversation that is no
+    longer in the corpus, so it failed on fixture drift rather than on a real
+    regression. It now checks the mechanism: a term present in the corpus
+    narrows to drawers containing it, and a term that is absent returns nothing.
+    """
+    print("\n=== test: recency text filter narrows results ===")
+    unfiltered = palace.search(order="recency", room="conversations", k=5)
+    if "NO_MATCH" in unfiltered:
+        print("SKIP: no conversation archives in this palace")
         return True
-    print("WARN: actions text present but exact exchange not confirmed — check manually")
+
+    present = palace.search(
+        order="recency", room="conversations", query="actions", k=3,
+    )
+    if "NO_MATCH" in present:
+        print("FAIL: a term known to be in the corpus returned nothing")
+        return False
+    body = present.split("**", 2)[-1].lower()
+    if "actions" not in body:
+        print("FAIL: filtered results do not contain the filter term")
+        return False
+
+    absent = palace.search(
+        order="recency", room="conversations",
+        query="zzq-not-in-any-drawer-xyzzy", k=3,
+    )
+    if "NO_MATCH" not in absent:
+        print(f"FAIL: absent term still returned rows: {absent[:200]}")
+        return False
+    print("PASS")
     return True
 
 
 def test_semantic_still_requires_query() -> bool:
     print("\n=== test: semantic mode requires query ===")
     out = palace.search(order="semantic", query="")
-    if "query is required" not in out:
+    if "give a `query`" not in out:
         print(f"FAIL: unexpected output: {out[:200]}")
         return False
     print("PASS")
@@ -95,7 +115,7 @@ def test_conversation_store_roundtrip() -> bool:
 def main() -> int:
     ok = all([
         test_recency_main_conversations(),
-        test_recency_finds_actions_page_chat(),
+        test_recency_text_filter_narrows(),
         test_semantic_still_requires_query(),
         test_conversation_store_roundtrip(),
     ])

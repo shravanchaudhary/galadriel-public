@@ -179,7 +179,7 @@ def _stub_agent(messages: list) -> GaladrielAgent:
     agent.compact_threshold = 300_000
     agent._compaction_summary = {}
     agent._last_input_tokens = {MAIN_CHANNEL_ID: 400_000}
-    agent._last_archived_len = {MAIN_CHANNEL_ID: 7}
+    agent._conversation_ids = {MAIN_CHANNEL_ID: "run-under-test"}
     agent._notified_recall_ids = {MAIN_CHANNEL_ID: {"r-old", "r-live"}}
     agent._session_id = {}
     agent._session_segments = {}
@@ -187,12 +187,23 @@ def _stub_agent(messages: list) -> GaladrielAgent:
     return agent
 
 
+# Channels whose durable archive cursor compaction reset during the last run.
+# Compaction has to clear it explicitly: message indices shift while the
+# conversation_id stays the same, so the cursor's own reset guard cannot see it.
+_cursor_resets: list = []
+
+
 def _run_compaction(agent: GaladrielAgent, **kwargs) -> dict:
-    """Compact MAIN with the palace and the LLM stubbed out.
+    """Compact MAIN with the palace, the cursor store and the LLM stubbed out.
 
     Compaction never runs memory consolidation (see on_episode_end) so there
     is nothing recall/learning-related left to stub here.
     """
+    _cursor_resets.clear()
+
+    async def _record_reset(channel_id):
+        _cursor_resets.append(channel_id)
+
     snapshot = {
         "snapshot": "GOAL: ship it",
         "messages_before": 0,
@@ -200,6 +211,7 @@ def _run_compaction(agent: GaladrielAgent, **kwargs) -> dict:
         "tokens_after": 10,
     }
     with patch("harness.palace.archive_conversation_durable", return_value=None), \
+         patch("harness.palace_cursor.reset_channel", new=_record_reset), \
          patch.object(GaladrielAgent, "_live_summarizer", return_value={}), \
          patch(
              "harness.compaction.compact_to_snapshot",
@@ -240,8 +252,8 @@ def test_compaction_keeps_the_current_turn_in_the_buffer() -> bool:
         agent._notified_recall_ids[MAIN_CHANNEL_ID], set(),
     ) and ok
     ok = check(
-        "windowed compact: unarchived tail awaits checkpoint",
-        agent._last_archived_len[MAIN_CHANNEL_ID], 0,
+        "windowed compact: archive cursor reset for the surviving tail",
+        _cursor_resets, [MAIN_CHANNEL_ID],
     ) and ok
     return check(
         "windowed compact: input measurement reset",

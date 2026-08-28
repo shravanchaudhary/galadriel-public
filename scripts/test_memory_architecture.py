@@ -98,7 +98,12 @@ def test_repository_stable_core_stays_minimal() -> None:
 
     # The neutral product base must remain useful but must not regain a copied
     # tenant persona merely to cross a provider-specific prompt-cache floor.
-    assert 4_000 <= len(stable) <= 12_000, len(stable)
+    # The ceiling covers the config files plus the two code-owned architecture
+    # sections (RECALL_STABLE_SECTION, PALACE_STABLE_SECTION) — raised from
+    # 12k when the palace conversation schema was added, which is mechanism the
+    # agent cannot infer and must not re-learn per turn. It is a persona guard,
+    # not a cap on documenting the harness.
+    assert 4_000 <= len(stable) <= 14_000, len(stable)
     for name in STABLE_FILES:
         assert (ROOT / "config" / name).read_text(encoding="utf-8") in stable
     # Non-allowlisted reference material must stay out of the stable prompt.
@@ -178,8 +183,11 @@ def test_archive_channel_kind_naming_and_legacy_match() -> None:
         assert "- channel: main" in text
         assert "- archive_kind: checkpoint" in text
 
-    # Recency helper must accept channel=main (legacy OR new patterns).
-    assert isinstance(palace._recent_sessions(channel="main", k=1), list)
+    # Recency search must accept channel=main and render, not raise. (The old
+    # `_recent_sessions` SQLite helper went with the Chroma backend; recency is
+    # now a filtered query in the store.)
+    recent = palace.search(order="recency", room="conversations", channel="main", k=1)
+    assert isinstance(recent, str) and recent
 
 
 def test_scheduler_prompts_use_purpose_rooms() -> None:

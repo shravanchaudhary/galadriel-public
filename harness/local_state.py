@@ -124,7 +124,6 @@ def prepare_local_state(source_root: Path) -> Path:
 
     os.environ["GALADRIEL_STORAGE_ROOT"] = str(state_root)
     os.environ["GALADRIEL_ENFORCE_WRITE_BOUNDARIES"] = "true"
-    os.environ["MEMPALACE_PATH"] = str(state_root / "data/.mempalace/palace")
     os.environ["PALACE_ARCHIVE_ROOT"] = str(state_root / "data/.mempalace/archive")
     os.environ["PALACE_WAKE_UP_FILE"] = str(state_root / "data/.mempalace/wake_up.md")
     os.environ["GALADRIEL_COMPLETION_MARKER_DIR"] = str(

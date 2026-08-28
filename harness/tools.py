@@ -45,7 +45,8 @@ _TOPIC_HALL_DESCRIPTION = (
     "to the facts behind it. Reuse an existing hall name whenever one fits — "
     "call `palace_taxonomy` to see the current rooms and halls before inventing "
     "a new one. Omitted, this falls back to hall `general`, which clusters with "
-    "nothing."
+    "nothing. (In `room=conversations` the halls are not topics: they are the "
+    "speaker, `user` or `assistant`, set by the archiver.)"
 )
 
 # kg_add stamps facts as true from today unless told otherwise, which is wrong
@@ -843,7 +844,10 @@ TOOL_DEFINITIONS = [
             "Default (order=semantic): natural-language similarity search. For "
             "'what did we just discuss' / 'previous conversation' use "
             "order=recency with room=conversations (optionally channel=main). "
-            "Hits carry `id=` — pass one to `memory(id=…)` to open it. A hit "
+            "Hits carry `id=`, `conversation_id=` and `chunk=`. Pass an id to "
+            "`memory(id=…)` to open it; pass a conversation_id back as "
+            "`search_meta={\"conversation_id\": …}` with no query to read that "
+            "whole conversation in order. A hit "
             "marked LEARNED is a curated memory that happens to live here too; "
             "open it rather than reading the drawer, so its prerequisites come "
             "with it. Zero API cost — runs locally."
@@ -883,11 +887,31 @@ TOOL_DEFINITIONS = [
                 },
                 "hall": {
                     "type": "string",
-                    "description": "Optional hall filter (decisions, problems, milestones, etc).",
+                    "description": (
+                        "Optional hall filter. In room=conversations the halls are "
+                        "exactly `user` (what the human said) and `assistant` "
+                        "(everything you produced: replies, tool calls, tool results)."
+                    ),
+                },
+                "search_meta": {
+                    "type": "object",
+                    "description": (
+                        "Metadata filter over indexed drawer fields: "
+                        "conversation_id, chunk_number, hall, channel, room, wing, "
+                        "agent, topic, source_file. Values may be exact "
+                        "(`{\"hall\": \"user\"}`), a list for any-of, or a range "
+                        "(`{\"chunk_number\": {\"from\": 1, \"to\": 20}}`).\n"
+                        "WITHOUT `query` this is a direct ordered fetch, not a "
+                        "search — the reliable way to read a whole conversation: "
+                        "take the conversation_id from any hit, then request it "
+                        "with no query to walk the thread in chunk order. Semantic "
+                        "search cannot do this; do not try to find an id by "
+                        "putting it in `query`."
+                    ),
                 },
                 "k": {
                     "type": "integer",
-                    "description": "Number of results (default 5, max 20).",
+                    "description": "Number of results (default 5, max 20; up to 200 for a search_meta fetch).",
                 },
             },
             "required": [],
@@ -1881,6 +1905,7 @@ async def _execute_tool_impl(
                 k=inputs.get("k", 5),
                 order=order,
                 channel=inputs.get("channel"),
+                search_meta=inputs.get("search_meta"),
             ),
         )
         # Both corpora live in one store, so a conversation search can surface a

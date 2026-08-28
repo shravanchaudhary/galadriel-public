@@ -186,12 +186,12 @@ def main():
     finally:
         # Run the shutdown archive/palace-close here, in normal code flow,
         # rather than relying solely on the atexit hook below. Once any
-        # ThreadPoolExecutor has been used in the process (chromadb/onnxruntime
+        # ThreadPoolExecutor has been used in the process (the embedder/onnxruntime
         # do this as soon as a palace tool runs), Python's interpreter-shutdown
         # sequence joins all thread pools via `threading._register_atexit`
         # BEFORE any `atexit.register` callback runs — so by the time the
         # atexit-registered `archive_conversations_on_shutdown` fires,
-        # `palace.close()` can no longer schedule chromadb's cleanup work
+        # `palace.close()` can no longer schedule the client's cleanup work
         # ("cannot schedule new futures after interpreter shutdown"), and HNSW
         # never flushes. Calling it here, before returning from main(), avoids
         # that race. The call is idempotent, so the atexit fallback registered

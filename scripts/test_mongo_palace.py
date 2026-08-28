@@ -63,17 +63,6 @@ class MongoPalaceTests(unittest.TestCase):
     def setUp(self):
         mongo_palace._native_vector_search = False
 
-    def test_backend_selection_accepts_mongo_and_documentdb(self):
-        for backend, expected in (
-            ("chroma", False),
-            ("mongo", True),
-            ("documentdb", True),
-        ):
-            with self.subTest(backend=backend), patch.dict(
-                os.environ, {"PALACE_BACKEND": backend}, clear=False
-            ):
-                self.assertEqual(palace._uses_documentdb(), expected)
-
     def test_documentdb_hnsw_command(self):
         command = mongo_palace._vector_index_command()
         options = command["indexes"][0]["vectorOptions"]
@@ -151,8 +140,58 @@ class MongoPalaceTests(unittest.TestCase):
             rows = mongo_palace.kg_query_rows(subject="Clyra")
             self.assertEqual(rows[0]["object"], "S3 Files")
             self.assertIn("invalidated", mongo_palace.kg_invalidate("Clyra", "uses", "S3 Files"))
-        kg.insert_one.assert_called_once()
-        kg.find_one_and_update.assert_called_once()
+        kg.update_one.assert_called_once()
+        kg.update_many.assert_called_once()
+
+
+class PalaceFacadeTests(unittest.TestCase):
+    """Collapsing the chroma/mongo branches deleted shared function tails."""
+
+    def test_kg_timeline_returns_formatted_markdown(self):
+        # The branch collapse removed the tail that formatted `facts` and
+        # returned it, so this returned None and the tool dispatcher then did
+        # `for b in None` mid-turn.
+        rows = [{"subject": "clyra", "predicate": "uses", "object": "documentdb",
+                 "valid_from": "2026-07-01", "valid_to": None}]
+        with patch.object(palace, "_documentdb") as store:
+            store.return_value.kg_query_rows.return_value = rows
+            out = palace.kg_timeline("clyra")
+        self.assertIsInstance(out, str)
+        self.assertIn("KG timeline for `clyra`", out)
+        self.assertIn("--[uses]-> `documentdb`", out)
+
+    def test_kg_timeline_reports_an_empty_history(self):
+        with patch.object(palace, "_documentdb") as store:
+            store.return_value.kg_query_rows.return_value = []
+            out = palace.kg_timeline("nobody")
+        self.assertIsInstance(out, str)
+        self.assertIn("No KG history", out)
+
+    def test_public_palace_functions_never_fall_off_the_end(self):
+        # Guard for the whole class of damage, not just kg_timeline.
+        import ast
+        tree = ast.parse(open("harness/palace.py").read())
+        offenders = []
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            returns_value = any(
+                isinstance(r, ast.Return) and r.value is not None
+                for r in ast.walk(node)
+            )
+            if not returns_value:
+                continue
+            last = node.body[-1]
+            ends_well = isinstance(last, (ast.Return, ast.Raise)) or (
+                isinstance(last, ast.Try)
+                and all(
+                    isinstance(b[-1], (ast.Return, ast.Raise))
+                    for b in [last.body] + [h.body for h in last.handlers] if b
+                )
+            )
+            if not ends_well:
+                offenders.append(f"{node.name}:{node.lineno}")
+        self.assertEqual(offenders, [], f"function(s) can fall off the end: {offenders}")
 
 
 if __name__ == "__main__":

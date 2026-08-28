@@ -887,8 +887,9 @@ def test_clearing_a_chat_hands_the_compaction_summary_to_the_consolidator() -> N
         seen.update(kwargs)
 
     agent.on_episode_end = fake_on_episode_end
-    # With no staged batch dir this method falls back to archiving the snapshot
-    # straight into the palace, which on a developer machine is the real one.
+    # The last-resort archive fires on a genuine staging FAILURE. `batch_dir is
+    # None` alone is also the ordinary "cursor already covered this buffer" case,
+    # and archiving there re-mined the whole conversation with no identity.
     from harness import palace
 
     with patch.object(palace, "archive_conversation", new=AsyncMock()) as archived:
@@ -896,8 +897,19 @@ def test_clearing_a_chat_hands_the_compaction_summary_to_the_consolidator() -> N
             "main", [{"role": "user", "content": "hi"}],
             batch_dir=None, session_id="s1", session_segments=[{"id": "seg1"}],
             compaction_summary="earlier: the user corrected the deploy step",
+            stage_failed=True, conversation_id="run-1",
         ))
-    assert archived.await_count == 1, "the archive fallback should still run"
+    assert archived.await_count == 1, "a real staging failure must still archive"
+
+    with patch.object(palace, "archive_conversation", new=AsyncMock()) as skipped:
+        _run(agent._postprocess_cleared_history(
+            "main", [{"role": "user", "content": "hi"}],
+            batch_dir=None, session_id="s1", session_segments=[{"id": "seg1"}],
+            compaction_summary="earlier: the user corrected the deploy step",
+        ))
+    assert skipped.await_count == 0, (
+        "nothing-new-to-stage must NOT re-archive the whole conversation"
+    )
     assert seen.get("compaction_summary") == (
         "earlier: the user corrected the deploy step"
     ), f"the summary must reach the consolidator, got {seen.get('compaction_summary')!r}"

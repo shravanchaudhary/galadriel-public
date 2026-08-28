@@ -70,6 +70,31 @@ the turn actually needs it — the fire is the nudge, not the memory, and openin
 one brings whatever it rests on along with it."""
 
 
+# Code-owned stable section describing the palace's conversation schema. Lives
+# in code, next to RECALL_STABLE_SECTION, because it documents the shape the
+# harness itself writes at archive time (harness/palace.py) — prose in a
+# config/*.md file would drift the moment that changes.
+PALACE_STABLE_SECTION = """# Conversation Memory Layout
+
+Archived conversations live under `room=conversations`, split by speaker:
+`hall=user` is what the human said; `hall=assistant` is everything you produced
+(replies, tool calls, tool results). Each drawer also carries `conversation_id`
+(which conversation) and `chunk_number` (its place in that conversation,
+from 1, continuing across sessions). Results show both, plus `filed_at`.
+
+**To read a whole conversation, filter — do not search for it.** Search finds a
+starting point but cannot retrieve by id, and returns confident rows for an id
+that appears nowhere. Take `conversation_id` off any hit and pass it back with
+no query — an exact ordered lookup, no ranking, no cutoff:
+
+    palace_search(search_meta={"conversation_id": "<id>"})
+    palace_search(search_meta={"conversation_id": "<id>", "hall": "user",
+                               "chunk_number": {"from": 12, "to": 30}})
+
+A search that finds nothing says so. That means "not in memory" — nothing was
+close enough to count as a match — not "nothing exists"."""
+
+
 def _model_capability_section(model: str) -> str:
     """One short block telling the agent which model it is and what that model
     can take as input. The vision line is the first of three gates against the
@@ -158,6 +183,7 @@ class MemoryManager:
                     parts.append(f"# Active Vision\n\n{vision}")
 
         parts.append(RECALL_STABLE_SECTION)
+        parts.append(PALACE_STABLE_SECTION)
 
         if model:
             parts.append(_model_capability_section(model))
@@ -178,7 +204,7 @@ class MemoryManager:
         selected project. It lives here (not stable) so toggling it via Tower
         is instantly visible without a cache invalidation.
 
-        Wake-up is a compact L0/L1 snapshot from the memory palace (MemPalace),
+        Wake-up is a compact digest of learned memory from the palace,
         regenerated whenever the palace mines new content. Lives in the
         dynamic block for the same reason: it changes often enough that
         caching it would just churn the prefix. Disable via env
@@ -186,19 +212,20 @@ class MemoryManager:
         """
         parts: list[str] = []
 
-        # Active-project banner (per-turn, cheap). Halls are MemPalace's
-        # auto-topic dimension, so project names belong in the query, not hall=.
+        # Active-project banner (per-turn, cheap). `hall` is the speaker in
+        # room=conversations, so a project name belongs in the query, not hall=.
         project = self._active_project_name()
         if project:
             parts.append(
                 f"# Active Project: `{project}`\n\n"
                 f"Include `{project}` in palace queries when project-specific "
-                f"history matters. Use room filters by memory type, never a "
-                f"project name as a hall."
+                f"history matters. Scope with room filters by memory type — "
+                f"never a project name as a hall, which is the speaker in "
+                f"room=conversations."
             )
 
-        # Wake-up injection (opt-out via env). Fails silently if mempalace
-        # isn't installed or no cache file exists yet.
+        # Wake-up injection (opt-out via env). Fails silently if no cache file
+        # exists yet.
         if os.environ.get("PALACE_WAKE_UP_INJECT", "1") != "0":
             try:
                 from . import palace

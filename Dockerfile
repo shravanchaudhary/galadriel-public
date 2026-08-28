@@ -2,8 +2,8 @@
 #
 # Replika — ready-to-run runtime image.
 #
-# Two-stage build: the builder compiles wheels (incl. the heavier ChromaDB /
-# onnxruntime stack that mempalace pulls in), the runtime stage stays slim.
+# Two-stage build: the builder compiles wheels (incl. the heavier onnxruntime
+# stack the embedder pulls in), the runtime stage stays slim.
 #
 #   docker build -t galadriel .
 #   docker run --env-file .env -p 127.0.0.1:8080:8080 -v galadriel-data:/data galadriel
@@ -38,7 +38,7 @@ LABEL org.opencontainers.image.title="Replika" \
       org.opencontainers.image.source="https://github.com/avasol/galadriel-public" \
       org.opencontainers.image.description="A persistent personal AI runtime with long-term memory."
 
-# onnxruntime (transitive dep of mempalace) needs libgomp at runtime. iptables
+# onnxruntime (embedder runtime) needs libgomp at runtime. iptables
 # is used only by the ECS task's short-lived network init sidecar, never by the
 # unprivileged application container.
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -50,7 +50,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
-# Non-root user. Its home is /data so the palace defaults (~/.mempalace) land
+# Non-root user. Its home is /data so the archive defaults (~/.mempalace) land
 # on the persistent volume with zero extra config.
 RUN useradd --create-home --home-dir /data --uid 1000 galadriel
 WORKDIR /app
@@ -82,9 +82,10 @@ RUN mkdir -p /opt/galadriel-defaults \
     && chown -R galadriel:galadriel /app /opt/galadriel-defaults
 
 # Palace lives under the user's home on the volume. These are the public
-# defaults already (~/.mempalace), set explicitly here for clarity.
-ENV MEMPALACE_PATH=/data/.mempalace/palace \
-    PALACE_ARCHIVE_ROOT=/data/.mempalace/archive \
+# defaults already (~/.mempalace), set explicitly here for clarity. Drawers
+# live in Mongo/DocumentDB; these paths are the staged archive .md files that
+# `read_episode_segment` reads back, so they must be on the persistent mount.
+ENV PALACE_ARCHIVE_ROOT=/data/.mempalace/archive \
     PALACE_WAKE_UP_FILE=/data/.mempalace/wake_up.md \
     GALADRIEL_STORAGE_ROOT=/mnt/efs \
     GALADRIEL_ENFORCE_WRITE_BOUNDARIES=true \

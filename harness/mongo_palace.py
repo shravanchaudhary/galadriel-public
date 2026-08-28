@@ -1,18 +1,19 @@
-"""Public Mongo-compatible palace adapter.
+"""Public palace adapter.
 
-The implementation remains in ``documentdb_palace`` for import compatibility
-with existing deployments and migration tooling.
+The implementation lives in ``documentdb_palace``; this module is the name the
+harness imports so call sites do not depend on the storage module's filename.
 """
 
 from .documentdb_palace import (  # noqa: F401
+    FilterError,
+    build_filter,
     close,
     create_drawer,
     delete_drawer,
     diary_read,
     diary_write,
+    fetch_data,
     get_drawer,
-    import_drawer,
-    import_kg,
     kg_add,
     kg_invalidate,
     kg_query_rows,

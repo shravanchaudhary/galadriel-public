@@ -824,11 +824,16 @@ class GaladrielAgent:
                 run["run_id"], len(tail),
             )
 
-        # Non-destructive checkpointing. Tracks how many messages of each channel
-        # have already been mined to the palace, so periodic checkpoints (driven
-        # by the scheduler) mine only the new slice and never create duplicate
-        # drawers. Reset whenever compaction rewrites/clears the buffer.
-        self._last_archived_len: dict[str, int] = {}  # channel_id -> messages mined so far
+        # Durable identity of each channel's current logical conversation:
+        # the run_id for `main`, the owning tick_id for a loop channel. Stamped
+        # on every palace drawer mined from that conversation and used as the
+        # reset guard for the archive cursor, so a new conversation never
+        # inherits the previous one's cursor or chunk numbering.
+        # The archive cursor itself is durable in Mongo (harness/palace_cursor.py)
+        # rather than in memory: an in-memory count reset to 0 on restart, and
+        # the shutdown archiver then re-mined buffers the scheduler had already
+        # checkpointed (measured: 74% duplicate conversation drawers).
+        self._conversation_ids: dict[str, str] = {}
 
         # Extra per-channel system context (e.g. a Slack team roster), set by a
         # gateway and re-injected on every turn until changed/cleared. Kept
@@ -975,12 +980,33 @@ class GaladrielAgent:
         conversation_store.delete_channel(self.working_dir, channel_id)
         self._last_input_tokens.pop(channel_id, None)
         self._compaction_summary.pop(channel_id, None)
-        self._last_archived_len.pop(channel_id, None)
+        self._conversation_ids.pop(channel_id, None)
         self._last_warn_tier.pop(channel_id, None)
         self._output_ceiling_streak.pop(channel_id, None)
         self._notified_recall_ids.pop(channel_id, None)
         self._session_id.pop(channel_id, None)
         self._session_segments.pop(channel_id, None)
+
+    def conversation_id_for(self, channel_id: str) -> str:
+        """Durable id of the channel's current logical conversation.
+
+        `main` is a run (`conversation_runs.run_id`) spanning many turns until
+        `/new`; a loop channel is a tick (`worker_ticks.tick_id`), whose buffer
+        is rebuilt each tick. Both are already in Mongo and readable in Tower,
+        so a palace drawer stamped with this id can be walked back to the exact
+        conversation it came from. The `<channel>:<session>` fallback only
+        applies when no recorder exists (audit disabled / recorder start failed);
+        it is still stable for the life of that buffer.
+        """
+        known = self._conversation_ids.get(channel_id)
+        if known:
+            return known
+        return f"{channel_id}:{self._session_for(channel_id)}"
+
+    def _note_conversation_id(self, channel_id: str, conversation_id: str | None) -> None:
+        """Record the durable conversation id once its recorder is established."""
+        if conversation_id:
+            self._conversation_ids[channel_id] = str(conversation_id)
 
     def _session_for(self, channel_id: str) -> str:
         """Stable id for the channel's current learning episode, created lazily."""
@@ -1654,16 +1680,21 @@ class GaladrielAgent:
         #    pointer so task-end consolidation can later drill into this
         #    specific verbatim slice via read_episode_segment.
         batch_dir = None
+        compaction_conversation_id = self.conversation_id_for(channel_id)
         try:
             if run_recorder is not None:
                 from .memory_sync import stage_main, mine_staged_main
-                batch_dir = await stage_main(run_recorder.run_id, head, kind="compact")
+                batch_dir = await stage_main(
+                    run_recorder.run_id, head, kind="compact",
+                    conversation_id=compaction_conversation_id,
+                )
                 if batch_dir is not None:
                     await mine_staged_main(batch_dir, agent="compaction", messages_count=len(head))
             else:
                 from . import palace
                 batch_dir = palace.archive_conversation_durable(
                     channel_id, head, kind="compact",
+                    conversation_id=compaction_conversation_id,
                 )
                 if batch_dir is not None:
                     await palace.mine_batch_dir(batch_dir, agent="compaction")
@@ -1709,8 +1740,11 @@ class GaladrielAgent:
             # In place — respond() holds a reference to this same set.
             notified.intersection_update(surviving_recall_ids)
         # The head was just archived, the tail was not, so the checkpoint
-        # baseline restarts at the front of what remains.
-        self._last_archived_len[channel_id] = 0
+        # baseline restarts at the front of what remains. Message indices just
+        # shifted while the conversation_id stayed the same, so the cursor's own
+        # reset guard cannot catch this — it has to be cleared explicitly.
+        from . import palace_cursor
+        await palace_cursor.reset_channel(channel_id)
 
         log.info(
             f"Compacted channel {channel_id}: {result['messages_before']} msgs → "
@@ -1736,7 +1770,12 @@ class GaladrielAgent:
         messages = self.conversations.get(channel_id)
         if not messages:
             return 0
-        start = self._last_archived_len.get(channel_id, 0)
+        from . import palace_cursor
+        conversation_id = self.conversation_id_for(channel_id)
+        claim = await palace_cursor.claim_slice(
+            channel_id, conversation_id, len(messages),
+        )
+        start = claim["start"]
         if start >= len(messages):
             return 0  # nothing new since the last checkpoint
 
@@ -1749,8 +1788,10 @@ class GaladrielAgent:
                 if recorder is not None:
                     ok = await stage_and_mine_main(
                         recorder.run_id, new_slice, kind="checkpoint", agent="checkpoint",
+                        conversation_id=conversation_id,
                     )
                     if not ok:
+                        await palace_cursor.rewind(channel_id, conversation_id, start)
                         return 0
                     await recorder.record_checkpoint({
                         "kind": "checkpoint", "messages_before": len(new_slice),
@@ -1759,21 +1800,25 @@ class GaladrielAgent:
                     from . import palace
                     batch_dir = palace.archive_conversation_durable(
                         channel_id, new_slice, kind="checkpoint",
+                        conversation_id=conversation_id,
                     )
                     if batch_dir is None or not await palace.mine_batch_dir(batch_dir, agent="checkpoint"):
+                        await palace_cursor.rewind(channel_id, conversation_id, start)
                         return 0
             else:
                 from . import palace
                 batch_dir = palace.archive_conversation_durable(
                     channel_id, new_slice, kind="checkpoint",
+                    conversation_id=conversation_id,
                 )
                 if batch_dir is None or not await palace.mine_batch_dir(batch_dir, agent="checkpoint"):
+                    await palace_cursor.rewind(channel_id, conversation_id, start)
                     return 0
         except Exception as e:
             log.warning(f"Checkpoint failed (channel={channel_id}): {e}")
+            await palace_cursor.rewind(channel_id, conversation_id, start)
             return 0
 
-        self._last_archived_len[channel_id] = len(messages)
         log.info(f"Checkpoint channel {channel_id}: mined {len(new_slice)} new msg(s)")
         return len(new_slice)
 
@@ -2104,6 +2149,7 @@ class GaladrielAgent:
             tools_count=len(self.tools or []),
         )
         await recorder.start()
+        self._note_conversation_id(channel_id, recorder.tick_id)
         return recorder
 
     async def _finalize_owned_tick(self, tick_recorder, *, state: str, error: str | None = None):
@@ -2266,6 +2312,7 @@ class GaladrielAgent:
             )
             if run_recorder is not None:
                 await run_recorder.begin_turn(client_dedup_key)
+                self._note_conversation_id(channel_id, run_recorder.run_id)
                 if run_holder is not None:
                     run_holder["recorder"] = run_recorder
 
@@ -3188,7 +3235,7 @@ class GaladrielAgent:
         self._output_ceiling_streak.pop(channel_id, None)
         self._compaction_summary.pop(channel_id, None)
         self._last_input_tokens.pop(channel_id, None)
-        self._last_archived_len.pop(channel_id, None)
+        self._conversation_ids.pop(channel_id, None)
         self._notified_recall_ids.pop(channel_id, None)
 
     async def switch_main_run(self, run_id: str) -> dict:
@@ -3229,7 +3276,7 @@ class GaladrielAgent:
         conversation_store.save_channel(self.working_dir, MAIN_CHANNEL_ID, messages)
         self._output_ceiling_streak.pop(MAIN_CHANNEL_ID, None)
         self._last_input_tokens.pop(MAIN_CHANNEL_ID, None)
-        self._last_archived_len[MAIN_CHANNEL_ID] = 0
+        self._conversation_ids.pop(MAIN_CHANNEL_ID, None)
         self._notified_recall_ids.pop(MAIN_CHANNEL_ID, None)
         # The live buffer just became a different run's messages entirely —
         # any in-flight learning episode belonged to the parked run, not this
@@ -3483,6 +3530,8 @@ class GaladrielAgent:
         session_segments: list[dict] | None = None,
         compaction_summary: str | None = None,
         reason: str = "new",
+        stage_failed: bool = False,
+        conversation_id: str | None = None,
     ) -> None:
         """Background consolidate+mine after /new wiped the live buffer.
 
@@ -3525,11 +3574,16 @@ class GaladrielAgent:
                     mined = await palace.mine_batch_dir(
                         batch_dir, agent="new-clear",
                     )
-            elif snapshot:
-                # Stage failed before wipe — last-resort archive+mine.
+            elif stage_failed and snapshot:
+                # Staging genuinely failed before the wipe — last-resort archive.
+                # `batch_dir is None` alone does NOT mean failure any more: it is
+                # also the normal "cursor already covered this buffer" case, and
+                # treating that as failure re-mined the entire conversation with
+                # no conversation_id attached.
                 from . import palace
                 await palace.archive_conversation(
                     channel_id, snapshot, kind="full",
+                    conversation_id=conversation_id,
                 )
                 mined = True
         except Exception as e:
@@ -3580,7 +3634,7 @@ class GaladrielAgent:
         end active run. Slow path (create_task): task-end consolidation +
         palace mine. Compaction only archives/mines and never triggers this.
 
-        Silent fallback if mempalace isn't installed: history is still cleared.
+        Silent fallback if the palace is unreachable: history is still cleared.
         """
         messages = self.conversations.get(channel_id)
         if not messages:
@@ -3608,24 +3662,45 @@ class GaladrielAgent:
             except Exception as e:
                 log.warning(f"[NewChat] could not resolve active run_id: {e}")
 
+        # Only the messages this conversation has not already staged. Without
+        # this the wipe re-archived everything the scheduler had checkpointed,
+        # which is where the duplicate conversation drawers came from.
+        from . import palace_cursor
+        clear_conversation_id = self.conversation_id_for(channel_id)
+        clear_claim = await palace_cursor.claim_slice(
+            channel_id, clear_conversation_id, len(snapshot),
+        )
+        # `snapshot` itself stays whole — task-end consolidation reads the full
+        # episode. Only the archive gets the not-yet-staged tail.
+        unstaged = snapshot[clear_claim["start"]:]
+
         # Durable stage before wipe so a crash cannot lose the verbatim chat.
+        # `stage_failed` distinguishes a real failure from the ordinary case of
+        # having nothing new to stage, which also yields batch_dir=None.
+        stage_failed = False
         try:
             if channel_id == MAIN_CHANNEL_ID and run_id:
                 from .memory_sync import stage_main
                 batch_dir = await stage_main(
-                    run_id, snapshot, kind="full",
+                    run_id, unstaged, kind="full",
+                    conversation_id=clear_conversation_id,
                 )
             else:
                 from . import palace
                 batch_dir = palace.archive_conversation_durable(
-                    channel_id, snapshot, kind="full",
+                    channel_id, unstaged, kind="full",
+                    conversation_id=clear_conversation_id,
                 )
                 if channel_id == MAIN_CHANNEL_ID and batch_dir is not None:
                     log.warning(
                         f"[NewChat] staged without run_id "
                         f"(channel={channel_id}); outbox row skipped"
                     )
+            if batch_dir is None and unstaged:
+                # Had messages to stage and got nothing back: a write error.
+                stage_failed = True
         except Exception as e:
+            stage_failed = True
             log.warning(f"[NewChat] durable stage failed on /new: {e}")
 
         log.info(
@@ -3647,7 +3722,7 @@ class GaladrielAgent:
         self._output_ceiling_streak.pop(channel_id, None)
         compaction_summary = self._compaction_summary.pop(channel_id, "")
         self._last_input_tokens.pop(channel_id, None)
-        self._last_archived_len.pop(channel_id, None)
+        self._conversation_ids.pop(channel_id, None)
         self._notified_recall_ids.pop(channel_id, None)
         session_id = self._session_id.pop(channel_id, None)
         session_segments = self._session_segments.pop(channel_id, [])
@@ -3661,6 +3736,7 @@ class GaladrielAgent:
                 channel_id, snapshot, batch_dir=batch_dir,
                 session_id=session_id, session_segments=session_segments,
                 compaction_summary=compaction_summary, reason=reason,
+                stage_failed=stage_failed, conversation_id=clear_conversation_id,
             )
         )
         log.info(
@@ -3684,18 +3760,38 @@ class GaladrielAgent:
         except Exception:
             return 0
         conversation_store.save_all(self.working_dir, self.conversations)
+        from . import palace_cursor
         written = 0
         for channel_id, messages in list(self.conversations.items()):
-            if messages and palace.write_conversation_archive_sync(channel_id, messages):
+            if not messages:
+                continue
+            # Only what the scheduler's checkpoints have not already mined. This
+            # path used to stage the entire buffer every time, so everything
+            # already checkpointed was mined a second time under a new batch
+            # name — the single largest source of duplicate drawers.
+            conversation_id = self.conversation_id_for(channel_id)
+            claim = palace_cursor.claim_slice_sync(
+                channel_id, conversation_id, len(messages),
+            )
+            unstaged = messages[claim["start"]:]
+            if not unstaged:
+                continue
+            if palace.write_conversation_archive_sync(
+                channel_id, unstaged, conversation_id=conversation_id,
+            ):
                 written += 1
+            else:
+                # The claim already moved the cursor past these messages; put it
+                # back or they are recorded as archived and never mined.
+                palace_cursor.rewind_sync(
+                    channel_id, conversation_id, claim["start"],
+                )
         if written:
             log.info(
                 f"Shutdown: staged {written} conversation(s) for palace archival "
                 "(background mine on next start)."
             )
-        # Flush + close MemPalace ChromaDB handles so in-process vector writes
-        # (e.g. diary_write) persist to HNSW; otherwise the next start
-        # quarantines the segment as drift and silently loses those drawers.
+        # Release the palace database client.
         try:
             palace.close()
         except Exception as e:

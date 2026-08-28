@@ -8,7 +8,7 @@ existing `palace_search` / `palace_taxonomy` agent tools).
 
 Editing a drawer's text triggers a scoped, single-record re-embed (see
 `harness/palace.py:update_drawer` for the mechanics) — never a full
-`mempalace mine` re-index. Editing a KG fact goes through invalidate+add
+re-index. Editing a KG fact goes through invalidate+add
 (`kg_invalidate` + `kg_add`) rather than raw mutation, matching the KG's
 temporal-fact design (valid_from/valid_to) instead of fighting it. Diary
 entries are stored as drawers (room="diary"), so they're browsed and edited

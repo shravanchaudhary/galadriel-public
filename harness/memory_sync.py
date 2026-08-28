@@ -20,6 +20,7 @@ async def stage_main(
     messages: list[dict],
     *,
     kind: str,
+    conversation_id: str | None = None,
 ) -> Path | None:
     """Durably stage a Palace batch + outbox row. Does not mine."""
     if not messages:
@@ -34,7 +35,10 @@ async def stage_main(
         f"[PalaceSync] staging run_id={run_id} kind={kind} "
         f"messages={len(messages)}"
     )
-    batch_dir = palace.archive_conversation_durable("main", messages, kind=kind)
+    batch_dir = palace.archive_conversation_durable(
+        "main", messages, kind=kind,
+        conversation_id=conversation_id or run_id,
+    )
     if batch_dir is None:
         log.warning(
             f"[PalaceSync] stage failed run_id={run_id} kind={kind} "
@@ -90,7 +94,7 @@ async def mine_staged_main(
                 "$set": {
                     "state": "mined" if ok else "failed",
                     "mined_at": _now() if ok else None,
-                    "last_error": None if ok else "mempalace mine failed",
+                    "last_error": None if ok else "palace mine failed",
                 },
                 "$inc": {"attempts": 1},
             },
@@ -106,6 +110,8 @@ async def stage_and_mine_main(
     *,
     kind: str,
     agent: str,
+    channel_id: str = "main",
+    conversation_id: str | None = None,
 ) -> bool:
     """Stage a stable Palace batch, record it in Mongo, then mine it once."""
     if not messages:
@@ -114,7 +120,10 @@ async def stage_and_mine_main(
             f"agent={agent} reason=empty_messages"
         )
         return True
-    batch_dir = await stage_main(run_id, messages, kind=kind)
+    batch_dir = await stage_main(
+        run_id, messages, kind=kind,
+        conversation_id=conversation_id,
+    )
     if batch_dir is None:
         return False
     return await mine_staged_main(
@@ -152,7 +161,7 @@ async def drain_outbox(limit: int = 20) -> int:
             {"$set": {
                 "state": "mined" if ok else "failed",
                 "mined_at": _now() if ok else None,
-                "last_error": None if ok else "mempalace mine failed",
+                "last_error": None if ok else "palace mine failed",
             }, "$inc": {"attempts": 1}},
         )
         mined += int(ok)
