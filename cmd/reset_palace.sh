@@ -1,16 +1,27 @@
 #!/usr/bin/env bash
 # ============================================================
-# reset_palace.sh — Wipe all memory and rebuild from scratch
+# reset_palace.sh — Wipe all memory and start from a blank slate
 #
 # Run as: bash cmd/reset_palace.sh         (prompts for confirmation)
 #         bash cmd/reset_palace.sh --yes   (skip the prompt)
 #
-# FULL BLANK SLATE. This is destructive and irreversible for:
-#   - Daily logs (memory/*.md)          — gitignored, NOT in git
-#   - Palace-only data: diary entries, agent-filed drawers, KG facts
-#                                          (no on-disk source to re-mine)
-# config/MEMORY.md is reset to its git-committed state.
-# Everything else (the vector index) is rebuilt by re-mining the repo.
+# The palace lives in MongoDB / DocumentDB, not on disk. This drops those
+# collections outright:
+#   palace_drawers           all memory: conversations, knowledge, diary
+#   palace_knowledge_graph   every KG triple
+#   palace_chunk_counters    per-conversation chunk numbering
+#   palace_archive_cursors   per-channel archive position
+#   palace_outbox            pending mine jobs
+#
+# It also deletes daily logs (memory/*.md, gitignored) and resets
+# config/MEMORY.md to its git-committed state.
+#
+# DESTRUCTIVE AND IRREVERSIBLE. There is no backup step: the drawers are in a
+# remote database, so `mv` cannot save them the way it saved the old on-disk
+# palace. Take a mongodump first if you might want any of it back.
+#
+# Staged archives under PALACE_ARCHIVE_ROOT are left alone — they are the only
+# on-disk source that can be re-mined afterwards.
 #
 # Stop the bot BEFORE running this so nothing writes mid-wipe.
 # ============================================================
@@ -21,31 +32,36 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "$REPO_DIR"
 
-# Prefer the repo's venv binary; fall back to whatever is on PATH.
-if [[ -x "${REPO_DIR}/venv/bin/mempalace" ]]; then
-    MEMPALACE="${REPO_DIR}/venv/bin/mempalace"
+if [[ -x "${REPO_DIR}/venv/bin/python" ]]; then
+    PYTHON="${REPO_DIR}/venv/bin/python"
+elif [[ -x "${REPO_DIR}/.venv/bin/python" ]]; then
+    PYTHON="${REPO_DIR}/.venv/bin/python"
 else
-    MEMPALACE="mempalace"
+    PYTHON="python3"
 fi
 
-# Palace lives at $MEMPALACE_PATH's parent, or ~/.mempalace by default.
-PALACE_HOME="${HOME}/.mempalace"
+TARGET="$("$PYTHON" - <<'PY'
+import os
+from dotenv import load_dotenv
+load_dotenv(".env")
+print(os.environ.get("MONGO_DB") or "(MONGO_DB unset)")
+PY
+)"
 
 echo "🧹 Galadriel memory reset — FULL BLANK SLATE"
 echo ""
-echo "  Repo:        ${REPO_DIR}"
-echo "  Palace home: ${PALACE_HOME}"
-echo "  mempalace:   ${MEMPALACE}"
+echo "  Repo:      ${REPO_DIR}"
+echo "  Database:  ${TARGET}"
+echo "  Python:    ${PYTHON}"
 echo ""
 echo "  This will:"
-echo "    1. Back up ${PALACE_HOME} → ${PALACE_HOME}.bak-<timestamp>"
+echo "    1. Drop the palace collections in ${TARGET}"
 echo "    2. Delete daily logs (memory/*.md) — gitignored, unrecoverable"
 echo "    3. Reset config/MEMORY.md to its git-committed state"
-echo "    4. Re-init + re-mine the repo into a fresh palace"
 echo ""
-echo "  ⚠️  Diary entries, agent-filed drawers, and KG facts have no on-disk"
-echo "      source and will NOT come back (the backup in step 1 is your only"
-echo "      recovery path). Stop the bot before continuing."
+echo "  ⚠️  No backup is taken. The drawers live in a remote database — run a"
+echo "      mongodump first if you might want any of this back. Stop the bot"
+echo "      before continuing."
 echo ""
 
 if [[ "${1:-}" != "--yes" ]]; then
@@ -56,14 +72,28 @@ if [[ "${1:-}" != "--yes" ]]; then
     fi
 fi
 
-# 1. Back up + wipe the palace in one move.
-if [[ -d "$PALACE_HOME" ]]; then
-    BACKUP="${PALACE_HOME}.bak-$(date +%Y%m%d-%H%M%S)"
-    mv "$PALACE_HOME" "$BACKUP"
-    echo "✅ Backed up old palace to ${BACKUP}"
-else
-    echo "ℹ️  No existing palace at ${PALACE_HOME} — nothing to back up."
-fi
+# 1. Drop the palace collections.
+"$PYTHON" - <<'PY'
+import os
+from dotenv import load_dotenv
+from pymongo import MongoClient
+
+load_dotenv(".env")
+uri, name = os.environ.get("MONGO_URI"), os.environ.get("MONGO_DB")
+if not uri or not name:
+    raise SystemExit("MONGO_URI / MONGO_DB are not set — nothing to reset.")
+database = MongoClient(uri)[name]
+for collection in (
+    "palace_drawers",
+    "palace_knowledge_graph",
+    "palace_chunk_counters",
+    "palace_archive_cursors",
+    "palace_outbox",
+):
+    count = database[collection].count_documents({})
+    database[collection].drop()
+    print(f"✅ Dropped {collection} ({count} document(s))")
+PY
 
 # 2. Delete daily logs (keep the .gitkeep so the dir survives).
 if compgen -G "memory/*.md" > /dev/null; then
@@ -82,16 +112,12 @@ if git -C "$REPO_DIR" rev-parse --is-inside-work-tree > /dev/null 2>&1; then
     fi
 fi
 
-# Stale per-project entity registry (regenerated on mine).
-rm -f "${REPO_DIR}/entities.json"
-
-# 4. Re-init + re-mine.
 echo ""
-echo "🏰 Rebuilding the palace..."
-"$MEMPALACE" init .
+echo "✅ Done. The palace rebuilds itself as the agent runs — indexes are"
+echo "   created on first write. To re-import conversations that are still"
+echo "   staged on disk:"
+echo "     python scripts/migrate_palace_bge.py            # dry run"
+echo "     python scripts/migrate_palace_bge.py --apply"
 echo ""
-"$MEMPALACE" status
-
-echo ""
-echo "✅ Done. Restart the bot to pick up the fresh palace:"
-echo "    python main.py        # or: sudo systemctl restart galadriel"
+echo "   Restart the bot:"
+echo "     python main.py        # or: sudo systemctl restart galadriel"

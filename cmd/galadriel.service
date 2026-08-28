@@ -23,10 +23,10 @@ EnvironmentFile=/opt/galadriel/.env
 Environment=HOME=/home/ubuntu
 Environment=PATH=/opt/galadriel/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-# ── Optional: Memory Palace (MemPalace) env vars ─────────────
-# Uncomment and adjust to override defaults. The mempalace library
-# reads MEMPALACE_PATH; the harness reads PALACE_* for the rest.
-# Environment=MEMPALACE_PATH=/home/ubuntu/.mempalace/palace
+# ── Optional: Memory Palace env vars ─────────────────────────
+# Drawers live in MongoDB/DocumentDB (MONGO_URI / MONGO_DB in the
+# EnvironmentFile above). These paths are only the staged conversation
+# archives, which read_episode_segment falls back to before they are mined.
 # Environment=PALACE_ARCHIVE_ROOT=/home/ubuntu/.mempalace/archive
 # Environment=PALACE_WAKE_UP_INJECT=1
 # ─────────────────────────────────────────────────────────────

@@ -146,9 +146,9 @@ MemPalace organizes memory the way a human would organize a library, and the age
 | **Drawer** | A single chunk of content — the atomic unit. ~200–1000 tokens, a verbatim slice of something the agent (or you) wrote. | One paragraph of a daily log. One decision note. One archived Discord exchange. |
 | **Room** | A purpose grouping inside the `agent` wing. Every drawer belongs to exactly one room. | `conversations` (verbatim chat), `knowledge` (durable facts), `episodes` (daily recaps), `diary` (first-person reflection). |
 | **Wing** | The top-level namespace. Lived memory uses one wing only. | `wing=agent` |
-| **Hall** | MemPalace's keyword auto-topic dimension (not a project ID). | `hall=decisions`, `hall=problems`, `hall=milestones`. |
+| **Hall** | The sub-grouping inside a room (not a project ID). In `room=conversations` it is the **speaker**, set by the archiver. | `hall=user`, `hall=assistant`; in other rooms, topic labels like `hall=clodexa-tech`. |
 
-Why this matters: **rooms** let you say *"look only at chat archives"* or *"only durable knowledge"*, **halls** let you say *"look only at things tagged as problems"*, and you can compose both. A search like `palace_search("retry logic", room="knowledge", hall="problems", k=10)` reads as "give me bug-tagged durable knowledge" — which is exactly how a human would ask a librarian.
+Why this matters: **rooms** let you say *"look only at chat archives"* or *"only durable knowledge"*, **halls** let you say *"look only at what the user actually said"*, and you can compose both. A search like `palace_search("retry logic", room="conversations", hall="user", k=10)` reads as "find where the user raised retry logic" — which is exactly how a human would ask a librarian.
 
 The agent's **diary** is a room inside the same `agent` wing — her own journal, written at end-of-session, read at wake-up. Her own voice to her future self, not mixed with operational logs.
 
@@ -159,17 +159,16 @@ The **knowledge graph** sits alongside the drawers. Where drawers are prose, the
 ### First-time setup
 
 ```bash
-# 1. Install (mempalace is in requirements.txt)
+# 1. Install
 pip install -r requirements.txt
 
-# 2. Copy the room layout template
-cp mempalace.yaml.example mempalace.yaml
-
-# 3. Initialize palace storage (defaults to ~/.mempalace/)
-# Lived memory is filed by the harness (conversation archives,
-# palace_add_drawer, diary). Do not mine the whole repo into the palace.
-mempalace init
+# 2. Point at a database — that is the whole setup
+# MONGO_URI / MONGO_DB in .env. Collections and indexes are created on the
+# first write; there is no init step and nothing on disk to seed.
 ```
+
+Lived memory is filed by the harness (conversation archives, `palace_add_drawer`,
+diary). The repo is never mined into the palace.
 
 That's it. The harness picks it up automatically on next start. `palace_search` works as soon as drawers exist; the wake-up snapshot appears after the first mine.
 
@@ -177,8 +176,8 @@ That's it. The harness picks it up automatically on next start. `palace_search` 
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `MEMPALACE_PATH` | `~/.mempalace/palace` | Where the palace lives on disk. Read by MemPalace itself. |
-| `PALACE_ARCHIVE_ROOT` | `~/.mempalace/archive` | Where archived conversations + pre-compaction tool_results land before being mined. |
+| `MONGO_URI` / `MONGO_DB` | — | Required. The palace lives here; there is no on-disk backend. |
+| `PALACE_ARCHIVE_ROOT` | `~/.mempalace/archive` | Where archived conversations are staged before being mined. Crash-safety scaffolding, not the record of truth. |
 | `PALACE_WAKE_UP_FILE` | `~/.mempalace/wake_up.md` | Cached wake-up snapshot. |
 | `PALACE_WAKE_UP_INJECT` | `1` | Set to `0` to disable the wake-up injection into the dynamic block (recovers a small amount of per-call token overhead if budget is tight). |
 | `GALADRIEL_NO_PALACE` | `0` | Set to `1` (or pass `--no-palace`) to run a **stateless / amnesiac session** — see below. |
@@ -330,10 +329,9 @@ pip install -r requirements.txt
 cp .env.example .env
 # Edit .env — set GEMINI_API_KEY (or GOOGLE_API_KEY) at minimum
 
-# 4. (Optional but recommended) Initialize the memory palace
-cp mempalace.yaml.example mempalace.yaml
-mempalace init              # creates ~/.mempalace/
-# Do not `mempalace mine .` the whole repo — lived memory is filed by the harness.
+# 4. Memory palace — no step needed
+# It lives in MongoDB/DocumentDB and builds itself on first write, using the
+# MONGO_URI / MONGO_DB you just set.
 
 # 5. Run
 python main.py
@@ -420,10 +418,8 @@ docker compose logs -f
 **First boot — seed the palace once** (otherwise `palace_*` tools report
 `[palace unavailable]` until there's something to search):
 
-```bash
-docker compose exec galadriel mempalace init
-# Lived memory is filed by the harness; do not mine the whole repo.
-```
+The palace needs no init — it builds itself in MongoDB/DocumentDB on the first
+write. Lived memory is filed by the harness; the repo is never mined.
 
 ### What persists
 
@@ -495,8 +491,9 @@ knowledge/
   skills/                 Technical discoveries
   reference/              Architecture, tools, DB, workflows, coding principles
 memory/                   Daily logs — auto-generated, gitignored (hot dynamic index only)
-mempalace.yaml.example    Agent-wing room template for `mempalace init` (copy to mempalace.yaml)
-~/.mempalace/             Palace storage (created by `mempalace init`) — overridable via MEMPALACE_PATH
+~/.mempalace/archive/     Staged conversation batches awaiting a mine — crash-safety
+                          scaffolding only, overridable via PALACE_ARCHIVE_ROOT.
+                          The palace itself is in MongoDB/DocumentDB.
 ```
 
 ### Semantic recalls — reactive mid-turn pointers
@@ -812,8 +809,8 @@ See `.env.example` for the full list with inline documentation.
 | Model selection | — | Edit `TASKS` in `harness/model_registry.py` (default: gemini-3.1-pro-preview agent, gemini-2.5-flash compaction; copy from `BEDROCK_DEFAULTS` for Claude / open models). Every model, its price, caps, and intel score live in `harness/model_catalog.py` |
 | Max output tokens | — | Not an env var. Each model's documented ceiling comes from `harness/model_catalog.py` via `MODEL_CAPS` (Gemini 3.x: 65,536; Claude 4.6+: 128,000) |
 | `AGENT_COMPACT_THRESHOLD` | No | Input tokens that trigger compaction (default: `300000`) |
-| `MEMPALACE_PATH` | No | Palace directory — read by the [MemPalace](https://github.com/MemPalace/mempalace) library itself (default: `~/.mempalace/palace`) |
-| `PALACE_ARCHIVE_ROOT` | No | Where archived conversations + pre-compaction tool_results land before mining (default: `~/.mempalace/archive`) |
+| `MONGO_URI` / `MONGO_DB` | Yes | The palace lives here — drawers, knowledge graph, diary. No on-disk backend exists |
+| `PALACE_ARCHIVE_ROOT` | No | Where conversations are staged before mining (default: `~/.mempalace/archive`). Crash-safety only; `read_episode_segment` reads the database first |
 | `PALACE_WAKE_UP_FILE` | No | Cached wake-up snapshot path (default: `~/.mempalace/wake_up.md`) |
 | `PALACE_WAKE_UP_INJECT` | No | Set to `0` to disable injection of the wake-up snapshot into the dynamic system-prompt block (default: `1` — enabled) |
 | `GALADRIEL_REFLECTION` | No | Set to `0` to disable the ambient reflection loop entirely — no scheduled reflection/audit turns (default: `1` — enabled) |
@@ -1000,7 +997,7 @@ All changes are additive and gracefully degrade. If MemPalace isn't installed, t
 
 **Cache impact, measured.** 14 consecutive calls on a real deployment: 86.5% cache hit ratio, 71.2% total-input token savings vs. no caching. The 90% cache-read discount is intact — integration costs ~1.5 percentage points of cache hit ratio (one extra wake-up snapshot in dynamic, 10 more tool schemas in the tools-layer cache). Estimated annual overhead: ~$95.
 
-**Graceful degradation.** If MemPalace isn't installed, all palace tools return `[palace unavailable]` at dispatch time; the rest of the harness runs normally. Upgrade path is `pip install mempalace>=3.3.2,<3.4` + `mempalace init`.
+**Graceful degradation.** Without `MONGO_URI` / `MONGO_DB`, palace tools return an error at dispatch time and the rest of the harness runs normally. There is no install or init step beyond pointing at a database.
 
 **Palace Protocol** codified in `SOUL.md` — 5 non-negotiable rules: verify before speaking, say "let me check" when unsure, diary at session-end, invalidate-then-add when facts change. See `knowledge/reference/tools.md` for the full decision matrix (memory_log vs palace_add_drawer vs palace_kg_add vs palace_diary_write).
 
