@@ -718,19 +718,25 @@ TOOL_DEFINITIONS = [
             "Read or configure browser connections used by the browser tool. "
             "Use list/status before first browser use or after a connection failure. "
             "Use connect to save a BCE pairing code or local Chrome CDP port, and "
-            "remove to delete a saved profile. Returns concise JSON and never "
-            "returns BCE API credentials."
+            "remove to delete a saved profile. `main` is a role, not an id: the "
+            "browser flagged default, or the only one paired. When several are "
+            "paired and none is flagged, browser calls without an explicit "
+            "`profile` fail — use set_default to pick one (ask the user which). "
+            "Returns concise JSON and never returns BCE API credentials."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["list", "status", "connect", "remove"],
+                    "enum": ["list", "status", "connect", "set_default", "remove"],
                 },
                 "profile_id": {
                     "type": "string",
-                    "description": "Profile name. Defaults to main for status/connect.",
+                    "description": (
+                        "Profile id. Defaults to main for status/connect; required "
+                        "for set_default and remove."
+                    ),
                 },
                 "backend": {
                     "type": "string",
@@ -1371,11 +1377,12 @@ def _browser_tool_description() -> str:
             "**PAIRING — ask before first use:** Each browser is identified by a "
             "pairing code (`XXXX-XXXX`, e.g. `KJ2D-H96M`) shown in the Chrome "
             "extension popup (Agent must be ON). Before your first browser call, "
-            "call `browser_devices` with action=list. If the list is empty (or "
-            "status says the profile is not configured), STOP and ask the user "
-            "for their code. Once they provide it, persist it with "
-            "`browser_devices` action=connect — use `main` for the default "
-            "browser — then retry.\n\n"
+            "call `browser_devices` with action=list. If it returns a device, "
+            "that browser is already paired — use it, passing "
+            "`profile=<profile_id>` on browser calls when the id is not `main`. "
+            "Only when the list comes back empty, STOP and ask the user for "
+            "their code, persist it with `browser_devices` action=connect, then "
+            "retry.\n\n"
             "Prerequisites (human setup): MongoDB + BCE server running; extension "
             "Agent ON (Connected).\n\n"
             "Core loop:\n"

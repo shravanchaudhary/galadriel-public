@@ -45,16 +45,45 @@ def _implicit_main() -> dict | None:
     return None
 
 
+def _effective_default_id(profiles: list[dict]) -> str | None:
+    """Which profile currently plays the `main` role.
+
+    `main` is a role, not an id. A browser explicitly flagged as default wins;
+    otherwise, when exactly one browser is paired, that is unambiguously the one
+    the user means. With several paired and none flagged, there is no honest
+    answer — the user picks in Tower.
+    """
+    for profile in profiles:
+        if profile.get("is_default"):
+            return profile["profile_id"]
+    return profiles[0]["profile_id"] if len(profiles) == 1 else None
+
+
 def resolve(profile_id: str | None = None) -> dict | None:
-    profile_id = (profile_id or "main").strip() or "main"
+    """One read, one rule: an exact id, else whichever browser holds the role.
+
+    The returned row carries the *effective* `is_default`, so status, list, and
+    the Tower badge can never disagree about which browser is main.
+    """
+    profile_id = (profile_id or "main").strip().lower() or "main"
     try:
-        profile = browser_profiles.get(profile_id)
+        profiles = browser_profiles.list_profiles()
     except RuntimeError:
-        profile = None
-    if profile:
-        return profile
+        profiles = []
+    default_id = _effective_default_id(profiles)
+    match = next(
+        (profile for profile in profiles if profile["profile_id"] == profile_id), None
+    )
+    if match is None and profile_id == "main" and default_id:
+        match = next(
+            (profile for profile in profiles if profile["profile_id"] == default_id),
+            None,
+        )
+    if match is not None:
+        return {**match, "is_default": match["profile_id"] == default_id}
     if profile_id == "main":
-        return _implicit_main()
+        implicit = _implicit_main()
+        return {**implicit, "is_default": True} if implicit else None
     return None
 
 
@@ -64,6 +93,7 @@ def _public(profile: dict, *, include_pairing_code: bool = False) -> dict:
         "backend": profile["backend"],
         "purpose": profile.get("purpose", ""),
         "source": profile.get("source", "database"),
+        "is_default": bool(profile.get("is_default")),
     }
     if profile["backend"] == "bce":
         result["configured"] = bool(profile.get("pairing_code"))
@@ -136,6 +166,23 @@ def _status_for(profile: dict, *, include_pairing_code: bool = False) -> dict:
     return {**base, **live}
 
 
+def _unresolved_reason(profile_id: str) -> str:
+    if profile_id != "main":
+        return f"Browser profile {profile_id!r} is not configured"
+    try:
+        paired = [profile["profile_id"] for profile in browser_profiles.list_profiles()]
+    except RuntimeError:
+        paired = []
+    if paired:
+        return (
+            "No default browser is set, and several are paired ("
+            + ", ".join(paired)
+            + "). Set one as main in Tower (Devices > Browser) or with "
+            "browser_devices action=set_default, or pass profile_id."
+        )
+    return "Browser profile is not configured"
+
+
 def status(
     profile_id: str | None = None,
     *,
@@ -148,7 +195,7 @@ def status(
             "profile_id": profile_id,
             "state": "unknown_profile",
             "online": False,
-            "error": "Browser profile is not configured",
+            "error": _unresolved_reason(profile_id),
         }
     return _status_for(profile, include_pairing_code=include_pairing_code)
 
@@ -159,11 +206,15 @@ def list_devices(
     include_pairing_code: bool = False,
 ) -> list[dict]:
     profiles = browser_profiles.list_profiles()
+    default_id = _effective_default_id(profiles)
     if not any(profile["profile_id"] == "main" for profile in profiles):
         implicit = _implicit_main()
         if implicit:
             profiles.append(implicit)
+            default_id = default_id or "main"
     profiles.sort(key=lambda profile: profile["profile_id"])
+    for profile in profiles:
+        profile["is_default"] = profile["profile_id"] == default_id
     if include_status:
         # list_profiles already returned these rows — status() would re-read
         # each one from Mongo (one round-trip per device).
@@ -185,6 +236,7 @@ def connect(
     cdp_port: int | None = None,
     purpose: str | None = None,
 ) -> dict:
+    before = browser_profiles.list_profiles()
     saved = browser_profiles.upsert(
         profile_id,
         backend or configured_backend(),
@@ -192,7 +244,21 @@ def connect(
         cdp_port=cdp_port,
         purpose=purpose,
     )
+    if not any(profile.get("is_default") for profile in before):
+        # Pin whoever was answering to `main` before this pairing. Without this a
+        # second browser makes the first one ambiguous and the agent loses it.
+        browser_profiles.set_default(
+            _effective_default_id(before) or saved["profile_id"]
+        )
     return status(saved["profile_id"])
+
+
+def set_default(profile_id: str) -> dict:
+    profile_id = browser_profiles.validate_profile_id(profile_id)
+    return {
+        "profile_id": profile_id,
+        "updated": browser_profiles.set_default(profile_id),
+    }
 
 
 def remove(profile_id: str) -> dict:
@@ -214,6 +280,10 @@ def execute(action: str, **inputs) -> dict:
             cdp_port=inputs.get("cdp_port"),
             purpose=inputs.get("purpose"),
         )
+    if action == "set_default":
+        return set_default(inputs.get("profile_id") or "")
     if action == "remove":
         return remove(inputs.get("profile_id") or "")
-    raise ValueError("action must be list, status, connect, or remove")
+    raise ValueError(
+        "action must be list, status, connect, set_default, or remove"
+    )

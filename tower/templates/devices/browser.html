@@ -57,12 +57,18 @@
             {% for browser in browsers %}
             <div class="settings-list-item is-static">
                 <span class="settings-list-content">
-                    <span class="settings-list-title">{{ browser.purpose or 'Browser' }}</span>
+                    <span class="settings-list-title">
+                        {{ browser.purpose or 'Browser' }}
+                        {% if browser.is_default %}<span class="device-tag">Main</span>{% endif %}
+                    </span>
                     <span class="settings-list-note">
                         {% if browser.pairing_code %}Pairing code {{ browser.pairing_code }}{% else %}Environment profile{% endif %}
                     </span>
                 </span>
                 <span class="device-status {{ 'is-online' if browser.online else 'is-offline' }}">{{ browser.state }}</span>
+                {% if browsers|length > 1 and not browser.is_default and browser.source != 'environment' %}
+                <button type="button" class="btn btn-small btn-secondary" data-make-main="{{ browser.profile_id }}">Set as main</button>
+                {% endif %}
                 {% if browser.source != 'environment' %}
                 <button type="button" class="btn btn-small btn-danger" data-remove-browser="{{ browser.profile_id }}">Remove</button>
                 {% endif %}
@@ -101,6 +107,12 @@ function renderBrowsers(browsers) {
         const title = document.createElement('span');
         title.className = 'settings-list-title';
         title.textContent = browser.purpose || 'Browser';
+        if (browser.is_default) {
+            const mainTag = document.createElement('span');
+            mainTag.className = 'device-tag';
+            mainTag.textContent = 'Main';
+            title.append(' ', mainTag);
+        }
         const note = document.createElement('span');
         note.className = 'settings-list-note';
         note.textContent = browser.pairing_code
@@ -111,6 +123,14 @@ function renderBrowsers(browsers) {
         badge.className = `device-status ${browser.online ? 'is-online' : 'is-offline'}`;
         badge.textContent = browser.state || 'offline';
         row.append(content, badge);
+        if (browsers.length > 1 && !browser.is_default && browser.source !== 'environment') {
+            const makeMain = document.createElement('button');
+            makeMain.type = 'button';
+            makeMain.className = 'btn btn-small btn-secondary';
+            makeMain.dataset.makeMain = browser.profile_id;
+            makeMain.textContent = 'Set as main';
+            row.append(makeMain);
+        }
         if (browser.source !== 'environment') {
             const remove = document.createElement('button');
             remove.type = 'button';
@@ -186,9 +206,28 @@ async function removeBrowser(profileId) {
     }
 }
 
+async function makeBrowserMain(profileId) {
+    try {
+        const response = await fetch(`/api/devices/browsers/${encodeURIComponent(profileId)}/default`, {method: 'POST'});
+        if (!response.ok) {
+            const data = await response.json().catch(() => ({}));
+            if (window.towerToast) window.towerToast(data.error || 'Could not set the main browser.', { type: 'error' });
+            return;
+        }
+        await refreshBrowsers();
+    } catch (err) {
+        if (window.towerToast) window.towerToast(err.message || 'Could not set the main browser.', { type: 'error' });
+    }
+}
+
 document.getElementById('browser-list').addEventListener('click', (event) => {
-    const btn = event.target.closest('[data-remove-browser]');
-    if (btn) removeBrowser(btn.dataset.removeBrowser);
+    const remove = event.target.closest('[data-remove-browser]');
+    if (remove) {
+        removeBrowser(remove.dataset.removeBrowser);
+        return;
+    }
+    const main = event.target.closest('[data-make-main]');
+    if (main) makeBrowserMain(main.dataset.makeMain);
 });
 
 window.setInterval(() => {

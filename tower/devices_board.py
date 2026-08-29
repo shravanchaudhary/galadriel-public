@@ -113,6 +113,16 @@ def register_devices_board(app) -> None:
         except RuntimeError as exc:
             return jsonify({"error": str(exc)}), 503
 
+    @blueprint.post("/api/devices/browsers/<profile_id>/default")
+    def make_browser_default(profile_id: str):
+        try:
+            result = browser_devices.set_default(profile_id)
+            return jsonify(result), 200 if result["updated"] else 404
+        except ValueError as exc:
+            return jsonify({"error": str(exc)}), 400
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc)}), 503
+
     @blueprint.delete("/api/devices/browsers/<profile_id>")
     def remove_browser(profile_id: str):
         try:

@@ -3617,6 +3617,17 @@ body.wfc-resizing * { cursor: inherit !important; }
 }
 .device-status.is-online { color: var(--success); }
 .device-status.is-offline { color: var(--danger); }
+.device-tag {
+    margin-left: 0.4rem;
+    padding: 0.1rem 0.4rem;
+    border-radius: 999px;
+    background: var(--bg-subtle);
+    color: var(--text-secondary);
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    vertical-align: middle;
+}
 .devices-enrollment-code {
     min-height: 1.5rem;
     margin-bottom: 0.75rem;

@@ -83,6 +83,7 @@ def _serializable(document: dict) -> dict:
             "pairing_code",
             "cdp_port",
             "purpose",
+            "is_default",
             "created_at",
             "updated_at",
         )
@@ -97,6 +98,7 @@ _LIST_PROJECTION = {
     "pairing_code": 1,
     "cdp_port": 1,
     "purpose": 1,
+    "is_default": 1,
     "created_at": 1,
     "updated_at": 1,
 }
@@ -106,16 +108,6 @@ def list_profiles(*, db=None) -> list[dict]:
     database = _database(db)
     rows = database[COLLECTION].find({"tenant_id": tenant_id()}, _LIST_PROJECTION)
     return sorted((_serializable(row) for row in rows), key=lambda row: row["profile_id"])
-
-
-def get(profile_id: str, *, db=None) -> dict | None:
-    profile_id = validate_profile_id(profile_id)
-    database = _database(db)
-    document = database[COLLECTION].find_one({
-        "_id": _document_id(profile_id),
-        "tenant_id": tenant_id(),
-    })
-    return _serializable(document) if document else None
 
 
 def upsert(
@@ -149,17 +141,39 @@ def upsert(
     database = _database(db)
     existing = database[COLLECTION].find_one(
         {"_id": document["_id"], "tenant_id": tenant_id()},
-        {"created_at": 1},
+        {"created_at": 1, "is_default": 1},
     )
     document["created_at"] = (
         existing.get("created_at") if existing else document["updated_at"]
     )
+    # replace_one rewrites the whole document; re-saving a browser must not
+    # silently demote it.
+    if existing and existing.get("is_default"):
+        document["is_default"] = True
     database[COLLECTION].replace_one(
         {"_id": document["_id"], "tenant_id": tenant_id()},
         document,
         upsert=True,
     )
     return _serializable(document)
+
+
+def set_default(profile_id: str, *, db=None) -> bool:
+    """Flag one profile as the default; clear the flag everywhere else."""
+    profile_id = validate_profile_id(profile_id)
+    database = _database(db)
+    document_id = _document_id(profile_id)
+    claimed = database[COLLECTION].update_one(
+        {"_id": document_id, "tenant_id": tenant_id()},
+        {"$set": {"is_default": True}},
+    )
+    if not claimed.matched_count:
+        return False
+    database[COLLECTION].update_many(
+        {"tenant_id": tenant_id(), "_id": {"$ne": document_id}},
+        {"$unset": {"is_default": ""}},
+    )
+    return True
 
 
 def delete(profile_id: str, *, db=None) -> bool:
