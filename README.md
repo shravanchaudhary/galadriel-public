@@ -611,7 +611,7 @@ The manual Socket Mode fallback follows `REPLIKA_TYPE`: organization Replikas us
 | Who can talk to it | One `DISCORD_AUTHORIZED_USER_ID` | Any member of the configured channel |
 | Which channel | Manually set via `DISCORD_CHANNEL_ID` | Manually set via `SLACK_CHANNEL_ID` |
 | When it responds | Every message in the target channel, DMs, or when mentioned | A structured reply gate observes every selected-channel message; explicit mentions always respond |
-| Who it thinks it's talking to | The one user in `config/MEMORY.md` | Whoever sent the message — each message is prefixed `[Sender Name]: ...`, and the agent is given a live roster of the channel so it knows it's a team member among several people, not a 1:1 assistant |
+| Who it thinks it's talking to | The one user in `config/MEMORY.md` | Whoever sent the message — organization messages are prefixed `[Slack/Sender Name]: ...` and the agent is given a live roster of the channel so it knows it's a team member among several people, not a 1:1 assistant (individual Replikas only ever hear from their installer, so those are just `[Slack]: ...` with no roster). Messages from the Tower UI carry no prefix at all — the UI is the default surface |
 | Approvals (🔴 red-tier commands) | The authorized user only, via DM buttons | Owner/installer/configured admins only, via Block Kit; central tenant mode blocks red actions because it has no local callback |
 | Push notifications (heartbeat, morning briefing, worker pings) | The authorized user's DM | The configured channel — there is no Slack DM push target by design |
 | Transport | Discord gateway | **Socket Mode** — an outbound-only websocket, so no public webhook URL or signing secret is needed |

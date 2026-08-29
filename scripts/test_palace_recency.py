@@ -91,7 +91,7 @@ def test_conversation_store_roundtrip() -> bool:
     with tempfile.TemporaryDirectory() as tmp:
         wd = Path(tmp)
         messages = [
-            {"role": "user", "content": "[Tower]: hello from test"},
+            {"role": "user", "content": "hello from test"},
             {"role": "assistant", "content": [{"type": "text", "text": "hi"}]},
         ]
         conversation_store.save_channel(wd, "main", messages)

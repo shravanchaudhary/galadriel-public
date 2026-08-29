@@ -54,7 +54,7 @@ _MIN_SEMANTIC_SCAN_WORDS = 4
 _STRUCTURED_CHUNK_RE = re.compile(
     r"^(?:"
     r"[\{\}\]\"']"                        # JSON/dict fragment starts
-    r"|\[[\{\[\"\d]"                      # array-of-structure; NOT [Tower]: prefixes
+    r"|\[[\{\[\"\d]"                      # array-of-structure; NOT [Slack/…]: prefixes
     r"|[-bcdlps][rwxsStT-]{9}[.+@]?\s"    # ls -l permission column
     r")"
 )

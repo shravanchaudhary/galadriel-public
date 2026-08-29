@@ -36,8 +36,8 @@ if str(REPO_ROOT) not in sys.path:
 # Real incident false positives (production inject logs). Every one of these
 # fired in production and should not have. All expected=False.
 INCIDENT_CASES: list[tuple[str, str]] = [
-    ("[Tower]: what are you doing every day thats consuming upto 20$ of your token usage every day?", "sys_plan"),
-    ("[Tower]: what are you doing every day thats consuming upto 20$ of your token usage every day?", "sys_jobs"),
+    ("what are you doing every day thats consuming upto 20$ of your token usage every day?", "sys_plan"),
+    ("what are you doing every day thats consuming upto 20$ of your token usage every day?", "sys_jobs"),
     ("read_file", "sys_architecture"),
     ("active", "sys_finish_work"),
     ("active", "sys_status"),

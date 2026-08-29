@@ -594,6 +594,47 @@ def observation_overlay(
     return text
 
 
+def slack_message_tag(replika_type: str, sender: str | None = None) -> str:
+    """Surface tag prefixed to one inbound Slack message.
+
+    An individual Replika only ever hears from its installer, so the bare
+    surface is unambiguous. An organization Replika sits in a shared channel
+    where the agent must know who spoke — carry the sender's resolved display
+    name, or their raw Slack user id when the name could not be resolved.
+
+    Shared by the local Socket Mode bot and the deployed tenant runtime so the
+    two surfaces cannot drift.
+    """
+    if replika_type == "organization" and sender:
+        return f"[Slack/{sender}]"
+    return "[Slack]"
+
+
+def channel_roster_context(channel_name: str, member_names: list[str]) -> str:
+    """System context telling the agent it is a teammate in a shared channel.
+
+    Without this the sender tag is just a label — the agent keeps treating
+    every message as one continuous "the user". Set via
+    ``agent.set_channel_context``; it is re-injected verbatim every turn, so
+    the text must stay byte-identical between pushes or it thrashes the
+    cache-stable system prefix.
+    """
+    members = ", ".join(member_names) if member_names else "(none yet)"
+    return (
+        f"# Slack team channel: #{channel_name}\n"
+        "This context applies only to messages tagged `[Slack/<name>]:` — those "
+        "come from a shared team Slack channel, not a private assistant DM. "
+        "(Untagged messages come from the primary user in the web UI; "
+        "`[Discord]:` messages come from the primary user on Discord — treat "
+        "both normally.)\n"
+        f"Current members who can talk to you on Slack: {members}.\n"
+        'Every incoming Slack message is prefixed with the sender\'s name, '
+        'e.g. "[Slack/Priya Sharma]: ...".\n'
+        "Address the person who actually spoke — don't assume continuity of a "
+        'single "the user" across Slack messages.'
+    )
+
+
 class SlackObservationArchiver:
     """Debounces channel observations into bounded durable Palace batches."""
 

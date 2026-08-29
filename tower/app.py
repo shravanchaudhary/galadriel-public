@@ -96,7 +96,7 @@ def _build_chat_message(message: str, images: list) -> str | list | None:
     when images are attached. None when there is nothing to send."""
     if not message and not images:
         return None
-    text = f"[Tower]: {message or '(image attached)'}"
+    text = message or '(image attached)'
     if not images:
         return text
     return [{"type": "text", "text": text}, *images]
@@ -579,7 +579,7 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
         if isinstance(payload, str):
             if not text.strip():
                 return jsonify({"error": "Message cannot be empty"}), 400
-            payload = f"[Tower]: {text.strip()}"
+            payload = text.strip()
         elif isinstance(payload, list):
             payload = list(payload)
             text_index = next((
@@ -592,7 +592,7 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
                 return jsonify({"error": "Message cannot be empty"}), 400
             payload[text_index] = {
                 **payload[text_index],
-                "text": f"[Tower]: {text.strip() or '(image attached)'}",
+                "text": text.strip() or "(image attached)",
             }
         else:
             return jsonify({"error": "Message payload is not safely editable"}), 400

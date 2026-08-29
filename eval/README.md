@@ -34,7 +34,7 @@ expected, source}` (95 fire / 103 no-fire, all 16 system recalls):
 - `heldout` (34): the labeled cases in `eval/heldout_cases.py` (pure data, no
   harness import).
 - `incident` (7): real production false-positive injects — e.g. the
-  `[Tower]: …20$ token usage…` message firing `sys_plan`/`sys_jobs`, bare
+  `…20$ token usage…` message firing `sys_plan`/`sys_jobs`, bare
   `read_file` firing `sys_architecture`, `active` firing
   `sys_finish_work`/`sys_status`, `worker_control.md` tool-args JSON firing
   `sys_deferred_work`/`sys_jobs`. All labeled `expected=False`.

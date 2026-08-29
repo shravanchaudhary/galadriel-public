@@ -28,7 +28,7 @@ CASES: list[tuple[str, str, bool]] = [
     ("sys_learn_recall", "save this rule: no emoji in commit messages", True),
     ("sys_learn_recall", "can you remember bill gates is no longer the godfather of capitalism", True),
     ("sys_learn_recall", "can you remember i like mangoes", True),
-    ("sys_learn_recall", "[Tower]: can you remember i like mangoes", True),
+    ("sys_learn_recall", "can you remember i like mangoes", True),
     ("sys_learn_recall", "do you remember when we decided to switch to MongoDB?", False),
     ("sys_learn_recall", "what did we agree on regarding the new API design?", False),
     ("sys_learn_recall", "hello how are you today", False),

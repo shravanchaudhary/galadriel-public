@@ -21,6 +21,8 @@ from harness.slack_observations import (  # noqa: E402
     ReplyDecision,
 )
 from tower.slack_integration import (  # noqa: E402
+    SLACK_NAME_LOOKUPS_PER_DELIVERY,
+    SLACK_ROSTER_MAX_MEMBERS,
     SlackOutboxDispatcher,
     internal_signature_valid,
     signed_internal_headers,
@@ -63,6 +65,7 @@ class ClaimStore:
         self.failures = []
         self.auth_refs = []
         self.placeholders = []
+        self.directories = []
 
     def claim(self, worker_id):
         if not self.items:
@@ -82,6 +85,10 @@ class ClaimStore:
 
     def set_runtime_placeholder(self, item_id, placeholder_ts):
         self.placeholders.append((item_id, placeholder_ts))
+        return True
+
+    def set_directory(self, replika_id, team_id, directory):
+        self.directories.append((replika_id, team_id, directory))
         return True
 
 
@@ -176,9 +183,199 @@ SlackOutboxDispatcher(
     slack_api=placeholder_slack,
 ).dispatch_once()
 check(
-    not placeholder_slack.calls
+    not [call for call in placeholder_slack.calls if call[0] == "chat.postMessage"]
     and placeholder_transport.calls[0][1]["placeholder_ts"] is None,
     "dispatcher waits for the runtime reply decision before posting a placeholder",
+)
+
+# The tenant runtime holds no Slack token, so the dispatcher resolves display
+# names and channel membership centrally and ships them with the event.
+class DirectorySlackApi:
+    def __init__(self):
+        self.calls = []
+
+    def call(self, method, *, token=None, **params):
+        self.calls.append((method, token, params))
+        if method == "conversations.members":
+            return {"ok": True, "members": ["U2", "U3", "B1"]}
+        if method == "users.info":
+            names = {"U2": "Priya Sharma", "U3": "Rahul Verma"}
+            return {"ok": True, "user": {"profile": {"display_name": names[params["user"]]}}}
+        return {"ok": True, "ts": "200.1"}
+
+
+directory_item = {
+    **ingress_item,
+    "_id": "E-DIR",
+    "dedupe_key": "E-DIR",
+    "payload": {
+        "event_id": "E-DIR",
+        "event": {"type": "message", "channel": "C1", "user": "U2", "text": "hi"},
+    },
+}
+directory_store = ClaimStore([directory_item])
+directory_transport = TenantTransport()
+directory_slack = DirectorySlackApi()
+SlackOutboxDispatcher(
+    directory_store,
+    installation_resolver=lambda owner: {
+        **installation,
+        "replika_id": "tenant-1",
+        "bot_user_id": "B1",
+        "selected_channel": {"id": "C1", "name": "eng"},
+    },
+    tenant_url_resolver=lambda owner: "https://tenant.example",
+    auth_vault=Vault(),
+    token_vault=Vault(),
+    transport=directory_transport,
+    slack_api=directory_slack,
+).dispatch_once()
+delivered = directory_transport.calls[0][1]
+check(
+    delivered["sender_display_name"] == "Priya Sharma"
+    and delivered["channel_member_names"] == ["Priya Sharma", "Rahul Verma"],
+    "dispatcher ships resolved sender name and channel roster to the tenant",
+)
+check(
+    directory_store.directories
+    and directory_store.directories[0][2]["user_names"]["U2"] == "Priya Sharma",
+    "resolved names are cached on the installation for reuse",
+)
+
+# Second delivery reuses the cache: no further users.info round-trips.
+cached_directory = directory_store.directories[0][2]
+reuse_store = ClaimStore([{**directory_item, "_id": "E-DIR2", "dedupe_key": "E-DIR2"}])
+reuse_slack = DirectorySlackApi()
+SlackOutboxDispatcher(
+    reuse_store,
+    installation_resolver=lambda owner: {
+        **installation,
+        "replika_id": "tenant-1",
+        "bot_user_id": "B1",
+        "selected_channel": {"id": "C1", "name": "eng"},
+        "slack_directory": cached_directory,
+    },
+    tenant_url_resolver=lambda owner: "https://tenant.example",
+    auth_vault=Vault(),
+    token_vault=Vault(),
+    transport=TenantTransport(),
+    slack_api=reuse_slack,
+).dispatch_once()
+check(
+    not [call for call in reuse_slack.calls if call[0] == "users.info"],
+    "cached Slack names are reused instead of re-resolved per message",
+)
+# This Mongo client is built without tz_aware, so a stored datetime returns
+# naive and comparing it against an aware now() raises — which would silently
+# drop every name and roster after the first message. Keep the stamp a float.
+check(
+    isinstance(cached_directory["refreshed_at"], float),
+    "directory freshness is stamped as epoch seconds, never a datetime",
+)
+stale_directory = {**cached_directory, "refreshed_at": 0.0}
+stale_store = ClaimStore([{**directory_item, "_id": "E-DIR3", "dedupe_key": "E-DIR3"}])
+stale_transport = TenantTransport()
+stale_slack = DirectorySlackApi()
+SlackOutboxDispatcher(
+    stale_store,
+    installation_resolver=lambda owner: {
+        **installation,
+        "replika_id": "tenant-1",
+        "bot_user_id": "B1",
+        "selected_channel": {"id": "C1", "name": "eng"},
+        "slack_directory": stale_directory,
+    },
+    tenant_url_resolver=lambda owner: "https://tenant.example",
+    auth_vault=Vault(),
+    token_vault=Vault(),
+    transport=stale_transport,
+    slack_api=stale_slack,
+).dispatch_once()
+check(
+    stale_transport.calls[0][1]["channel_member_names"] == ["Priya Sharma", "Rahul Verma"]
+    and "conversations.members" in [call[0] for call in stale_slack.calls],
+    "an expired roster re-lists membership and still ships names",
+)
+
+# Name resolution runs inside the delivery path, so a large channel must not
+# stall messages behind hundreds of serial users.info calls.
+class BigChannelSlackApi:
+    def __init__(self):
+        self.calls = []
+
+    def call(self, method, *, token=None, **params):
+        self.calls.append((method, token, params))
+        if method == "conversations.members":
+            return {"ok": True, "members": [f"U{index:03d}" for index in range(400)]}
+        if method == "users.info":
+            return {"ok": True, "user": {"profile": {"display_name": params["user"] + "-name"}}}
+        return {"ok": True, "ts": "200.1"}
+
+
+big_store = ClaimStore([{**directory_item, "_id": "E-BIG", "dedupe_key": "E-BIG"}])
+big_transport = TenantTransport()
+big_slack = BigChannelSlackApi()
+SlackOutboxDispatcher(
+    big_store,
+    installation_resolver=lambda owner: {
+        **installation,
+        "replika_id": "tenant-1",
+        "bot_user_id": "B1",
+        "selected_channel": {"id": "C1", "name": "eng"},
+    },
+    tenant_url_resolver=lambda owner: "https://tenant.example",
+    auth_vault=Vault(),
+    token_vault=Vault(),
+    transport=big_transport,
+    slack_api=big_slack,
+).dispatch_once()
+lookups = [call for call in big_slack.calls if call[0] == "users.info"]
+check(
+    len(lookups) <= SLACK_NAME_LOOKUPS_PER_DELIVERY,
+    "one delivery never resolves more than its name-lookup budget",
+)
+check(
+    lookups[0][2]["user"] == "U2",
+    "the sender is resolved first, ahead of the rest of the roster",
+)
+check(
+    len(big_transport.calls[0][1]["channel_member_names"]) <= SLACK_ROSTER_MAX_MEMBERS,
+    "the shipped roster is bounded for large channels",
+)
+check(
+    big_transport.calls[0][1]["sender_display_name"] == "U2-name",
+    "the sender name still resolves in a large channel",
+)
+
+# Slack does not promise a member order; the roster text is re-injected
+# verbatim every turn, so an unstable order would move the cached prefix.
+class ShuffledSlackApi(DirectorySlackApi):
+    def call(self, method, *, token=None, **params):
+        if method == "conversations.members":
+            self.calls.append((method, token, params))
+            return {"ok": True, "members": ["U3", "B1", "U2"]}
+        return super().call(method, token=token, **params)
+
+
+shuffled_transport = TenantTransport()
+SlackOutboxDispatcher(
+    ClaimStore([{**directory_item, "_id": "E-DIR4", "dedupe_key": "E-DIR4"}]),
+    installation_resolver=lambda owner: {
+        **installation,
+        "replika_id": "tenant-1",
+        "bot_user_id": "B1",
+        "selected_channel": {"id": "C1", "name": "eng"},
+    },
+    tenant_url_resolver=lambda owner: "https://tenant.example",
+    auth_vault=Vault(),
+    token_vault=Vault(),
+    transport=shuffled_transport,
+    slack_api=ShuffledSlackApi(),
+).dispatch_once()
+check(
+    shuffled_transport.calls[0][1]["channel_member_names"]
+    == ["Priya Sharma", "Rahul Verma"],
+    "roster order is stable regardless of Slack member ordering",
 )
 
 retry_store = ClaimStore([dict(ingress_item)])
@@ -267,6 +464,7 @@ class Agent:
         self.enqueued = []
         self.stops = 0
         self.response = response
+        self.channel_context = {}
 
     async def enqueue(self, payload, **kwargs):
         self.enqueued.append((payload, kwargs))
@@ -278,6 +476,9 @@ class Agent:
     def request_stop(self, channel):
         self.stops += 1
         return True
+
+    def set_channel_context(self, channel, text):
+        self.channel_context[channel] = text
 
 
 class Scheduler:
@@ -417,6 +618,11 @@ check(
     agent.enqueued[0][1]["request_context"]["trusted"],
     "individual owner DM is trusted",
 )
+check(
+    agent.enqueued[0][0].startswith("[Slack]: "),
+    "individual Slack messages carry the bare surface tag",
+)
+check(not agent.channel_context, "individual Slack installs get no channel roster")
 
 org_client, org_agent, org_delivery, _, selected = runtime_client("organization")
 org = json.loads(json.dumps(base))
@@ -433,13 +639,49 @@ org["payload"]["event"].update(
     text="organization request without a mention",
     ts="100.0",
 )
+org["selected_channel"] = {"id": selected, "name": "eng"}
+org["sender_display_name"] = "Priya Sharma"
+org["channel_member_names"] = ["Priya Sharma", "Rahul Verma"]
 check(post_ingress(org_client, org).get_json()["accepted"], "selected channel accepted")
 check(org_delivery.event.wait(2), "organization response delivered asynchronously")
+check(
+    org_agent.enqueued[0][0].startswith("[Slack/Priya Sharma]: "),
+    "organization Slack messages carry the resolved sender name",
+)
+roster = org_agent.channel_context.get("main") or ""
+check(
+    "#eng" in roster and "Priya Sharma, Rahul Verma" in roster,
+    "organization Slack installs push the channel roster as system context",
+)
 check(
     org_delivery.calls[0][1]["create_placeholder"]
     and org_delivery.calls[1][1]["placeholder_ts"] == "200.1",
     "reply-gate-approved organization message gets a placeholder before processing",
 )
+# Central name resolution is best-effort; a failed lookup must not replace a
+# good roster with "(none yet)", and the sender falls back to the raw id.
+blank_client, blank_agent, blank_delivery, _, _ = runtime_client("organization")
+check(post_ingress(blank_client, org).get_json()["accepted"], "named org message accepted")
+check(blank_delivery.event.wait(2), "named org message delivered")
+named_roster = blank_agent.channel_context.get("main")
+blank = json.loads(json.dumps(org))
+blank["dedupe_key"] = "E-ORG-BLANK"
+blank["payload"]["event_id"] = "E-ORG-BLANK"
+blank["payload"]["event"]["ts"] = "100.5"
+blank["sender_display_name"] = None
+blank["channel_member_names"] = []
+blank_delivery.event.clear()
+check(post_ingress(blank_client, blank).get_json()["accepted"], "unnamed org message accepted")
+check(blank_delivery.event.wait(2), "unnamed org message still delivered")
+check(
+    blank_agent.channel_context.get("main") == named_roster,
+    "a failed name lookup never wipes the existing channel roster",
+)
+check(
+    blank_agent.enqueued[-1][0].startswith("[Slack/U2]: "),
+    "an unresolved sender falls back to the raw Slack user id",
+)
+
 ignore_gate = NeverRespondGate()
 ignore_client, ignore_agent, ignore_delivery, _, _ = runtime_client(
     "organization", reply_gate=ignore_gate

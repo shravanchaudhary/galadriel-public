@@ -41,14 +41,14 @@ class SanitizationTests(unittest.TestCase):
 
 
 class TitleTests(unittest.TestCase):
-    def test_title_from_tower_user_message(self):
+    def test_title_from_ui_user_message(self):
         self.assertEqual(
-            conversation_run_store.title_from_user_content("[Tower]: Plan the launch"),
+            conversation_run_store.title_from_user_content("Plan the launch"),
             "Plan the launch",
         )
 
     def test_title_truncates(self):
-        long = "[Tower]: " + ("x" * 100)
+        long = "" + ("x" * 100)
         title = conversation_run_store.title_from_user_content(long)
         self.assertTrue(title.endswith("…"))
         self.assertLessEqual(len(title), 72)
@@ -111,7 +111,7 @@ class RecorderFlushTests(unittest.TestCase):
         async def run_test():
             await recorder.begin_turn("dedupe-1")
             await recorder.record_message(
-                {"role": "user", "content": "[Tower]: hello world"},
+                {"role": "user", "content": "hello world"},
                 visibility="user",
                 kind="direct_user",
             )
@@ -151,7 +151,7 @@ class RecorderFlushTests(unittest.TestCase):
 
         async def run_test():
             await recorder.record_message(
-                {"role": "user", "content": "[Tower]: fallback title please"},
+                {"role": "user", "content": "fallback title please"},
                 visibility="user",
                 kind="direct_user",
             )
@@ -188,7 +188,7 @@ class SwitchMainRunTests(unittest.TestCase):
             "title": "Older chat",
         }
         rebuilt = [
-            {"role": "user", "content": "[Tower]: resume me"},
+            {"role": "user", "content": "resume me"},
             {"role": "assistant", "content": [{"type": "text", "text": "ok"}]},
         ]
 
@@ -241,7 +241,7 @@ class OverlayHistoryTests(unittest.TestCase):
             {
                 "kind": "direct_user",
                 "role": "user",
-                "content": "[Tower]: hello",
+                "content": "hello",
                 "visibility": "user",
             },
             {
@@ -284,7 +284,7 @@ class OverlayHistoryTests(unittest.TestCase):
             },
         ]
         direct = [
-            {"role": "user", "content": "[Tower]: only direct", "kind": "direct_user"},
+            {"role": "user", "content": "only direct", "kind": "direct_user"},
             {
                 "role": "assistant",
                 "content": "ok",

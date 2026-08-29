@@ -109,7 +109,7 @@ def title_from_user_content(content: Any) -> str | None:
     text = _content_text(content).strip()
     if not text:
         return None
-    for prefix in ("[Tower]: ", "[User instruction]\n"):
+    for prefix in ("[User instruction]\n",):
         if prefix in text:
             text = text.split(prefix, 1)[-1].strip()
     text = text.replace("\n", " ").strip()

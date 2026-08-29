@@ -16,9 +16,11 @@ from flask import Blueprint, current_app, jsonify, request
 from harness.slack_observations import (
     ReplyGate,
     SlackObservationArchiver,
+    channel_roster_context,
     default_observation_store,
     explicit_bot_address,
     observation_overlay,
+    slack_message_tag,
 )
 
 from .slack_integration import (
@@ -184,6 +186,7 @@ def register_slack_runtime(app, agent, scheduler=None, channel_id: str = "main")
             or len(dedupe_key) > 300
             or kind not in {"event", "control"}
             or not isinstance(data.get("admin_user_ids") or [], list)
+            or not isinstance(data.get("channel_member_names") or [], list)
         ):
             return jsonify({"error": "Invalid ingress payload"}), 400
 
@@ -244,6 +247,7 @@ def register_slack_runtime(app, agent, scheduler=None, channel_id: str = "main")
                 transport=central_transport,
             )
 
+        sender_display_name = str(data.get("sender_display_name") or "") or None
         observation = None
         if replika_type == "organization":
             observation = observation_store.observe(
@@ -253,6 +257,7 @@ def register_slack_runtime(app, agent, scheduler=None, channel_id: str = "main")
                 event=event,
                 event_id=event_id,
                 event_time=payload.get("event_time"),
+                sender_display_name=sender_display_name,
             )
             if observation is None:
                 discard_placeholder()
@@ -283,6 +288,27 @@ def register_slack_runtime(app, agent, scheduler=None, channel_id: str = "main")
             try:
                 overlay = None
                 if replika_type == "organization":
+                    # The roster is what makes the sender tag mean anything —
+                    # without it the agent reads every message as one
+                    # continuous "the user". Same builder as the local bot;
+                    # identical text between pushes keeps the cached prefix.
+                    # Skipped when empty: central name resolution is
+                    # best-effort, and a transient failure must not replace a
+                    # good roster with "(none yet)".
+                    member_names = [
+                        str(name) for name in data.get("channel_member_names") or []
+                    ]
+                    if member_names:
+                        agent.set_channel_context(
+                            channel_id,
+                            channel_roster_context(
+                                str(
+                                    (data.get("selected_channel") or {}).get("name")
+                                    or channel
+                                ),
+                                member_names,
+                            ),
+                        )
                     recent = observation_store.recent(team_id, channel, limit=20)
                     queue = getattr(agent, "conversation_queue", None)
                     inbox_status = (
@@ -330,8 +356,11 @@ def register_slack_runtime(app, agent, scheduler=None, channel_id: str = "main")
                         placeholder_ts = str(result.get("placeholder_ts") or "") or None
                     except Exception:
                         log.warning("Could not create Slack placeholder", exc_info=True)
+                tag = slack_message_tag(
+                    replika_type, sender_display_name or sender_id
+                )
                 item = await agent.enqueue(
-                    f"[Slack/{sender_id}]: {text}",
+                    f"{tag}: {text}",
                     channel_id=channel_id,
                     source="slack",
                     external_dedupe_key=f"slack:{team_id}:{event_id}",

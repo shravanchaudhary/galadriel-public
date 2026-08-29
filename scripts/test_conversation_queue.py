@@ -24,12 +24,12 @@ def store_tests():
     store = MemoryConversationStore()
     first, created = store.enqueue(
         channel="main", source="tower", external_dedupe_key="request-1",
-        sender={"id": "u1"}, payload="[Tower]: one", display_text="one",
+        sender={"id": "u1"}, payload="one", display_text="one",
         reply_target={"page": "tower"}, overlay="page context",
     )
     duplicate, duplicate_created = store.enqueue(
         channel="main", source="tower", external_dedupe_key="request-1",
-        sender={"id": "u1"}, payload="[Tower]: ignored", display_text="ignored",
+        sender={"id": "u1"}, payload="ignored", display_text="ignored",
         reply_target=None, overlay=None,
     )
     check(created and not duplicate_created, "external key should deduplicate")
@@ -44,12 +44,12 @@ def store_tests():
 
     second, _ = store.enqueue(
         channel="main", source="tower", external_dedupe_key="request-2",
-        sender=None, payload="[Tower]: two", display_text="two",
+        sender=None, payload="two", display_text="two",
         reply_target=None, overlay=None,
     )
     edited = store.edit(
         first["id"], first["revision"],
-        {"display_text": "one edited", "payload": "[Tower]: one edited"},
+        {"display_text": "one edited", "payload": "one edited"},
     )
     check(edited and edited["revision"] == 2, "pending edit should increment revision")
     check(

@@ -18,7 +18,7 @@ _SYSTEM = (
 
 def _seed_text(raw: str) -> str:
     text = (raw or "").strip()
-    for prefix in ("[Tower]: ", "[User instruction]\n"):
+    for prefix in ("[User instruction]\n",):
         if prefix in text:
             text = text.split(prefix, 1)[-1].strip()
     return re.sub(r"\s+", " ", text).strip()

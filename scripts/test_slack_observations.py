@@ -287,6 +287,7 @@ class RuntimeGate:
 class RuntimeAgent:
     def __init__(self):
         self.enqueued = []
+        self.channel_context = {}
         self.conversation_queue = SimpleNamespace(
             status=lambda channel: {"busy": False, "paused": False, "depth": 0}
         )
@@ -300,6 +301,9 @@ class RuntimeAgent:
 
     def request_stop(self, channel):
         return True
+
+    def set_channel_context(self, channel, text):
+        self.channel_context[channel] = text
 
 
 loop = asyncio.new_event_loop()

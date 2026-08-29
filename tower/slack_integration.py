@@ -38,6 +38,14 @@ MAX_SLACK_REQUEST_BYTES = 1_000_000
 MAX_OUTBOUND_TEXT_CHARS = 40_000
 MAX_SLACK_EVENT_TEXT_CHARS = 40_000
 MAX_SLACK_FILES = 20
+# Channel roster is re-listed at most this often; names cache per user id.
+SLACK_DIRECTORY_TTL_SECONDS = 600
+# Name resolution costs one users.info per unknown member and runs inside the
+# delivery path, so bound both the roster and how many new names one delivery
+# may resolve — a large channel must never stall messages behind hundreds of
+# serial Slack calls. Unresolved members fill in over subsequent deliveries.
+SLACK_ROSTER_MAX_MEMBERS = 50
+SLACK_NAME_LOOKUPS_PER_DELIVERY = 10
 log = logging.getLogger("galadriel.slack.central")
 
 
@@ -440,6 +448,29 @@ class SlackInstallationStore:
         )
         return bool(result.matched_count)
 
+    def set_directory(
+        self, replika_id: str, team_id: str, directory: dict[str, Any]
+    ) -> bool:
+        """Cache resolved Slack display names and channel membership.
+
+        The tenant runtime holds no Slack token, so every human-readable name
+        it shows the agent has to be resolved here and shipped with the event.
+        """
+        result = self.installations.update_one(
+            {
+                "replika_id": replika_id,
+                "team_id": team_id,
+                "replika_type": "organization",
+            },
+            {
+                "$set": {
+                    "slack_directory": directory,
+                    "updated_at": datetime.now(timezone.utc),
+                }
+            },
+        )
+        return bool(result.matched_count)
+
     def delete_installation(self, replika_id: str, team_id: str | None = None) -> bool:
         query: dict[str, Any] = {"replika_id": replika_id}
         if team_id is not None:
@@ -655,6 +686,111 @@ class SlackOutboxDispatcher:
             )
         return True
 
+    def _resolve_name(self, token: str, user_id: str) -> str | None:
+        try:
+            user = self.slack_api.call(
+                "users.info", token=token, user=user_id
+            ).get("user") or {}
+        except RuntimeError:
+            return None
+        profile = user.get("profile") or {}
+        return (
+            profile.get("display_name")
+            or user.get("real_name")
+            or user.get("name")
+            or None
+        )
+
+    def _tenant_directory(
+        self, installation: dict[str, Any], item: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Display names + channel roster for an organization event.
+
+        Best-effort: any Slack API failure falls back to whatever is already
+        cached, because a missing name must never stop message delivery.
+        """
+        cached = installation.get("slack_directory") or {}
+        names = dict(cached.get("user_names") or {})
+        member_ids = list(cached.get("member_ids") or [])
+        # Epoch seconds, never a datetime: this client is built without
+        # `tz_aware`, so a stored datetime comes back naive and comparing it
+        # with an aware `now` raises (same trap as `_as_aware` in
+        # harness/consolidation.py).
+        refreshed_at = cached.get("refreshed_at")
+        if not isinstance(refreshed_at, (int, float)):
+            refreshed_at = None
+        channel_id = (installation.get("selected_channel") or {}).get("id")
+        now = datetime.now(timezone.utc).timestamp()
+        stale = (
+            not member_ids
+            or refreshed_at is None
+            or now - refreshed_at > SLACK_DIRECTORY_TTL_SECONDS
+        )
+
+        sender_id = str((item.get("payload") or {}).get("event", {}).get("user") or "")
+        wanted = set(member_ids)
+        if sender_id:
+            wanted.add(sender_id)
+
+        token = None
+        if stale and channel_id:
+            try:
+                token = self.token_vault.get(installation["token_ref"])
+                result = self.slack_api.call(
+                    "conversations.members", token=token, channel=channel_id, limit="1000"
+                )
+                bot_user_id = str(installation.get("bot_user_id") or "")
+                member_ids = sorted(
+                    str(value)
+                    for value in result.get("members", [])
+                    if str(value) != bot_user_id
+                )[:SLACK_ROSTER_MAX_MEMBERS]
+                wanted = set(member_ids) | ({sender_id} if sender_id else set())
+                refreshed_at = now
+            except (RuntimeError, KeyError):
+                log.warning("Slack channel roster refresh failed", exc_info=True)
+
+        missing = [uid for uid in wanted if uid and uid not in names]
+        # The sender is the one name this message actually needs; the rest of
+        # the roster can fill in across later deliveries.
+        if sender_id in missing:
+            missing.remove(sender_id)
+            missing.insert(0, sender_id)
+        missing = missing[:SLACK_NAME_LOOKUPS_PER_DELIVERY]
+        if missing:
+            try:
+                token = token or self.token_vault.get(installation["token_ref"])
+            except KeyError:
+                token = None
+            for user_id in missing:
+                if token is None:
+                    break
+                resolved = self._resolve_name(token, user_id)
+                if resolved:
+                    names[user_id] = resolved
+
+        changed = (
+            names != (cached.get("user_names") or {})
+            or member_ids != list(cached.get("member_ids") or [])
+            or refreshed_at != cached.get("refreshed_at")
+        )
+        if changed:
+            self.store.set_directory(
+                str(installation.get("replika_id") or installation.get("owner_id") or ""),
+                installation["team_id"],
+                {
+                    "user_names": names,
+                    "member_ids": member_ids,
+                    "refreshed_at": refreshed_at,
+                },
+            )
+        return {
+            "sender_display_name": names.get(sender_id),
+            "channel_member_names": [
+                names.get(uid) or uid for uid in member_ids
+            ],
+        }
+
     def _deliver_tenant(self, installation: dict[str, Any], item: dict[str, Any]) -> None:
         replika_id = str(
             installation.get("replika_id") or installation.get("owner_id") or ""
@@ -663,6 +799,12 @@ class SlackOutboxDispatcher:
         if not auth_ref:
             auth_ref = self.auth_vault.ensure(replika_id)
             self.store.set_auth_ref(replika_id, auth_ref)
+        directory = {"sender_display_name": None, "channel_member_names": []}
+        if installation["replika_type"] == "organization" and item["kind"] == "event":
+            try:
+                directory = self._tenant_directory(installation, item)
+            except Exception:
+                log.warning("Slack directory resolution failed", exc_info=True)
         payload = {
             "tenant_id": replika_id,
             "team_id": installation["team_id"],
@@ -671,6 +813,8 @@ class SlackOutboxDispatcher:
             "admin_user_ids": installation.get("admin_user_ids") or [],
             "selected_channel": installation.get("selected_channel"),
             "bot_user_id": installation.get("bot_user_id"),
+            "sender_display_name": directory["sender_display_name"],
+            "channel_member_names": directory["channel_member_names"],
             "kind": item["kind"],
             "dedupe_key": item["dedupe_key"],
             "payload": item["payload"],

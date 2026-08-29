@@ -46,9 +46,7 @@ def display_user_text(stored: str) -> str:
         stored = stored.split(_OVERLAY_MARKER, 1)[1].strip()
     elif stored.startswith(_OVERLAY_PREFIX):
         stored = "(Tower overlay message)"
-    elif stored.startswith("[Tower]: "):
-        stored = stored[len("[Tower]: "):]
-        
+
     if "⚡ **Automated Nudge:**" in stored:
         idx = stored.find("⚡ **Automated Nudge:**")
         return stored[:idx].strip()

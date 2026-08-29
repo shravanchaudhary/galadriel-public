@@ -25,9 +25,11 @@ from harness.error_humanizer import humanize_anthropic_error
 from harness.slack_observations import (
     ReplyGate,
     SlackObservationArchiver,
+    channel_roster_context,
     default_observation_store,
     explicit_bot_address,
     observation_overlay,
+    slack_message_tag,
 )
 from discord_bot.bot import (
     _format_status_report,
@@ -257,17 +259,10 @@ def create_bot(
             return
 
         names = [await _resolve_name(uid) for uid in member_ids]
-        roster_text = (
-            f"# Slack team channel: #{state['channel_name']}\n"
-            "This context applies only to messages tagged `[Slack/<name>]:` — those "
-            "come from a shared team Slack channel, not a private assistant DM. "
-            "(Messages tagged `[Discord]:` or `[Tower]:` in this same conversation "
-            "come from the primary user directly — treat those normally.)\n"
-            f"Current members who can talk to you on Slack: {', '.join(names) if names else '(none yet)'}.\n"
-            'Every incoming Slack message is prefixed with the sender\'s name, e.g. "[Slack/Priya Sharma]: ...".\n'
-            "Address the person who actually spoke — don't assume continuity of a single \"the user\" across Slack messages."
+        agent.set_channel_context(
+            agent_channel_id(),
+            channel_roster_context(state["channel_name"], names),
         )
-        agent.set_channel_context(agent_channel_id(), roster_text)
 
     app.refresh_roster = _refresh_roster
 
@@ -394,10 +389,11 @@ def create_bot(
         if not clean_text and not image_blocks:
             return
 
-        # Tagged with the surface — the conversation is shared with
-        # Discord/Tower (see MAIN_CHANNEL_ID), so the agent needs to know
-        # which surface a message came from.
-        user_input = f"[Slack/{display_name}]: {clean_text or '(image attached)'}"
+        # Tagged with the surface — the conversation is shared with the web UI
+        # and Discord (see MAIN_CHANNEL_ID), so the agent needs to know which
+        # surface a message came from, and in a team channel who sent it.
+        tag = slack_message_tag(state["replika_type"], display_name)
+        user_input = f"{tag}: {clean_text or '(image attached)'}"
         if image_blocks:
             user_input = [{"type": "text", "text": user_input}, *image_blocks]
 
