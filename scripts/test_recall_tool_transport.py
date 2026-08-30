@@ -175,6 +175,22 @@ def test_wire_serialization_is_legal_openai() -> None:
     assert synthetic[0]["content"] is None  # thought-less tool-only turn
 
 
+def test_turn_start_fire_keeps_the_dynamic_tail() -> None:
+    """A turn-start fire pair ends with a tool_result, but the ambient tail
+    (timestamp/daily log/advisories) must still ride — the old user-message
+    transport kept it, and a genuinely mid-cascade tail must still suppress."""
+    turn_start = [{"role": "user", "content": "heyo, status?"}]
+    turn_start += _recall_fire_messages(MATCHES, FIRE, as_tool_exchange=True)
+    wire = _messages_to_openai(turn_start, trailing_text="[AMBIENT] now=17:30")
+    assert any("AMBIENT" in str(m) for m in wire), "turn-start fire lost the tail"
+    mid = list(_cascade_with_pair())
+    wire_mid = _messages_to_openai(mid, trailing_text="[AMBIENT] now=17:30")
+    assert not any("AMBIENT" in str(m) for m in wire_mid), (
+        "mid-cascade must stay tail-free — a user text turn inside an open "
+        "tool chain resets stateful reasoning"
+    )
+
+
 def test_compaction_never_splits_the_pair() -> None:
     msgs = _cascade_with_pair() + [
         {"role": "user", "content": "and now a brand new question"},
@@ -382,6 +398,7 @@ def main() -> int:
         test_recall_is_scan_excluded_and_defined,
         test_scan_segments_exclude_recall_payload,
         test_wire_serialization_is_legal_openai,
+        test_turn_start_fire_keeps_the_dynamic_tail,
         test_compaction_never_splits_the_pair,
         test_pair_never_reaches_the_palace_archive,
         test_open_memory_resolves_a_recall_id,

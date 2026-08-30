@@ -269,8 +269,21 @@ def _is_tool_result_message(msg: dict) -> bool:
 
 
 def _ends_with_tool_result(messages: list) -> bool:
-    """True when the last message is a tool-result turn (mid tool cascade)."""
-    return bool(messages) and _is_tool_result_message(messages[-1])
+    """True when the tail is mid tool-cascade, deciding whether the dynamic
+    context rides as the trailing user message.
+
+    Synthetic recall-fire messages are skipped: a turn-START fire pair ends
+    with a tool_result, but the turn is still at its start — suppressing the
+    tail there costs the whole turn its timestamp/daily-log/advisories (the
+    old user-message fire transport kept them). A genuinely mid-cascade tail
+    (real tool results, or an assistant tool call whose recall-only round got
+    kind-marked) still suppresses.
+    """
+    for msg in reversed(messages):
+        if isinstance(msg, dict) and msg.get("kind") == "recall_fire":
+            continue
+        return _is_tool_result_message(msg) or msg.get("role") == "assistant"
+    return False
 
 
 def _messages_to_openai(messages: list, trailing_text: str | None = None) -> list:

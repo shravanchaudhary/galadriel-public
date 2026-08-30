@@ -238,13 +238,21 @@ def _ends_with_tool_result(messages: list) -> bool:
     resetting the model's stateful reasoning each iteration — the root cause of
     the agent re-deriving its plan and looping. So we suppress it mid-cascade.
     """
-    if not messages:
+    for msg in reversed(messages):
+        # Skip synthetic recall-fire messages: a turn-START fire pair ends
+        # with a tool_result but the turn is still at its start, and
+        # suppressing the tail there costs the turn its dynamic context.
+        if isinstance(msg, dict) and msg.get("kind") == "recall_fire":
+            continue
+        if msg.get("role") == "assistant":
+            return True
+        content = msg.get("content")
+        if isinstance(content, list):
+            return any(
+                isinstance(b, dict) and b.get("type") == "tool_result"
+                for b in content
+            )
         return False
-    content = messages[-1].get("content")
-    if isinstance(content, list):
-        return any(
-            isinstance(b, dict) and b.get("type") == "tool_result" for b in content
-        )
     return False
 
 
