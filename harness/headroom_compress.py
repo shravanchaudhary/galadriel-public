@@ -8,9 +8,10 @@ Cache-safe defaults: user/assistant text protected; tool_result / structured
 tool output is the main target. Failures passthrough originals — never break
 a turn.
 
-Also prunes old screenshot image blocks from the API-bound copy (keep last N)
-so browser sessions do not balloon context with base64 that Headroom cannot
-compress.
+Images are never pruned here: rewriting an already-sent message busts the
+cached prefix, so screenshots ride until compaction disposes of them. The
+vision gate (``strip_images``) still blanks them for text-only models, which
+is deterministic per call and therefore prefix-stable.
 """
 
 from __future__ import annotations
@@ -19,7 +20,6 @@ import asyncio
 import copy
 import logging
 from dataclasses import dataclass
-from typing import Any
 
 log = logging.getLogger("galadriel.headroom")
 
@@ -37,17 +37,6 @@ class HeadroomMetrics:
     tokens_saved: int = 0
     compression_ratio: float = 0.0
     transforms_applied: tuple[str, ...] = ()
-
-    def as_cost_fields(self, enabled: bool) -> dict[str, Any]:
-        return {
-            "headroom_enabled": enabled,
-            "headroom_tokens_before": self.tokens_before,
-            "headroom_tokens_after": self.tokens_after,
-            "headroom_tokens_saved": self.tokens_saved,
-        }
-
-
-_EMPTY = HeadroomMetrics()
 
 
 def _image_refs(messages: list[dict]) -> list[tuple[int, tuple]]:
