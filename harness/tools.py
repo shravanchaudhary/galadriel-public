@@ -2114,9 +2114,32 @@ def _bce_pairing_required_message(profile: str) -> str:
         "e.g. KJ2D-H96M). They find it in the extension popup — Agent must be ON "
         "(status: Connected).\n\n"
         "Once they provide it, call browser_devices with action=connect, "
-        f"profile_id={profile!r}, backend='bce', pairing_code='<code>', and a "
-        "short purpose, then retry the browser command.\n\n"
+        "backend='bce', pairing_code='<code>', and a short purpose, then retry "
+        "the browser command.\n\n"
         "Prerequisites: MongoDB + BCE FastAPI server running."
+    )
+
+
+def _no_default_browser_message() -> str:
+    """Nothing answers to `main`: either nothing is paired, or several are and
+    none has been chosen. Only the first case needs a pairing code."""
+    from .browser_devices import list_devices
+
+    try:
+        paired = [
+            device["profile_id"] for device in list_devices(include_status=False)
+        ]
+    except Exception:
+        paired = []
+    if not paired:
+        return _bce_pairing_required_message(_DEFAULT_PROFILE)
+    return (
+        "[no default browser] These browsers are already paired: "
+        + ", ".join(paired)
+        + ". None is set as main. Ask the user which one to use, then call "
+        "browser_devices with action=set_default and that profile_id — or pass "
+        "profile=<profile_id> on this command. Do NOT ask for a new pairing "
+        "code; these are already connected."
     )
 
 
@@ -2131,7 +2154,7 @@ def _resolve_bce_pairing_code(profile: str | None) -> tuple[str, str | None]:
         # Default profile with no Mongo/env config → ask to pair, don't invent
         # an empty "main" device. Named profiles stay "unknown" until connect.
         if profile == _DEFAULT_PROFILE:
-            return "", _bce_pairing_required_message(profile)
+            return "", _no_default_browser_message()
         return "", (
             f"[error] unknown browser profile {profile!r}. Register it with "
             "browser_devices, then retry."

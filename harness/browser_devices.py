@@ -266,6 +266,22 @@ def remove(profile_id: str) -> dict:
     return {"profile_id": profile_id, "removed": browser_profiles.delete(profile_id)}
 
 
+def _connect_profile_id(inputs: dict) -> str:
+    """Id for a newly connected profile — the pairing code, as Tower does it.
+
+    `main` is a role, so it must not become a profile's name.
+    """
+    explicit = (inputs.get("profile_id") or "").strip()
+    if explicit:
+        return explicit
+    code = (inputs.get("pairing_code") or "").strip()
+    if code:
+        from .bce_client import normalize_pairing_code
+
+        return normalize_pairing_code(code).lower()
+    return "main"
+
+
 def execute(action: str, **inputs) -> dict:
     action = (action or "").strip().lower()
     if action == "list":
@@ -274,7 +290,7 @@ def execute(action: str, **inputs) -> dict:
         return status(inputs.get("profile_id"))
     if action == "connect":
         return connect(
-            inputs.get("profile_id") or "main",
+            _connect_profile_id(inputs),
             backend=inputs.get("backend"),
             pairing_code=inputs.get("pairing_code"),
             cdp_port=inputs.get("cdp_port"),

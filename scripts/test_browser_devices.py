@@ -224,6 +224,30 @@ class DefaultBrowserRoleTest(unittest.TestCase):
         set_default.assert_called_once_with("bbbb-3456")
         self.assertTrue(result["updated"])
 
+    def test_connect_names_a_profile_after_its_code_not_the_role(self) -> None:
+        with mock.patch.object(
+            browser_devices.browser_profiles, "list_profiles", return_value=[]
+        ), mock.patch.object(
+            browser_devices.browser_profiles, "upsert", return_value=self._row("abcd-2345")
+        ) as upsert, mock.patch.object(
+            browser_devices.browser_profiles, "set_default"
+        ), mock.patch.object(
+            browser_devices, "status", return_value={}
+        ):
+            browser_devices.execute("connect", pairing_code="ABCD-2345")
+        self.assertEqual(upsert.call_args.args[0], "abcd-2345")
+
+    def test_browser_tool_does_not_beg_for_a_code_it_already_has(self) -> None:
+        """Several paired, none chosen: pick one, don't ask for a new pairing."""
+        from harness.tools import _resolve_bce_pairing_code
+
+        with self._paired(self._row("aaaa-2345"), self._row("bbbb-3456")):
+            code, err = _resolve_bce_pairing_code(None)
+        self.assertEqual(code, "")
+        self.assertIn("already paired", err)
+        self.assertIn("set_default", err)
+        self.assertNotIn("Ask the user for their Chrome extension pairing code", err)
+
     def test_set_default_action_is_offered_to_the_agent(self) -> None:
         from harness.tools import visible_tool_definitions
 
