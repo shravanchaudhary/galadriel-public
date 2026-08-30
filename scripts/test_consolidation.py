@@ -286,6 +286,81 @@ def test_commit_candidate_prose_duplicate_skips_write() -> None:
     assert saved_record["duplicate_of"] == "dupe-id-123"
 
 
+class _PoolColl:
+    """Fake memory_candidates for the two paths that rank a committed pool —
+    `find(...).sort(...).limit(...)`, async-iterated."""
+
+    def __init__(self, docs: list[dict]):
+        self._docs = docs
+
+    def find(self, query=None, projection=None):
+        rows = list(self._docs)
+
+        class _Cursor:
+            def sort(self, *a, **k): return self
+            def limit(self, n): return self
+            def __aiter__(self):
+                async def gen():
+                    for row in rows:
+                        yield row
+                return gen()
+        return _Cursor()
+
+
+def test_dedupe_skips_only_identical_text() -> None:
+    """Commit-time dedupe SKIPS the write, so it may only fire where skipping
+    loses nothing — identical prose, and nothing else.
+
+    Measured on the live corpus (kb/learning-loop-measured.md): every cosine
+    floor low enough to catch a paraphrase also drops distinct documents (at
+    0.88, three of nineteen — a personal profile vs an employer list at 0.899),
+    and the one high enough to be safe never fires at all. Rewordings are the
+    edge classifier's `restates` verdict, which records the restatement
+    WITHOUT discarding the new write.
+    """
+    stored = "Always reply in one short paragraph."
+    coll = _PoolColl([{"memory_id": "m1", "content": stored}])
+    cases = {
+        stored: "m1",                                        # identical
+        "  ALWAYS   reply in one short paragraph. ": "m1",   # same text, normalized
+        "Keep replies to a single short paragraph.": None,   # paraphrase -> classifier
+        "Always reply in one short paragraph, unless asked for detail.": None,
+    }
+    for content, expected in cases.items():
+        with patch.object(consolidation, "_collection",
+                          new=AsyncMock(return_value=coll)):
+            got = _run(consolidation._is_prose_duplicate("preference", content))
+        assert got == expected, (content, got, expected)
+
+
+def test_dedupe_never_calls_the_encoder() -> None:
+    """No embedding, no threshold: the whole class of miscalibration is gone,
+    and the commit path drops an encode it used to pay for on every write."""
+    coll = _PoolColl([{"memory_id": "m1", "content": "stored"}])
+    with patch.object(consolidation, "_collection", new=AsyncMock(return_value=coll)), \
+         patch("harness.recall.get_encoder",
+               side_effect=AssertionError("dedupe must not embed")):
+        assert _run(consolidation._is_prose_duplicate("preference", "stored")) == "m1"
+
+
+def test_shortlist_carries_the_cosine_score() -> None:
+    """Similarity picks who gets *considered*; the number is what lets the
+    classifier (and the searching agent) refuse a 0.55 'nearest neighbour'."""
+    coll = _PoolColl([
+        {"memory_id": "m1", "content": "aligned", "type": "semantic"},
+        {"memory_id": "m2", "content": "orthogonal", "type": "semantic"},
+    ])
+    with patch.object(consolidation, "_collection", new=AsyncMock(return_value=coll)), \
+         patch("harness.recall.get_encoder", return_value=object()), \
+         patch.object(consolidation, "_encode", new=AsyncMock(return_value=[[1.0, 0.0]])), \
+         patch.object(consolidation, "_pool_vectors",
+                      new=AsyncMock(return_value=[[1.0, 0.0], [0.0, 1.0]])):
+        out = _run(consolidation.shortlist_neighbours("query", limit=2))
+    assert [n["memory_id"] for n in out] == ["m1", "m2"], out
+    assert out[0]["score"] == 1.0, out
+    assert out[1]["score"] == 0.0, out
+
+
 def test_commit_candidate_procedural_writes_knowledge_file() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         prev_cwd = os.getcwd()
@@ -513,6 +588,334 @@ def _bare_agent():
     return agent
 
 
+def test_a_learning_episode_survives_a_restart() -> None:
+    """A restart mid-conversation must resume the SAME episode.
+
+    The session id is what distinct-session promotion counting joins on, so a
+    fresh id for the second half of one chat lets a single preference confirm
+    itself twice. The segment list is what lets the consolidator drill into
+    content already folded out of the live buffer, so losing it blinds the
+    episode index to everything archived before the restart.
+    """
+    from harness import conversation_run_store as store
+
+    disk: dict[str, dict] = {}
+
+    def fake_save(channel_id, session_id, segments):
+        disk[channel_id] = {"session_id": session_id, "segments": list(segments)}
+
+    def fake_load():
+        return {k: {"session_id": v["session_id"], "segments": list(v["segments"])}
+                for k, v in disk.items()}
+
+    def fake_clear(channel_id):
+        disk.pop(channel_id, None)
+
+    with patch.object(store, "save_session_state", fake_save), \
+         patch.object(store, "load_session_states", fake_load), \
+         patch.object(store, "clear_session_state", fake_clear):
+        before = _bare_agent()
+        sid = before._session_for("main")
+        # Persisted at MINT, not first compaction: a short chat that restarts
+        # before it ever compacts must still resume its episode.
+        assert disk["main"] == {"session_id": sid, "segments": []}, disk
+        before._record_session_segment("main", None, kind="compaction",
+                                       message_count=7)
+        assert len(disk["main"]["segments"]) == 1, disk
+
+        # ── restart ── a brand-new process resumes from the durable record.
+        after = _bare_agent()
+        after._resume_sessions()
+        assert after._session_for("main") == sid, "restart split one chat in two"
+        assert len(after._session_segments["main"]) == 1, after._session_segments
+
+        # A second compaction after the restart extends the SAME episode.
+        after._record_session_segment("main", None, kind="compaction",
+                                      message_count=3)
+        assert len(disk["main"]["segments"]) == 2, disk
+
+        # The episode ends through the real boundary -> the record goes with
+        # it, and the next conversation is its own episode.
+        after.conversations = {}
+        after._compaction_summary = {}
+        with patch.object(GaladrielAgent, "run_task_consolidation",
+                          new=AsyncMock()) as consolidate:
+            _run(after.on_episode_end("main", reason="worked"))
+        consolidate.assert_awaited_once()
+        assert "main" not in disk, disk
+
+        fresh = _bare_agent()
+        fresh._resume_sessions()
+        assert fresh._session_for("main") != sid, "a finished episode was resumed"
+
+
+def test_only_recent_non_disposable_episodes_are_resumable() -> None:
+    """The record is a restart bridge, not an archive.
+
+    A day-old row is not an occasion anyone is continuing, and a consolidation
+    side channel is disposable by construction — adopting either would attach
+    fresh turns to an episode that is over. Both are dropped by
+    `load_session_states` against a real collection shape.
+    """
+    from harness import conversation_run_store as store
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    rows = [
+        {"_id": "main", "session_id": "live", "segments": [],
+         "updated_at": now - timedelta(minutes=5)},
+        {"_id": "worker", "session_id": "ancient", "segments": [],
+         "updated_at": now - timedelta(hours=store.SESSION_MAX_AGE_HOURS + 1)},
+        {"_id": "__consolidate_main_abc123", "session_id": "disposable",
+         "segments": [], "updated_at": now},
+    ]
+
+    class _Sessions:
+        def __init__(self, docs): self.docs = docs
+        def delete_many(self, query):
+            cutoff = query["updated_at"]["$lt"]
+            self.docs = [d for d in self.docs if d["updated_at"] >= cutoff]
+        def find(self, query): return list(self.docs)
+
+    sessions = _Sessions(rows)
+    with patch.object(store, "_sync_db", return_value={store.SESSIONS: sessions}):
+        loaded = store.load_session_states()
+    assert list(loaded) == ["main"], loaded
+    assert loaded["main"]["session_id"] == "live"
+    # The stale row is pruned, not just filtered — the collection cannot grow
+    # a tail of abandoned episodes.
+    assert [d["_id"] for d in sessions.docs] == ["main", "__consolidate_main_abc123"]
+
+
+def test_resuming_sessions_survives_a_dead_store() -> None:
+    """Telemetry must never block construction: if the record cannot be read,
+    the agent starts with no episode rather than failing to start."""
+    from harness import conversation_run_store as store
+
+    with patch.object(store, "load_session_states",
+                      side_effect=RuntimeError("mongo down")):
+        agent = _bare_agent()
+        agent._resume_sessions()  # must not raise
+    assert agent._session_id == {}
+
+
+# ─── record_unopened_fires ─────────────────────────────────────────────
+
+
+class _EventsColl:
+    """Fake retrieval_events: dispatches on the query's memory_kind the way
+    record_unopened_fires actually asks — one bounded find for pending recall
+    fires, one find for opens/expansions across the involved sessions. Records
+    every update_many so the watermark can be asserted."""
+
+    def __init__(self, pending: list[dict], opened: list[dict]):
+        self._pending = pending
+        self._opened = opened
+        self.updates: list[tuple[dict, dict]] = []
+
+    async def update_many(self, query, update):
+        self.updates.append((query, update))
+
+    def stamped(self, field: str) -> set:
+        """retrieval_ids this collection was asked to set `field` on."""
+        out = set()
+        for query, update in self.updates:
+            if field in (update.get("$set") or {}):
+                out |= set(query.get("retrieval_id", {}).get("$in", []))
+        return out
+
+    def find(self, query, projection=None):
+        kind = query.get("memory_kind")
+        if kind == "recall":
+            # Honour the watermark the way Mongo would: a row already stamped
+            # must not come back, and `graded` is NOT part of the selection —
+            # the sweep counts opens, the model grades, and neither waits on
+            # the other.
+            docs = [
+                d for d in self._pending
+                if not d.get("unopened_checked")
+                and all(d.get(f) == v for f, v in query.items()
+                        if f in ("graded",) and not isinstance(v, dict))
+            ]
+        else:
+            # Honour the kind filter the way Mongo would, so a `memory:`-keyed
+            # event of some OTHER kind is not silently counted as an open.
+            allowed = kind.get("$in") if isinstance(kind, dict) else None
+            docs = [
+                d for d in self._opened
+                if allowed is None or d.get("memory_kind", "memory_open") in allowed
+            ]
+
+        class _Cursor:
+            def __init__(self, rows): self._rows = list(rows)
+            def limit(self, n):
+                self._rows = self._rows[:n]
+                return self
+            def __aiter__(self):
+                async def gen():
+                    for row in self._rows:
+                        yield row
+                return gen()
+        return _Cursor(docs)
+
+
+def _fire(rid: str, recall: str, session: str) -> dict:
+    return {"retrieval_id": rid, "memory_key": f"recall:{recall}", "session_id": session}
+
+
+def _sweep(events, backing, **kwargs):
+    """Run the real sweep against a fake collection, capturing stat bumps."""
+    bumps = []
+
+    async def fake_bump(key, inc, **_):
+        bumps.append((key, inc))
+
+    with patch.object(consolidation, "_collection", new=AsyncMock(return_value=events)), \
+         patch.object(consolidation, "memory_ids_by_recall",
+                      new=AsyncMock(return_value=backing)), \
+         patch.object(consolidation, "_bump_stats", fake_bump), \
+         patch.object(consolidation, "grade_retrieval", new=AsyncMock()) as grade:
+        counted = _run(consolidation.record_unopened_fires(**kwargs))
+    return counted, bumps, grade
+
+
+def test_unopened_counts_backed_fires_only() -> None:
+    """A fire whose backing memory was never opened is counted; one with no
+    backing memory (sys_/user recall) has no memory an open could have touched,
+    so there is nothing to count."""
+    events = _EventsColl(
+        pending=[_fire("r1", "learned1", "sessA"), _fire("r2", "sys_status", "sessA")],
+        opened=[],
+    )
+    counted, bumps, _ = _sweep(events, {"learned1": "mem1"}, session_id="sessA")
+    assert counted == 1, counted
+    assert bumps == [("recall:learned1", {"unopened_count": 1})], bumps
+
+
+def test_unopened_never_grades_so_the_model_can_still_judge() -> None:
+    """The sweep must not write a grade.
+
+    Measured on the live corpus: of the model-graded used=true fires with a
+    backing memory, 17 of 19 had no open in that session — the instruction was
+    actionable on its own. Since grade_retrieval refuses a second grade, a
+    mechanical used=false would permanently displace the model's real verdict
+    and collapse use_ratio on triggers the model called helpful.
+    """
+    events = _EventsColl(pending=[_fire("r1", "learned1", "sessA")], opened=[])
+    counted, _, grade = _sweep(events, {"learned1": "mem1"}, session_id="sessA")
+    assert counted == 1
+    grade.assert_not_awaited()
+    # `graded` is never touched, so the row still reaches the grading pass.
+    for _query, update in events.updates:
+        assert "graded" not in (update.get("$set") or {}), update
+
+
+def test_unopened_watermarks_every_row_it_examined() -> None:
+    """Rows the sweep can never act on must still leave the query.
+
+    They never become graded, so if only actionable rows were stamped the dead
+    ones would sit at the head of the ts-ordered index forever; once they
+    filled a batch the sweep would re-read them every hour and never reach a
+    live fire again.
+    """
+    events = _EventsColl(
+        pending=[_fire("r1", "learned1", "sessA"), _fire("r2", "sys_status", "sessA")],
+        opened=[],
+    )
+    counted, _, _ = _sweep(events, {"learned1": "mem1"}, session_id="sessA")
+    assert counted == 1
+    assert events.stamped("unopened_checked") == {"r1", "r2"}, events.updates
+    # Only the actionable one is marked as an unopened fire.
+    assert events.stamped("unopened") == {"r1"}, events.updates
+
+
+def test_unopened_selects_on_the_watermark_not_on_graded() -> None:
+    """The sweep and the grading pass are independent.
+
+    A row the model already graded still has an open-or-not fact worth
+    counting, and a row this sweep already stamped must never come back —
+    selecting on `graded` would do both backwards, and would resurrect the
+    coupling that let a mechanical verdict pre-empt the model's.
+    """
+    events = _EventsColl(
+        pending=[
+            dict(_fire("r1", "learned1", "sessA"), graded=True),
+            dict(_fire("r2", "learned1", "sessA"), unopened_checked=True),
+        ],
+        opened=[],
+    )
+    counted, _, _ = _sweep(events, {"learned1": "mem1"}, session_id="sessA")
+    assert counted == 1, "an already-graded fire still has an unopened fact"
+    assert events.stamped("unopened_checked") == {"r1"}, events.updates
+
+
+def test_unopened_skips_fires_whose_memory_was_opened() -> None:
+    """Opened means the content demonstrably entered context — nothing to
+    record, and the grade stays with the model either way."""
+    events = _EventsColl(
+        pending=[_fire("r1", "learned1", "sessA")],
+        opened=[{"session_id": "sessA", "memory_key": "memory:mem1"}],
+    )
+    counted, bumps, _ = _sweep(events, {"learned1": "mem1"}, session_id="sessA")
+    assert counted == 0, counted
+    assert bumps == []
+    assert events.stamped("unopened_checked") == {"r1"}
+
+
+def test_unopened_open_in_another_session_does_not_count_as_opened() -> None:
+    """The session is the join key: an open of the same memory in a different
+    episode says nothing about this fire."""
+    events = _EventsColl(
+        pending=[_fire("r1", "learned1", "sessA")],
+        opened=[{"session_id": "sessB", "memory_key": "memory:mem1"}],
+    )
+    counted, _, _ = _sweep(events, {"learned1": "mem1"}, session_id="sessA")
+    assert counted == 1, counted
+
+
+def test_unopened_refuses_unbounded_scope() -> None:
+    """No session and no age bound would count fires still on screen.
+
+    The fixture holds a fire that counts under any *bounded* call, so removing
+    the guard fails this test — an empty collection would have passed either
+    way and pinned nothing.
+    """
+    events = _EventsColl(pending=[_fire("r1", "learned1", "sessA")], opened=[])
+    counted, _, _ = _sweep(
+        events, {"learned1": "mem1"}, session_id=None, older_than_minutes=0,
+    )
+    assert counted == 0
+    assert events.updates == []
+
+
+def test_unopened_ignores_a_memory_keyed_event_of_another_kind() -> None:
+    """"Opened" is a memory_kind, never a key prefix.
+
+    Every `memory:<id>` event written today is a memory_open or a
+    graph_expansion, so a prefix filter looks equivalent right now — until some
+    other kind starts using the namespace and silently marks fires as followed
+    that nobody ever read.
+    """
+    events = _EventsColl(
+        pending=[_fire("r1", "learned1", "sessA")],
+        opened=[{"session_id": "sessA", "memory_key": "memory:mem1",
+                 "memory_kind": "drawer"}],
+    )
+    counted, _, _ = _sweep(events, {"learned1": "mem1"}, session_id="sessA")
+    assert counted == 1, counted
+
+
+def test_task_prompt_grades_every_ungraded_row_without_defaulting() -> None:
+    """The harness no longer pre-grades, so the pass must grade every ungraded
+    row — and must be told that [not opened] is context, not a verdict."""
+    from harness.loop_prompts import task_consolidation_prompt
+    text = task_consolidation_prompt()
+    assert "NOT marked [already" in text, "grading instruction lost its scope"
+    assert "not opened" in text, "the pass is not told what [not opened] means"
+    assert "not a verdict" in text, "[not opened] is no longer framed as context"
+    assert "used=true even though" in text, "the pass may default unopened to used=false"
+
+
 def test_tool_result_has_content_filters_sentinels() -> None:
     has_content = GaladrielAgent._tool_result_has_content
     assert has_content("**Palace search:** `x` real content") is True
@@ -657,6 +1060,24 @@ def test_reflection_prompt_worker_audit_untouched() -> None:
     assert "state/worker_control.md" in part3
     assert "state/steering.md" in part3
     assert "ALL GOOD / STEERED / PAUSED" in part3
+
+
+def test_reflection_prompt_drops_the_memory_half_after_the_first_slot() -> None:
+    """The evidence bins move in days, so only the day's first slot re-reads
+    them; later slots must get the skip note and still run the worker audit."""
+    from harness.loop_prompts import reflection_prompt
+
+    full = reflection_prompt("2026-08-23")
+    skipped = reflection_prompt("2026-08-23", memory_pass=False)
+    assert "Call memory_utility_report() first" in full
+    # The skip note still names the tool — to forbid it, not to ask for it.
+    assert "Call memory_utility_report() first" not in skipped, "memory half survived the skip"
+    assert "SKIPPED THIS SLOT" in skipped
+    assert "BAD-TRIGGER" in full and "BAD-TRIGGER" not in skipped
+    assert len(skipped) < len(full) / 2, (len(skipped), len(full))
+    # The worker audit is not part of the memory half and runs every slot.
+    assert "PART 3" in skipped
+    assert "state/worker_control.md" in skipped
 
 
 def test_goodnight_prompt_unchanged_episode_recap() -> None:
@@ -830,7 +1251,8 @@ def test_promotion_audit_follows_the_character_budget() -> None:
     # are absent from the file" check pass no matter what was written.
     entries = [
         {"memory_id": f"m{i}", "content": f"pref-{i:02d} " + ("x" * 180),
-         "confirmations": 3, "last_confirmed_ts": float(100 - i)}
+         "confirmations": 3, "last_confirmed_ts": float(100 - i),
+         "promotion_review": {"promote": True, "reason": "test"}}
         for i in range(consolidation._PROMOTION_MAX_ENTRIES)
     ]
     fitted, lines = consolidation.fitting_promotions(entries)
@@ -857,9 +1279,14 @@ def test_promotion_audit_follows_the_character_budget() -> None:
             Path("config/MEMORY.md").write_text("# hand written\n", encoding="utf-8")
             with patch.object(consolidation, "promotable_preferences",
                               new=AsyncMock(return_value=entries)), \
+                 patch.object(consolidation, "_review_promotion",
+                              new=AsyncMock()) as gate, \
+                 patch.object(consolidation, "_collection",
+                              new=AsyncMock(return_value=None)), \
                  patch.object(consolidation, "record_maintenance", fake_record):
                 _run(consolidation.promote_preferences())
             written = Path("config/MEMORY.md").read_text(encoding="utf-8")
+            gate.assert_not_awaited()  # every entry already carries a verdict
         finally:
             os.chdir(cwd)
 
@@ -875,6 +1302,181 @@ def test_promotion_audit_follows_the_character_budget() -> None:
         assert entry["content"][:8] not in written, (
             "an entry recorded as evicted must not be in the written file"
         )
+
+
+def test_promotion_gate_fails_closed_and_stamps_verdicts() -> None:
+    """Nothing enters the always-on prompt without a stored gate verdict:
+    approved renders, rejected is stamped and excluded, unjudged (gate failure)
+    stays out and is retried later."""
+    entries = [
+        {"memory_id": "ok", "content": "Approved preference.",
+         "confirmations": 3, "last_confirmed_ts": 3.0,
+         "promotion_review": {"promote": True, "reason": "crucial"}},
+        {"memory_id": "no", "content": "Rejected preference.",
+         "confirmations": 3, "last_confirmed_ts": 2.0, "promotion_review": None},
+        {"memory_id": "later", "content": "Unjudged preference.",
+         "confirmations": 3, "last_confirmed_ts": 1.0, "promotion_review": None},
+    ]
+    verdicts = {"no": {"promote": False, "reason": "recall covers it"},
+                "later": None}
+
+    async def fake_gate(entry):
+        return verdicts[entry["memory_id"]]
+
+    coll = AsyncMock()
+    records = []
+
+    async def fake_record(kind, detail):
+        records.append(detail)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        cwd = os.getcwd()
+        os.chdir(tmp)
+        try:
+            Path("config").mkdir()
+            Path("config/MEMORY.md").write_text("# hand written\n", encoding="utf-8")
+            with patch.object(consolidation, "promotable_preferences",
+                              new=AsyncMock(return_value=entries)), \
+                 patch.object(consolidation, "_review_promotion", fake_gate), \
+                 patch.object(consolidation, "_collection",
+                              new=AsyncMock(return_value=coll)), \
+                 patch.object(consolidation, "record_maintenance", fake_record):
+                _run(consolidation.promote_preferences())
+            written = Path("config/MEMORY.md").read_text(encoding="utf-8")
+        finally:
+            os.chdir(cwd)
+
+    assert "Approved preference." in written
+    assert "Rejected preference." not in written
+    assert "Unjudged preference." not in written
+    # The rejected verdict was stored so the gate never re-runs for it.
+    stamped = [c.args[1]["$set"]["promotion_review"]
+               for c in coll.update_one.call_args_list
+               if "promotion_review" in c.args[1].get("$set", {})]
+    assert stamped and stamped[0]["promote"] is False
+    detail = records[0]
+    assert detail["approved"] == ["ok"]
+    assert detail["rejected"] == ["no"]
+    assert detail["unreviewed"] == ["later"]
+
+
+def test_promotion_gate_rejects_a_verdict_it_cannot_read() -> None:
+    """Fail-closed covers the REPLY, not just a raised exception.
+
+    Prose, JSON without `promote`, and a non-boolean `promote` all have to
+    yield no verdict: an approve-by-default would put unjudged text in front of
+    every turn, which is the one thing the gate exists to prevent.
+    """
+    from types import SimpleNamespace
+
+    entry = {"memory_id": "m1", "content": "Be terse.", "confirmations": 3}
+
+    def _provider(reply: str):
+        async def create_message(**kwargs):
+            return SimpleNamespace(
+                content=[SimpleNamespace(type="text", text=reply)]
+            )
+        return SimpleNamespace(create_message=create_message)
+
+    unreadable = [
+        "Yes, definitely promote this one.",       # prose, no JSON
+        '{"reason": "crucial"}',                   # no verdict field
+        '{"promote": "yes", "reason": "x"}',       # not a boolean
+    ]
+    for reply in unreadable:
+        with patch("harness.model_registry.get_provider", return_value=_provider(reply)):
+            assert _run(consolidation._review_promotion(entry)) is None, reply
+
+    with patch("harness.model_registry.get_provider",
+               return_value=_provider('{"promote": true, "reason": "binds first"}')):
+        verdict = _run(consolidation._review_promotion(entry))
+    assert verdict is not None and verdict["promote"] is True, verdict
+    assert verdict["reason"] == "binds first", verdict
+
+
+def test_promotion_gate_budget_counts_attempts_not_successes() -> None:
+    """A failing gate must not turn one pass into a call per preference.
+
+    _review_promotion returns None on a provider error or an unreadable reply,
+    so bounding successes would leave the loop calling the model for every
+    eligible entry exactly when every call is useless.
+    """
+    entries = [
+        {"memory_id": f"m{i}", "content": f"Preference {i}.", "confirmations": 3,
+         "last_confirmed_ts": float(i), "promotion_review": None}
+        for i in range(10)
+    ]
+    calls = []
+
+    async def always_fails(entry):
+        calls.append(entry["memory_id"])
+        return None
+
+    with tempfile.TemporaryDirectory() as tmp:
+        cwd = os.getcwd()
+        os.chdir(tmp)
+        try:
+            Path("config").mkdir()
+            Path("config/MEMORY.md").write_text("# hand written\n", encoding="utf-8")
+            with patch.object(consolidation, "promotable_preferences",
+                              new=AsyncMock(return_value=entries)), \
+                 patch.object(consolidation, "_review_promotion", always_fails), \
+                 patch.object(consolidation, "_collection", new=AsyncMock()), \
+                 patch.object(consolidation, "record_maintenance", new=AsyncMock()):
+                _run(consolidation.promote_preferences())
+        finally:
+            os.chdir(cwd)
+    assert len(calls) == consolidation._GATE_REVIEWS_PER_PASS, calls
+
+
+def test_promoted_lines_point_at_the_memory() -> None:
+    """MEMORY.md points at memory, it does not replace it: the block holds the
+    rule's short form and the pointer that reaches the full context."""
+    fitted, lines = consolidation.fitting_promotions(
+        [{"memory_id": "m1", "content": "Answer briefly."}]
+    )
+    assert [e["memory_id"] for e in fitted] == ["m1"]
+    assert lines == ["- Answer briefly. (memory:m1)"], lines
+
+
+def test_promotion_overflow_is_signposted_not_silently_dropped() -> None:
+    """Approved entries past the cap are not gone — one line says how many more
+    exist and how to reach them. It must NOT be a "- " bullet: entry lines are
+    the promotion audit's unit of account."""
+    entries = [
+        {"memory_id": f"m{i}", "content": f"Preference number {i}."}
+        for i in range(13)
+    ]
+    section = consolidation.render_promotion_section(entries)
+    assert "plus 3 more" in section, section
+    overflow_lines = [
+        line for line in section.splitlines() if "plus 3 more" in line
+    ]
+    assert overflow_lines and not overflow_lines[0].startswith("- "), overflow_lines
+
+
+def test_commit_stamps_the_ambient_session_on_the_candidate() -> None:
+    """session_id is the join key the distinct-session promotion counter runs
+    on: a commit that lands without one confirms nothing, forever."""
+    with patch.object(consolidation, "_save_candidate", new=AsyncMock()) as save, \
+         patch.object(consolidation, "_is_prose_duplicate", new=AsyncMock(return_value=None)), \
+         patch.object(consolidation, "_commit_preference",
+                      new=AsyncMock(return_value=("committed", {}, "ok"))):
+        try:
+            consolidation.set_session_context("sessA")
+            _run(consolidation.commit_candidate(
+                type="preference", content="Answer briefly.",
+            ))
+            ambient = save.await_args.args[0]
+            # An explicit session (the consolidator's episode) wins over ambient.
+            _run(consolidation.commit_candidate(
+                type="preference", content="Answer briefly.", session_id="sessB",
+            ))
+            explicit = save.await_args.args[0]
+        finally:
+            consolidation.set_session_context(None)
+    assert ambient["session_id"] == "sessA", ambient
+    assert explicit["session_id"] == "sessB", explicit
 
 
 def test_graded_counters_move_on_every_grade_not_only_on_use() -> None:
@@ -1020,9 +1622,31 @@ def main() -> int:
         test_a_genuinely_measured_bad_trigger_is_still_reported,
         test_bad_trigger_needs_enough_graded_evidence,
         test_promotion_audit_follows_the_character_budget,
+        test_promotion_gate_fails_closed_and_stamps_verdicts,
         test_graded_counters_move_on_every_grade_not_only_on_use,
         test_clearing_a_chat_hands_the_compaction_summary_to_the_consolidator,
         test_episode_end_passes_the_summary_through_to_the_pass,
+        test_a_learning_episode_survives_a_restart,
+        test_only_recent_non_disposable_episodes_are_resumable,
+        test_resuming_sessions_survives_a_dead_store,
+        test_unopened_counts_backed_fires_only,
+        test_unopened_never_grades_so_the_model_can_still_judge,
+        test_unopened_watermarks_every_row_it_examined,
+        test_unopened_selects_on_the_watermark_not_on_graded,
+        test_unopened_skips_fires_whose_memory_was_opened,
+        test_unopened_open_in_another_session_does_not_count_as_opened,
+        test_unopened_refuses_unbounded_scope,
+        test_unopened_ignores_a_memory_keyed_event_of_another_kind,
+        test_task_prompt_grades_every_ungraded_row_without_defaulting,
+        test_dedupe_skips_only_identical_text,
+        test_dedupe_never_calls_the_encoder,
+        test_shortlist_carries_the_cosine_score,
+        test_promotion_gate_rejects_a_verdict_it_cannot_read,
+        test_promotion_gate_budget_counts_attempts_not_successes,
+        test_promoted_lines_point_at_the_memory,
+        test_promotion_overflow_is_signposted_not_silently_dropped,
+        test_commit_stamps_the_ambient_session_on_the_candidate,
+        test_reflection_prompt_drops_the_memory_half_after_the_first_slot,
     ]
     for test in tests:
         test()

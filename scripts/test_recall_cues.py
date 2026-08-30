@@ -286,13 +286,21 @@ def test_trigger_autogen_respects_the_kill_switch() -> None:
 
 
 def test_promotion_needs_repeated_confirmations() -> None:
+    """Confirmations are DISTINCT SESSIONS: three restatements inside one
+    chat's to-and-fro are one confirmation, so a same-session duplicate must
+    not move the count."""
     docs = [
         {"memory_id": "m1", "type": "preference", "status": "committed",
-         "content": "Keep replies short.", "created_at_ts": 1.0},
+         "content": "Keep replies short.", "created_at_ts": 1.0,
+         "session_id": "s1"},
         {"memory_id": "m2", "type": "preference", "status": "duplicate",
-         "duplicate_of": "m1", "created_at_ts": 2.0},
+         "duplicate_of": "m1", "created_at_ts": 2.0, "session_id": "s2"},
+        # Restated again in the SAME session as the original — no new evidence.
+        {"memory_id": "m2b", "type": "preference", "status": "duplicate",
+         "duplicate_of": "m1", "created_at_ts": 2.5, "session_id": "s1"},
         {"memory_id": "m3", "type": "preference", "status": "committed",
-         "content": "Use metric units.", "created_at_ts": 3.0},
+         "content": "Use metric units.", "created_at_ts": 3.0,
+         "session_id": "s9"},
     ]
     with patch.object(consolidation, "_collection", new=AsyncMock(return_value=_FakeColl(docs))):
         ready = _run(consolidation.promotable_preferences(min_confirmations=2))
@@ -300,16 +308,79 @@ def test_promotion_needs_repeated_confirmations() -> None:
     assert ready[0]["confirmations"] == 2
 
 
+def test_promotion_ignores_sessionless_confirmations() -> None:
+    """A duplicate with no session cannot attribute its confirmation to a
+    distinct occasion, so it counts for nothing."""
+    docs = [
+        {"memory_id": "m1", "type": "preference", "status": "committed",
+         "content": "Keep replies short.", "created_at_ts": 1.0,
+         "session_id": "s1"},
+        {"memory_id": "m2", "type": "preference", "status": "duplicate",
+         "duplicate_of": "m1", "created_at_ts": 2.0},
+    ]
+    with patch.object(consolidation, "_collection", new=AsyncMock(return_value=_FakeColl(docs))):
+        ready = _run(consolidation.promotable_preferences(min_confirmations=2))
+    assert ready == []
+
+
+def test_promotion_follows_a_restatement_chain_to_one_original() -> None:
+    """The classifier's `restates` verdict leaves the restating row COMMITTED,
+    so it stays in the shortlist pool and a later paraphrase can name it.
+
+    Folding one hop would split a preference confirmed in three sessions into
+    two counts of two — it would never promote — and would offer the middle
+    restatement as its own promotable rule, giving one preference two
+    always-on slots.
+    """
+    docs = [
+        {"memory_id": "b", "type": "preference", "status": "committed",
+         "content": "Keep replies short.", "created_at_ts": 1.0,
+         "session_id": "s1"},
+        # Restated in s2; the classifier stamped it, the write was kept.
+        {"memory_id": "a", "type": "preference", "status": "committed",
+         "content": "Answer briefly.", "duplicate_of": "b",
+         "created_at_ts": 2.0, "session_id": "s2"},
+        # Restated again in s3, this time against the NEWEST phrasing.
+        {"memory_id": "c", "type": "preference", "status": "committed",
+         "content": "Be brief.", "duplicate_of": "a",
+         "created_at_ts": 3.0, "session_id": "s3"},
+    ]
+    with patch.object(consolidation, "_collection", new=AsyncMock(return_value=_FakeColl(docs))):
+        ready = _run(consolidation.promotable_preferences(min_confirmations=3))
+    assert [r["memory_id"] for r in ready] == ["b"], ready
+    assert ready[0]["confirmations"] == 3, ready
+    # Even with the bar on the floor, a restatement is not its own rule: one
+    # preference must never hold several always-on slots.
+    with patch.object(consolidation, "_collection", new=AsyncMock(return_value=_FakeColl(docs))):
+        every = _run(consolidation.promotable_preferences(min_confirmations=1))
+    assert [r["memory_id"] for r in every] == ["b"], every
+
+
+def test_promotion_survives_a_restatement_cycle() -> None:
+    """A cycle must terminate rather than hang the reflection tick."""
+    docs = [
+        {"memory_id": "x", "type": "preference", "status": "committed",
+         "content": "One.", "duplicate_of": "y", "created_at_ts": 1.0,
+         "session_id": "s1"},
+        {"memory_id": "y", "type": "preference", "status": "committed",
+         "content": "Two.", "duplicate_of": "x", "created_at_ts": 2.0,
+         "session_id": "s2"},
+    ]
+    with patch.object(consolidation, "_collection", new=AsyncMock(return_value=_FakeColl(docs))):
+        ready = _run(consolidation.promotable_preferences(min_confirmations=2))
+    assert isinstance(ready, list)
+
+
 def test_promotion_orders_by_most_recent_confirmation() -> None:
     docs = [
         {"memory_id": "m1", "type": "preference", "status": "committed",
-         "content": "Older.", "created_at_ts": 1.0},
+         "content": "Older.", "created_at_ts": 1.0, "session_id": "a1"},
         {"memory_id": "m2", "type": "preference", "status": "committed",
-         "content": "Newer.", "created_at_ts": 2.0},
+         "content": "Newer.", "created_at_ts": 2.0, "session_id": "b1"},
         {"memory_id": "d1", "type": "preference", "status": "duplicate",
-         "duplicate_of": "m2", "created_at_ts": 9.0},
+         "duplicate_of": "m2", "created_at_ts": 9.0, "session_id": "b2"},
         {"memory_id": "d2", "type": "preference", "status": "duplicate",
-         "duplicate_of": "m1", "created_at_ts": 3.0},
+         "duplicate_of": "m1", "created_at_ts": 3.0, "session_id": "a2"},
     ]
     with patch.object(consolidation, "_collection", new=AsyncMock(return_value=_FakeColl(docs))):
         ready = _run(consolidation.promotable_preferences(min_confirmations=2))
@@ -317,7 +388,7 @@ def test_promotion_orders_by_most_recent_confirmation() -> None:
 
 
 def test_promotion_section_respects_the_entry_budget() -> None:
-    entries = [{"content": f"Preference {i}."} for i in range(30)]
+    entries = [{"memory_id": f"m{i}", "content": f"Preference {i}."} for i in range(30)]
     section = consolidation.render_promotion_section(entries)
     bullets = [line for line in section.splitlines() if line.startswith("- ")]
     assert len(bullets) <= consolidation._PROMOTION_MAX_ENTRIES
@@ -327,13 +398,13 @@ def test_promotion_section_respects_the_entry_budget() -> None:
 def test_promotion_leaves_hand_written_memory_alone() -> None:
     """An automated writer must never own the whole always-on prompt."""
     original = "# MEMORY\n\n## User\n\n- **Preferred name:** Ada\n"
-    section = consolidation.render_promotion_section([{"content": "Keep replies short."}])
+    section = consolidation.render_promotion_section([{"memory_id": "m1", "content": "Keep replies short."}])
     updated = consolidation.apply_promotion_section(original, section)
     assert "- **Preferred name:** Ada" in updated
     assert "Keep replies short." in updated
 
     # Re-running with different evidence replaces only the managed block.
-    section2 = consolidation.render_promotion_section([{"content": "Use metric units."}])
+    section2 = consolidation.render_promotion_section([{"memory_id": "m2", "content": "Use metric units."}])
     twice = consolidation.apply_promotion_section(updated, section2)
     assert "- **Preferred name:** Ada" in twice
     assert "Keep replies short." not in twice
@@ -344,7 +415,7 @@ def test_promotion_leaves_hand_written_memory_alone() -> None:
 
 def test_promotion_is_idempotent() -> None:
     original = "# MEMORY\n\n## User\n\n- nothing yet\n"
-    section = consolidation.render_promotion_section([{"content": "Keep replies short."}])
+    section = consolidation.render_promotion_section([{"memory_id": "m1", "content": "Keep replies short."}])
     once = consolidation.apply_promotion_section(original, section)
     twice = consolidation.apply_promotion_section(once, section)
     assert once == twice
@@ -352,7 +423,7 @@ def test_promotion_is_idempotent() -> None:
 
 def test_empty_promotion_clears_the_managed_block() -> None:
     original = "# MEMORY\n\n## User\n\n- keep\n"
-    section = consolidation.render_promotion_section([{"content": "Temporary."}])
+    section = consolidation.render_promotion_section([{"memory_id": "mt", "content": "Temporary."}])
     filled = consolidation.apply_promotion_section(original, section)
     cleared = consolidation.apply_promotion_section(filled, "")
     assert "Temporary." not in cleared
@@ -495,6 +566,9 @@ def main() -> int:
         test_duplicate_memory_schedules_no_trigger,
         test_trigger_autogen_respects_the_kill_switch,
         test_promotion_needs_repeated_confirmations,
+        test_promotion_ignores_sessionless_confirmations,
+        test_promotion_follows_a_restatement_chain_to_one_original,
+        test_promotion_survives_a_restatement_cycle,
         test_promotion_orders_by_most_recent_confirmation,
         test_promotion_section_respects_the_entry_budget,
         test_promotion_leaves_hand_written_memory_alone,

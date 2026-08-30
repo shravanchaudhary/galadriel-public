@@ -81,10 +81,12 @@ async def main() -> int:
             neighbours = await consolidation.shortlist_neighbours(
                 text, exclude_id=memory_id,
             )
-            edges = await memory_graph.classify_edges(
+            edges, restates = await memory_graph.classify_edges(
                 memory_id, text, memory_type=doc.get("type") or "semantic",
                 neighbours=neighbours,
             )
+            if restates:
+                print(f"    would mark as restating {restates[:8]}")
             for edge in edges:
                 print(f"    would write {edge['relation']} -> {edge['to'][:8]} "
                       f"({edge['label']}, {edge['strength']})")

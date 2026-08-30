@@ -434,9 +434,9 @@ def _response_thought(response) -> str:
     the model's OWN reply text/tool-call and is what UI/history render and
     diff; the thought is stored alongside it (see `assistant_msg["_thought"]`
     below) and each provider decides for itself whether and how to replay it
-    on the next call (Mantle/Ollama re-attach the raw text on tool-call turns
-    inside the open cascade; Gemini instead round-trips an opaque
-    `thought_signature`). Native Anthropic responses carry `thinking` blocks
+    on the next call (Mantle folds it into visible content on tool-call turns
+    because its shim strips out-of-band reasoning fields; Ollama re-attaches
+    the raw text; Gemini round-trips an opaque `thought_signature`). Native Anthropic responses carry `thinking` blocks
     inline in `.content` already, where they must stay for tool-use signature
     continuity, so this function reads them from there as a fallback.
     """
@@ -703,11 +703,18 @@ class GaladrielAgent:
         self._api_key = api_key
         default_model = model or model_registry.model_for("agent")
         self._channel_models: dict[str, str] = {}
+        # Per-channel reasoning-effort overrides (Agent page). Main is absent
+        # by design: the composer's per-model memory keeps owning main.
+        self._channel_efforts: dict[str, str] = {}
         if provider is None and model is None:
             for channel in tower_settings.CONFIGURABLE_CHANNELS:
                 saved = tower_settings.get_channel_model(channel)
                 if saved:
                     self._channel_models[channel] = saved
+                if channel != MAIN_CHANNEL_ID:
+                    saved_effort = tower_settings.get_channel_effort(channel)
+                    if saved_effort:
+                        self._channel_efforts[channel] = saved_effort
         self.model = self._channel_models.get(MAIN_CHANNEL_ID, default_model)
         self._channel_models.setdefault(MAIN_CHANNEL_ID, self.model)
         self._channel_models.setdefault(WORKER_CHANNEL_ID, self.model)
@@ -814,6 +821,7 @@ class GaladrielAgent:
         # touched, including content already folded out of the live buffer.
         self._session_id: dict[str, str] = {}
         self._session_segments: dict[str, list[dict]] = {}
+        self._resume_sessions()
         if self._pending_run_recovery is not None:
             run, tail, checkpoint = self._pending_run_recovery
             self.conversations[MAIN_CHANNEL_ID] = list(tail)
@@ -986,6 +994,8 @@ class GaladrielAgent:
         self._notified_recall_ids.pop(channel_id, None)
         self._session_id.pop(channel_id, None)
         self._session_segments.pop(channel_id, None)
+        from . import conversation_run_store
+        conversation_run_store.clear_session_state(channel_id)
 
     def conversation_id_for(self, channel_id: str) -> str:
         """Durable id of the channel's current logical conversation.
@@ -1008,6 +1018,32 @@ class GaladrielAgent:
         if conversation_id:
             self._conversation_ids[channel_id] = str(conversation_id)
 
+    def _resume_sessions(self) -> None:
+        """Adopt any learning episode a previous process left in flight.
+
+        An episode outlives the process. Without this, a restart mid-chat
+        minted a fresh session for the SAME conversation: promotion counts
+        confirmations by DISTINCT SESSION, so one preference restated on both
+        sides of a restart counted twice, and the segments archived before it
+        dropped out of the episode index the consolidator drills into.
+
+        Read once, at construction. Every turn afterwards reads the in-memory
+        copy; the durable record is only written when an episode is minted,
+        gains a segment, or ends.
+        """
+        try:
+            from . import conversation_run_store
+            for channel, state in conversation_run_store.load_session_states().items():
+                self._session_id[channel] = state["session_id"]
+                self._session_segments[channel] = state["segments"]
+            if self._session_id:
+                log.info(
+                    "Resumed %d in-flight learning episode(s): %s",
+                    len(self._session_id), ", ".join(sorted(self._session_id)),
+                )
+        except Exception as e:
+            log.warning(f"Could not resume learning episodes: {e}")
+
     def _session_for(self, channel_id: str) -> str:
         """Stable id for the channel's current learning episode, created lazily."""
         sid = self._session_id.get(channel_id)
@@ -1015,6 +1051,8 @@ class GaladrielAgent:
             sid = uuid.uuid4().hex
             self._session_id[channel_id] = sid
             self._session_segments[channel_id] = []
+            from . import conversation_run_store
+            conversation_run_store.save_session_state(channel_id, sid, [])
         return sid
 
     def _record_session_segment(
@@ -1029,13 +1067,20 @@ class GaladrielAgent:
         consolidation can enumerate + drill into everything the episode touched
         even after several compactions have folded it out of the live buffer.
         """
-        self._session_for(channel_id)
+        sid = self._session_for(channel_id)
         self._session_segments.setdefault(channel_id, []).append({
             "segment_id": batch_dir.name if batch_dir is not None else None,
             "kind": kind,
             "archived_at": datetime.now(timezone.utc).isoformat(),
             "message_count": message_count,
         })
+        # Re-persisted whole rather than appended: a compaction is rare, and the
+        # segment list is what lets the consolidator drill into an episode whose
+        # content has already left the live buffer.
+        from . import conversation_run_store
+        conversation_run_store.save_session_state(
+            channel_id, sid, self._session_segments[channel_id],
+        )
 
     async def _log_retrieval_event(
         self,
@@ -1445,6 +1490,52 @@ class GaladrielAgent:
             pass
         log.info(f"Compaction threshold for {self.model} set to {value:,} tokens")
 
+    def effort_for_channel(
+        self, channel_id: str, model: str | None = None, default: str | None = None,
+    ) -> str:
+        """Reasoning effort for a channel's next turn.
+
+        A per-channel override (Agent page) wins; otherwise the model's own
+        runtime default (`default`, when the caller already resolved it).
+        Clamping runs either way, so a Replika tier's pinned effort overrides
+        both — the pin is the whole point of a tier.
+        """
+        model = model or self.model_for_channel(channel_id)
+        override = self._channel_efforts.get(channel_id)
+        if override:
+            return tower_settings.clamp_effort_for_model(model, override)
+        if default is not None:
+            return tower_settings.clamp_effort_for_model(model, default)
+        return self._runtime_for(model)["effort"]
+
+    def set_channel_effort(self, channel: str, effort: str) -> None:
+        """Set a non-main channel's reasoning effort and persist it.
+
+        Main keeps the composer path (`set_thinking_effort`) so its per-model
+        memory semantics stay intact.
+        """
+        if channel == MAIN_CHANNEL_ID:
+            self.set_thinking_effort(effort)
+            return
+        if channel not in tower_settings.CONFIGURABLE_CHANNELS:
+            raise ValueError(f"Unsupported channel: {channel}")
+        model = self.model_for_channel(channel)
+        value = tower_settings.normalize_thinking_effort(effort)
+        allowed = tower_settings.effort_options_for_model(model)
+        if value is None or (allowed and value not in allowed):
+            raise ValueError(
+                f"Unsupported effort: {effort}; "
+                f"expected one of {list(allowed or tower_settings.EFFORT_OPTIONS)}"
+            )
+        self._channel_efforts[channel] = value
+        try:
+            tower_settings.set_channel_effort(channel, value)
+        except RuntimeError:
+            log.warning(
+                f"Channel {channel} effort changed but not persisted — MongoDB not configured"
+            )
+        log.info(f"Channel {channel} effort set to {value} (model={model})")
+
     def set_thinking_effort(self, effort: str) -> None:
         """Set Gemini thinking effort for the current model and persist it."""
         value = tower_settings.normalize_thinking_effort(effort)
@@ -1756,8 +1847,34 @@ class GaladrielAgent:
             channel_id,
             details={"messages_before": result["messages_before"]},
         )
+        # The summarized head just left the buffer, so its recall fires can no
+        # longer be acted on — grade the unopened ones now rather than waiting
+        # for an episode boundary this chat may never reach. Fire-and-forget:
+        # counting is telemetry, never worth blocking the turn for.
+        # getattr guards: compaction is exercised on partially-built agents in
+        # tests; telemetry must never break a compact.
+        sid = getattr(self, "_session_id", {}).get(channel_id)
+        if (
+            sid
+            and getattr(self, "learning_enabled", True)
+            and hasattr(self, "_background_clear_tasks")
+        ):
+            self._spawn_clear_postprocess(self._count_unopened_fires(sid))
         result["compacted"] = True
         return result
+
+    async def _count_unopened_fires(self, session_id: str) -> None:
+        try:
+            from . import consolidation
+            # Age-gated: automatic compaction keeps a live tail, so a fire from
+            # the current turn may still be followed by an open. Ten minutes
+            # clears anything from the folded-out head without touching the
+            # in-flight turn.
+            await consolidation.record_unopened_fires(
+                session_id=session_id, older_than_minutes=10,
+            )
+        except Exception as e:
+            log.warning(f"Post-compaction unopened count failed ({session_id}): {e}")
 
     async def checkpoint_channel(self, channel_id: str = "default") -> int:
         """Non-destructively archive + mine a channel's NEW messages to the palace.
@@ -2297,6 +2414,13 @@ class GaladrielAgent:
         ephemeral: bool = False,
     ) -> str:
         messages = self._get_messages(channel_id)
+        # Ambient episode id for any memory committed during this turn (learn /
+        # propose_memory reach commit_candidate with no agent in scope). Set
+        # fresh at every turn entry, so staleness cannot leak across turns; the
+        # consolidator's side channel is pre-seeded with the episode's session,
+        # so its proposals attribute to the episode they distill.
+        from . import consolidation as _consolidation
+        _consolidation.set_session_context(self._session_for(channel_id))
         run_recorder = None
         if (not ephemeral) and channel_id == MAIN_CHANNEL_ID:
             from .conversation_run_store import ConversationRunRecorder
@@ -2485,6 +2609,9 @@ class GaladrielAgent:
             self._check_cancelled(channel_id)
             channel_model = self.model_for_channel(channel_id)
             runtime = self._runtime_for(channel_model)
+            runtime["effort"] = self.effort_for_channel(
+                channel_id, channel_model, runtime["effort"],
+            )
             if pending_tool_results_holder is not None:
                 pending_tool_results_holder["blocks"] = None
                 pending_tool_results_holder["results"] = []
@@ -3283,6 +3410,7 @@ class GaladrielAgent:
         # one, so it must not be attributed to whatever runs next.
         self._session_id.pop(MAIN_CHANNEL_ID, None)
         self._session_segments.pop(MAIN_CHANNEL_ID, None)
+        conversation_run_store.clear_session_state(MAIN_CHANNEL_ID)
         if checkpoint and checkpoint.get("summary"):
             self._compaction_summary[MAIN_CHANNEL_ID] = checkpoint["summary"]
         else:
@@ -3339,6 +3467,12 @@ class GaladrielAgent:
 
         side_channel = f"__consolidate_{channel_id}_{uuid.uuid4().hex[:8]}"
         self.conversations[side_channel] = copy.deepcopy(messages_snapshot)
+        # The pass writes memories ABOUT the episode, so its commits must carry
+        # the episode's session, not a fresh side-channel one — this is what
+        # distinct-session confirmation counting joins on. Cleaned up with the
+        # rest of the side channel in the finally below.
+        if session_id:
+            self._session_id[side_channel] = session_id
         try:
             from .loop_prompts import task_consolidation_prompt
             from .recall import fetch_all_recalls
@@ -3349,6 +3483,15 @@ class GaladrielAgent:
             except Exception as e:
                 log.warning(f"[Consolidate] recall catalog fetch failed: {e}")
                 catalog = []
+            # The episode is over, so "fired but never opened" is final. This
+            # only counts it — the grade itself stays with the pass below,
+            # which can still see that a fire helped without an open.
+            try:
+                await consolidation.record_unopened_fires(
+                    session_id=session_id, older_than_minutes=0,
+                )
+            except Exception as e:
+                log.warning(f"[Consolidate] unopened count failed: {e}")
             try:
                 episode_index = await consolidation.build_episode_index(
                     channel_id=channel_id,
@@ -3431,6 +3574,8 @@ class GaladrielAgent:
             self._compaction_summary.pop(side_channel, None)
             self._session_id.pop(side_channel, None)
             self._session_segments.pop(side_channel, None)
+            from . import conversation_run_store
+            conversation_run_store.clear_session_state(side_channel)
 
     async def on_episode_end(
         self,
@@ -3458,6 +3603,8 @@ class GaladrielAgent:
             session_id = self._session_id.pop(channel_id, None)
         if session_segments is None:
             session_segments = self._session_segments.pop(channel_id, [])
+        from . import conversation_run_store
+        conversation_run_store.clear_session_state(channel_id)
         if compaction_summary is None:
             compaction_summary = self._compaction_summary.get(channel_id, "")
         await self.run_task_consolidation(
@@ -3726,6 +3873,7 @@ class GaladrielAgent:
         self._notified_recall_ids.pop(channel_id, None)
         session_id = self._session_id.pop(channel_id, None)
         session_segments = self._session_segments.pop(channel_id, [])
+        conversation_run_store.clear_session_state(channel_id)
 
         if channel_id == MAIN_CHANNEL_ID:
             from .conversation_run_store import end_active_run

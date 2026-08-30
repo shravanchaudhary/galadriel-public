@@ -197,8 +197,24 @@ def normalize_effort(value: str | None) -> str | None:
     return key if key in EFFORT_OPTIONS else None
 
 
+def _tier_pin(model: str | None) -> str | None:
+    """Pinned effort for a Replika tier alias, or None for vendor models.
+
+    Tiers hardcode their reasoning level (fast=low, medium=medium, smart=high),
+    so every effort surface below collapses to the pin: the UI dropdown shows a
+    single option and the resolved effort is always the pin, regardless of any
+    persisted per-model or per-channel value.
+    """
+    from . import model_catalog
+
+    return model_catalog.tier_effort(model or "")
+
+
 def effort_options_for_model(model: str | None) -> tuple[str, ...]:
     """Selectable efforts for `model` (unavailable family keys omitted)."""
+    pin = _tier_pin(model)
+    if pin:
+        return (pin,)
     spec = _spec(model)
     if spec is None:
         return ()
@@ -207,6 +223,9 @@ def effort_options_for_model(model: str | None) -> tuple[str, ...]:
 
 def effort_catalog_for_model(model: str | None) -> list[dict[str, Any]]:
     """Family options with `available` so the UI can hide or blur the rest."""
+    pin = _tier_pin(model)
+    if pin:
+        return [{"value": pin, "label": EFFORT_LABELS[pin], "available": True}]
     spec = _spec(model)
     if spec is None:
         return []
@@ -222,6 +241,9 @@ def effort_catalog_for_model(model: str | None) -> list[dict[str, Any]]:
 
 
 def default_effort_for_model(model: str | None) -> str:
+    pin = _tier_pin(model)
+    if pin:
+        return pin
     spec = _spec(model)
     if spec is None:
         return DEFAULT_EFFORT
@@ -230,6 +252,9 @@ def default_effort_for_model(model: str | None) -> str:
 
 def clamp_effort_for_model(model: str | None, effort: str | None) -> str:
     """Return a selectable effort for `model`."""
+    pin = _tier_pin(model)
+    if pin:
+        return pin
     spec = _spec(model)
     wanted = normalize_effort(effort)
     if spec is None:

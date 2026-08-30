@@ -180,8 +180,17 @@ def _build_agent_items(scheduler, agent, today: str, worker=None) -> list[dict]:
         item["model_selectable"] = selectable
         if selectable and agent:
             item["model"] = agent.model_for_channel(channel)
+            # Reasoning effort rides next to the model select. The catalog is
+            # per-model (a Replika tier collapses to its pinned single option;
+            # a no-thinking model returns [] and the row hides).
+            item["effort"] = agent.effort_for_channel(channel)
+            item["effort_catalog"] = tower_settings.effort_catalog_for_model(
+                item["model"]
+            )
         elif selectable:
             item["model"] = None
+            item["effort"] = None
+            item["effort_catalog"] = []
 
     return loops
 

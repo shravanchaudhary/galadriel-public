@@ -43,13 +43,20 @@ TASKS: dict[str, tuple[str, str]] = {
     # One-shot short title for a new conversation run.
     "chat_title": (BEDROCK_MANTLE, "glm-5"),
     # Authors a stored memory's retrieval trigger — ~60 positive phrasings plus
-    # held-out probes (harness/recall_cues.py). Cue quality decides whether a
-    # memory is ever recalled at all, so this follows the active chat model.
-    "recall_cues": (BEDROCK_MANTLE, "glm-5"),
+    # held-out probes (harness/recall_cues.py). Pinned to the medium tier: cue
+    # quality decides whether a memory is ever recalled at all, but its cost
+    # must not silently follow whatever chat model the user selected.
+    "recall_cues": (BEDROCK_MANTLE, "replika-medium"),
     # Decides how a new memory relates to its nearest neighbours
-    # (harness/memory_graph.py). A wrong DEPENDS_ON injects an irrelevant
-    # memory every time its partner fires, so this follows the active model too.
-    "memory_edges": (BEDROCK_MANTLE, "glm-5"),
+    # (harness/memory_graph.py). Same tier and same reasoning as recall_cues —
+    # a wrong DEPENDS_ON injects an irrelevant memory every time its partner
+    # fires.
+    "memory_edges": (BEDROCK_MANTLE, "replika-medium"),
+    # Judges whether a confirmed preference is crucial enough for the
+    # always-on prompt (harness/consolidation.promote_preferences). One call
+    # per newly-eligible preference, verdict stored forever — rare and small,
+    # but the judgment shapes every future turn's prompt, so medium tier.
+    "promotion_gate": (BEDROCK_MANTLE, "replika-medium"),
 }
 
 # Bedrock equivalents — drop any of these into TASKS to move a task onto Claude
@@ -67,17 +74,20 @@ BEDROCK_DEFAULTS: dict[str, tuple[str, str]] = {
 # fail a task while the main conversation works fine. The TASKS pins remain
 # the fallback before the agent has registered its model.
 #
+# recall_cues and memory_edges are deliberately NOT here any more: following
+# the active model meant switching the chat to Opus silently repriced every
+# cue-generation and edge call ~5-8x. They are pinned to replika-medium above,
+# so learning cost moves only when someone retargets the tier.
+#
 # The task-end and periodic memory consolidators (harness/agent.py
 # run_task_consolidation; ambient reflection/goodnight) are NOT listed here —
 # they don't need a pin at all. Both run as full agent turns through
 # _respond_locked_inner on a channel (a disposable side channel, or
 # reflection/goodnight), which resolves its model via model_for_channel();
 # any channel with no explicit override already falls back to the live
-# main-channel model. Learning quality is deliberately not a place to save
-# tokens (see the multi-timescale learning architecture plan) — this fallback
-# already guarantees the active chat model with zero extra config.
+# main-channel model.
 FOLLOW_ACTIVE_MODEL = frozenset({
-    "compaction", "chat_title", "slack_reply_gate", "recall_cues", "memory_edges",
+    "compaction", "chat_title", "slack_reply_gate",
 })
 
 _active_model: str | None = None
@@ -106,10 +116,25 @@ def model_for(task: str) -> str:
 
 
 def provider_name_for(task: str) -> str:
-    """Provider id configured for `task` (live main provider for followers)."""
+    """Provider id configured for `task` (live main provider for followers).
+
+    Resolved from the model, not the TASKS provider column, so a task pinned
+    to a Replika tier keeps the right provider when the tier is retargeted —
+    the column stays as documentation of the current resolution.
+    """
     if task in FOLLOW_ACTIVE_MODEL and _active_model:
         return provider_for_model(_active_model)
-    return TASKS[task][0]
+    return provider_for_model(TASKS[task][1])
+
+
+def task_effort(task: str) -> str | None:
+    """Pinned reasoning effort for `task`'s model, or None when not a tier.
+
+    Callers that today pass `thinking=False` should switch to
+    `thinking=bool(pin), effort=pin` when a pin exists, so a task assigned to
+    replika-medium actually reasons at medium instead of the silent floor.
+    """
+    return model_catalog.tier_effort(model_for(task))
 
 
 def provider_for_model(model: str) -> str:

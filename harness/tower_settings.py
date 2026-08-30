@@ -42,12 +42,13 @@ DEFAULT_AGENT_TIMEZONE = "Europe/Stockholm"
 _AVAILABLE_TIMEZONES = available_timezones()
 
 # Judge model for the paid tier — any JUDGE_MODEL_OPTIONS entry (the judge never
-# calls a tool, so no-tool models stay eligible). Cheapest model that scored 100%
-# on the accuracy-vs-cost judge eval (knowledge/reference/bedrock_providers.md):
+# calls a tool, so no-tool models stay eligible). Defaults to the fast tier,
+# which currently targets gpt-oss-20b: cheapest model that scored 100% on the
+# accuracy-vs-cost judge eval (knowledge/reference/bedrock_providers.md):
 # ~$0.05/1k calls at p90 1.1s. Superseded 2026-08-18 measurement on the earlier
 # Gemini-only judge, kept for reference: gemini-2.5-flash and -flash-lite both
 # P=0.916 R=0.952 F1=0.933, identical case-level verdicts, ~1.3 s/scan.
-DEFAULT_RECALL_JUDGE_MODEL = "gpt-oss-20b"
+DEFAULT_RECALL_JUDGE_MODEL = "replika-fast"
 
 # Idle-poll minutes when the worker has nothing to do (default 10).
 VALID_WORKER_IDLE_MINUTES: tuple[int, ...] = (5, 10, 15, 20, 30, 60)
@@ -117,6 +118,11 @@ def _channel_setting_id(channel: str) -> str:
     if channel in _CHANNEL_DOC_IDS:
         return _CHANNEL_DOC_IDS[channel]
     return f"channel_model_{channel}"
+
+
+def _channel_effort_id(channel: str) -> str:
+    """Mongo setting id for a channel's reasoning-effort choice."""
+    return f"channel_effort_{channel}"
 
 # Selectable models in Tower, both derived from `model_catalog` so a model is
 # added in exactly one place. Provider is resolved from the model name via
@@ -204,6 +210,49 @@ def set_channel_model(channel: str, model: str) -> None:
         },
         upsert=True,
     )
+
+
+def get_channel_effort(channel: str) -> str | None:
+    """Persisted reasoning effort for a channel, or None if unset.
+
+    Stored raw and clamped at use (`clamp_effort_for_model`) so a later model
+    change on the channel cannot leave an illegal pair persisted. The main
+    channel keeps the composer's per-model memory (`model_runtime`) instead —
+    this is only for the autonomous channels on the Agent page.
+    """
+    if channel not in CONFIGURABLE_CHANNELS:
+        return None
+    db = _db()
+    if db is None:
+        return None
+    doc = db[COLLECTION].find_one(
+        {"_id": _doc_id(_channel_effort_id(channel)), "tenant_id": _tenant_id()}
+    )
+    return normalize_thinking_effort((doc or {}).get("effort"))
+
+
+def set_channel_effort(channel: str, effort: str) -> str:
+    """Persist a channel's reasoning effort. Raises if Mongo is unavailable."""
+    if channel not in CONFIGURABLE_CHANNELS:
+        raise ValueError(f"Unsupported channel: {channel}")
+    value = normalize_thinking_effort(effort)
+    if value is None:
+        raise ValueError(f"Unsupported effort: {effort}")
+    db = _db()
+    if db is None:
+        raise RuntimeError("MONGO_URI / MONGO_DB not configured")
+    setting_id = _channel_effort_id(channel)
+    db[COLLECTION].replace_one(
+        {"_id": _doc_id(setting_id)},
+        {
+            "_id": _doc_id(setting_id),
+            "tenant_id": _tenant_id(),
+            "effort": value,
+            "updated_at": datetime.now(timezone.utc),
+        },
+        upsert=True,
+    )
+    return value
 
 
 def get_agent_model() -> str | None:

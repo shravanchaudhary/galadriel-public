@@ -32,11 +32,12 @@ matching the rest of the harness (see e.g. harness/recall.py, conversation_run_s
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 import os
 import re
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 log = logging.getLogger("galadriel.consolidation")
@@ -53,9 +54,23 @@ MAINTENANCE_COLLECTION = "memory_maintenance"
 
 MEMORY_TYPES = ("semantic", "procedural", "preference")
 
-# Prose dedupe: a new candidate whose content is at least this similar to a
-# recently committed candidate of the same type is treated as a duplicate.
-_DUPLICATE_COSINE_FLOOR = 0.93
+# Ambient episode id for commits. The tool layer (learn / propose_memory) has
+# no agent reference, so the agent sets this at turn entry and every commit in
+# that turn's await tree inherits it — which is what lets preference
+# confirmations be counted per DISTINCT session instead of per restatement
+# (three restatements inside one chat's to-and-fro are one confirmation).
+# The task-end consolidator's side channel is seeded with the EPISODE's
+# session, so its proposals attribute to the episode they came from.
+_SESSION_CONTEXT: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "memory_commit_session", default=None,
+)
+
+
+def set_session_context(session_id: str | None) -> None:
+    """Record the episode a subsequent commit should be attributed to."""
+    _SESSION_CONTEXT.set(session_id)
+
+# Prose dedupe scope: candidates committed through this pipeline recently.
 _DEDUPE_POOL_SIZE = 200
 _DEDUPE_WINDOW_DAYS = 30
 # Staleness floor for the periodic-consolidator utility report.
@@ -203,6 +218,14 @@ async def ensure_indexes() -> None:
             # Graded-event rollups (the utility backfill, and any per-memory
             # audit) would otherwise scan the whole collection.
             await events.create_index([("memory_key", 1), ("graded", 1)])
+            # Edge decay selects graded rows of one memory_kind; without this
+            # it scans the collection on every pass.
+            await events.create_index([("memory_kind", 1), ("graded", 1), ("ts", 1)])
+            # The unopened sweep selects one memory_kind's un-watermarked rows
+            # oldest-first, which is a different prefix from the line above.
+            await events.create_index(
+                [("memory_kind", 1), ("unopened_checked", 1), ("ts", 1)]
+            )
         except Exception as e:
             log.warning(f"Retrieval event index creation failed: {e}")
 
@@ -238,6 +261,7 @@ async def commit_candidate(
     source: str = "runtime",
     note: str = "",
     supersedes_memory_id: str | None = None,
+    session_id: str | None = None,
 ) -> dict:
     """Validate -> dedupe -> write -> record provenance.
 
@@ -330,6 +354,7 @@ async def commit_candidate(
         "status": status,
         "destination": destination,
         "duplicate_of": duplicate_of,
+        "session_id": session_id or _SESSION_CONTEXT.get(),
         "created_at": _now(),
         "created_at_ts": _now().timestamp(),
     })
@@ -474,9 +499,9 @@ async def _classify_edges(
 
     try:
         neighbours = await shortlist_neighbours(text, exclude_id=memory_id)
-        edges, written = [], 0
+        edges, written, restates = [], 0, None
         if neighbours:
-            edges = await memory_graph.classify_edges(
+            edges, restates = await memory_graph.classify_edges(
                 memory_id, text, memory_type=type_, neighbours=neighbours,
             )
             written = await memory_graph.add_edges(memory_id, edges, source=source)
@@ -492,12 +517,25 @@ async def _classify_edges(
     coll = await _collection(CANDIDATES_COLLECTION)
     if coll is not None:
         try:
-            await coll.update_one(
-                {"memory_id": memory_id},
-                {"$set": {"edges": {
-                    "classified_at": _now(), "written": written, "source": source,
-                }}},
-            )
+            update: dict = {"edges": {
+                "classified_at": _now(), "written": written, "source": source,
+            }}
+            # The classifier's restatement verdict lands as `duplicate_of` —
+            # the same field commit-time dedupe writes, so the preference
+            # confirmation counter (promotable_preferences) sees both paths
+            # identically. Nothing is deleted: the restating memory stays
+            # committed; only the counting changes. Never overwrite a
+            # dedupe-set value — the commit-time verdict saw the nearer pool.
+            if restates:
+                existing = await coll.find_one(
+                    {"memory_id": memory_id}, {"_id": 0, "duplicate_of": 1},
+                )
+                if existing is not None and not existing.get("duplicate_of"):
+                    update["duplicate_of"] = restates
+                    log.info(
+                        "[Restates] memory=%s confirms %s", memory_id, restates,
+                    )
+            await coll.update_one({"memory_id": memory_id}, {"$set": update})
         except Exception as e:
             log.warning("Could not record edge outcome for %s: %s", memory_id, e)
     return written
@@ -600,19 +638,37 @@ async def _is_kg_duplicate(subject: str, predicate: str, obj: str) -> bool:
         return False
 
 
-async def _is_prose_duplicate(type_: str, content: str) -> str | None:
-    """Return the duplicate memory_id if content is a near-duplicate of a
-    recently committed candidate of the same type, else None.
+def _dedupe_key(content: str) -> str:
+    """Whitespace- and case-insensitive form of a memory's prose."""
+    return " ".join((content or "").split()).casefold()
 
-    Scope: dedupes against candidates that went through THIS pipeline in the
-    last _DEDUPE_WINDOW_DAYS — not the full historical palace corpus (palace's
-    own search API returns formatted markdown, not per-item vectors, so full
+
+async def _is_prose_duplicate(type_: str, content: str) -> str | None:
+    """Return the memory_id of a committed candidate holding the SAME prose.
+
+    Text equality only, deliberately. This verdict SKIPS the write, so it is
+    safe exactly when skipping loses nothing — which is true of a re-proposal
+    of the same text and of nothing else. Measured on the live corpus
+    (kb/learning-loop-measured.md), every cosine floor low enough to catch a
+    paraphrase also drops genuinely distinct documents: at 0.88, three of
+    nineteen, including a personal profile against an employer list at 0.899
+    (they share only the subject's name); at 0.93, nothing fires at all. There
+    is no honest constant in between, so near-duplicates are the edge
+    classifier's `restates` verdict instead, which records the restatement
+    WITHOUT discarding the new write.
+
+    Scope: candidates that went through THIS pipeline in the last
+    _DEDUPE_WINDOW_DAYS — not the full historical palace corpus (palace's own
+    search API returns formatted markdown, not per-item vectors, so full
     corpus dedupe isn't reachable without forking palace internals). This
-    still catches the common failure mode the plan is worried about: the same
-    consolidator (or the runtime agent) proposing the same lesson repeatedly
-    across ticks. Best-effort: any failure means "not a duplicate" — a missed
-    dedupe costs a redundant write, never a lost one.
+    still catches the failure the pipeline is worried about: the same
+    consolidator (or the runtime agent) re-proposing one lesson across ticks.
+    Best-effort: any failure means "not a duplicate" — a missed dedupe costs a
+    redundant write, never a lost one.
     """
+    key = _dedupe_key(content)
+    if not key:
+        return None
     coll = await _collection(CANDIDATES_COLLECTION)
     if coll is None:
         return None
@@ -622,25 +678,11 @@ async def _is_prose_duplicate(type_: str, content: str) -> str | None:
             {"type": type_, "status": "committed", "created_at_ts": {"$gte": since_ts}},
             {"memory_id": 1, "content": 1},
         ).sort("created_at_ts", -1).limit(_DEDUPE_POOL_SIZE)
-        pool = [doc async for doc in cursor]
+        async for doc in cursor:
+            if _dedupe_key(doc.get("content") or "") == key:
+                return doc.get("memory_id")
     except Exception as e:
         log.warning(f"Prose dedupe query failed: {e}")
-        return None
-    pool = [doc for doc in pool if (doc.get("content") or "").strip()]
-    if not pool:
-        return None
-    try:
-        from .recall import get_encoder, _argmax_cosine
-        hit = _argmax_cosine(get_encoder(), content, [doc["content"] for doc in pool])
-    except Exception as e:
-        log.warning(f"Prose dedupe scoring failed: {e}")
-        return None
-    if hit is None or hit[0] < _DUPLICATE_COSINE_FLOOR:
-        return None
-    matched_text = hit[1]
-    for doc in pool:
-        if doc.get("content") == matched_text:
-            return doc.get("memory_id")
     return None
 
 
@@ -705,23 +747,28 @@ async def shortlist_neighbours(
         return []
 
     try:
-        from .recall import get_encoder, top_k_vector_indices
+        from .recall import get_encoder, top_k_vector_scores
 
         encoder = get_encoder()
         query_vector = ((await _encode(encoder, [content])) or [None])[0]
         if query_vector is None:
             return []
         vectors = await _pool_vectors(coll, pool, encoder, len(query_vector))
-        best = top_k_vector_indices(query_vector, vectors, limit)
+        best = top_k_vector_scores(query_vector, vectors, limit)
     except Exception as e:
         log.warning(f"Edge shortlist scoring failed: {e}")
         return []
 
+    # The score travels with each candidate: the classifier and the searching
+    # agent both need to see that a "nearest neighbour" on a sparse corpus may
+    # sit at 0.55 — similarity picks who gets considered, the number is what
+    # lets judgment refuse it.
     return [{
         "memory_id": pool[i].get("memory_id"),
         "content": pool[i].get("content"),
         "type": pool[i].get("type"),
-    } for i in best]
+        "score": round(score, 3),
+    } for i, score in best]
 
 
 async def _encode(encoder, texts: list[str]):
@@ -965,7 +1012,19 @@ _PROMOTION_HEADING = "## Learned preferences"
 async def promotable_preferences(
     min_confirmations: int = _PROMOTION_MIN_CONFIRMATIONS,
 ) -> list[dict]:
-    """Committed preferences the user has restated enough times to promote.
+    """Committed preferences confirmed in enough DISTINCT sessions to promote.
+
+    Confirmations count sessions, not restatements: three rewordings inside
+    one chat's to-and-fro are one confirmation, because they are one occasion
+    on which the preference mattered. Restatements arrive as candidates with
+    `duplicate_of` pointing at the original (commit-time dedupe for
+    near-verbatim, the edge classifier's `restates` verdict for paraphrase),
+    each carrying the session it happened in. A doc with no session — an old
+    row, or a commit outside any turn — cannot confirm anything.
+
+    Whether a confirmed preference is CRUCIAL enough for the always-on prompt
+    is a separate judgment (`promote_preferences` runs the gate); this only
+    answers "was it independently reinforced".
 
     Newest confirmation first, so the eviction order under the size cap is
     least-recently-reinforced.
@@ -980,15 +1039,45 @@ async def promotable_preferences(
         log.warning(f"Preference promotion query failed: {e}")
         return []
 
-    originals = {d["memory_id"]: d for d in docs if d.get("status") == "committed"}
-    confirmations: dict[str, int] = {mid: 1 for mid in originals}
+    by_id = {d["memory_id"]: d for d in docs}
+
+    def _root(memory_id: str) -> str:
+        """Follow `duplicate_of` to the memory a chain of restatements is about.
+
+        A restatement stamped by the classifier keeps `status="committed"`, so
+        it stays in the shortlist pool and a later paraphrase can legitimately
+        name IT as the thing being restated. Folding a single hop would split
+        one preference's confirmations along the chain (C->A->B counts as two
+        twos, never a three) and promote a restatement as if it were its own
+        rule. Stops on a cycle or a dangling pointer.
+        """
+        seen = {memory_id}
+        current = memory_id
+        for _ in range(len(by_id)):  # bounded: a chain cannot exceed the corpus
+            target = (by_id.get(current) or {}).get("duplicate_of")
+            if not target or target in seen or target not in by_id:
+                break
+            seen.add(target)
+            current = target
+        return current
+
+    originals = {
+        d["memory_id"]: d for d in docs
+        if d.get("status") == "committed" and _root(d["memory_id"]) == d["memory_id"]
+    }
+    sessions: dict[str, set] = {
+        mid: ({d.get("session_id")} if d.get("session_id") else set())
+        for mid, d in originals.items()
+    }
     last_seen: dict[str, float] = {
         mid: d.get("created_at_ts") or 0.0 for mid, d in originals.items()
     }
     for doc in docs:
-        target = doc.get("duplicate_of")
-        if target in confirmations:
-            confirmations[target] += 1
+        if not doc.get("duplicate_of") or not doc.get("session_id"):
+            continue
+        target = _root(doc["memory_id"])
+        if target in sessions:
+            sessions[target].add(doc["session_id"])
             last_seen[target] = max(
                 last_seen[target], doc.get("created_at_ts") or 0.0,
             )
@@ -997,11 +1086,13 @@ async def promotable_preferences(
         {
             "memory_id": mid,
             "content": " ".join((originals[mid].get("content") or "").split()),
-            "confirmations": count,
+            "confirmations": len(confirmed),
             "last_confirmed_ts": last_seen[mid],
+            "promotion_review": originals[mid].get("promotion_review"),
         }
-        for mid, count in confirmations.items()
-        if count >= min_confirmations and (originals[mid].get("content") or "").strip()
+        for mid, confirmed in sessions.items()
+        if len(confirmed) >= min_confirmations
+        and (originals[mid].get("content") or "").strip()
     ]
     ready.sort(key=lambda r: r["last_confirmed_ts"], reverse=True)
     return ready
@@ -1014,13 +1105,17 @@ def fitting_promotions(entries: list[dict]) -> tuple[list[dict], list[str]]:
     audit has to ask this rather than assume the first _PROMOTION_MAX_ENTRIES
     were promoted — otherwise the entries the char cap dropped get recorded as
     promoted and the eviction list comes back empty.
+
+    Each line carries a `(memory:<id>)` pointer: the block holds the rule's
+    short form, the full memory (context, links, history) stays one
+    `memory(id=…)` away — MEMORY.md points at memory, it does not replace it.
     """
     fitted, lines, used = [], [], 0
     for entry in entries[:_PROMOTION_MAX_ENTRIES]:
         text = entry["content"]
         if len(text) > 200:
             text = text[:197] + "..."
-        line = f"- {text}"
+        line = f"- {text} (memory:{entry['memory_id']})"
         if used + len(line) > _PROMOTION_MAX_CHARS:
             break
         fitted.append(entry)
@@ -1030,10 +1125,24 @@ def fitting_promotions(entries: list[dict]) -> tuple[list[dict], list[str]]:
 
 
 def render_promotion_section(entries: list[dict]) -> str:
-    """The managed block, trimmed to the entry and character budget."""
-    _, lines = fitting_promotions(entries)
+    """The managed block, trimmed to the entry and character budget.
+
+    Approved entries beyond the caps are not silently gone: one overflow line
+    says how many more exist and how to reach them — the second level the cap
+    creates lives in the memory store, not in a bigger block.
+    """
+    fitted, lines = fitting_promotions(entries)
     if not lines:
         return ""
+    overflow = len(entries) - len(fitted)
+    if overflow > 0:
+        # Deliberately not a "- " bullet: entry lines are the promotion audit's
+        # unit of account (fitting_promotions), and this is a signpost, not an
+        # entry.
+        lines.append(
+            f"…plus {overflow} more confirmed preference(s) — "
+            f'memory(query="preference")'
+        )
     return "\n".join([_PROMOTION_HEADING, _PROMOTION_BEGIN, *lines, _PROMOTION_END])
 
 
@@ -1060,17 +1169,134 @@ def apply_promotion_section(existing: str, section: str) -> str:
     return text.rstrip("\n") + "\n\n" + section + "\n"
 
 
+# The crucialness gate — one small model call per NEWLY eligible preference,
+# never per tick: the verdict is stamped on the candidate (`promotion_review`)
+# and re-read forever after. Bounded per pass so a backlog cannot turn one
+# reflection tick into a call storm.
+_GATE_REVIEWS_PER_PASS = 3
+
+_PROMOTION_GATE_SYSTEM = """\
+You decide whether a learned preference belongs in the agent's ALWAYS-ON \
+system prompt (MEMORY.md — present before the first token of every single \
+turn, forever), or whether on-demand recall is enough.
+
+Always-on is for rules that must bind BEFORE anything happens — where waiting \
+for a retrieval to fire is already too late:
+- how to speak (tone, brevity, language) — shapes the first token;
+- safety and approval gates (never send X without asking) — must precede the act;
+- standing constraints with no textual trigger — nothing in a conversation \
+resembles them, so a cue can never fire.
+
+On-demand is for everything whose moment announces itself in the text: facts, \
+procedures, tool habits, project details, topic-specific preferences. The \
+recall system surfaces those when the conversation resembles them.
+
+The always-on prompt is paid on every turn and capped, so the bar is high: \
+promote only what would misfire on turn one without it.
+
+Return ONLY a JSON object: {"promote": true|false, "reason": "<one line>"}"""
+
+
+async def _review_promotion(entry: dict) -> dict | None:
+    """One gate verdict for one confirmed preference, or None on any failure.
+
+    None means "not judged yet" — the entry stays out of MEMORY.md and is
+    retried on a later pass. Failing closed is the point: nothing enters the
+    always-on prompt without a stored verdict.
+    """
+    try:
+        from . import model_registry
+
+        provider = model_registry.get_provider("promotion_gate")
+        model = model_registry.model_for("promotion_gate")
+        pinned_effort = model_registry.task_effort("promotion_gate")
+        response = await provider.create_message(
+            model=model,
+            max_tokens=300,
+            system=_PROMOTION_GATE_SYSTEM,
+            messages=[{
+                "role": "user",
+                "content": (
+                    f"Preference (confirmed in {entry['confirmations']} distinct "
+                    f"sessions):\n{entry['content'][:1500]}"
+                ),
+            }],
+            thinking=bool(pinned_effort),
+            effort=pinned_effort,
+            temperature=0.0,
+        )
+    except Exception as e:
+        log.warning("Promotion gate call failed for %s: %s", entry["memory_id"], e)
+        return None
+    text = " ".join(
+        getattr(block, "text", "") or ""
+        for block in (getattr(response, "content", None) or [])
+        if getattr(block, "type", None) == "text" or getattr(block, "text", None)
+    )
+    from .recall_cues import _parse_json_object
+
+    payload = _parse_json_object(text)
+    if not payload or not isinstance(payload.get("promote"), bool):
+        log.warning("Promotion gate returned unparseable verdict for %s", entry["memory_id"])
+        return None
+    return {
+        "promote": payload["promote"],
+        "reason": str(payload.get("reason") or "")[:300],
+        "reviewed_at": _now(),
+    }
+
+
 async def promote_preferences(
     min_confirmations: int = _PROMOTION_MIN_CONFIRMATIONS,
 ) -> str:
     """Sync MEMORY.md's managed block with the preferences that earned a place.
 
+    Two gates in sequence, deliberately different in kind: repetition across
+    distinct sessions (counted by the harness — evidence it was independently
+    reinforced) and then crucialness (judged once by a model — evidence recall
+    would be too late for it). Only entries passing both render; a rejected
+    entry stays a perfectly good memory, reachable by recall and search, just
+    not paid for on every turn.
+
     Returns a one-line summary for the caller's log, or "" when nothing
-    changed. Idempotent: re-running with the same evidence rewrites identical
-    bytes.
+    changed. Idempotent: verdicts are stamped once, and re-running with the
+    same evidence rewrites identical bytes.
     """
     entries = await promotable_preferences(min_confirmations)
-    section = render_promotion_section(entries)
+
+    # Judge the newly eligible (no stored verdict), bounded per pass.
+    coll = await _collection(CANDIDATES_COLLECTION)
+    reviewed = 0
+    for entry in entries:
+        if entry.get("promotion_review") is not None:
+            continue
+        if reviewed >= _GATE_REVIEWS_PER_PASS:
+            break
+        # Count the ATTEMPT, not the success: a gate that is failing (provider
+        # down, unparseable replies) returns None for every entry, and bounding
+        # only the successes would turn one pass into a call per eligible
+        # preference — a call storm exactly when the calls are useless.
+        reviewed += 1
+        verdict = await _review_promotion(entry)
+        if verdict is None:
+            continue
+        entry["promotion_review"] = verdict
+        if coll is not None:
+            try:
+                await coll.update_one(
+                    {"memory_id": entry["memory_id"]},
+                    {"$set": {"promotion_review": verdict}},
+                )
+            except Exception as e:
+                log.warning(
+                    "Could not store promotion verdict for %s: %s",
+                    entry["memory_id"], e,
+                )
+
+    approved = [
+        e for e in entries if (e.get("promotion_review") or {}).get("promote")
+    ]
+    section = render_promotion_section(approved)
     path = Path("config/MEMORY.md")
     try:
         existing = path.read_text(encoding="utf-8") if path.exists() else ""
@@ -1088,17 +1314,26 @@ async def promote_preferences(
     # Which preferences hold the block, and which qualified but did not fit.
     # Eviction is otherwise invisible: the entry simply stops being in the file,
     # with nothing anywhere saying it was ever promoted or why it left.
-    fitted, _ = fitting_promotions(entries)
+    fitted, _ = fitting_promotions(approved)
     promoted = [e["memory_id"] for e in fitted]
     await record_maintenance("promotion", {
         "eligible": len(entries),
+        "approved": [e["memory_id"] for e in approved],
+        "rejected": [
+            e["memory_id"] for e in entries
+            if e.get("promotion_review") is not None
+            and not (e["promotion_review"] or {}).get("promote")
+        ],
+        "unreviewed": [
+            e["memory_id"] for e in entries if e.get("promotion_review") is None
+        ],
         "promoted": promoted,
-        "evicted": [e["memory_id"] for e in entries if e["memory_id"] not in promoted],
+        "evicted": [e["memory_id"] for e in approved if e["memory_id"] not in promoted],
         "min_confirmations": min_confirmations,
     })
     return (
-        f"promoted {len(section.splitlines()) - 3 if section else 0} preference(s) "
-        f"into MEMORY.md (>= {min_confirmations} confirmations)"
+        f"promoted {len(promoted)} preference(s) into MEMORY.md "
+        f"(>= {min_confirmations} distinct-session confirmations + gate approval)"
     )
 
 
@@ -1175,20 +1410,25 @@ async def _episode_retrieval_summary(session_id: str | None) -> str:
         for e in events if str(e.get("memory_key", "")).startswith("recall:")
     ])
     lines = [
-        "[EPISODE_RETRIEVALS] Memory surfaced during this episode — grade each "
-        "with grade_retrieval(retrieval_id, used, outcome):",
+        "[EPISODE_RETRIEVALS] Memory surfaced during this episode. Call "
+        "grade_retrieval(retrieval_id, used, outcome) for every row not marked "
+        "[already graded]. [not opened] means the harness saw no memory(id=…) "
+        "for it this episode — that is context, NOT the answer: a fire whose "
+        "instruction you acted on directly is used=true even though nothing "
+        "was opened.",
     ]
     for e in events:
         q = (e.get("query_or_cue") or "").replace("\n", " ").strip()
         if len(q) > 120:
             q = q[:117] + "..."
         graded = " [already graded]" if e.get("graded") else ""
+        unopened = " [not opened]" if e.get("unopened") else ""
         key = str(e.get("memory_key", ""))
         memory_id = backing.get(key.split("recall:", 1)[-1]) if key.startswith("recall:") else None
         origin = f" memory_id={memory_id}" if memory_id else ""
         lines.append(
             f"- retrieval_id={e.get('retrieval_id')} kind={e.get('memory_kind')} "
-            f"memory_key={key}{origin} query=\"{q}\"{graded}"
+            f"memory_key={key}{origin} query=\"{q}\"{unopened}{graded}"
         )
     return "\n".join(lines)
 
@@ -1451,6 +1691,159 @@ async def grade_retrieval(retrieval_id: str, used: bool, outcome: str, note: str
     return f"Graded retrieval {retrieval_id}: used={used_} outcome={outcome_}."
 
 
+# The sweep works one bounded batch at a time, so a backlog cannot occupy the
+# loop for minutes. EVERY row it looks at is stamped `unopened_checked`, even
+# the ones it has nothing to say about — that stamp, not `graded`, is the
+# watermark. Stamping only the rows it can act on would leave the ones it
+# cannot (sys_/user recalls, which never gain a backing memory) at the head of
+# the ts-ordered index forever, and once they filled a batch the sweep would
+# re-read the same dead rows every hour and never reach a live one.
+_UNOPENED_BATCH = 500
+
+
+async def record_unopened_fires(
+    session_id: str | None = None, older_than_minutes: int = 60,
+) -> int:
+    """Record which recall fires were never followed by opening their memory.
+
+    A COUNTER, not a grade. The obvious shortcut — "never opened, therefore
+    used=false" — was measured against the live corpus and is false: of the
+    model-graded `used=true` fires that have a backing memory, 17 of 19 had no
+    open in the same session, all `outcome=helpful`. Cue instructions are
+    frequently actionable on their own ("apply the message-approval protocol
+    from …"), so the agent acts without ever opening the memory. Writing
+    `used=false` there would also be irreversible: `grade_retrieval` refuses a
+    second grade, so a mechanical verdict permanently displaces the model's
+    real one, and `use_ratio` (the bad-trigger bin's numerator) collapses on
+    triggers the model itself called helpful.
+
+    So this leaves `graded` alone. It bumps `unopened_count` beside
+    `retrieval_count`, which makes "fired 43 times, opened twice" legible to
+    the consolidator as evidence to weigh — never as a verdict the harness
+    reached on its own.
+
+    Deliberately narrow:
+    - Only `memory_kind="recall"` events. An open IS the use; a graph expansion
+      was already injected. Neither has a mechanical "ignored" signal.
+    - Only fires whose recall backs a committed memory (`memory_ids_by_recall`);
+      for a sys_/user recall there is no memory an open could have touched.
+    - Only events with a session_id: the session is the join key between a fire
+      and the opens that would answer it.
+
+    Callers: task-end consolidation (age 0 — the episode is over), post
+    -compaction (age 10 min — the fire text just left the buffer), and the
+    scheduler hourly for chats that reach neither boundary. Idempotent: a
+    stamped row leaves the query for good.
+    """
+    events = await _collection(RETRIEVAL_EVENTS_COLLECTION)
+    if events is None:
+        return 0
+    if session_id is None and older_than_minutes <= 0:
+        # No session and no age bound would count fires still on screen.
+        return 0
+
+    query: dict = {
+        "memory_kind": "recall",
+        "unopened_checked": {"$ne": True},
+    }
+    if session_id is not None:
+        query["session_id"] = session_id
+    else:
+        query["session_id"] = {"$ne": None}
+    if older_than_minutes > 0:
+        query["ts"] = {"$lt": _now() - timedelta(minutes=older_than_minutes)}
+
+    try:
+        cursor = events.find(
+            query,
+            {"_id": 0, "retrieval_id": 1, "memory_key": 1, "session_id": 1},
+        ).limit(_UNOPENED_BATCH + 1)
+        pending = [doc async for doc in cursor]
+    except Exception as e:
+        log.warning(f"Unopened-fire query failed: {e}")
+        return 0
+    if len(pending) > _UNOPENED_BATCH:
+        log.info(
+            "[Unopened] batch cap hit (%d); the rest continues next sweep",
+            _UNOPENED_BATCH,
+        )
+        pending = pending[:_UNOPENED_BATCH]
+    pending = [d for d in pending if d.get("retrieval_id") and d.get("session_id")]
+    if not pending:
+        return 0
+
+    recall_ids = list({
+        str(d["memory_key"]).split("recall:", 1)[-1]
+        for d in pending
+        if str(d.get("memory_key", "")).startswith("recall:")
+    })
+    backing = await memory_ids_by_recall(recall_ids)
+
+    opened: set[tuple[str, str]] = set()
+    if backing:
+        sessions = list({d["session_id"] for d in pending})
+        try:
+            cursor = events.find(
+                {
+                    "session_id": {"$in": sessions},
+                    # Filter on memory_kind, never the key prefix: memory_open
+                    # and graph_expansion share the `memory:<id>` namespace,
+                    # and both mean the content entered context.
+                    "memory_kind": {"$in": ["memory_open", "graph_expansion"]},
+                },
+                {"_id": 0, "session_id": 1, "memory_key": 1},
+            )
+            async for doc in cursor:
+                key = str(doc.get("memory_key", ""))
+                if key.startswith("memory:"):
+                    opened.add((doc["session_id"], key.split("memory:", 1)[-1]))
+        except Exception as e:
+            log.warning(f"Unopened-fire open lookup failed: {e}")
+            return 0
+
+    # Stamp the whole batch first, including rows with nothing to record: the
+    # stamp is the watermark, and a row left unstamped comes back forever.
+    try:
+        await events.update_many(
+            {"retrieval_id": {"$in": [d["retrieval_id"] for d in pending]}},
+            {"$set": {"unopened_checked": True}},
+        )
+    except Exception as e:
+        log.warning(f"Unopened-fire watermark write failed: {e}")
+        return 0
+
+    counted = 0
+    unopened_ids: list[str] = []
+    for doc in pending:
+        key = str(doc.get("memory_key", ""))
+        if not key.startswith("recall:"):
+            continue
+        memory_id = backing.get(key.split("recall:", 1)[-1])
+        if not memory_id:
+            continue  # sys_/user recall — no memory an open could have touched.
+        if (doc["session_id"], memory_id) in opened:
+            continue  # opened — the content did reach context.
+        await _bump_stats(key, {"unopened_count": 1})
+        unopened_ids.append(doc["retrieval_id"])
+        counted += 1
+    if unopened_ids:
+        # Marked on the event too, so [EPISODE_RETRIEVALS] can show the grading
+        # pass which fires went unopened without recomputing the join.
+        try:
+            await events.update_many(
+                {"retrieval_id": {"$in": unopened_ids}},
+                {"$set": {"unopened": True}},
+            )
+        except Exception as e:
+            log.warning(f"Unopened-fire event mark failed: {e}")
+    if counted:
+        log.info(
+            "[Unopened] %d fire(s) whose memory was never opened%s",
+            counted, f" session={session_id}" if session_id else "",
+        )
+    return counted
+
+
 # Namespaces `log_retrieval` stamps. A flag against anything else is either a
 # typo or an invented key, and because the bad-memory bin has no retrieval gate,
 # such a row would sit in the consolidator's evidence permanently.
@@ -1529,7 +1922,8 @@ async def _bump_stats(
     defaults = {
         "memory_key": memory_key, "created_at": _now(),
         "retrieval_count": 0, "use_count": 0, "helpful_count": 0,
-        "harmful_count": 0, "user_correction_count": 0, "last_used": None,
+        "harmful_count": 0, "user_correction_count": 0, "unopened_count": 0,
+        "last_used": None,
     }
     if memory_kind:
         defaults["memory_kind"] = memory_kind
@@ -1659,6 +2053,7 @@ async def memory_utility_report(limit: int = 15) -> str:
         harmful = int(d.get("harmful_count", 0) or 0)
         helpful = int(d.get("helpful_count", 0) or 0)
         corrections = int(d.get("user_correction_count", 0) or 0)
+        unopened = int(d.get("unopened_count", 0) or 0)
         last_used = _as_aware(d.get("last_used"))
         last_graded = _as_aware(d.get("last_graded"))
         use_ratio = (use / graded) if graded else None
@@ -1668,7 +2063,7 @@ async def memory_utility_report(limit: int = 15) -> str:
         # unmeasured one, and counting it as unused indicts a memory for its
         # episode never ending.
         if graded >= _MIN_GRADED_FOR_BIN and use_ratio is not None and use_ratio < 0.15 and harmful == 0:
-            bad_trigger.append((key, retrieval, graded, use, use_ratio, helpful))
+            bad_trigger.append((key, retrieval, graded, use, use_ratio, helpful, unopened))
         if harmful > 0 or corrections > 0:
             bad_memory.append((key, harmful, corrections))
         # Stale: measured, and nothing useful has happened for a long time.
@@ -1687,16 +2082,47 @@ async def memory_utility_report(limit: int = 15) -> str:
         f"-> narrow the recall cue / drawer summary, do NOT touch the content). "
         f"helpful>0 means the content earned its keep when it did land, so fix the "
         f"cue and leave the memory alone. use_ratio is over GRADED surfacings, "
-        f"not raw ones. Top {limit}:",
+        f"not raw ones. unopened counts fires the harness saw no memory(id=…) "
+        f"for — supporting context only: a fire can be genuinely used without "
+        f"one, so never treat a high unopened count as a verdict. Top {limit}:",
     ]
-    for key, retrieval, graded, use, use_ratio, helpful in sorted(bad_trigger, key=lambda x: -x[2])[:limit]:
+    for key, retrieval, graded, use, use_ratio, helpful, unopened in sorted(
+        bad_trigger, key=lambda x: -x[2],
+    )[:limit]:
         lines.append(
             f"- {key}: retrieved={retrieval} graded={graded} used={use} "
-            f"use_ratio={use_ratio:.2f} helpful={helpful}"
+            f"use_ratio={use_ratio:.2f} helpful={helpful} unopened={unopened}"
         )
     if not bad_trigger:
         lines.append("(none)")
     lines.append("")
+    # A corrected memory must leave the bin, or it sits in the evidence
+    # forever: the counters are monotonic and supersession is the only signal
+    # that the correction actually happened. Resolvable only for memory:<id>
+    # keys — a recall:<id> flag stays until its backing memory is retired.
+    resolved = 0
+    if bad_memory:
+        from . import memory_graph
+
+        flagged_ids = [
+            key.split("memory:", 1)[-1]
+            for key, _, _ in bad_memory if str(key).startswith("memory:")
+        ]
+        try:
+            replaced = await memory_graph.replacements(flagged_ids)
+        except Exception as e:
+            log.warning(f"Supersession lookup for utility report failed: {e}")
+            replaced = {}
+        still_bad = [
+            row for row in bad_memory
+            if not (
+                str(row[0]).startswith("memory:")
+                and row[0].split("memory:", 1)[-1] in replaced
+            )
+        ]
+        resolved = len(bad_memory) - len(still_bad)
+        bad_memory = still_bad
+
     lines.append(
         f"Bad-memory candidates (harmful use and/or user correction "
         f"-> rewrite, invalidate the KG fact, or delete), top {limit}:"
@@ -1705,6 +2131,11 @@ async def memory_utility_report(limit: int = 15) -> str:
         lines.append(f"- {key}: harmful_count={harmful} user_correction_count={corrections}")
     if not bad_memory:
         lines.append("(none)")
+    if resolved:
+        lines.append(
+            f"({resolved} previously-flagged memory/memories already superseded "
+            f"— resolved, not listed)"
+        )
     lines.append("")
     lines.append(
         f"Stale candidates (graded before, nothing useful in {_STALE_DAYS}+ days "

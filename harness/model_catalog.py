@@ -192,7 +192,7 @@ def _gemini(key, label, score, input_rate, output_rate, cache_minimum, *,
     )
 
 
-MODELS: tuple[Model, ...] = (
+_BASE_MODELS: tuple[Model, ...] = (
     # ─── Gemini ──────────────────────────────────────────────────────
     # gemini-3.7-flash is introductory pricing through 2026-12-31; the standard
     # rate ($1.50/$7.50) applies from 2027-01-01 — revisit this row then.
@@ -275,7 +275,63 @@ MODELS: tuple[Model, ...] = (
             _CTX_128K, can_disable_thinking=False),
 )
 
+# ─── Replika tiers ───────────────────────────────────────────────────
+# Named intelligence tiers — internal references the harness can pin tasks to
+# without naming a vendor model, selectable in every Tower picker alongside the
+# real entries. Each tier is a full catalog row copied from its target, so
+# pricing, wire id, provider, context and vision all stay correct wherever the
+# tier name flows (cost tracking, caps, the vision gate). Retargeting a tier is
+# a one-line change here and nothing downstream moves.
+#
+# Reasoning is pinned per tier and enforced in `thinking_effort` (the effort
+# pickers collapse to the pinned value for a tier):
+#   fast   → "none if supported else minimum". gpt-oss speaks Harmony, which
+#            rejects reasoning_effort="none", so its floor "low" is the pin.
+#   medium → "medium". The learning passes (cue generation, edge classification).
+#   smart  → "high". Best model reachable on the default Bedrock credential —
+#            Gemini 3.7 Flash scores higher but needs a GEMINI_API_KEY that
+#            managed tenants no longer ship with.
+TIER_TARGETS: dict[str, str] = {
+    "replika-fast": "gpt-oss-20b",
+    "replika-medium": "glm-5",
+    "replika-smart": "claude-opus-4-6",
+}
+TIER_EFFORTS: dict[str, str] = {
+    "replika-fast": "low",
+    "replika-medium": "medium",
+    "replika-smart": "high",
+}
+_TIER_LABELS: dict[str, str] = {
+    "replika-fast": "Replika Fast",
+    "replika-medium": "Replika Medium",
+    "replika-smart": "Replika Smart",
+}
+
+_BASE_BY_KEY: dict[str, Model] = {m.key: m for m in _BASE_MODELS}
+
+
+def _tier_rows() -> tuple[Model, ...]:
+    from dataclasses import replace
+
+    return tuple(
+        replace(_BASE_BY_KEY[target], key=key, label=_TIER_LABELS[key])
+        for key, target in TIER_TARGETS.items()
+    )
+
+
+MODELS: tuple[Model, ...] = _tier_rows() + _BASE_MODELS
+
 BY_KEY: dict[str, Model] = {m.key: m for m in MODELS}
+
+
+def is_tier(model: str) -> bool:
+    """True when `model` is a Replika tier alias rather than a vendor entry."""
+    return (model or "").strip() in TIER_TARGETS
+
+
+def tier_effort(model: str) -> str | None:
+    """The pinned reasoning effort for a tier, or None for a vendor model."""
+    return TIER_EFFORTS.get((model or "").strip())
 
 
 def get(model: str) -> Model | None:

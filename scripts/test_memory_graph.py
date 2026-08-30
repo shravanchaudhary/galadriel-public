@@ -259,8 +259,13 @@ def _classify(response_text, neighbours=None):
         ))
 
 
+def _classify_edges_only(response_text, neighbours=None):
+    edges, _ = _classify(response_text, neighbours)
+    return edges
+
+
 def test_classifier_returns_validated_edges() -> None:
-    edges = _classify(
+    edges = _classify_edges_only(
         '{"edges": [{"to": "m2", "relation": "DEPENDS_ON", '
         '"label": "needs buffering fact", "strength": 0.8}]}'
     )
@@ -271,12 +276,12 @@ def test_classifier_returns_validated_edges() -> None:
 
 def test_classifier_accepts_zero_edges_as_a_real_answer() -> None:
     """Most memories stand alone. Empty must not read as a failure to retry."""
-    assert _classify('{"edges": []}') == []
+    assert _classify('{"edges": []}') == ([], None)
 
 
 def test_classifier_drops_edges_to_invented_ids() -> None:
     """An edge to a hallucinated id points at nothing and traversal cannot tell."""
-    edges = _classify(
+    edges = _classify_edges_only(
         '{"edges": [{"to": "m2", "relation": "DEPENDS_ON"}, '
         '{"to": "m_does_not_exist", "relation": "DEPENDS_ON"}]}'
     )
@@ -284,12 +289,12 @@ def test_classifier_drops_edges_to_invented_ids() -> None:
 
 
 def test_classifier_binds_a_free_relation_name() -> None:
-    edges = _classify('{"edges": [{"to": "m2", "relation": "REQUIRES"}]}')
+    edges = _classify_edges_only('{"edges": [{"to": "m2", "relation": "REQUIRES"}]}')
     assert edges[0]["relation"] == "DEPENDS_ON"
 
 
 def test_classifier_survives_unparseable_output() -> None:
-    assert _classify("I could not determine any relationships, sorry.") == []
+    assert _classify("I could not determine any relationships, sorry.") == ([], None)
 
 
 def test_classifier_skips_the_call_with_no_neighbours() -> None:
@@ -302,8 +307,28 @@ def test_classifier_skips_the_call_with_no_neighbours() -> None:
     with patch("harness.model_registry.get_provider", fake_provider):
         assert _run(memory_graph.classify_edges(
             "m1", "text", memory_type="semantic", neighbours=[],
-        )) == []
+        )) == ([], None)
     assert called == []
+
+
+def test_classifier_restates_accepts_a_shortlisted_id() -> None:
+    """The dedupe verdict rides the same call: a valid restated id survives
+    alongside (or without) edges."""
+    edges, restates = _classify(
+        '{"edges": [], "restates": "m2"}'
+    )
+    assert edges == [] and restates == "m2"
+
+
+def test_classifier_restates_drops_invented_and_self_ids() -> None:
+    """Same rule as edges: the shortlist is the universe the model was shown,
+    and a memory cannot confirm itself."""
+    _, invented = _classify('{"edges": [], "restates": "m_nope"}')
+    assert invented is None
+    _, self_ref = _classify('{"edges": [], "restates": "m1"}')
+    assert self_ref is None
+    _, absent = _classify('{"edges": []}')
+    assert absent is None
 
 
 # ─── Shortlist bound ────────────────────────────────────────────────────
@@ -608,10 +633,11 @@ def _classify_one(new, existing, wording):
     ]})
     with patch("harness.model_registry.get_provider", return_value=_provider(payload)), \
          patch("harness.model_registry.model_for", return_value="m"):
-        return _run(memory_graph.classify_edges(
+        edges, _ = _run(memory_graph.classify_edges(
             "new", new, memory_type="procedural",
             neighbours=[{"memory_id": "existing", "content": existing, "type": "semantic"}],
         ))
+        return edges
 
 
 def test_free_wording_binds_to_the_same_behaviour_in_every_domain() -> None:
@@ -1185,7 +1211,7 @@ def test_a_failed_classifier_call_is_recorded_not_silently_empty() -> None:
     # The call fails.
     with patch.object(consolidation, "record_maintenance", fake_record), \
          patch.object(model_registry, "get_provider", lambda task: _Boom()):
-        edges = _run(memory_graph.classify_edges(
+        edges, _ = _run(memory_graph.classify_edges(
             "m1", "new memory", memory_type="semantic", neighbours=neighbours,
         ))
     assert edges == [], "a failed call must not invent edges"
@@ -1203,7 +1229,7 @@ def test_a_failed_classifier_call_is_recorded_not_silently_empty() -> None:
 
     with patch.object(consolidation, "record_maintenance", fake_record), \
          patch.object(model_registry, "get_provider", _no_provider):
-        edges = _run(memory_graph.classify_edges(
+        edges, _ = _run(memory_graph.classify_edges(
             "m2", "new memory", memory_type="semantic", neighbours=neighbours,
         ))
     assert edges == []
@@ -1235,6 +1261,8 @@ def main() -> int:
         test_classifier_binds_a_free_relation_name,
         test_classifier_survives_unparseable_output,
         test_classifier_skips_the_call_with_no_neighbours,
+        test_classifier_restates_accepts_a_shortlisted_id,
+        test_classifier_restates_drops_invented_and_self_ids,
         test_shortlist_is_bounded_and_spans_types,
         test_shortlist_excludes_the_memory_being_classified,
         test_shortlist_reaches_memories_older_than_the_dedupe_window,

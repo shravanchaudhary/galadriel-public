@@ -136,14 +136,20 @@ def catchup_prompt(today: str) -> str:
     ) + morning_prompt(today)
 
 
-def reflection_prompt(today: str) -> str:
-    return (
+def reflection_prompt(today: str, memory_pass: bool = True) -> str:
+    """`memory_pass=False` (every slot after the day's first) swaps the memory
+    half for a skip note: the evidence bins move in days, so later slots
+    re-reading the same rows spend the turn re-litigating the morning's
+    judgments. The worker audit (PART 3) runs every slot regardless."""
+    header = (
         "[SYSTEM:REFLECTION] This is an ambient reflection + periodic memory "
         "consolidation + worker-audit tick — consolidate memory, steer the "
         "background worker, and report a short status. You WILL end the turn "
         "with a brief plain summary to the user (see PART 3) — that summary "
         "is delivered to them, so make it tight and useful rather than trying "
         "to force an empty turn.\n\n"
+    )
+    memory_parts = (
         "PART 1 — Periodic memory consolidation. This is CROSS-EPISODE work "
         "only: you are not here to notice and file new one-off facts — the "
         "runtime `learn` tool and the task-end consolidator that already runs "
@@ -190,10 +196,11 @@ def reflection_prompt(today: str) -> str:
         "When truly unsure, leave it — staleness is a prompt to look, not an "
         "automatic delete.\n"
         "  2. Cross-episode duplicates the automatic pipeline can't see: "
-        "commit-time dedupe only compares a new candidate against the last "
-        "~200 candidates from the last 30 days of the SAME type (see "
-        "harness/consolidation.py _is_prose_duplicate) — it is not a full "
-        "historical-corpus check. Spot-check a topic you suspect has "
+        "commit-time dedupe only catches IDENTICAL text among the last ~200 "
+        "candidates from the last 30 days of the SAME type (see "
+        "harness/consolidation.py _is_prose_duplicate); reworded restatements "
+        "are recorded by the edge classifier but still written. Spot-check a "
+        "topic you suspect has "
         "drifted with palace_search / palace_kg_query; merge any true "
         "duplicates or contradictions you find the same way as a BAD-MEMORY "
         "fix above.\n"
@@ -245,6 +252,18 @@ def reflection_prompt(today: str) -> str:
         "arrays and thresholds are yours to tune. Do not essay facts into an "
         "instruction field — an instruction is a pointer to a store, not the "
         "store itself.\n\n"
+    )
+    memory_skipped = (
+        "PART 1 & 2 — SKIPPED THIS SLOT. Memory consolidation ran on an "
+        "earlier slot today, and its evidence (utility bins, staleness, "
+        "cross-episode duplicates) moves in days, not hours — do NOT call "
+        "memory_utility_report or tune recall cues now; re-judging the same "
+        "rows re-litigates this morning's decisions. One exception: if "
+        "TODAY'S conversation contains an explicit user correction of stored "
+        "memory, flag_memory / propose_memory for that single item is still "
+        "in scope. Your job this slot is PART 3.\n\n"
+    )
+    part3 = (
         "PART 3 — Audit the worker, reconcile the ledger, steer, and SUMMARIZE. "
         f"Read today's file `state/progress/{today}.html` (if it exists) and the "
         "recent linkedin_profiles DB writes; compare what the worker ACTUALLY did "
@@ -279,6 +298,7 @@ def reflection_prompt(today: str) -> str:
         "correction you filed or action you took. A short honest status every "
         "tick is the goal — don't try to stay silent."
     )
+    return header + (memory_parts if memory_pass else memory_skipped) + part3
 
 
 def goodnight_prompt(today: str) -> str:
@@ -415,8 +435,12 @@ def task_consolidation_prompt() -> str:
         "was never explicitly filed -> propose_memory(type=semantic).\n"
         "5. A lasting behavioral preference the user expressed -> "
         "propose_memory(type=preference).\n"
-        "6. Every retrieval_id in [EPISODE_RETRIEVALS] -> exactly one "
-        "grade_retrieval call — this step is not optional.\n\n"
+        "6. Every retrieval_id in [EPISODE_RETRIEVALS] NOT marked [already "
+        "graded] -> exactly one grade_retrieval call — this step is not "
+        "optional. Judge used and helpful/harmful from what the episode "
+        "actually did; don't default to used=false. [not opened] is harness "
+        "context, not a verdict: a recall whose instruction you followed "
+        "directly is used=true even though its memory was never opened.\n\n"
         "Be conservative on propose_memory: a one-off detail that won't "
         "recur isn't worth writing (duplicates are auto-skipped but still "
         "cost a review). Cross-episode pattern-finding (merging, decay, "

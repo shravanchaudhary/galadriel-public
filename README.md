@@ -526,7 +526,7 @@ Palace search is **pull** (the model decides to look something up). Semantic rec
 | Variable | Default | Purpose |
 |---|---|---|
 | `RECALL_JUDGE_VERIFY` | `1` | Set `0` to disable Stage-2 (Stage-1 only; more false injects). |
-| `RECALL_JUDGE_MODEL` | `gpt-oss-20b` | Any model from `tower_settings.JUDGE_MODEL_OPTIONS`. |
+| `RECALL_JUDGE_MODEL` | `replika-fast` | Any model from `tower_settings.JUDGE_MODEL_OPTIONS`, Replika tiers included. |
 | `RECALL_STAGE2_MAX_CANDIDATES` | `3` | Stage-1 proposals verified per pass, best positive first. |
 
 The judge needs the credentials for whichever provider serves `RECALL_JUDGE_MODEL`, and disarms the whole system without them. Collections: `proposed_recalls` (every Stage-1 candidate) and `recall_fires` (verified injects). Event kind is `recall_fire` (legacy `nudge` / `is_nudge` markers are gone).

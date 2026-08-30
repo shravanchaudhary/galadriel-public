@@ -104,8 +104,13 @@ async def find(query: str, limit: int = 5) -> str:
         # findable. It stays listed — the history is real — but never unmarked.
         replacement = retired.get(hit.get("memory_id"))
         marker = f" — REPLACED by `{replacement}`" if replacement else ""
+        # The list is always filled to length, so the similarity rides along —
+        # a top hit at 0.55 is the agent's cue that nothing really matches,
+        # the same judgment palace search already hands over with its scores.
+        score = hit.get("score")
+        sim = f" sim={score:.2f}" if isinstance(score, (int, float)) else ""
         lines.append(
-            f"- `{hit.get('memory_id')}` [{hit.get('type')}]{marker} "
+            f"- `{hit.get('memory_id')}` [{hit.get('type')}]{sim}{marker} "
             f"{_one_line(hit.get('content') or '', 160)}"
         )
     return "\n".join(lines)

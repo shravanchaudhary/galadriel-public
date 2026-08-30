@@ -8,7 +8,7 @@ import logging
 import os
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from pymongo import MongoClient, ReturnDocument
@@ -21,6 +21,12 @@ RUNS = "conversation_runs"
 EVENTS = "conversation_events"
 CHECKPOINTS = "conversation_checkpoints"
 OUTBOX = "palace_outbox"
+# One doc per channel with a learning episode in flight, keyed by
+# channel_id. Durable because the episode outlives the process: a
+# restart mid-conversation must resume the SAME session, not split one
+# chat into two (which would double-count its promotion confirmations
+# and orphan the segments archived before the restart).
+SESSIONS = "learning_sessions"
 
 _SECRET_KEYS = {
     "api_key", "access_token", "auth_token", "authorization", "credential",
@@ -744,6 +750,79 @@ def calls_for_run(run_id: str) -> list[dict]:
     if db is None:
         return []
     return list(db["llm_calls"].find({"run_id": run_id}).sort([("call_index", 1), ("ts", 1)]))
+
+
+# How long a record may sit before it stops being a resumable episode. This is
+# a restart bridge, not an archive: a process that comes back a day later is not
+# continuing the same occasion, and treating it as one would attribute fresh
+# turns to an ancient episode. Also the backstop that keeps a crashed
+# consolidation side channel, or a stray row from a local test run, from being
+# adopted as real work forever.
+SESSION_MAX_AGE_HOURS = 24
+
+
+def load_session_states() -> dict[str, dict]:
+    """Every RESUMABLE learning episode, as {channel_id: {session_id, segments}}.
+
+    Read once at agent startup. Deliberately not consulted per call: the agent
+    keeps the live copy in memory, and this is only the crash/restart bridge.
+    Rows past SESSION_MAX_AGE_HOURS are dropped rather than returned, so the
+    collection cannot accumulate abandoned episodes.
+    """
+    db = _sync_db()
+    if db is None:
+        return {}
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=SESSION_MAX_AGE_HOURS)
+    try:
+        db[SESSIONS].delete_many({"updated_at": {"$lt": cutoff}})
+    except Exception as e:
+        log.warning(f"Session-state prune failed: {e}")
+    try:
+        return {
+            doc["_id"]: {
+                "session_id": doc.get("session_id"),
+                "segments": list(doc.get("segments") or []),
+            }
+            for doc in db[SESSIONS].find({})
+            # A consolidation side channel is disposable by construction: if a
+            # crash left one behind, it is not an episode to resume.
+            if doc.get("_id") and doc.get("session_id")
+            and not str(doc["_id"]).startswith("__consolidate_")
+        }
+    except Exception as e:
+        log.warning(f"Session-state load failed: {e}")
+        return {}
+
+
+def save_session_state(channel_id: str, session_id: str, segments: list) -> None:
+    """Persist a channel's in-flight episode. Called when one is minted and
+    whenever a compaction appends a segment to it — never per turn."""
+    db = _sync_db()
+    if db is None or not channel_id or not session_id:
+        return
+    try:
+        db[SESSIONS].update_one(
+            {"_id": channel_id},
+            {"$set": {
+                "session_id": session_id,
+                "segments": list(segments or []),
+                "updated_at": datetime.now(timezone.utc),
+            }},
+            upsert=True,
+        )
+    except Exception as e:
+        log.warning(f"Session-state save failed ({channel_id}): {e}")
+
+
+def clear_session_state(channel_id: str) -> None:
+    """Drop a channel's episode record — the episode is over (or was reset)."""
+    db = _sync_db()
+    if db is None or not channel_id:
+        return
+    try:
+        db[SESSIONS].delete_one({"_id": channel_id})
+    except Exception as e:
+        log.warning(f"Session-state clear failed ({channel_id}): {e}")
 
 
 def recovery_state(channel_id: str = "main") -> tuple[dict | None, list[dict], dict | None]:

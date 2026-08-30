@@ -423,6 +423,12 @@ relationship — these candidates were already selected for being similar. Ask \
 instead: does one require the other, replace it, contradict it, explain it, or \
 need to be in mind before acting on it?
 
+Each EXISTING memory carries cos=<its embedding similarity to the new one>. \
+That number is shortlist rank, not evidence: the list is always filled to \
+length, so on a small corpus the tail may sit near 0.5 — treat low-cos entries \
+as probably unrelated unless the text itself argues otherwise, and never \
+assert a relation just because something was listed.
+
 Relations (use these exact names):
 %(catalog)s
 
@@ -457,15 +463,22 @@ as asserting a relation that does not hold.
 
 At most one relation per existing memory: the strongest single claim.
 
+Separately from relations: if one EXISTING memory makes the SAME claim as the \
+new one — the same rule or fact merely reworded, nothing new added — name it in \
+"restates". A restatement is reinforcement, not a relation: the system counts \
+it as a confirmation of the original. Overlapping-but-adds-something is NOT a \
+restatement; when in doubt, null.
+
 Return ONLY a JSON object:
 {"edges": [{"to": "<existing memory id>", "relation": "<exact name above>", \
 "label": "<your own wording for this relationship, lowercase, 1-3 words>", \
-"strength": <0.0-1.0 confidence>}]}
+"strength": <0.0-1.0 confidence>}], \
+"restates": "<existing memory id or null>"}
 
-Return {"edges": []} when nothing genuinely relates. That is the common and \
-correct answer — most memories stand alone, and a wrong edge injects an \
-irrelevant memory every single time its partner fires. Only assert a relation \
-you could defend. Never relate a memory to itself."""
+Return {"edges": [], "restates": null} when nothing genuinely relates. That is \
+the common and correct answer — most memories stand alone, and a wrong edge \
+injects an irrelevant memory every single time its partner fires. Only assert \
+a relation you could defend. Never relate a memory to itself."""
 
 
 async def classify_edges(
@@ -474,15 +487,21 @@ async def classify_edges(
     *,
     memory_type: str,
     neighbours: list[dict],
-) -> list[dict]:
+) -> tuple[list[dict], str | None]:
     """One model call deciding how a new memory relates to its shortlist.
 
-    Returns validated edges, or [] on any failure — a memory with no edges is
-    the normal resting state, so failing to find them costs nothing that a
-    later consolidation pass cannot recover.
+    Returns (validated edges, restated memory id or None). Empty on any
+    failure — a memory with no edges is the normal resting state, so failing
+    to find them costs nothing that a later consolidation pass cannot recover.
+
+    `restates` is the dedupe question folded into the call the commit already
+    pays for: cosine cannot separate "same lesson reworded" from "same topic,
+    different lesson" (the bands overlap — kb/learning-loop-measured.md), but
+    the model reading both texts can. A restatement feeds the preference
+    confirmation counter; it is NOT an edge and never deletes anything.
     """
     if not memory_id or not (content or "").strip() or not neighbours:
-        return []
+        return [], None
     try:
         from . import model_registry
 
@@ -493,23 +512,28 @@ async def classify_edges(
         # worth recording — a silent [] here reads as "nothing to link".
         log.warning("Edge classifier provider unavailable: %s", e)
         await _record_classify_failure(memory_id, "?", f"provider_unavailable: {e}")
-        return []
+        return [], None
 
     listing = "\n".join(
-        f'- id={n.get("memory_id")} [{n.get("type")}] {" ".join((n.get("content") or "").split())[:300]}'
+        f'- id={n.get("memory_id")} [{n.get("type")}] cos={n.get("score", "?")} '
+        f'{" ".join((n.get("content") or "").split())[:300]}'
         for n in neighbours if n.get("memory_id")
     )
     prompt = (
         f"NEW memory (type={memory_type}):\n{content.strip()[:2000]}\n\n"
         f"EXISTING memories:\n{listing}"
     )
+    # A tier-pinned task reasons at its pinned effort (replika-medium →
+    # "medium"); a vendor model keeps the old no-thinking call.
+    pinned_effort = model_registry.task_effort("memory_edges")
     try:
         response = await provider.create_message(
             model=model,
             max_tokens=1500,
             system=_CLASSIFIER_SYSTEM % {"catalog": relation_catalog()},
             messages=[{"role": "user", "content": prompt}],
-            thinking=False,
+            thinking=bool(pinned_effort),
+            effort=pinned_effort,
         )
     except Exception as e:
         # An empty edge list is the expected answer for most memories, so a
@@ -518,7 +542,7 @@ async def classify_edges(
         # apart instead of trusting a zero.
         log.warning("Edge classification failed: %s", e)
         await _record_classify_failure(memory_id, model, str(e))
-        return []
+        return [], None
 
     text = " ".join(
         getattr(block, "text", "") or ""
@@ -531,12 +555,18 @@ async def classify_edges(
     if not payload:
         log.warning("Edge classification returned unparseable output for %s", memory_id)
         await _record_classify_failure(memory_id, model, "unparseable_output")
-        return []
+        return [], None
     known = {n.get("memory_id") for n in neighbours}
     edges = clean_edges(payload.get("edges"), from_id=memory_id)
+    restates = payload.get("restates")
+    restates = restates.strip() if isinstance(restates, str) else None
+    # Same rule as edges: an invented or self-referential id is discarded, not
+    # trusted — the shortlist is the universe the model was shown.
+    if restates not in known or restates == memory_id:
+        restates = None
     # A model that invents an id would otherwise create an edge to nothing,
     # which traversal cannot detect and nobody would ever notice.
-    return [edge for edge in edges if edge["to"] in known]
+    return [edge for edge in edges if edge["to"] in known], restates
 
 
 async def _record_classify_failure(memory_id: str, model: str, reason: str) -> None:

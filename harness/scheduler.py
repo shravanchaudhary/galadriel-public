@@ -124,6 +124,7 @@ class Scheduler:
         self._morning_task: asyncio.Task | None = None
         self._goodnight_task: asyncio.Task | None = None
         self._reflection_task: asyncio.Task | None = None
+        self._unopened_task: asyncio.Task | None = None
         self._catchup_task: asyncio.Task | None = None
         # Concurrent-guard for Tower/API manual morning re-runs
         self._manual_morning_future = None
@@ -471,6 +472,13 @@ class Scheduler:
         if os.environ.get("GALADRIEL_REFLECTION", "1") != "0":
             self._reflection_task = asyncio.ensure_future(self._reflection_loop())
 
+        # Hourly unopened-fire sweep: counts recall fires never followed by
+        # opening their memory (harness/consolidation.py
+        # record_unopened_fires). Episode boundaries and compaction cover
+        # their own sessions; this catches chats that reach neither — a
+        # session that just goes on, or one abandoned mid-way.
+        self._unopened_task = asyncio.ensure_future(self._unopened_loop())
+
         # Start heartbeat if it was enabled (persisted state)
         if self.heartbeat_enabled:
             self._heartbeat_task = asyncio.ensure_future(self._heartbeat_loop())
@@ -545,6 +553,33 @@ class Scheduler:
             await consolidation.backfill_graded_counts()
         except Exception as e:
             log.warning(f"Memory startup pass failed: {e}")
+
+    # ── Unopened-fire sweep ──────────────────────────────────────
+
+    async def _unopened_loop(self):
+        """Hourly, deterministic, zero model calls — see record_unopened_fires.
+
+        Gated on the learning toggle each tick rather than at start, so
+        flipping learning off in Tower quiets the sweep without a restart.
+        """
+        while True:
+            try:
+                await asyncio.sleep(3600)
+                if self.agent is not None and not getattr(
+                    self.agent, "learning_enabled", True,
+                ):
+                    continue
+                from . import consolidation
+
+                counted = await consolidation.record_unopened_fires(
+                    session_id=None, older_than_minutes=60,
+                )
+                if counted:
+                    log.info(f"[Unopened] sweep counted {counted} stale fire(s)")
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                log.warning(f"Unopened-fire sweep failed: {e}")
 
     # ── One-shot Wake Loop ───────────────────────────────────────
 
@@ -777,13 +812,25 @@ class Scheduler:
                     )
                     # Fire if we're at/past the slot but within a 10-min grace.
                     if now >= target_dt and (now - target_dt).total_seconds() < 600:
+                        # Memory maintenance (utility bins, promotion, edge
+                        # decay) runs on the FIRST slot of the day only:
+                        # staleness and cross-episode evidence move in days,
+                        # so later slots re-reading the same rows spend the
+                        # turn re-litigating what the morning pass already
+                        # judged. The worker audit stays every slot.
+                        memory_pass = not any(
+                            k.startswith(today_str) for k in self._fired_reflections
+                        )
                         self._fired_reflections.add(key)
                         self._save_state()  # persist so a restart won't re-fire this slot
                         if self._paused():
                             log.info(f"Reflection [{key}]: skipped because scheduler is paused")
                         else:
-                            log.info(f"Reflection [{key}]: firing")
-                            await self._reflection_routine()
+                            log.info(
+                                f"Reflection [{key}]: firing "
+                                f"(memory_pass={memory_pass})"
+                            )
+                            await self._reflection_routine(memory_pass=memory_pass)
 
                 # Trim the fired-set so it doesn't grow unbounded.
                 if len(self._fired_reflections) > 32:
@@ -824,9 +871,11 @@ class Scheduler:
         else:
             log.warning("Catch-up delivery failed; left for retry on next boot.")
 
-    async def _reflection_routine(self):
+    async def _reflection_routine(self, memory_pass: bool = True):
         """Ambient reflection + periodic memory consolidation + worker audit —
-        per slot in REFLECTION_TIMES, workdays.
+        per slot in REFLECTION_TIMES, workdays. `memory_pass` gates the memory
+        half (evidence bins, preference promotion, edge decay) to the first
+        slot of the day; the worker audit runs every slot.
 
         The agent runs the periodic consolidator pass (merge/dedupe, strengthen
         or weaken memory using retrieval-telemetry evidence from
@@ -848,31 +897,33 @@ class Scheduler:
         # runs 4x/workday, so any active chat gets mined regularly regardless of
         # whether it ever hit the compaction threshold.
         await self._checkpoint_user_conversations()
-        # Promote preferences the user has restated enough times into the
-        # always-on prompt. Pure counting over the candidate records, so it
-        # runs before the turn rather than costing the consolidator a decision.
-        try:
-            from .consolidation import promote_preferences
+        if memory_pass:
+            # Promote preferences confirmed across enough distinct sessions
+            # (and gate-approved) into the always-on prompt. Runs before the
+            # turn rather than costing the consolidator a decision.
+            try:
+                from .consolidation import promote_preferences
 
-            promoted = await promote_preferences()
-            if promoted:
-                log.info(f"[Reflection] {promoted}")
-        except Exception as e:
-            log.warning(f"[Reflection] preference promotion failed: {e}")
-        # Weaken memory-graph edges whose target keeps getting injected and
-        # never used — a wrong edge otherwise costs prompt budget on every fire
-        # of its partner, forever. Deterministic counting, same as above.
-        try:
-            from . import memory_graph
+                promoted = await promote_preferences()
+                if promoted:
+                    log.info(f"[Reflection] {promoted}")
+            except Exception as e:
+                log.warning(f"[Reflection] preference promotion failed: {e}")
+            # Weaken memory-graph edges whose target keeps getting injected and
+            # never used — a wrong edge otherwise costs prompt budget on every
+            # fire of its partner, forever. Deterministic counting, same as
+            # above.
+            try:
+                from . import memory_graph
 
-            decayed = await memory_graph.decay_unhelpful_edges()
-            if decayed:
-                log.info(f"[Reflection] {decayed}")
-        except Exception as e:
-            log.warning(f"[Reflection] edge decay failed: {e}")
+                decayed = await memory_graph.decay_unhelpful_edges()
+                if decayed:
+                    log.info(f"[Reflection] {decayed}")
+            except Exception as e:
+                log.warning(f"[Reflection] edge decay failed: {e}")
         today = tower_settings.agent_today()
         await self._send_agent_message(
-            prompt=_reflection_prompt(today),
+            prompt=_reflection_prompt(today, memory_pass=memory_pass),
             channel_id="reflection",
         )
         await self._checkpoint("reflection")

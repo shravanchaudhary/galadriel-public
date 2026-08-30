@@ -224,9 +224,11 @@ async def generate_cues(
 ) -> dict | None:
     """One model pass turning a stored memory into a full cue set.
 
-    Follows the active chat model (see model_registry) — learning quality is
-    not a place to save tokens. Returns None on any failure; the caller keeps
-    the memory and leaves it triggerless rather than blocking the commit.
+    Runs on the `recall_cues` task model — the replika-medium tier, pinned at
+    medium reasoning. Deliberately NOT the active chat model: following it
+    silently repriced every commit 5-8x whenever chat switched to Opus.
+    Returns None on any failure; the caller keeps the memory and leaves it
+    triggerless rather than blocking the commit.
     """
     if not (memory or "").strip():
         return None
@@ -252,13 +254,17 @@ async def generate_cues(
     if failures:
         parts.append(_REPAIR_NOTE % {"failures": failures})
 
+    # A tier-pinned task reasons at its pinned effort (replika-medium →
+    # "medium"); a vendor model keeps the old no-thinking call.
+    pinned_effort = model_registry.task_effort("recall_cues")
     try:
         response = await provider.create_message(
             model=model,
             max_tokens=6000,
             system=_prompt(_WANT_POSITIVES, _WANT_LEXICAL, _WANT_NEGATIVES, _WANT_PROBES),
             messages=[{"role": "user", "content": "\n\n".join(parts)}],
-            thinking=False,
+            thinking=bool(pinned_effort),
+            effort=pinned_effort,
         )
     except Exception as e:
         log.warning("Recall cue generation failed: %s", e)

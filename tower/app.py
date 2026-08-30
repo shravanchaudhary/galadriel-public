@@ -762,11 +762,20 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
                     tower_settings.default_compact_threshold_for_model(model),
                 ),
             ),
-            "effort": tower_settings.clamp_effort_for_model(
-                model,
-                getattr(
-                    agent, "thinking_effort", tower_settings.DEFAULT_THINKING_EFFORT
-                ),
+            # Channel-aware: a non-main channel with its own effort override
+            # reports that; main (and no-channel) keeps the composer's value.
+            # getattr because test stubs (and any partial agent) may not carry
+            # the channel-effort surface — degrade to the per-model value.
+            "effort": (
+                agent.effort_for_channel(channel, model)
+                if channel and hasattr(agent, "effort_for_channel")
+                else tower_settings.clamp_effort_for_model(
+                    model,
+                    getattr(
+                        agent, "thinking_effort",
+                        tower_settings.DEFAULT_THINKING_EFFORT,
+                    ),
+                )
             ),
             "effort_options": list(tower_settings.effort_options_for_model(model)),
             "effort_catalog": tower_settings.effort_catalog_for_model(model),
@@ -847,6 +856,27 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
     @app.route("/api/effort", methods=["POST"])
     def api_effort_set():
         data = request.json or {}
+        channel = str(data.get("channel") or "").strip()
+        if channel and channel != MAIN_CHANNEL_ID:
+            # Per-channel effort (Agent page). Validation against the channel's
+            # own model happens inside set_channel_effort.
+            if channel not in tower_settings.CONFIGURABLE_CHANNELS:
+                return jsonify({"error": "Invalid channel"}), 400
+            effort = tower_settings.normalize_thinking_effort(data.get("effort"))
+            if effort is None:
+                return jsonify({"error": "Invalid effort"}), 400
+            try:
+                agent.set_channel_effort(channel, effort)
+            except ValueError as e:
+                return jsonify({"error": str(e)}), 400
+            except Exception as e:
+                return jsonify({"error": str(e)}), 500
+            return jsonify({
+                "channel": channel,
+                "effort": agent.effort_for_channel(channel),
+                "persisted": tower_settings.is_configured(),
+                **_runtime_payload(channel),
+            })
         effort = tower_settings.normalize_thinking_effort(data.get("effort"))
         model = getattr(agent, "model", None)
         allowed = tower_settings.effort_options_for_model(model)

@@ -80,10 +80,22 @@
             <div class="settings-row loops-control">
                 <label class="settings-row-label" for="model-{{ item.id }}">Model</label>
                 <select id="model-{{ item.id }}" class="interval-select settings-row-control"
-                        data-channel="{{ item.channel }}"
+                        data-channel="{{ item.channel }}" data-item="{{ item.id }}"
                         onchange="changeLoopModel(this)">
                     {% for m in model_options %}
                     <option value="{{ m.value }}" {% if m.value == item.model %}selected{% endif %}>{{ m.label }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="settings-row loops-control" id="effort-row-{{ item.id }}"
+                 {% if not item.effort_catalog %}style="display: none;"{% endif %}>
+                <label class="settings-row-label" for="effort-{{ item.id }}">Reasoning</label>
+                <select id="effort-{{ item.id }}" class="interval-select settings-row-control"
+                        data-effort-channel="{{ item.channel }}"
+                        onchange="changeLoopEffort(this)">
+                    {% for e in item.effort_catalog %}
+                    <option value="{{ e.value }}" {% if e.value == item.effort %}selected{% endif %}
+                            {% if not e.available %}disabled{% endif %}>{{ e.label }}</option>
                     {% endfor %}
                 </select>
             </div>
@@ -267,10 +279,55 @@ async function changeLoopModel(select) {
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Failed to set model');
         select.dataset.current = model;
+        syncLoopEffort(select.dataset.item, data);
     } catch (err) {
         console.error('Failed to set loop model:', err);
         if (previous) select.value = previous;
         if (window.towerToast) window.towerToast(err.message || 'Failed to set model', { type: 'error' }); else alert(err.message || 'Failed to set model');
+    }
+}
+
+/** Rebuild a loop's Reasoning select after its model changed — the new model
+ *  has its own effort family, and a Replika tier collapses to one pinned option. */
+function syncLoopEffort(itemId, data) {
+    const row = document.getElementById(`effort-row-${itemId}`);
+    const sel = document.getElementById(`effort-${itemId}`);
+    if (!row || !sel) return;
+    const catalog = data.effort_catalog || [];
+    if (!catalog.length) {
+        row.style.display = 'none';
+        return;
+    }
+    row.style.display = '';
+    sel.innerHTML = '';
+    for (const opt of catalog) {
+        const o = document.createElement('option');
+        o.value = opt.value;
+        o.textContent = opt.label;
+        if (!opt.available) o.disabled = true;
+        if (opt.value === data.effort) o.selected = true;
+        sel.appendChild(o);
+    }
+    sel.dataset.current = data.effort || '';
+}
+
+async function changeLoopEffort(select) {
+    const channel = select.dataset.effortChannel;
+    const effort = select.value;
+    const previous = select.dataset.current || select.querySelector('option[selected]')?.value;
+    try {
+        const res = await fetch('/api/effort', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ effort, channel }),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to set reasoning effort');
+        select.dataset.current = data.effort || effort;
+    } catch (err) {
+        console.error('Failed to set loop effort:', err);
+        if (previous) select.value = previous;
+        if (window.towerToast) window.towerToast(err.message || 'Failed to set reasoning effort', { type: 'error' }); else alert(err.message || 'Failed to set reasoning effort');
     }
 }
 
@@ -336,6 +393,9 @@ async function changeRoutineTime(input) {
 }
 
 document.querySelectorAll('select[data-channel]').forEach(el => {
+    el.dataset.current = el.value;
+});
+document.querySelectorAll('select[data-effort-channel]').forEach(el => {
     el.dataset.current = el.value;
 });
 document.querySelectorAll('input[data-routine]').forEach(el => {

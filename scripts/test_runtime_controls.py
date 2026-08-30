@@ -219,6 +219,14 @@ def test_api_exposes_context_and_effort() -> None:
     bad_effort = client.post("/api/effort", json={"effort": "off"})
     assert bad_effort.status_code == 400
 
+    # A non-string channel must be a refusal, not an unhandled .strip() on an
+    # int — the endpoint is reachable by anything that can POST JSON.
+    for junk in (123, ["main"], {"a": 1}, True):
+        junk_channel = client.post(
+            "/api/effort", json={"channel": junk, "effort": "low"},
+        )
+        assert junk_channel.status_code in (200, 400), (junk, junk_channel.data)
+
     bad = client.post("/api/context", json={"context": 12})
     assert bad.status_code == 400
 
