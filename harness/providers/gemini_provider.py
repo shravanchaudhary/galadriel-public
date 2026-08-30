@@ -565,7 +565,7 @@ class GeminiProvider(BaseModelProvider):
 
     async def stream_message(
         self, *, model, max_tokens, messages, system=None, tools=None, thinking=True,
-        effort=None,
+        effort=None, temperature=None,
     ):
         """True chunk streaming. Yields ("thought"|"text", delta) as Gemini
         emits parts, then ("message", _Message) assembled from every part so
@@ -574,7 +574,8 @@ class GeminiProvider(BaseModelProvider):
         stable, dynamic = _split_system(system)
         contents = _messages_to_contents(messages, trailing_text=dynamic)
         config = self._build_config(
-            model, stable, tools, max_tokens, thinking=thinking, effort=effort
+            model, stable, tools, max_tokens, thinking=thinking, effort=effort,
+            temperature=temperature,
         )
 
         async def _stream_once():

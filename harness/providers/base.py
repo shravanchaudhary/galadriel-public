@@ -54,6 +54,7 @@ class BaseModelProvider(ABC):
         tools: list | None = None,
         thinking: bool = True,
         effort: str | None = None,
+        temperature: float | None = None,
     ):
         """Streaming variant. Async-yields ("text"|"thought", str) deltas as
         they arrive, then a final ("message", response) carrying the assembled

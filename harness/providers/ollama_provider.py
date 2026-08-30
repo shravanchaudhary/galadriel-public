@@ -431,7 +431,7 @@ class OllamaProvider(BaseModelProvider):
 
     async def stream_message(
         self, *, model, max_tokens, messages, system=None, tools=None, thinking=True,
-        effort=None,
+        effort=None, temperature=None,
     ):
         """True chunk streaming. Yields ("thought"|"text", delta) as Ollama
         emits thinking/content, then ("message", _Message) assembled from the
@@ -445,7 +445,7 @@ class OllamaProvider(BaseModelProvider):
             tools=_tools_to_ollama(tools),
             stream=True,
             think=thinking,
-            options=self._options(max_tokens),
+            options=self._options(max_tokens, temperature),
         )
 
         thinking = ""

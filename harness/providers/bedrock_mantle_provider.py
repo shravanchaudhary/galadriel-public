@@ -32,12 +32,21 @@ Reasoning. Thinking models return their chain of thought on a non-standard
 `reasoning` (sometimes `reasoning_content`) field rather than in `content`, so
 it is read out of the SDK's `model_extra`, surfaced as ("thought", delta), and
 stored on the history message as `_thought` — outside `content`, which is the
-visible reply. On every subsequent request `_messages_to_openai` puts it back
-verbatim on the assistant message's `reasoning` field, unconditionally: these
-are open-weight models with no signature scheme (unlike Anthropic/Gemini), the
-model needs its own prior reasoning back to stay coherent rather than
-re-derive it, and an append-only history keeps request prefixes byte-identical
-so provider-side prompt caching keeps hitting.
+visible reply. Replay is the hard part: Mantle silently DROPS an assistant
+`reasoning`/`reasoning_content`/`thinking` field on input (measured 2026-08-30:
+an ~850-token blob moved prompt_tokens by 0 on every model probed — both
+gpt-oss sizes, glm-5, kimi-k2-thinking, deepseek-v3.2, minimax-m2.5,
+nemotron-super-3-120b — and the structured block shapes 400). So
+`_messages_to_openai` folds `_thought` into the assistant `content` under a
+`[prior reasoning]` marker, on tool-call turns only — Harmony's contract: CoT
+is required input while a tool chain is open, dropped once a turn ends in a
+final message. Without the fold the model re-derives its plan from your
+message on every round of a cascade (glm-5 also hallucinated a tool call in
+testing). The fold rule reads only the message itself, so a message's
+serialization never changes between requests: history stays append-only and
+byte-identical prefixes keep provider-side prompt caching hitting — which is
+also why completed turns keep their fold instead of dropping it later. Probe
+matrix: project-agent-kb/kb/mantle-reasoning-replay.md.
 """
 
 import json
@@ -75,6 +84,17 @@ _THINKING_OFF = "none"
 # Harmony-format models reject "none" outright, so the most minimal reasoning
 # they can be held to is "low".
 _THINKING_FLOOR = "low"
+
+# Prior CoT is folded into assistant `content` behind this marker on tool-call
+# turns (Mantle drops the out-of-band reasoning fields — module docstring).
+# Part of the cached prefix: keep it short and never change it casually.
+_PRIOR_REASONING_MARKER = "[prior reasoning]"
+
+# Folded thoughts are model-visible input on every later request of the
+# session (kept for prefix stability), so an unbounded one compounds. The cap
+# is deterministic — applied from the stored `_thought` identically on every
+# request — so serialization stays byte-stable across the cascade.
+_FOLDED_THOUGHT_MAX_CHARS = 8_000
 
 
 # ─── Anthropic-shaped response objects ───────────────────────────────
@@ -262,11 +282,13 @@ def _messages_to_openai(messages: list, trailing_text: str | None = None) -> lis
     message each. Images inside a tool_result move to a trailing user message
     because OpenAI tool messages are text-only.
 
-    Every assistant turn's stored `_thought` is replayed as-is on the
-    `reasoning` field, unconditionally. History must be append-only: if a
-    message's serialization ever changed between requests (e.g. dropping the
-    reasoning once its turn completed), the byte-identical prefix would break
-    and every cached token after that point would be re-billed cold.
+    A tool-call turn's stored `_thought` is folded into its `content` behind
+    `_PRIOR_REASONING_MARKER` — Mantle strips every out-of-band reasoning
+    field on input, so visible content is the only carrier that reaches the
+    model (module docstring has the probe numbers). Final turns send no
+    thought, per Harmony. The fold depends only on the message itself, so a
+    message's serialization never changes between requests: the byte-identical
+    prefix holds and every cached token stays cached.
 
     The input `messages` are never mutated.
     """
@@ -334,19 +356,22 @@ def _messages_to_openai(messages: list, trailing_text: str | None = None) -> lis
 
         if role == "assistant" and (text_parts or tool_calls):
             text = "".join(p["text"] for p in text_parts if p["type"] == "text")
-            # A tool-only assistant turn sends content: null, the shape OpenAI
-            # specifies. An empty string here made some thinking models treat the
-            # turn as unfinished and resume it, leaking raw <think> prose into
-            # the next reply.
+            thought = (msg.get("_thought") or "").strip()
+            if tool_calls and thought:
+                thought = thought[:_FOLDED_THOUGHT_MAX_CHARS]
+                text = f"{_PRIOR_REASONING_MARKER}\n{thought}" + (
+                    f"\n\n{text}" if text else ""
+                )
+            # A tool-only assistant turn with no thought sends content: null,
+            # the shape OpenAI specifies. An empty string here made some
+            # thinking models treat the turn as unfinished and resume it,
+            # leaking raw <think> prose into the next reply.
             entry: dict = {
                 "role": "assistant",
                 "content": text or (None if tool_calls else ""),
             }
             if tool_calls:
                 entry["tool_calls"] = tool_calls
-            thought = (msg.get("_thought") or "").strip()
-            if thought:
-                entry["reasoning"] = thought
             out.append(entry)
         elif role == "user" and text_parts:
             out.append({"role": "user", "content": text_parts})
@@ -677,7 +702,7 @@ class BedrockMantleProvider(BaseModelProvider):
 
     async def stream_message(
         self, *, model, max_tokens, messages, system=None, tools=None, thinking=True,
-        effort=None,
+        effort=None, temperature=None,
     ):
         """True chunk streaming. Yields ("thought"|"text", delta) as Mantle emits
         them, then ("message", _Message) assembled from the whole stream so the
@@ -685,7 +710,8 @@ class BedrockMantleProvider(BaseModelProvider):
         """
         kwargs = self._build_kwargs(
             model, max_tokens, messages, system, tools,
-            thinking=thinking, effort=effort, stream=True,
+            thinking=thinking, effort=effort, temperature=temperature,
+            stream=True,
         )
 
         async def _stream_once():
