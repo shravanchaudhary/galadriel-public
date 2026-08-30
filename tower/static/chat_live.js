@@ -81,16 +81,7 @@ window.ChatLive = (function () {
         return turn;
     }
 
-    function appendThought(delta, turn, opts) {
-        const isRecallFire = opts && opts.kind === 'recall_fire';
-        if (isRecallFire) {
-            // Recall fires are learned-behavior notes, not model thoughts —
-            // self-contained collapsed block; later thoughts stream fresh.
-            turn.bodyEl.appendChild(ChatRender.createLearnedBlock(delta));
-            turn.thoughtEl = null;
-            ensureTyping(turn);
-            return;
-        }
+    function appendThought(delta, turn) {
         if (!turn.thoughtEl) {
             const d = document.createElement('details');
             d.className = 'thought';

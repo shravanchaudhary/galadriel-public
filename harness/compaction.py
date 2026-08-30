@@ -74,9 +74,10 @@ IN_CONVERSATION_MESSAGE = (
     + _SNAPSHOT_RULES
 )
 
-# User-role messages the harness injects for protocol reasons. They are real
-# turns as far as the API is concerned, but none of them is a human instruction,
-# so none of them may define the compaction boundary (see partition).
+# Harness-injected user-role messages (the tool_result half of a recall-fire
+# exchange, truncation notices). Real turns as far as the API is concerned, but
+# none of them is a human instruction, so none may define the compaction
+# boundary (see partition).
 SYNTHETIC_USER_KINDS = frozenset({"recall_fire", "truncation_notice"})
 
 
@@ -88,8 +89,13 @@ def _coerce_text(value) -> str:
 
 def estimate_tokens(msg: dict) -> int:
     """Rough size of one message. 4 chars ≈ 1 token; good enough for choosing
-    where to cut, and it deliberately counts base64 image payloads as large."""
-    return len(str(msg.get("content", ""))) // 4
+    where to cut, and it deliberately counts base64 image payloads as large.
+    `_thought` counts too: the Mantle provider folds it into content on the
+    wire, so ignoring it undersizes thought-heavy cascades (other providers
+    get a mild overestimate, which only cuts earlier — the safe direction)."""
+    return (
+        len(str(msg.get("content", ""))) + len(msg.get("_thought") or "")
+    ) // 4
 
 
 def _has_tool_result(msg: dict) -> bool:

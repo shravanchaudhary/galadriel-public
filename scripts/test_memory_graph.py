@@ -929,15 +929,23 @@ def test_a_fire_carries_the_cue_and_nothing_else() -> None:
     follow it is the model's call — pre-loading the memory makes that decision
     for them and spends context on a turn that may not need it."""
     prompt = _fire(_MATCH)
-    assert prompt == "[Recall detected]\n- [r1] check the deployment procedures room"
+    assert prompt == "- check the deployment procedures room"
 
 
 def test_a_memory_backed_fire_names_the_memory_to_open() -> None:
-    """Pursuing the cue should cost one call, not a guess about which room."""
+    """Pursuing the cue should cost one call, not a guess about which room —
+    and the call snippet must carry the MEMORY id. The recall id stays out of
+    the stream entirely: models copied it into memory(id=...) and concluded
+    the memory did not exist; ids live in message metadata and the
+    consolidation appendix."""
     prompt = _fire(_MATCH, backing={"r1": "abc123"})
     assert "check the deployment procedures room" in prompt
-    assert "memory(id=" in prompt
-    assert "`abc123`" in prompt
+    assert 'memory(id="abc123")' in prompt
+    assert "r1" not in prompt
+    assert prompt.rstrip().endswith("otherwise continue as you were."), (
+        "one tail nudge, close to the calls — models miss the stable block"
+    )
+    assert prompt.count("Open a memory") == 1, "nudge is per fire, not per bullet"
     assert "deployment procedure" not in prompt.split("memory(id=")[1], (
         "the id is a pointer; the memory's own text must not ride along"
     )
@@ -952,7 +960,7 @@ def test_a_failed_backing_lookup_leaves_the_fire_intact() -> None:
         prompt = _run(agent._build_recall_fire(
             "chan", _MATCH, query="q", ephemeral=False, origin="User-message",
         ))
-    assert prompt == "[Recall detected]\n- [r1] check the deployment procedures room"
+    assert prompt == "- check the deployment procedures room"
 
 
 def _calls_in(func_name: str) -> list[str]:

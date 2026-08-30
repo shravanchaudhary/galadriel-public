@@ -131,12 +131,15 @@ def _serialize_assistant_turn(messages: list, start: int) -> tuple[list[dict], i
         role = msg.get("role")
         content = msg.get("content")
 
-        # Recall fires are harness-injected (user-role now; assistant-role in
-        # older stored runs). Render as "Learned behavior", never as a user
-        # message or model thought — check before the user-turn break.
-        if msg.get("kind") == "recall_fire":
-            if isinstance(content, str) and content:
-                blocks.append({"type": "learned", "text": content})
+        # Recall fires are synthetic recall() tool exchanges and render as
+        # ordinary tool cards through the generic handling below. Only the
+        # user-message transport (supports_tools=False models) needs mapping —
+        # without it the string content would read as a human turn and break
+        # the cascade here.
+        if msg.get("kind") == "recall_fire" and isinstance(content, str):
+            if content:
+                blocks.append({"type": "tool_call", "name": "recall",
+                               "input": "{}", "output": content})
             i += 1
             continue
 
@@ -193,11 +196,13 @@ def serialize_chat_history(messages: list) -> list[dict]:
         msg = messages[i]
         role = msg.get("role")
         content = msg.get("content")
-        if msg.get("kind") == "recall_fire":
-            # User-role injected note — group under the surrounding assistant
-            # turn as a "Learned behavior" block, never as a user message.
-            if isinstance(content, str) and content:
-                block = {"type": "learned", "text": content}
+        if msg.get("kind") == "recall_fire" and isinstance(content, str):
+            # User-message-transport fire — render as a recall tool card,
+            # never as a user message. Tool-exchange fires flow through the
+            # assistant-turn serializer like any other tool traffic.
+            if content:
+                block = {"type": "tool_call", "name": "recall",
+                         "input": "{}", "output": content}
                 if history and history[-1]["role"] == "assistant":
                     history[-1]["blocks"].append(block)
                 else:

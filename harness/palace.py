@@ -180,7 +180,8 @@ ASSISTANT_HALL = "assistant"
 
 
 def _is_synthetic(msg: dict) -> bool:
-    """True for harness-injected user-role scaffolding (never archived)."""
+    """True for harness-injected scaffolding (never archived) — both halves of
+    a recall-fire tool exchange via kind, plus [SYSTEM: prompts by prefix."""
     if msg.get("kind") in _SYNTHETIC_MESSAGE_KINDS:
         return True
     content = msg.get("content")
@@ -503,6 +504,12 @@ def _write_conversation_batch(
             "---\n",
         ]
         for i, msg in enumerate(messages):
+            # Same filter as spans: a crash between this write and the
+            # manifest makes _spans_from_markdown rebuild from THIS file, and
+            # its prefix heuristics cannot recognise headerless tool-exchange
+            # fire text — so machine scaffolding must not be here either.
+            if _is_synthetic(msg):
+                continue
             sections.append(f"<!-- message {i} -->")
             sections.append(_serialize_message(msg))
             sections.append("")

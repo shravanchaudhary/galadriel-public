@@ -92,7 +92,7 @@ CONSOLIDATION_TOOLS = frozenset({
 # Tools whose args/results are recall/learning meta-content (example phrases,
 # feedback notes, instructions). Scanning them makes the matcher fire on its
 # own bookkeeping, so they are excluded from the mid-turn recall scan corpus.
-RECALL_SCAN_EXCLUDED_TOOLS = CONSOLIDATION_TOOLS | frozenset({"learn"})
+RECALL_SCAN_EXCLUDED_TOOLS = CONSOLIDATION_TOOLS | frozenset({"learn", "recall"})
 
 # Granular memory writers + consolidator-authoring tools hidden from a normal
 # turn's toolset. `learn` is the one runtime-facing writer (conservative,
@@ -124,6 +124,27 @@ PALACE_RETRIEVAL_TOOLS = frozenset({
 })
 
 _STOPPED_ASSISTANT_NOTE = "(Stopped — turn cancelled.)"
+
+
+def _recall_fire_text(msg: dict) -> str:
+    """Fire text of a recall_fire message, wherever the transport put it.
+
+    Tool-exchange fires carry it in a tool_result block; the user-message
+    transport (supports_tools=False models) carries it as plain string content.
+    """
+    content = msg.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = [
+            block.get("content")
+            for block in content
+            if isinstance(block, dict)
+            and block.get("type") == "tool_result"
+            and isinstance(block.get("content"), str)
+        ]
+        return "\n".join(parts)
+    return ""
 
 
 def _is_recall_fire_message(msg: dict) -> bool:
@@ -253,17 +274,76 @@ async def _verify_and_select_recalls(
     return verified
 
 
-def _recall_fire_message(matches: list[dict], fire_text: str) -> dict:
-    # User-role on purpose: assistant-role injection made models treat the
-    # nudge as their own prior reasoning/decisions (observed: a model "found"
-    # it had decided to pause the worker). The stable block explains the
-    # `[Recall detected]` contract; this message stays minimal.
-    return {
-        "role": "user",
-        "content": fire_text,
-        "kind": "recall_fire",
-        "matched_recall_ids": [m.get("recall_id") for m in matches if m.get("recall_id")],
-    }
+_RECALL_NOTHING_NEW = "Nothing new to scan since the last automatic check."
+
+
+def _fire_as_tool_exchange(channel_model: str) -> bool:
+    """Tool-exchange transport, where a fabricated assistant turn is safe.
+
+    Verified on Mantle (probe matrix in kb/recall-injection-transport.md);
+    Ollama shares the same message translation. Gemini validates thought
+    signatures on current-turn functionCalls and Anthropic extended thinking
+    400s on an assistant tool_use with no thinking block — both documented —
+    so those providers keep the user-message transport until a fabricated
+    exchange is verified there. Unlisted models are Ollama tags (see
+    model_catalog.get).
+    """
+    entry = model_catalog.get(channel_model)
+    if entry is None:
+        return True
+    return entry.supports_tools and entry.provider in ("bedrock_mantle", "ollama")
+
+
+def _recall_fire_messages(
+    matches: list[dict], fire_text: str, *, as_tool_exchange: bool,
+) -> list[dict]:
+    """Package a verified fire for injection — third transport design.
+
+    Assistant-role text taught models to emit bogus fires as their own; the
+    user-role message that replaced it read as a NEW REQUEST and derailed
+    cascades (models restated the fire as "the user asked…" — measured 4-5/6
+    cells on gpt-oss/glm-5). A synthetic recall() tool exchange fixes both:
+    tool output carries information-authority, not request-authority (0/6
+    mid-cascade derails, relevant fires still acted on 12/12), and the call
+    itself is contentless so there is no fire text for a model to learn to
+    fabricate. Matrix + invariants: kb/recall-injection-transport.md.
+
+    Both messages carry kind=recall_fire: dedupe's exclude_texts, run-store
+    rebuild, and compaction's synthetic-kind rules all key on it. Compaction
+    cannot split the pair — the tool_result half can never start a tail.
+
+    supports_tools=False models keep the single user-message transport.
+    """
+    ids = [m.get("recall_id") for m in matches if m.get("recall_id")]
+    if not as_tool_exchange:
+        # A plain user message needs its own machine-marker; a tool result
+        # does not — the call is the marker.
+        return [{
+            "role": "user",
+            "content": f"[Recall detected]\n{fire_text}",
+            "kind": "recall_fire",
+            "matched_recall_ids": ids,
+        }]
+    call_id = f"recall_{uuid.uuid4().hex[:12]}"
+    return [
+        {
+            "role": "assistant",
+            "content": [{
+                "type": "tool_use", "id": call_id, "name": "recall", "input": {},
+            }],
+            "kind": "recall_fire",
+            "matched_recall_ids": ids,
+        },
+        {
+            "role": "user",
+            "content": [{
+                "type": "tool_result", "tool_use_id": call_id,
+                "content": fire_text,
+            }],
+            "kind": "recall_fire",
+            "matched_recall_ids": ids,
+        },
+    ]
 
 
 class TurnCancelled(Exception):
@@ -1136,17 +1216,142 @@ class GaladrielAgent:
         """
         from .recall import generate_recall_fire_text
 
-        fire_text = generate_recall_fire_text(matches)
+        # No header and no recall ids: the recall() tool call marks the text
+        # as a fire, and ids ride in message metadata / the consolidation
+        # appendix. The user-message fallback transport re-adds a
+        # `[Recall detected]` prefix in _recall_fire_messages, where role
+        # alone cannot mark it.
+        backing = await self._fire_backing_memories(matches)
+        fire_text = generate_recall_fire_text(matches, backing=backing)
         log.info(f"{origin} recall fire triggered: {fire_text!r}")
-        return f"[Recall detected]\n{fire_text}{await self._fire_memory_ids(matches)}"
+        return fire_text
+
+    async def _inject_recall_fire(
+        self, messages: list, matches: list[dict], fire_prompt: str, *,
+        channel_model: str, tick_recorder, run_recorder, emit,
+    ) -> None:
+        """Append + record + emit one fire, identically at both inject sites.
+
+        Both halves of the pair are appended BEFORE the first await: recorder
+        awaits are suspension points, and a shutdown save or cancel snapshot
+        taken between the halves would persist a dangling tool_use that 400s
+        the rebuilt buffer on every provider. The emitted events are the same
+        shapes a real tool call produces, so the UI renders an ordinary
+        recall card with no special parsing.
+        """
+        fire_msgs = _recall_fire_messages(
+            matches, fire_prompt,
+            as_tool_exchange=_fire_as_tool_exchange(channel_model),
+        )
+        messages.extend(fire_msgs)
+        for fire_msg in fire_msgs:
+            if tick_recorder is not None:
+                await tick_recorder.record_message(fire_msg)
+            if run_recorder is not None:
+                await run_recorder.record_message(
+                    fire_msg, visibility="user", kind="recall_fire",
+                )
+        if emit is not None:
+            await emit({"type": "tool_call", "name": "recall", "input": "{}"})
+            await emit({
+                "type": "tool_result", "name": "recall", "output": fire_prompt,
+            })
+
+    async def _agent_recall_scan(
+        self,
+        channel_id: str,
+        *,
+        active_recalls: list,
+        notified_recall_ids: set,
+        turn_thought: str,
+        assistant_content,
+        tool_blocks: list,
+        tool_results: list,
+        messages: list,
+    ) -> tuple[str, list[str], str]:
+        """Run the model's own recall() call: the same two-stage scan the
+        harness runs automatically at this pause, returned as the tool result.
+
+        Returns (result_text, fired_recall_ids, scanned_text). The caller
+        passes scanned_text into the pause-end auto-scan's exclude_texts so
+        judge-rejected candidates are not re-judged on the same evidence (the
+        notified-id filter only remembers fires, not rejections), and uses
+        fired_recall_ids to mark the round's tool_results message
+        kind=recall_fire when recall was the round's only tool — without that
+        the fire is invisible to the consolidation appendix, the palace
+        archive filter, and dedupe.
+        """
+        from .recall import scan_text_for_recalls
+
+        segments = _build_tool_use_recall_scan_segments(
+            thought=turn_thought,
+            assistant_content=assistant_content,
+            tool_blocks=tool_blocks,
+            tool_results=tool_results,
+        )
+        if not segments and turn_thought.strip():
+            # Recall-ONLY round: the bookkeeping gate blanked the segments, but
+            # here the thought is task narration worth scanning. A round mixing
+            # recall() with tune_recall/learn keeps the blank — that narration
+            # restates the matched chunk and re-fires the recall being tuned.
+            names = {
+                getattr(b, "name", None)
+                or (b.get("name") if isinstance(b, dict) else "")
+                for b in tool_blocks
+            }
+            if names == {"recall"}:
+                segments = [{"text": turn_thought.strip(), "source": "thought"}]
+        if not segments:
+            return _RECALL_NOTHING_NEW, [], ""
+        text_to_scan = "\n".join(s["text"] for s in segments).strip()
+        exclude_texts = [
+            _recall_fire_text(m) for m in messages if _is_recall_fire_message(m)
+        ]
+        matched = scan_text_for_recalls(
+            text_to_scan, active_recalls,
+            exclude_texts=exclude_texts, segments=segments,
+        )
+        new_matches = [
+            m for m in matched if m.get("recall_id") not in notified_recall_ids
+        ]
+        if new_matches:
+            new_matches = await _verify_and_select_recalls(
+                channel_id, new_matches, text_to_scan[:500],
+            )
+        if not new_matches:
+            return _RECALL_NOTHING_NEW, [], text_to_scan
+        log.info(
+            f"[Recall Check] Agent-initiated fire: "
+            f"{[m.get('recall_id') for m in new_matches]}"
+        )
+        for m in new_matches:
+            notified_recall_ids.add(m.get("recall_id"))
+            await _log_recall_fire(channel_id, m, text_to_scan[:500])
+            await self._log_retrieval_event(
+                channel_id, memory_key=f"recall:{m.get('recall_id')}",
+                memory_kind="recall", query_or_cue=text_to_scan[:500],
+            )
+        fire_text = await self._build_recall_fire(
+            channel_id, new_matches,
+            query=text_to_scan[:500], ephemeral=False, origin="Agent-initiated",
+        )
+        fired_ids = [
+            m.get("recall_id") for m in new_matches if m.get("recall_id")
+        ]
+        return fire_text, fired_ids, text_to_scan
 
     @staticmethod
-    async def _fire_memory_ids(matches: list[dict]) -> str:
-        """`recall_id -> memory_id` for whichever matches are memory-backed.
+    async def _fire_backing_memories(matches: list[dict]) -> dict:
+        """recall_id -> the memory id worth opening, for memory-backed matches.
 
         Hand-authored recalls have no backing memory and get nothing; their
         instruction is already the whole payload. Best-effort — a lookup failure
-        costs the shortcut, never the fire.
+        costs the pointer, never the fire.
+
+        A recall outlives the memory it was built for: the situation it
+        describes still occurs after the rule is retired. Naming the retired
+        memory would send the agent to read a rule that no longer applies, so
+        the pointer follows the replacement.
         """
         try:
             from . import consolidation
@@ -1156,13 +1361,9 @@ class GaladrielAgent:
             )
         except Exception as e:
             log.warning(f"Recall-to-memory lookup failed: {e}")
-            return ""
+            return {}
         if not backing:
-            return ""
-        # A recall outlives the memory it was built for: the situation it
-        # describes still occurs after the rule is retired. Naming the retired
-        # memory would send the agent to read a rule that no longer applies, so
-        # the pointer follows the replacement.
+            return {}
         try:
             from . import memory_graph
 
@@ -1170,20 +1371,10 @@ class GaladrielAgent:
         except Exception as e:
             log.warning(f"Supersession check failed on a fire: {e}")
             retired = {}
-        lines = []
-        for recall_id, memory_id in backing.items():
-            current = retired.get(memory_id)
-            if current:
-                lines.append(
-                    f"  [{recall_id}] pointed at memory `{memory_id}`, which has "
-                    f"been replaced by `{current}` — open that one"
-                )
-            else:
-                lines.append(f"  [{recall_id}] is the trigger for memory `{memory_id}`")
-        return (
-            "\nOpen with memory(id=…) if this turn actually needs it:\n"
-            + "\n".join(lines)
-        )
+        return {
+            recall_id: retired.get(memory_id) or memory_id
+            for recall_id, memory_id in backing.items()
+        }
 
     @staticmethod
     def _tool_result_has_content(result) -> bool:
@@ -2505,7 +2696,7 @@ class GaladrielAgent:
                 )
             else:
                 exclude_texts = [
-                    m.get("content", "") if isinstance(m.get("content"), str) else ""
+                    _recall_fire_text(m)
                     for m in messages
                     if _is_recall_fire_message(m)
                 ]
@@ -2558,13 +2749,12 @@ class GaladrielAgent:
                 channel_id, new_user_matches,
                 query=scanned, ephemeral=ephemeral, origin="User-message",
             )
-            messages.append(_recall_fire_message(new_user_matches, fire_prompt))
-            if tick_recorder is not None:
-                await tick_recorder.record_message(messages[-1])
-            if run_recorder is not None:
-                await run_recorder.record_message(messages[-1], visibility="user", kind="recall_fire")
-            if emit is not None:
-                await emit({"type": "thought", "text": fire_prompt, "kind": "recall_fire"})
+            await self._inject_recall_fire(
+                messages, new_user_matches, fire_prompt,
+                channel_model=self.model_for_channel(channel_id),
+                tick_recorder=tick_recorder, run_recorder=run_recorder,
+                emit=emit,
+            )
 
         # System blocks: stable + dynamic + snapshot. Rebuilt whenever compaction
         # fires mid-turn so the snapshot block never goes stale.
@@ -3014,6 +3204,8 @@ class GaladrielAgent:
             if response.stop_reason == "tool_use":
                 max_tokens_retries = 0  # Reset counter on successful tool use
                 tool_results = []
+                agent_fired_recall_ids: list[str] = []
+                agent_recall_scanned = ""
                 tool_blocks = [
                     block for block in response.content
                     if hasattr(block, "type") and block.type == "tool_use"
@@ -3147,7 +3339,36 @@ class GaladrielAgent:
 
                     # execute_tool never raises — missing args / tool bugs come
                     # back as "[tool error] …" so the model can correct + retry.
-                    if ephemeral and tool_name not in CONSOLIDATION_TOOLS:
+                    if tool_name == "recall":
+                        # Agent-initiated scan of the current pause. The tool
+                        # stays defined even when recall is off — adding or
+                        # removing a tool mid-session resets the whole cached
+                        # prompt prefix.
+                        if ephemeral:
+                            result = _RECALL_NOTHING_NEW
+                        elif not self.recall_enabled:
+                            result = "Semantic recall is currently disabled."
+                        elif not active_recalls:
+                            result = _RECALL_NOTHING_NEW
+                        else:
+                            (
+                                result,
+                                fired_ids,
+                                scanned_text,
+                            ) = await self._agent_recall_scan(
+                                channel_id,
+                                active_recalls=active_recalls,
+                                notified_recall_ids=notified_recall_ids,
+                                turn_thought=turn_thought,
+                                assistant_content=assistant_content,
+                                tool_blocks=tool_blocks,
+                                tool_results=tool_results,
+                                messages=messages,
+                            )
+                            agent_fired_recall_ids.extend(fired_ids)
+                            if scanned_text:
+                                agent_recall_scanned = scanned_text
+                    elif ephemeral and tool_name not in CONSOLIDATION_TOOLS:
                         result = (
                             f"[blocked] tool `{tool_name}` is not available during "
                             "the silent consolidation pass. Use propose_memory, "
@@ -3256,7 +3477,16 @@ class GaladrielAgent:
                         })
 
                 # Order: tool_results first, then optional recall_fire, then loop.
-                messages.append({"role": "user", "content": tool_results})
+                tool_results_msg: dict = {"role": "user", "content": tool_results}
+                if agent_fired_recall_ids and len(tool_blocks) == 1:
+                    # A recall-only round whose scan fired: the tool result IS
+                    # the fire. kind marks it for the consolidation appendix,
+                    # the palace archive filter, dedupe's exclude_texts, and
+                    # the post-compaction survivor scan — without it an
+                    # agent-initiated fire lives a second, untracked life.
+                    tool_results_msg["kind"] = "recall_fire"
+                    tool_results_msg["matched_recall_ids"] = agent_fired_recall_ids
+                messages.append(tool_results_msg)
                 if (not ephemeral) and tick_recorder is not None:
                     await tick_recorder.record_message(messages[-1])
                 if run_recorder is not None:
@@ -3275,10 +3505,16 @@ class GaladrielAgent:
                     new_matches = []
                     if scan_segments:
                         exclude_texts = [
-                            m.get("content", "") if isinstance(m.get("content"), str) else ""
+                            _recall_fire_text(m)
                             for m in messages
                             if _is_recall_fire_message(m)
                         ]
+                        if agent_recall_scanned:
+                            # The model's own recall() already scanned this
+                            # pause's evidence; stripping it stops the judge
+                            # re-running on judge-rejected candidates (the
+                            # notified filter only remembers fires).
+                            exclude_texts.append(agent_recall_scanned)
                         matched = scan_text_for_recalls(
                             text_to_scan,
                             active_recalls,
@@ -3330,19 +3566,12 @@ class GaladrielAgent:
                             query=text_to_scan[:500], ephemeral=ephemeral,
                             origin="Tool-use",
                         )
-                        messages.append(_recall_fire_message(new_matches, fire_prompt))
-                        if tick_recorder is not None:
-                            await tick_recorder.record_message(messages[-1])
-                        if run_recorder is not None:
-                            await run_recorder.record_message(
-                                messages[-1], visibility="user", kind="recall_fire",
-                            )
-                        if emit is not None:
-                            await emit({
-                                "type": "thought",
-                                "text": fire_prompt,
-                                "kind": "recall_fire",
-                            })
+                        await self._inject_recall_fire(
+                            messages, new_matches, fire_prompt,
+                            channel_model=channel_model,
+                            tick_recorder=tick_recorder,
+                            run_recorder=run_recorder, emit=emit,
+                        )
 
                 # Tool outcomes can change the shared experiential state. Make
                 # that change globally available to the very next reasoning
@@ -3646,9 +3875,14 @@ class GaladrielAgent:
         for i, msg in enumerate(messages):
             if not _is_recall_fire_message(msg):
                 continue
+            # The tool-exchange transport is a two-message pair; the assistant
+            # call half carries no fire text — count only the text-bearing half
+            # so each fire lists once.
+            content = _recall_fire_text(msg)
+            if msg.get("role") == "assistant" and not content:
+                continue
             n += 1
             ids = msg.get("matched_recall_ids") or []
-            content = msg.get("content") if isinstance(msg.get("content"), str) else ""
             if ids:
                 detail_parts = []
                 for rid in ids:
@@ -3873,11 +4107,11 @@ class GaladrielAgent:
         self._notified_recall_ids.pop(channel_id, None)
         session_id = self._session_id.pop(channel_id, None)
         session_segments = self._session_segments.pop(channel_id, [])
+        from . import conversation_run_store
         conversation_run_store.clear_session_state(channel_id)
 
         if channel_id == MAIN_CHANNEL_ID:
-            from .conversation_run_store import end_active_run
-            await end_active_run(channel_id, reason)
+            await conversation_run_store.end_active_run(channel_id, reason)
 
         self._spawn_clear_postprocess(
             self._postprocess_cleared_history(

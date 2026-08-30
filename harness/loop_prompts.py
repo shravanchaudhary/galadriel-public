@@ -230,7 +230,7 @@ def reflection_prompt(today: str, memory_pass: bool = True) -> str:
         "lexical-only) → Stage-2 is an LLM entailment judge reading the "
         "recall's `activation_condition` and `exclusions` against "
         "`matched_chunk`, plus a junk filter for bare tools/HTML → "
-        "only verified fires inject as a `[Recall detected]` note. Defaults: "
+        "only verified fires inject as a recall() tool exchange. Defaults: "
         "positive_threshold=0.6; negatives NEVER gate Stage-1 — they reach "
         "Stage-2 as few-shot known-misfire vetoes, so a negative only helps "
         "when it reads like a case the judge should refuse. Always "

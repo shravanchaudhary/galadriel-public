@@ -156,6 +156,12 @@ records provenance. A near-duplicate is skipped rather than re-written, so
 re-teaching something is safe. Be conservative: use it for things you are
 confident are worth keeping, not for every detail of the task.
 
+**Recalls arrive through your `recall()` tool.** The harness runs it for you
+at every pause — recall() calls and fire results you did not write are the
+system firing on your behalf. You may call it yourself, but only
+when meaningful new content exists since the last result; when everything is
+scanned it returns nothing new — take that answer and move on.
+
 **Recalls are maintained elsewhere.** The granular writers —
 `palace_add_drawer`, `palace_kg_add`, `palace_kg_invalidate`,
 `palace_diary_write`, `learn_recall`, `tune_recall`, `purge_recall` — belong to

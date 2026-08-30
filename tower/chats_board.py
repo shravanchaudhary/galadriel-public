@@ -131,11 +131,24 @@ def _direct_history(events: list[dict]) -> list[dict]:
     for event in events:
         role = event.get("role")
         text = _content_text(event.get("content"))
-        # Harness-injected recall fires (user-role now, assistant-role in old
-        # runs) render as "Learned behavior" blocks, never as user messages.
+        # Harness-injected recall fires render as ordinary recall tool cards,
+        # never as user messages. The tool-exchange transport stores the fire
+        # text in a tool_result block (the paired synthetic assistant recall()
+        # call carries no text and drops out here); the user-message transport
+        # for supports_tools=False models is plain string content, which
+        # _content_text already yields.
         if event.get("kind") == "recall_fire":
+            if not text:
+                text = "\n".join(
+                    block.get("content")
+                    for block in (event.get("content") or [])
+                    if isinstance(block, dict)
+                    and block.get("type") == "tool_result"
+                    and isinstance(block.get("content"), str)
+                )
             if text:
-                _append_blocks([{"type": "learned", "text": text}])
+                _append_blocks([{"type": "tool_call", "name": "recall",
+                                 "input": "{}", "output": text}])
             continue
         if role == "user":
             disp = ui_ctx.display_user_text(text)

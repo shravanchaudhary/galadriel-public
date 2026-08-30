@@ -155,7 +155,9 @@ async def label_curated(markdown: str) -> str:
     return "\n".join(lines)
 
 
-async def open_memory(memory_id: str) -> tuple[str, list[str]]:
+async def open_memory(
+    memory_id: str, _resolving: bool = False,
+) -> tuple[str, list[str]]:
     """Materialise one memory with its prerequisites and its links.
 
     Returns (rendered text, expanded memory ids) — the caller logs telemetry for
@@ -174,6 +176,23 @@ async def open_memory(memory_id: str) -> tuple[str, list[str]]:
     texts = await consolidation.memory_texts([memory_id])
     doc = texts.get(memory_id)
     if not doc:
+        # Live fires no longer print rule ids, but the consolidation appendix
+        # and get_recent_recalls do, and old stored fires still carry them —
+        # a model that opens a rule id would dead-end here and conclude the
+        # memory does not exist. Resolve it instead.
+        try:
+            backing = await consolidation.memory_ids_by_recall([memory_id])
+        except Exception:
+            backing = {}
+        backed = (backing or {}).get(memory_id)
+        if backed and backed != memory_id and not _resolving:
+            # One hop only: cyclic trigger data (A backs B backs A) must
+            # degrade to a miss, not a RecursionError.
+            text, expanded = await open_memory(backed, _resolving=True)
+            return (
+                f"`{memory_id}` is a recall trigger, not a memory id — opened "
+                f"its backing memory `{backed}` instead.\n\n{text}"
+            ), expanded
         return await _open_verbatim(memory_id), []
     if not (doc.get("content") or "").strip() and doc.get("kg_triplets"):
         # A semantic memory committed as triplets stores no prose, but it still

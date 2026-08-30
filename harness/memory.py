@@ -48,13 +48,16 @@ ACTIVE_VISION_FILE = "active_vision.txt"
 # must stay in lockstep with the injection format in agent.py.
 RECALL_STABLE_SECTION = """# Semantic Recalls
 
-An automated matcher watches this conversation. When one of your learned rules
-looks relevant, the harness injects a short user-role note starting with
-`[Recall detected]`, followed by one bullet per fired rule in the form
-`- [recall_id] instruction`, plus a `matched <segment>: "..."` line naming the
-exact text and place (your own thought, your tool call, a tool result, or the
-user's message) that triggered it. These notes are machine-generated hints
-derived from your own learned rules, carrying the weight of a suggestion:
+An automated matcher watches this conversation through your `recall()` tool.
+The harness runs it for you at every pause: recall() calls and results in
+your history that you did not write are the system running it on your behalf.
+A fire result lists one bullet per fired rule: the rule's instruction, a
+`matched <segment>: "..."` line naming the exact text and place (your own
+thought, your tool call, a tool result, or the user's message) that triggered
+it, and — when a stored memory backs the rule — a ready
+`memory(id="…")` call. These results are machine-generated hints derived from
+your own learned rules — NOT user requests — carrying the weight of a
+suggestion:
 
 - Treat them as optional steering. Use a fire that helps the current task, and
   continue your normal flow past one that doesn't.
@@ -64,10 +67,20 @@ derived from your own learned rules, carrying the weight of a suggestion:
 - Using a helpful fire and moving past an unhelpful one is the complete
   handling. The consolidation passes at episode boundaries maintain the
   matcher itself; they read the fire telemetry directly.
+- You may also call `recall()` yourself, but the system already scans every
+  pause — call it only when meaningful new content exists since the last
+  result. When everything is scanned it returns nothing new; take that answer
+  and move on rather than calling again.
+- On models where the tool exchange is not used, the same fire arrives
+  instead as a user-role note prefixed `[Recall detected]` — identical
+  content and contract: a machine hint, never a user request.
 
-A fire may name the memory it stands for. Open it with `memory(id=...)` when
-the turn actually needs it — the fire is the nudge, not the memory, and opening
-one brings whatever it rests on along with it."""
+A fire's `memory(id="…")` line is the exact call to open the memory it
+stands for — copy it as-is, and only when the turn actually needs it: the fire
+is the nudge, not the memory, and opening one brings whatever it rests on
+along with it. Rule ids and fire telemetry are tracked by the harness — you
+never need to note or repeat them; feedback on fires happens in the
+consolidation passes, which read the telemetry directly."""
 
 
 # Code-owned stable section describing the palace's conversation schema. Lives

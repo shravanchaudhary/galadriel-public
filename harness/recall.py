@@ -1015,33 +1015,43 @@ _SEGMENT_SOURCE_LABELS = {
 _FIRE_TEXT_SNIPPET_CHARS = 160
 
 
-def generate_recall_fire_text(matched_recalls: list[dict]) -> str:
-    """Injected recall-fire text: `- [recall_id] instruction` per match, plus
-    a short provenance line naming what actually matched.
+def generate_recall_fire_text(
+    matched_recalls: list[dict], backing: dict | None = None,
+) -> str:
+    """Injected recall-fire text: the instruction per match, a short provenance
+    line naming what actually matched, and — when the rule is memory-backed —
+    the exact `memory(id="…")` call to open it.
 
-    The id must be in the visible text. The stable block tells the agent to call
-    `tune_recall(recall_id, ...)` after a fire, but the id previously lived only
-    in the message's `matched_recall_ids` metadata, which the model never sees —
-    so it invented plausible ids (`sys_worker_board`, `sys_cookbooks`) and every
-    feedback call failed.
+    No recall id and no boilerplate: ids live in the fire messages'
+    `matched_recall_ids` metadata, the `recall_fires` docs, and the
+    consolidation appendix (`_build_recall_audit_appendix`), which is where
+    `tune_recall` feedback happens now that the tool is consolidation-only
+    (RUNTIME_HIDDEN_TOOLS). Visible ids were needed when the LIVE model gave
+    feedback — it invented ids without them — but in the stream they only
+    added tokens and got mistaken for memory ids (observed 2026-08-30:
+    memory(id=<recall_id>) returned nothing and the model concluded no
+    user-identity memory exists). The how-to-treat-a-fire contract lives in
+    the cached stable block, not here.
 
-    The same blind spot existed for WHAT matched: with no visible evidence of
-    the triggering segment, a model asked to judge applicability will
-    rationalize a plausible-sounding but wrong cause instead of admitting it
-    doesn't know — observed 2026-08-18, where a fire caused by the agent's own
-    thought ("...worker control...") got a tune_recall note blaming the user's
-    unrelated greeting. `matched_chunk` + `segment_source` are already computed
-    by Stage-1; naming them here removes the guesswork rather than prompting
-    around it.
+    The provenance line stays. Without visible evidence of the triggering
+    segment, a model asked to judge applicability rationalizes a
+    plausible-sounding but wrong cause instead of admitting it doesn't know —
+    observed 2026-08-18, where a fire caused by the agent's own thought
+    ("...worker control...") got a tune_recall note blaming the user's
+    unrelated greeting. `matched_chunk` + `segment_source` are already
+    computed by Stage-1; naming them removes the guesswork.
+
+    `backing` maps recall_id -> memory id to open (the caller has already
+    followed supersession to the current memory).
     """
     if not matched_recalls:
         return ""
 
+    backing = backing or {}
     fire_lines = []
+    any_backed = False
     for recall in matched_recalls:
-        rid = (recall.get("recall_id") or "").strip()
-        instruction = recall.get("instruction")
-        line = f"- [{rid}] {instruction}" if rid else f"- {instruction}"
+        line = f"- {recall.get('instruction')}"
         chunk = _strip_channel_prefix(recall.get("matched_chunk") or "")
         if chunk:
             label = _SEGMENT_SOURCE_LABELS.get(
@@ -1051,9 +1061,28 @@ def generate_recall_fire_text(matched_recalls: list[dict]) -> str:
             if len(chunk) > _FIRE_TEXT_SNIPPET_CHARS:
                 snippet += "…"
             line += f'\n  matched {label}: "{snippet}"'
+        memory_id = backing.get((recall.get("recall_id") or "").strip())
+        if memory_id:
+            line += f'\n  memory(id="{memory_id}")'
+            any_backed = True
         fire_lines.append(line)
 
-    return "\n".join(fire_lines)
+    text = "\n".join(fire_lines)
+    if any_backed:
+        # One deliberate nudge at the tail, not per bullet: the full contract
+        # lives in the cached stable block, but models miss distant
+        # instructions — one close-by line is the whole point of this system.
+        # Wording is measured, not styled: "whose content matters … and
+        # isn't already in your context" made both gpt-oss sizes open an
+        # IRRELEVANT identity memory mid-task (the missing-from-context clause
+        # read as a reason to fetch). Gating on task-need first passes both
+        # directions (ignore-when-irrelevant, open-when-needed).
+        text += (
+            "\nOpen a memory(id=…) above only if the current task needs its "
+            "content and it isn't already in your context; otherwise continue "
+            "as you were."
+        )
+    return text
 
 
 def _judge_verify_enabled() -> bool:

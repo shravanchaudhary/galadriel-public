@@ -130,13 +130,21 @@ Palace tools are **pull**. Semantic recalls are **push**: Stage-1 (positive-only
 embed floor 0.6 / lexical; chunks under 4 words are lexical-only) proposes on
 `matched_chunk`; Stage-2 verifies with a batched LLM entailment judge
 (activation_condition + exclusions) plus a junk filter; only verified fires
-inject a user-role `[Recall detected]` note (`kind=recall_fire`). Without a
+inject a synthetic `recall()` tool exchange — a fabricated assistant tool call
+plus a tool result carrying the fire text (instruction bullets with matched-
+chunk provenance), both `kind=recall_fire`. Tool-result framing carries information-authority rather
+than request-authority, so the model uses a relevant fire and continues past
+an irrelevant one instead of answering it as a new user request. The model may
+also call `recall()` itself; with nothing new to scan it returns exactly that.
+Models that cannot use tools get a plain user-role note instead. Without a
 credential for the selected judge model's provider the whole recall system is
 disarmed (fail-closed — no scans, no fires). Fires are suggestions: ground any action in the user's request or the
 current task, and continue past a fire that doesn't help.
 
 Inject windows: new user message at turn start, and mid-turn **only** on
 `tool_use` pauses (thought + tool args + tool results). Not on bare `end_turn`.
+An agent-initiated `recall()` call scans the current pause early; the pause-end
+auto-scan dedupes against it.
 
 Package durable content with the unified `learn` tool, picking `type` yourself
 (`semantic` / `procedural` / `preference`). The *trigger* — `learn_recall`,

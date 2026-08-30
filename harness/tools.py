@@ -244,7 +244,7 @@ TOOL_DEFINITIONS = [
     {
         "name": "tune_recall",
         "description": (
-            "Feedback on a fired recall (a `[Recall detected]` note). Call after "
+            "Feedback on a fired recall (a recall() fire result). Call after "
             "you acted on — or deliberately ignored — a fire. "
             "applicable=true reinforces the match: the fired chunk is appended to "
             "the recall's positive_examples. applicable=false records a misfire: "
@@ -315,6 +315,19 @@ TOOL_DEFINITIONS = [
             },
             "required": ["recall_id"],
         },
+    },
+    {
+        "name": "recall",
+        "description": (
+            "Scan recent conversation content for applicable learned rules "
+            "(semantic recalls). Takes no input. The harness already runs this "
+            "automatically at every pause — recall() calls and fire results "
+            "you did not write are the system running it on your behalf. Call "
+            "it yourself only when meaningful new content exists since the "
+            "last result; when everything is already scanned it returns "
+            "nothing new."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
     },
     {
         "name": "memory",
