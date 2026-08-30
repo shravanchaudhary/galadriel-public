@@ -2854,8 +2854,6 @@ class GaladrielAgent:
                 "tokens_before": 0,
                 "tokens_after": 0,
                 "tokens_saved": 0,
-                "images_kept": 0,
-                "images_pruned": 0,
             }
             if self.headroom_enabled:
                 frozen = len(api_messages) if api_messages is not None else 0
@@ -2877,24 +2875,19 @@ class GaladrielAgent:
                     "tokens_before": hr.tokens_before,
                     "tokens_after": hr.tokens_after,
                     "tokens_saved": hr.tokens_saved,
-                    "images_kept": hr.images_kept,
-                    "images_pruned": hr.images_pruned,
                 }
-                if hr.tokens_saved > 0 or hr.images_pruned > 0:
+                if hr.tokens_saved > 0:
                     log.info(
                         f"Headroom | before={hr.tokens_before} after={hr.tokens_after} "
-                        f"saved={hr.tokens_saved} frozen={frozen} "
-                        f"images_kept={hr.images_kept} images_pruned={hr.images_pruned}"
+                        f"saved={hr.tokens_saved} frozen={frozen}"
                     )
             else:
-                # Still prune old screenshots so Headroom-off browser sessions
-                # do not send every historical base64 image to the provider.
+                # No per-call image pruning: the keep-last sliding window
+                # rewrote already-sent messages and busted the cached prefix.
+                # Images ride until compaction disposes of them; text-only
+                # models get them stripped by the (deterministic) vision gate.
                 api_messages = None
-                messages_for_api, prune_stats = headroom_compress.prepare_messages_for_api(
-                    messages
-                )
-                headroom_metrics["images_kept"] = prune_stats.images_kept
-                headroom_metrics["images_pruned"] = prune_stats.images_pruned
+                messages_for_api = messages
 
             # Last gate before the wire: a text-only model must never be
             # handed an image block. The UI hides the upload and the system

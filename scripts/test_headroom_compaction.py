@@ -306,115 +306,60 @@ def _approx_json_size(messages: list) -> int:
     return len(json.dumps(messages))
 
 
-def test_prune_old_screenshots() -> bool:
-    """Keep last 3 images; older become placeholders; input list unchanged."""
-    print("\n=== test: prune_old_screenshots keep_last=3 ===")
-    history = []
-    for i in range(5):
-        path = f"state/screenshots/shot-{i}.png"
-        history.append(
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": f"t{i}",
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": f"Saved screenshot to {path}",
-                            },
-                            _fake_image_block(f"img{i}"),
-                        ],
-                    }
-                ],
-            }
-        )
-    original_size = _approx_json_size(history)
-    original_images = _count_images(history)
-    pruned, stats = headroom_compress.prune_old_screenshots(history, keep_last=3)
-    after_images = _count_images(pruned)
-    after_size = _approx_json_size(pruned)
-    print(
-        f"images: {original_images} -> {after_images} "
-        f"(kept={stats.images_kept} pruned={stats.images_pruned}) "
-        f"json_bytes: {original_size} -> {after_size}"
-    )
+def _history_with_images(n: int) -> list:
+    """n screenshot-bearing tool rounds, Anthropic-shaped."""
+    msgs = []
+    for i in range(n):
+        msgs.append({"role": "user", "content": f"step {i}: click and shoot"})
+        msgs.append({"role": "assistant", "content": [
+            {"type": "tool_use", "id": f"s{i}", "name": "browser",
+             "input": {"action": "screenshot"}}]})
+        msgs.append({"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": f"s{i}", "content": [
+                {"type": "text", "text": f"screenshot {i} saved"},
+                _fake_image_block(chr(97 + i % 26))]}]})
+    return msgs
+
+
+def test_images_survive_serialization() -> bool:
+    """No per-call image pruning: the keep-last sliding window rewrote
+    already-sent messages and busted the cached prefix. Images ride until
+    compaction disposes of them."""
+    print("\n=== test: images survive per-call serialization ===")
+    history = _history_with_images(5)
+    compressed, metrics = asyncio.run(headroom_compress.compress_for_api(
+        history, model="gpt-oss-20b", frozen_message_count=0,
+    ))
     if _count_images(history) != 5:
-        print("FAIL: prune mutated the original history")
+        print("FAIL: stored history mutated")
         return False
-    if after_images != 3 or stats.images_kept != 3 or stats.images_pruned != 2:
-        print("FAIL: expected keep 3 / prune 2")
+    if _count_images(compressed) != 5:
+        print(f"FAIL: images pruned ({_count_images(compressed)}/5 survive)")
         return False
-    if after_size >= original_size:
-        print("FAIL: pruned API copy should be smaller")
-        return False
-    # Oldest two should be placeholders mentioning the path.
-    for i in range(2):
-        inner = pruned[i]["content"][0]["content"]
-        texts = [
-            b.get("text", "")
-            for b in inner
-            if isinstance(b, dict) and b.get("type") == "text"
-        ]
-        joined = "\n".join(texts)
-        if "screenshot omitted" not in joined:
-            print(f"FAIL: image {i} not replaced with placeholder: {joined!r}")
-            return False
-        if f"shot-{i}.png" not in joined:
-            print(f"FAIL: placeholder missing path hint for shot-{i}")
-            return False
     print("PASS")
     return True
 
 
-def test_compress_for_api_prunes_screenshots() -> bool:
-    """compress_for_api runs prune before Headroom; metrics expose image counts."""
-    print("\n=== test: compress_for_api prunes screenshots ===")
-
-    async def _run() -> bool:
-        history = []
-        for i in range(5):
-            history.append(
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": f"t{i}",
-                            "content": [
-                                {
-                                    "type": "text",
-                                    "text": f"Saved screenshot to state/screenshots/s{i}.png",
-                                },
-                                _fake_image_block(f"big{i}"),
-                            ],
-                        }
-                    ],
-                }
-            )
-        before_images = _count_images(history)
-        out, metrics = await headroom_compress.compress_for_api(
-            history, model=MODEL, frozen_message_count=0,
-        )
-        after_images = _count_images(out)
-        print(
-            f"images: {before_images} -> {after_images} "
-            f"metrics kept={metrics.images_kept} pruned={metrics.images_pruned}"
-        )
-        if _count_images(history) != 5:
-            print("FAIL: stored history mutated")
-            return False
-        if after_images != 3:
-            print(f"FAIL: expected 3 images in API copy, got {after_images}")
-            return False
-        if metrics.images_pruned != 2 or metrics.images_kept != 3:
-            print("FAIL: metrics mismatch")
-            return False
-        print("PASS")
-        return True
-
-    return asyncio.run(_run())
+def test_frozen_prefix_bytes_stable_as_images_arrive() -> bool:
+    """The frozen prefix must serialize byte-identically even when new
+    image-bearing messages append — the exact property the sliding window
+    violated."""
+    print("\n=== test: frozen prefix stable as images arrive ===")
+    import json
+    base = _history_with_images(4)
+    first, _ = asyncio.run(headroom_compress.compress_for_api(
+        base, model="gpt-oss-20b", frozen_message_count=0,
+    ))
+    frozen = len(first)
+    extended = list(first) + _history_with_images(2)
+    second, _ = asyncio.run(headroom_compress.compress_for_api(
+        extended, model="gpt-oss-20b", frozen_message_count=frozen,
+    ))
+    if json.dumps(second[:frozen], sort_keys=True) != json.dumps(first, sort_keys=True):
+        print("FAIL: frozen prefix changed after new images arrived")
+        return False
+    print("PASS")
+    return True
 
 
 def test_downscale_screenshot_bytes() -> bool:
@@ -460,8 +405,8 @@ def main() -> int:
         test_protection_defaults(),
         test_config_knobs(),
         test_freeze_lifecycle(),
-        test_prune_old_screenshots(),
-        test_compress_for_api_prunes_screenshots(),
+        test_images_survive_serialization(),
+        test_frozen_prefix_bytes_stable_as_images_arrive(),
         test_downscale_screenshot_bytes(),
     ]
     passed = sum(results)
