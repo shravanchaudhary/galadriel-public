@@ -377,13 +377,6 @@ async def execute_tool(name: str, inputs: dict, working_dir: str = None) -> str:
             page_context=ui_ctx.config_browse("tools", "default", []),
         )
 
-    @bp.route("/config/semantic-recalls")
-    def config_semantic_recalls():
-        return render_template(
-            "config/semantic_recalls.html",
-            page_context=ui_ctx.config_browse("state", "semantic-recalls", []),
-        )
-
     @bp.route("/config/activity/toggle", methods=["POST"])
     def config_activity_toggle():
         data = request.get_json(silent=True) or {}

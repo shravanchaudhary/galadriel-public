@@ -14,7 +14,7 @@
         <a href="/palace/search" class="{{ 'active' if request.path == '/palace/search' }}">Search</a>
         <a href="/palace/learned" class="{{ 'active' if request.path.startswith('/palace/learned') or request.path.startswith('/palace/memory/') }}">Learned</a>
         <a href="/palace/kg" class="{{ 'active' if request.path == '/palace/kg' }}">Knowledge Graph</a>
-        <a href="/config/semantic-recalls">Recalls</a>
+        <a href="/palace/recalls" class="{{ 'active' if request.path == '/palace/recalls' }}">Recalls</a>
         <a href="/palace/daily" class="{{ 'active' if request.path == '/palace/daily' }}">Daily Logs</a>
         <form class="settings-tabs-action" method="post" action="/palace/reconcile" onsubmit="this.querySelector('button').disabled=true;">
             <button type="submit" class="btn btn-small btn-secondary">Reconcile</button>

@@ -431,7 +431,7 @@ no longer parses or returns a `reasons` key at all (a model that emits one
 unprompted has it silently dropped — `applicable` is the only key that
 matters), `MAX_REASON_CHARS` is gone, and `harness/recall.py` sets a fixed
 `"judge:applicable"` tag instead of formatting a per-id lookup that can never
-find anything. `tower/templates/config/semantic_recalls.html` hides the
+find anything. `tower/templates/palace/recalls.html` hides the
 `reason:` line on the test page specifically when it's `judge:applicable` or
 `judge:none` — both now just restate the FIRES/REJECTED badge — but still
 shows it for every other tag (`stage2_junk`, `stage2_disabled`,
@@ -644,7 +644,7 @@ burns minutes and then surfaces as a raw `str(e)`.
 `chat_live.js:fillSelect()` already accepts `{value, label}`, so the chat
 composer needs only a richer `/api/model` payload — return
 `{value, label: "Claude Opus 4.6 · 62.9", score, provider}`. The judge picker in
-`config/semantic_recalls.html:loadJudgeModel()` hardcodes
+`palace/recalls.html:loadJudgeModel()` hardcodes
 `opt.textContent = name` and needs the same label treatment.
 
 ### 3.7 Config

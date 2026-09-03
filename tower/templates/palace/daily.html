@@ -14,7 +14,7 @@ is archived in <code>room=conversations</code>.</p>
 {% for log in logs %}
 <details class="settings-prompt" {% if log.date in injected_dates %}open{% endif %}>
     <summary>{{ log.date }}{% if log.date in injected_dates %} <span class="muted">(injected)</span>{% endif %}</summary>
-    <pre style="white-space:pre-wrap;">{{ log.text }}</pre>
+    <pre class="loops-prompt">{{ log.text }}</pre>
 </details>
 {% endfor %}
 {% else %}

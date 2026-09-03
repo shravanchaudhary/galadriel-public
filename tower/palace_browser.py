@@ -66,6 +66,13 @@ def register_palace_browser(app, run_async=None):
         # encoded the banner into %20 soup.
         return redirect(url_for("palace_browser.palace_index", notice=notice))
 
+    @bp.route("/palace/recalls")
+    def palace_recalls():
+        return render_template(
+            "palace/recalls.html",
+            page_context=ui_ctx.palace_recalls(),
+        )
+
     @bp.route("/palace/browse")
     def palace_browse():
         """Rooms within a wing, as folder tiles — the wing → room step of

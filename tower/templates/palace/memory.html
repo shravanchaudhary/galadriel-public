@@ -16,7 +16,7 @@
 
 <section class="settings-section">
     <div class="settings-section-head"><h2 class="settings-section-title">Content</h2></div>
-    <pre style="white-space:pre-wrap;">{{ memory.content or '(no prose — KG-only memory)' }}</pre>
+    <pre class="loops-prompt">{{ memory.content or '(no prose — KG-only memory)' }}</pre>
     {% if memory.kg_triplets %}
     <p class="settings-meta">KG triples:</p>
     <ul>
@@ -38,7 +38,7 @@
         <p class="settings-section-desc">When this memory resurfaces on its own. A memory with no trigger is still findable by deliberate search — <code>memory(query=…)</code>.</p>
     </div>
     {% if trigger and trigger.recall_id %}
-    <p>Trigger <code>{{ trigger.recall_id }}</code> ({{ trigger.status or '?' }}) — <a href="/config/semantic-recalls">manage &amp; test on the Recalls page</a>.</p>
+    <p>Trigger <code>{{ trigger.recall_id }}</code> ({{ trigger.status or '?' }}) — <a href="/palace/recalls">manage &amp; test on the Recalls tab</a>.</p>
     {% elif memory.type == 'episodic' %}
     <p class="muted">Episodic — deliberately triggerless; it is the record, not a rule.</p>
     {% elif trigger %}

@@ -393,6 +393,15 @@ def palace_browse(wing: str, rooms: list[str]) -> dict:
     return _ptr("palace_browse", f"palace/{wing}", reload=False, wing=wing, rooms=rooms)
 
 
+def palace_recalls() -> dict:
+    return _ptr(
+        "palace_recalls",
+        "semantic recalls",
+        reload=False,
+        read={"get_recall": "the definition catalog; get_recent_recalls for fires"},
+    )
+
+
 def palace_room(
     wing: str | None,
     room: str | None,
