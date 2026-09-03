@@ -1,8 +1,9 @@
 """Single source of truth for model-per-task selection.
 
 Edit THIS FILE to choose which provider and model handles each task. Nothing
-else in the harness hardcodes a model name — the agent loop and the compaction
-summarizer both resolve their provider/model here.
+else in the harness hardcodes a model name — every side task resolves its
+provider/model here. (Compaction is not a task: it always runs on the
+channel's own live model — see harness/compaction.py.)
 
 Which models *exist*, what they cost, and what they can do lives in
 `harness/model_catalog.py`; this module only assigns them to tasks and builds
@@ -36,8 +37,10 @@ DEFAULT_PROVIDER = BEDROCK_MANTLE
 TASKS: dict[str, tuple[str, str]] = {
     # The main conversational agent — tool use, streaming, the full loop.
     "agent": (BEDROCK_MANTLE, "glm-5"),
-    # The cheap summarizer /compact uses to shrink old tool results.
-    "compaction": (BEDROCK_MANTLE, "glm-5"),
+    # NOTE: there is no "compaction" task any more (2026-09-04). Compaction is
+    # always the channel's own live model summarizing in place — a separate
+    # cheap summarizer needs a context window ≥ the live model's, which no
+    # fixed pick can guarantee. See harness/compaction.py.
     # Lightweight structured gate for shared Slack channel replies.
     "slack_reply_gate": (BEDROCK_MANTLE, "glm-5"),
     # One-shot short title for a new conversation run.
@@ -63,7 +66,6 @@ TASKS: dict[str, tuple[str, str]] = {
 # or an open model (no other code changes needed).
 BEDROCK_DEFAULTS: dict[str, tuple[str, str]] = {
     "agent": (BEDROCK_ANTHROPIC, "claude-opus-4-6"),
-    "compaction": (BEDROCK_ANTHROPIC, "claude-haiku-4-5"),
     "slack_reply_gate": (BEDROCK_MANTLE, "glm-4.7-flash"),
     "chat_title": (BEDROCK_MANTLE, "glm-4.7-flash"),
 }
@@ -87,7 +89,7 @@ BEDROCK_DEFAULTS: dict[str, tuple[str, str]] = {
 # any channel with no explicit override already falls back to the live
 # main-channel model.
 FOLLOW_ACTIVE_MODEL = frozenset({
-    "compaction", "chat_title", "slack_reply_gate",
+    "chat_title", "slack_reply_gate",
 })
 
 _active_model: str | None = None

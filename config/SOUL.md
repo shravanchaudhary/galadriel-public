@@ -94,6 +94,7 @@ this palace.
 | `procedures` | Reusable how-tos (`learn type=procedural`) |
 | `episodes` | Day recaps and operational narratives (`learn type=episodic`) |
 | `preferences` | How to behave for this user (`learn type=preference`) |
+| `sources` | Studied documents (`study_file`) — searchable reference, not memory |
 
 1. Read the injected wake-up summary when present.
 2. Before you speak about any past decision, number, date, name, or historical
@@ -103,7 +104,9 @@ this palace.
    `palace_search`; an entity relation → `palace_kg_query` /
    `palace_kg_timeline`.
 3. Do **not** re-dump chat into the palace — raw turns are already archived.
-   File only distilled lessons, through `learn`.
+   File distilled lessons through `learn`; a big reference document becomes
+   searchable via `study_file` (room=sources) — that is ingestion, not
+   learning, and it never mints memories or recall triggers.
 4. If unsure about a specific figure — say you will check, then query.
 5. When facts change: `learn(type=semantic, kg_invalidate=[old triple],
    kg_triplets=[new triple])`. Preserve history instead of overwriting it.

@@ -28,6 +28,7 @@ debug/prompts/
 todo
 state/conversation_buffers/*
 !state/conversation_buffers/README.md
+state/artifacts/
 state/screenshots/
 state/phone_bridge_auth.json
 

@@ -507,6 +507,11 @@ def search_markdown(
         ]
         if meta_row.get("conversation_id"):
             bits.append(f"conversation_id=`{meta_row['conversation_id']}`")
+        elif meta_row.get("source_file"):
+            # Studied sources have no conversation_id; source_file is their
+            # walk key (chunk_number collides ACROSS documents, so a hit must
+            # hand back the scope for the follow-up ordered fetch).
+            bits.append(f"source_file=`{meta_row['source_file']}`")
         if meta_row.get("chunk_number") is not None:
             bits.append(f"chunk={meta_row['chunk_number']}")
         if meta_row.get("filed_at"):
@@ -788,6 +793,67 @@ def _mine_conversation_spans(
     ])
 
 
+# Parts of one studied file are spaced this far apart in chunk_index /
+# chunk_number, so each part purges and re-files only its own range while the
+# numbers still order the whole document. Same contract as conversations:
+# chunk_number ORDERS a source, it is not dense.
+STUDY_PART_STRIDE = 100_000
+
+
+def study_text(
+    text: str, *, source_file: str, hall: str, room: str = "sources",
+    part: int = 1, total_parts: int | None = None,
+) -> int:
+    """File one part of a document as searchable chunks (room=sources).
+
+    The sibling of `_mine_conversation_spans` for reference material the agent
+    chose to study: same chunker, same purge-before-insert idempotency — but
+    scoped to this part's index range, so re-studying part 3 never deletes
+    parts 1-2. Two namespace guards keep study and the conversation miner out
+    of each other's drawers: ids hash a `study:`-prefixed source, and every
+    purge here is room-scoped (the miner's `_purge_source` purges by
+    source_file alone — an unprefixed shared id or purge would let either
+    silently delete the other's work).
+
+    `total_parts` is the file's CURRENT part count: anything at or beyond it
+    is a stale tail from a longer past version of the file and is purged, so a
+    shrunk file cannot keep serving deleted content. Empty `text` still runs
+    the purges and files nothing — that is how a now-empty part is cleared.
+
+    No memory ids, no recall triggers, no KG edges: studied chunks are a raw
+    searchable archive (like conversations), NOT learned memory — `learn`
+    remains the only path that mints memories.
+    """
+    base = (max(1, part) - 1) * STUDY_PART_STRIDE
+    _collection().delete_many({
+        "room": room,
+        "source_file": source_file,
+        "chunk_index": {"$gte": base, "$lt": base + STUDY_PART_STRIDE},
+    })
+    if total_parts is not None:
+        _collection().delete_many({
+            "room": room,
+            "source_file": source_file,
+            "chunk_index": {"$gte": max(1, total_parts) * STUDY_PART_STRIDE},
+        })
+    pieces = _chunks(text)
+    return _store_chunks([
+        {
+            "_id": _drawer_id(f"study:{source_file}", base + position),
+            "text": piece,
+            "wing": DEFAULT_WING,
+            "room": room,
+            "hall": hall,
+            "source_file": source_file,
+            "chunk_index": base + position,
+            "chunk_number": base + position + 1,
+            "agent": "study",
+            "filed_at": _now(),
+        }
+        for position, piece in enumerate(pieces)
+    ])
+
+
 def mine_directory(batch_dir: Path, *, agent: str = DEFAULT_WING) -> bool:
     """Mine one staged batch directory into the palace.
 
@@ -1050,12 +1116,14 @@ def wake_up_text() -> str:
     Deliberately excludes room=conversations: conversation chunks are the bulk
     of the palace and the newest of them are always whatever was just archived,
     so including them made this a re-injection of the last chat into every
-    single prompt. What belongs here is what the agent learned, not what it
-    just said. Hard-capped so it cannot grow into the context unbounded.
+    single prompt. room=sources is excluded for the same reason — a freshly
+    studied document is hundreds of chunks and would BE the digest. What
+    belongs here is what the agent learned, not what it just said or read.
+    Hard-capped so it cannot grow into the context unbounded.
     """
     rows = list(
         _collection()
-        .find({"room": {"$ne": "conversations"}}, _LIST_PROJECTION)
+        .find({"room": {"$nin": ["conversations", "sources"]}}, _LIST_PROJECTION)
         .sort("filed_at", -1)
         .limit(20)
     )

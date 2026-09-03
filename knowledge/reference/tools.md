@@ -82,15 +82,15 @@ Rule of thumb: stable block → already in context. Dynamic block → still in c
 
 ### Conversation memory vs learned memory
 
-Two corpora, two questions.
+Two questions, plus a reference shelf.
 
-| | Conversation memory | Learned memory |
-|---|---|---|
-| Holds | every message, verbatim, plus recaps | rules, procedures, facts, preferences |
-| Answers | *what happened, when, in whose words* | *what do I know, how should I act* |
-| Search | `palace_search` | `memory(query=…)` |
-| Open one | `memory(id=…)` — verbatim, no links | `memory(id=…)` — with its linked context |
-| Size | the whole archive | a small curated set |
+| | Conversation memory | Learned memory | Studied sources |
+|---|---|---|---|
+| Holds | every message, verbatim, plus recaps | rules, procedures, facts, preferences | documents ingested via `study_file` |
+| Answers | *what happened, when, in whose words* | *what do I know, how should I act* | *what does that document say* |
+| Search | `palace_search` | `memory(query=…)` | `palace_search` + `search_meta={"room": "sources", ...}` |
+| Open one | `memory(id=…)` — verbatim, no links | `memory(id=…)` — with its linked context | `source_file` + `chunk_number` range walk |
+| Size | the whole archive | a small curated set | whatever was studied |
 
 ```python
 palace_search(query="the migration we ran", room="conversations")  # what happened
@@ -120,7 +120,7 @@ palace_search(order="recency", room="conversations", channel="main", k=5)  # lat
 
 - `query` — full phrases beat keywords.
 - `wing` — **leave `None`.**
-- `room` — optional filter (`conversations`, `knowledge`, `procedures`, `episodes`, `preferences`).
+- `room` — optional filter (`conversations`, `knowledge`, `procedures`, `episodes`, `preferences`, `sources`).
 - `hall` — optional auto-topic filter (not a project name).
 - `k` — 5 is usually enough; bump to 10–20 for broader sweeps.
 
@@ -141,13 +141,17 @@ or truncated, grep the source file the result names.
 ### Decision matrix — where to record what
 
 During a normal turn you have exactly two memory writers: `memory_log` for
-scratch notes and `learn` for anything durable. Pick the `type` yourself.
+scratch notes and `learn` for anything durable — plus `study_file`, which is
+NOT a memory writer: it chunks a big document into `room=sources` so any part
+is searchable by meaning (an archive, like conversations; no memory id, no
+recall trigger). Pick the `type` yourself.
 
 | What you want to save | Use | Becomes palace-searchable |
 |---|---|---|
 | A raw observation, progress tick, quick note | `memory_log(entry)` | No — hot daily index only, gone from view after ~48h |
 | A durable fact worth re-reading later | `learn(type="semantic", content=..., topic=...)` | Immediately, as a `knowledge` drawer |
 | A structured relational fact | `learn(type="semantic", kg_triplets=[[s, p, o]], valid_from=...)` | Immediately via KG |
+| A whole document worth searching later | `study_file(path, topic=...)` | Immediately, as `sources` chunks (reference, not memory) |
 | A stored fact that CHANGED | `learn(type="semantic", kg_invalidate=[[old s, p, o]], kg_triplets=[[new s, p, o]])` | Immediately — old fact retired with history kept |
 | A reusable how-to, or the lesson from a failure | `learn(type="procedural", content=..., topic=...)` | Immediately — `knowledge/**` file plus a drawer |
 | How the user wants you to behave going forward | `learn(type="preference", content=...)` | Immediately — daily log plus a drawer |

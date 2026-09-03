@@ -108,6 +108,38 @@ A search that finds nothing says so. That means "not in memory" — nothing was
 close enough to count as a match — not "nothing exists"."""
 
 
+# Code-owned stable section describing the oversized-input contract. Lives in
+# code because it must stay in lockstep with the spill mechanics in
+# harness/tools.py (bound_tool_result, study_file) and harness/agent.py
+# (externalize_oversized_input).
+OVERSIZED_INPUT_STABLE_SECTION = """# Oversized Inputs Become Files
+
+Tool output or an inbound document too large for the context window is saved
+to an artifact file (state/artifacts/, kept ~24 hours) and arrives as a stub:
+the file path, its size, and a head/tail excerpt. Nothing is lost — the full
+content is on disk instead of in this conversation. Four instruments, one job
+each — never pull a whole file back into the conversation at once:
+
+- `read_file` / `run_shell` grep, head, tail, `sed -n 'N,Mp'` — precise access
+  while the file exists: exact strings, ids, line ranges, code. First choice
+  for lookups you can name.
+- `study_file(path)` — for a document you will work with deeply or return to:
+  chunks it into palace room=sources, where `palace_search(query,
+  search_meta={"room": "sources", ...})` finds any part by MEANING and a
+  chunk_number walk reads it in order. The palace copy is permanent — it
+  survives compaction and the 24h cleanup. Very large files study in parts,
+  on demand.
+- `learn` — for the FEW durable rules, conditions, or facts from the content
+  that must hold during or after this task. Only learned memories get recall
+  triggers that surface them unasked; studied chunks are reference, found
+  only when searched.
+- Corpus routing stays as always: `memory(query)` for what you LEARNED;
+  `palace_search` for raw archives — conversations and studied sources.
+
+Studied it → search it. Learned it → memory()/recall bring it back. On disk →
+grep it while it lasts."""
+
+
 def _model_capability_section(model: str) -> str:
     """One short block telling the agent which model it is and what that model
     can take as input. The vision line is the first of three gates against the
@@ -197,6 +229,7 @@ class MemoryManager:
 
         parts.append(RECALL_STABLE_SECTION)
         parts.append(PALACE_STABLE_SECTION)
+        parts.append(OVERSIZED_INPUT_STABLE_SECTION)
 
         if model:
             parts.append(_model_capability_section(model))

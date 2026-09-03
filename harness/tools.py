@@ -5,8 +5,11 @@ import base64
 import json
 import logging
 import os
+import time
 from datetime import datetime
 from pathlib import Path
+
+from .compaction import CHARS_PER_TOKEN
 
 log = logging.getLogger("galadriel.tools")
 
@@ -677,13 +680,68 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "read_file",
-        "description": "Read the contents of a file from the local filesystem.",
+        "description": (
+            "Read the contents of a file from the local filesystem. Large "
+            "files come back as a head+tail view with the middle omitted; "
+            "pass full_page=true when you genuinely need the whole file in "
+            "one read (it is still capped to what the model's context can "
+            "hold). For targeted slices prefer run_shell with grep, head, "
+            "tail, or sed -n 'N,Mp'."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "path": {
                     "type": "string",
                     "description": "Absolute or relative path to the file.",
+                },
+                "full_page": {
+                    "type": "boolean",
+                    "description": (
+                        "Return as much of the file as the model's context "
+                        "budget allows instead of the default bounded view."
+                    ),
+                },
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "study_file",
+        "description": (
+            "Chunk a file into the memory palace (room=sources) so any part "
+            "of it can be found by MEANING, permanently — it survives "
+            "compaction and artifact cleanup. Use it for a document you will "
+            "work with deeply or return to; for a one-off exact lookup, "
+            "run_shell grep is cheaper. Afterwards retrieve with "
+            "palace_search(query=…, search_meta={'room': 'sources', "
+            "'source_file': '<path>'}) and walk it in order via chunk_number "
+            "ranges. Studying makes content FINDABLE, not remembered: durable "
+            "rules or facts from it still go through `learn`, which is what "
+            "gives them recall triggers. Large files are studied in parts — "
+            "the result says when more parts remain. Re-studying the same "
+            "part replaces it (no duplicates)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Absolute or relative path to the file.",
+                },
+                "topic": {
+                    "type": "string",
+                    "description": (
+                        "Short kebab-case topic slug — becomes the hall these "
+                        "chunks are grouped under. Defaults to the filename."
+                    ),
+                },
+                "part": {
+                    "type": "integer",
+                    "description": (
+                        "1-based part number for files too large to study in "
+                        "one call (default 1)."
+                    ),
                 },
             },
             "required": ["path"],
@@ -920,6 +978,10 @@ TOOL_DEFINITIONS = [
             "reused rather than recalled as history — use `memory(query=…)`, "
             "which searches only curated learned memory and hands back ids you "
             "can open for the context linked to them.\n"
+            "Studied documents (study_file) are the other raw archive here: "
+            "search them with search_meta={'room': 'sources'} (add "
+            "source_file to scope one document, chunk_number ranges to read "
+            "it in order).\n"
             "Default (order=semantic): natural-language similarity search. For "
             "'what did we just discuss' / 'previous conversation' use "
             "order=recency with room=conversations (optionally channel=main). "
@@ -1301,7 +1363,7 @@ TOOL_DEFINITIONS.extend(PHONE_TOOL_DEFINITIONS)
 _PALACE_TOOL_NAMES = frozenset({
     "palace_search", "palace_wake_up", "palace_taxonomy",
     "palace_kg_query", "palace_kg_timeline",
-    "memory", "learn", "propose_memory",
+    "memory", "learn", "propose_memory", "study_file",
 })
 
 
@@ -1457,6 +1519,104 @@ def visible_tool_definitions() -> list:
     return tools
 
 
+# ─── Tool-result size bounds ─────────────────────────────────────────
+#
+# A single unbounded tool result (cat of a huge file, a giant page dump) can
+# jump the buffer from under the compaction threshold to over the model's
+# context window in one hop — past the point where compaction can help,
+# straight to an API 400 (see project-agent-kb/kb/context-overflow-400.md).
+# Every result is therefore bounded at the one choke point all tools pass
+# through: oversized output is spilled to an artifact file and the model gets
+# head + tail + the path, so nothing is lost — it moves to disk, where
+# run_shell/read_file can slice it on demand.
+
+# All limits in TOKENS (compaction.CHARS_PER_TOKEN converts at string
+# boundaries) — token counts are what every model limit is denominated in.
+_INLINE_RESULT_MAX_TOKENS = 7_500  # matches Claude Code's shell-output cap
+_SPILL_EXCERPT_TOKENS = 500        # shown from each end of a spilled result
+# read_file bounds itself inside _read_file_sync (default head+tail at the
+# same 7.5k tokens, `full_page=True` up to the model's own budget — the source is
+# already a file, so there is nothing to spill). Every other tool goes through
+# the one shared limit: no per-tool carve-outs, every channel plays by the
+# same rules.
+_SELF_BOUNDED_TOOLS = frozenset({"read_file"})
+
+
+def artifact_dir() -> Path:
+    """Directory for spilled oversized content. Lives under the storage root —
+    state/ is persistent and agent-readable in managed runtimes, and the local
+    storage root (.galadriel-local) is gitignored."""
+    root = os.environ.get("GALADRIEL_STORAGE_ROOT")
+    base = Path(root) if root else Path(os.getcwd())
+    d = base / "state" / "artifacts"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+# Artifacts are working scratch, not storage: anything durable is either still
+# producible (re-run the command) or has been studied into the palace /
+# learned. 24h covers "the summary references some/path from yesterday" —
+# older than that, refetching is acceptable (shravan, 2026-09-04). The sweep is
+# opportunistic (on each new spill) so no scheduler is involved.
+_ARTIFACT_TTL_SECONDS = 24 * 3600
+
+
+def _sweep_stale_artifacts(d: Path) -> None:
+    cutoff = time.time() - _ARTIFACT_TTL_SECONDS
+    for f in d.glob("*.txt"):
+        try:
+            if f.stat().st_mtime < cutoff:
+                f.unlink()
+        except OSError:
+            continue
+
+
+def spill_text(text: str, prefix: str) -> Path:
+    """Write oversized text to a timestamped artifact file, return its path."""
+    d = artifact_dir()
+    _sweep_stale_artifacts(d)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    path = d / f"{prefix}-{stamp}-{os.urandom(3).hex()}.txt"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def bound_tool_result(text: str, tool_name: str) -> str:
+    """Cap one tool result's inline size; spill the full text to a file."""
+    est_tokens = len(text) // CHARS_PER_TOKEN
+    if est_tokens <= _INLINE_RESULT_MAX_TOKENS:
+        return text
+    excerpt = _SPILL_EXCERPT_TOKENS * CHARS_PER_TOKEN
+    try:
+        where = f"full output saved for ~24h to {spill_text(text, tool_name)}"
+    except Exception as e:
+        log.warning(f"Could not spill oversized {tool_name} result: {e}")
+        where = "full output could NOT be saved — rerun with a narrower command"
+    return (
+        f"{text[:excerpt]}\n\n[... ≈{est_tokens - 2 * _SPILL_EXCERPT_TOKENS:,} "
+        f"of ≈{est_tokens:,} tokens omitted — {where}. Slice it with "
+        "run_shell (grep/head/tail/sed) or read_file instead of re-running "
+        "the command. ...]\n\n"
+        f"{text[-excerpt:]}"
+    )
+
+
+def _bound_result(result, tool_name: str):
+    if tool_name in _SELF_BOUNDED_TOOLS:
+        return result
+    if isinstance(result, str):
+        return bound_tool_result(result, tool_name)
+    if isinstance(result, list):
+        for block in result:
+            if (
+                isinstance(block, dict)
+                and block.get("type") == "text"
+                and isinstance(block.get("text"), str)
+            ):
+                block["text"] = bound_tool_result(block["text"], tool_name)
+    return result
+
+
 async def execute_tool(
     name: str,
     inputs: dict,
@@ -1464,6 +1624,7 @@ async def execute_tool(
     working_dir: str = None,
     experience_manager=None,
     channel_id: str = "unknown",
+    model: str = None,
 ) -> str | list:
     """Execute a tool and return the result. Usually a string; the browser
     tool's `screenshot` returns a list of content blocks (text + image) so the
@@ -1478,13 +1639,17 @@ async def execute_tool(
             f"got {type(inputs).__name__}. Call again with the schema fields."
         )
     try:
-        return await _execute_tool_impl(
+        result = await _execute_tool_impl(
             name, inputs,
             memory_manager=memory_manager,
             working_dir=working_dir,
             experience_manager=experience_manager,
             channel_id=channel_id,
+            model=model,
         )
+        # Bounding may spill megabytes to disk (spill_text write + TTL sweep)
+        # — off the event loop so one huge result can't stall other channels.
+        return await asyncio.to_thread(_bound_result, result, name)
     except KeyError as e:
         missing = e.args[0] if e.args else "?"
         got = sorted(inputs.keys())
@@ -1667,6 +1832,7 @@ async def _execute_tool_impl(
     working_dir: str = None,
     experience_manager=None,
     channel_id: str = "unknown",
+    model: str = None,
 ) -> str | list:
     # Stateless mode: refuse palace calls clearly.
     if palace_disabled() and name in _PALACE_TOOL_NAMES:
@@ -1709,7 +1875,17 @@ async def _execute_tool_impl(
             poll_interval=inputs.get("poll_interval"),
         )
     elif name == "read_file":
-        return await _read_file(inputs["path"])
+        return await _read_file(
+            inputs["path"],
+            full_page=bool(inputs.get("full_page")),
+            model=model,
+        )
+    elif name == "study_file":
+        return await _study_file(
+            inputs["path"],
+            topic=inputs.get("topic"),
+            part=inputs.get("part"),
+        )
     elif name == "learn":
         from .learn import learn as _unified_learn
         return await _unified_learn(
@@ -3244,25 +3420,135 @@ async def _tune_recall(recall_id: str, applicable: bool, note: str | None = None
     return f"Recorded {verdict} feedback for '{rid}' — chunk added to {field} ({len(examples)} total)."
 
 
-async def _read_file(path: str) -> str:
-    """Read a file's contents without blocking the event loop."""
-    loop = asyncio.get_running_loop()
-    try:
-        return await loop.run_in_executor(None, _read_file_sync, path)
-    except Exception as e:
-        return f"[error] {e}"
+# One study call chunks and embeds this many tokens (locally, FastEmbed — no
+# API cost, but real compute: ~400 chunks ≈ well under a minute, in the same
+# ballpark as a compaction mine). Bigger files are studied part by part so a
+# single call never blocks a turn for minutes.
+_STUDY_PART_TOKENS = 200_000
 
 
-def _read_file_sync(path: str) -> str:
-    """Synchronous file read, run in executor."""
+def _slugify(text: str) -> str:
+    slug = "".join(c if c.isalnum() else "-" for c in (text or "").lower())
+    return "-".join(p for p in slug.split("-") if p)[:60] or "document"
+
+
+def _looks_binary(text: str) -> bool:
+    """True for content that decoded as garbage (binary / wrong encoding)."""
+    if not text:
+        return False
+    if "\x00" in text:
+        return True
+    return text.count("�") / len(text) > 0.05
+
+
+async def _study_file(path: str, topic: str = None, part=None) -> str:
+    """Chunk one part of a file into palace room=sources (see palace.study_document)."""
+    from . import palace
     from .path_policy import assert_agent_readable
 
     p = assert_agent_readable(path)
     if not p.exists():
         return f"[error] File not found: {path}"
-    if p.stat().st_size > 500_000:
-        return f"[error] File too large ({p.stat().st_size} bytes). Use run_shell with head/tail instead."
-    return p.read_text(encoding="utf-8")
+    part = max(1, int(part or 1))
+    stride_chars = _STUDY_PART_TOKENS * CHARS_PER_TOKEN
+    size = p.stat().st_size
+    total_parts = max(1, (size + stride_chars - 1) // stride_chars)
+    with p.open("rb") as f:
+        f.seek((part - 1) * stride_chars)
+        blob = f.read(stride_chars).decode("utf-8", errors="replace")
+    if _looks_binary(blob):
+        return (
+            f"[study] {p} does not decode as readable text (binary or "
+            "non-UTF-8) — studying it would file garbage permanently. Convert "
+            "it first (e.g. pdftotext, iconv) and study the converted file."
+        )
+    hall = _slugify(topic or p.stem)
+    # Empty parts still go through: study_text runs the range purges either
+    # way, which is how a part that no longer exists (the file shrank) gets
+    # its stale chunks cleared instead of stranded.
+    count = await palace.study_document(
+        blob, source_path=str(p), hall=hall, part=part, total_parts=total_parts,
+    )
+    if not blob.strip():
+        return (
+            f"[study] part {part} of {p} is beyond the file's current end "
+            f"(≈{size // CHARS_PER_TOKEN:,} tokens, {total_parts} part(s)) — "
+            "cleared any stale chunks for that range; nothing new filed."
+        )
+    remaining = (
+        f" Parts {part + 1}–{total_parts} remain — study them on demand with "
+        f"part={part + 1}."
+        if part < total_parts else " The whole file is studied."
+    )
+    return (
+        f"[study] Filed {count} chunks (≈{len(blob) // CHARS_PER_TOKEN:,} "
+        f"tokens, part {part}/{total_parts}) of {p} into palace "
+        f"room=sources hall={hall}.{remaining} Retrieve any part by meaning: "
+        f"palace_search(query=…, search_meta={{'room': 'sources', "
+        f"'source_file': '{p}'}}); read in order via chunk_number ranges. "
+        "The palace copy is permanent. Durable rules/facts from it still go "
+        "through `learn`."
+    )
+
+
+# full_page reads still have to fit: the model's window minus its output
+# budget, with 20% slack for the system prompt and the rest of the
+# conversation (whatever older history doesn't fit gets compacted away by the
+# pre-send gate — that trade is the caller's to make by passing full_page).
+def _full_page_token_budget(model: str | None) -> int:
+    from . import model_catalog
+
+    entry = model_catalog.get(model) if model else None
+    context = getattr(entry, "context", None) or 200_000
+    max_output = getattr(entry, "max_output", None) or 8_192
+    return max(_INLINE_RESULT_MAX_TOKENS, int((context - max_output) * 0.8))
+
+
+async def _read_file(path: str, full_page: bool = False, model: str = None) -> str:
+    """Read a file's contents without blocking the event loop."""
+    loop = asyncio.get_running_loop()
+    try:
+        return await loop.run_in_executor(
+            None, _read_file_sync, path, full_page, model,
+        )
+    except Exception as e:
+        return f"[error] {e}"
+
+
+def _read_file_sync(path: str, full_page: bool = False, model: str = None) -> str:
+    """Synchronous file read, run in executor. Bounds itself (execute_tool's
+    shared bound skips read_file): the default view is head+tail at the same
+    7.5k tokens every tool gets; `full_page` raises the cap to the model's own context
+    budget. No refusal, no spill — the source is already a file the model can
+    slice with run_shell."""
+    from .path_policy import assert_agent_readable
+
+    p = assert_agent_readable(path)
+    if not p.exists():
+        return f"[error] File not found: {path}"
+    size = p.stat().st_size
+    limit_tokens = (
+        _full_page_token_budget(model) if full_page else _INLINE_RESULT_MAX_TOKENS
+    )
+    # File size in bytes ≈ chars for the text files this tool reads.
+    if size <= limit_tokens * CHARS_PER_TOKEN:
+        return p.read_text(encoding="utf-8")
+    excerpt = (limit_tokens // 2) * CHARS_PER_TOKEN
+    hint = (
+        "pass full_page=true for the whole file, or slice"
+        if not full_page
+        else "that is this model's context budget — slice the rest"
+    )
+    with p.open("rb") as f:
+        head = f.read(excerpt).decode("utf-8", errors="replace")
+        f.seek(size - excerpt)
+        tail = f.read().decode("utf-8", errors="replace")
+    return (
+        f"{head}\n\n[... file is ≈{size // CHARS_PER_TOKEN:,} tokens — "
+        f"showing the first and last ≈{limit_tokens // 2:,}. {hint} with "
+        f"run_shell (grep, sed -n 'N,Mp', head, tail) on {p} ...]\n\n"
+        f"{tail}"
+    )
 
 
 async def _write_file(path: str, content: str) -> str:

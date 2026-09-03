@@ -59,6 +59,10 @@ DEFAULT_WING = "agent"
 CONVERSATION_ROOM = "conversations"
 KNOWLEDGE_ROOM = "knowledge"
 EPISODES_ROOM = "episodes"
+# Studied documents (study_file): raw searchable chunks of reference material.
+# Like conversations — an archive, not learned memory — and excluded from the
+# wake-up digest for the same reason.
+SOURCES_ROOM = "sources"
 DEFAULT_DRAWER_ROOM = KNOWLEDGE_ROOM
 # Legacy archive channel tags that predate channel+kind naming.
 _LEGACY_ARCHIVE_KIND_PREFIXES = ("checkpoint", "compact", "max_tokens")
@@ -684,6 +688,24 @@ async def add_drawer(
         )
     except Exception as e:
         return f"[palace add] {type(e).__name__}: {e}"
+
+async def study_document(
+    text: str, *, source_path: str, hall: str, part: int = 1,
+    total_parts: int | None = None,
+) -> int:
+    """Chunk one part of a document into room=sources (see mongo_palace.study_text).
+
+    Embedding plus sync driver writes — off the event loop, like add_drawer.
+    Returns the number of chunks filed. No wake-up refresh: sources are
+    excluded from the digest by design.
+    """
+    return await asyncio.to_thread(
+        lambda: _documentdb().study_text(
+            text, source_file=source_path, hall=hall, room=SOURCES_ROOM,
+            part=part, total_parts=total_parts,
+        )
+    )
+
 
 async def wake_up() -> str:
     """Fetch a fresh wake-up snapshot (on-demand tool).

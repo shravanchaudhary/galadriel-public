@@ -86,6 +86,40 @@ def is_transient_llm_error(exc: BaseException) -> bool:
     return False
 
 
+# One request over the model's context window. Every provider phrases it
+# differently and none of it is transient — but unlike other 4xx bugs it IS
+# recoverable: compact the conversation and retry (agent._respond_locked_inner).
+# Message patterns, not exception types, because four SDKs are in play:
+# Anthropic/Bedrock ("prompt is too long", "Input is too long for requested
+# model", "input length and max_tokens exceed context limit"), OpenAI-compat
+# Mantle ("maximum context length", code context_length_exceeded), and
+# google-genai ("input token count ... exceeds the maximum number of tokens").
+_CONTEXT_OVERFLOW_RES = tuple(
+    re.compile(p, re.IGNORECASE)
+    for p in (
+        r"prompt is too long",
+        r"input is too long",
+        r"context_length_exceeded",
+        r"maximum context length",
+        r"input length and .{0,20}max_tokens.{0,20} exceed",
+        r"input token count .{0,40}exceeds",
+        r"exceeds the maximum number of tokens",
+        r"exceeds? .{0,30}context (?:window|limit|length)",
+        r"too many total text bytes",
+    )
+)
+
+
+def is_context_overflow_error(exc: BaseException) -> bool:
+    """True when the API rejected the request for exceeding the context window."""
+    if is_transient_llm_error(exc):
+        return False
+    if getattr(exc, "status_code", None) == 413 or getattr(exc, "code", None) == 413:
+        return True
+    text = str(exc)
+    return any(rx.search(text) for rx in _CONTEXT_OVERFLOW_RES)
+
+
 def _header_retry_after(exc: BaseException) -> float | None:
     response = getattr(exc, "response", None)
     if response is None:

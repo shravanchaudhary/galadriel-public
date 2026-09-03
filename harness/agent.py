@@ -48,8 +48,9 @@ from .safety import (
     classify_command, format_safety_notice, is_demonstrably_read_only,
     _simple_rm_target,
 )
-from .compaction import partition
+from .compaction import CHARS_PER_TOKEN, estimate_request_tokens, partition
 from .providers import BaseModelProvider
+from .providers.llm_retry import is_context_overflow_error
 from . import model_catalog
 from . import model_registry
 from . import conversation_store
@@ -87,6 +88,16 @@ CONSOLIDATION_TOOLS = frozenset({
     "read_episode_segment", "memory",
     "palace_search", "palace_kg_query", "palace_kg_timeline",
     "get_recall", "get_recent_recalls", "learn_recall", "tune_recall", "purge_recall",
+})
+
+# What the silent consolidation pass may actually call: its judgment tools
+# plus the same file tools every other channel has — oversized results spill
+# to artifact files (tools._bound_result), and every consumer must be able to
+# chase a stub the same way. Kept separate from CONSOLIDATION_TOOLS because
+# that set also feeds RECALL_SCAN_EXCLUDED_TOOLS, and read_file/run_shell
+# results on normal turns must stay in the recall scan corpus.
+CONSOLIDATION_TURN_TOOLS = CONSOLIDATION_TOOLS | frozenset({
+    "read_file", "run_shell",
 })
 
 # Tools whose args/results are recall/learning meta-content (example phrases,
@@ -348,6 +359,98 @@ def _recall_fire_messages(
 
 class TurnCancelled(Exception):
     """Raised when a channel turn is cancelled via request_stop()."""
+
+
+# ─── Oversized inbound input ──────────────────────────────────────────
+#
+# A pasted document larger than a fraction of the model's window would crowd
+# out (or overflow) the context in one message. It is spilled to an artifact
+# file instead: the stored message carries the path plus a head/tail excerpt,
+# and the model slices the file on demand — the same contract as oversized
+# tool results (tools.bound_tool_result), stated once in the stable system
+# prompt (memory.OVERSIZED_INPUT_STABLE_SECTION).
+
+_INPUT_INLINE_WINDOW_FRACTION = 0.20
+_INPUT_EXCERPT_TOKENS = 500
+
+# Auto-compaction may not wait past this fraction of the model window: the
+# summarizer is the channel's own model summarizing the head in place, so the
+# head plus IN_CONVERSATION_MAX_TOKENS of output must still fit the window at
+# trigger time. 85% is shravan's line (2026-09-04) — 80%+ of context condenses
+# into a ≤4k-token snapshot, so waiting longer buys nothing and risks the
+# summarize itself.
+_COMPACT_WINDOW_FRACTION = 0.85
+
+_INPUT_STUB_INSTRUCTION = (
+    "[If instructions came with this input they are inside the saved file — "
+    "find them (grep) and follow them; otherwise infer the intent from the "
+    "content and proceed.]"
+)
+
+
+def _externalize_text(text: str, limit: int) -> str | None:
+    """The stub replacing `text`, or None when it fits inline. `limit` is the
+    effective context limit in tokens (model window capped by the selected
+    compaction threshold)."""
+    est_tokens = len(text) // CHARS_PER_TOKEN
+    if est_tokens <= int(limit * _INPUT_INLINE_WINDOW_FRACTION):
+        return None
+    from .tools import spill_text
+    try:
+        path = spill_text(text, "input")
+    except Exception as e:
+        log.warning(f"Could not spill oversized input ({e}); passing it through")
+        return None
+    excerpt = _INPUT_EXCERPT_TOKENS * CHARS_PER_TOKEN
+    return (
+        f"[Attached input too large to inline: ≈{est_tokens:,} tokens against "
+        f"a {limit:,}-token context limit. Saved for ~24h to {path} — slice "
+        "it (read_file, run_shell grep/head/tail/sed), or study_file(path) "
+        "to make it permanently searchable. Head and tail excerpts:]\n\n"
+        f"{text[:excerpt]}\n\n[... middle omitted ...]\n\n{text[-excerpt:]}"
+    )
+
+
+def externalize_oversized_input(user_message, limit: int):
+    """Spill oversized text in an inbound message to artifact files.
+
+    Returns (message, spilled_count). A string message is replaced whole — a
+    Tower paste arrives as one string, prompt and documents inseparable — so
+    its stub also carries the find-the-instructions line. In a block list,
+    each oversized text block is replaced individually (images ride), and the
+    instruction block is appended only when no inline text survived to serve
+    as the prompt.
+    """
+    if limit <= 0:
+        return user_message, 0
+    if isinstance(user_message, str):
+        stub = _externalize_text(user_message, limit)
+        if stub is None:
+            return user_message, 0
+        return f"{stub}\n\n{_INPUT_STUB_INSTRUCTION}", 1
+    if not isinstance(user_message, list):
+        return user_message, 0
+    out = []
+    spilled = 0
+    inline_text_survives = False
+    for block in user_message:
+        if (
+            isinstance(block, dict)
+            and block.get("type") == "text"
+            and isinstance(block.get("text"), str)
+        ):
+            stub = _externalize_text(block["text"], limit)
+            if stub is not None:
+                out.append({**block, "text": stub})
+                spilled += 1
+                continue
+            inline_text_survives = True
+        out.append(block)
+    if not spilled:
+        return user_message, 0
+    if not inline_text_survives:
+        out.append({"type": "text", "text": _INPUT_STUB_INSTRUCTION})
+    return out, spilled
 
 
 # ─── Context-window warnings ──────────────────────────────────────────
@@ -804,8 +907,8 @@ class GaladrielAgent:
         # Best-effort provider id for cost logging (matches model_catalog's
         # provider ids even when a custom `provider` is injected).
         self.provider_name = model_registry.provider_for_model(self.model)
-        # Side tasks (chat title, compaction fallback, learn packaging, Slack
-        # reply gate) follow the main-channel model instead of pinned defaults.
+        # Side tasks (chat title, Slack reply gate) follow the main-channel
+        # model instead of pinned defaults.
         model_registry.set_active_model(self.model)
         # In-process Headroom compression (Tower toggle). Default off.
         self.headroom_enabled = tower_settings.get_headroom_enabled()
@@ -941,7 +1044,7 @@ class GaladrielAgent:
         # Log stable block metadata on startup
         stable_text = self.memory.build_stable_text()
         stable_chars = len(stable_text)
-        stable_tokens_est = stable_chars // 4  # rough estimate: 4 chars per token
+        stable_tokens_est = stable_chars // CHARS_PER_TOKEN
         log.info(
             f"Stable block loaded: {stable_chars} chars (~{stable_tokens_est} tokens). "
             f"Model {self.model} cache minimum: "
@@ -1891,7 +1994,8 @@ class GaladrielAgent:
 
         Same shape as the turn's own request so the compaction call reuses the
         prompt cache. Empty when no provider can be resolved (a managed Replika
-        with no key yet), which sends compaction to the fallback summarizer.
+        with no key yet) — compact_to_snapshot then raises, and the error
+        surfaces; there is no fallback summarizer.
         """
         channel_model = self.model_for_channel(channel_id)
         try:
@@ -1931,6 +2035,12 @@ class GaladrielAgent:
         the user wants a clean slate — summarizes the whole buffer. `full=False`
         (automatic) keeps the tail from the last real user turn verbatim, so the
         instruction in flight is never summarized out from under the model.
+
+        The snapshot always comes from the channel's own live model
+        summarizing the head in place — no fallback model exists. If that
+        head no longer fits its own window (possible only when the 85% trigger
+        was somehow overrun), the summarize fails and this raises: the error
+        is meant to surface, not be absorbed.
 
         Returns the compaction stats dict (with "compacted": bool).
         """
@@ -2604,6 +2714,27 @@ class GaladrielAgent:
         run_holder: dict | None = None,
         ephemeral: bool = False,
     ) -> str:
+        # Oversized pastes/documents become artifact files before anything —
+        # recall scan, episode summary, storage, and the API all see the stub.
+        # The 20% inline allowance is taken off the EFFECTIVE limit: the
+        # channel model's window capped by its currently selected compaction
+        # threshold — both per-model, both live-switchable, so the allowance
+        # follows every model/limit change.
+        _spill_model = self.model_for_channel(channel_id)
+        # to_thread: spilling can write megabytes to disk — not on the loop.
+        user_message, spilled_inputs = await asyncio.to_thread(
+            externalize_oversized_input,
+            user_message,
+            min(
+                _resolve_context_window(_spill_model),
+                self._runtime_for(_spill_model)["context"],
+            ),
+        )
+        if spilled_inputs:
+            log.info(
+                f"[Input spill] {spilled_inputs} oversized input block(s) "
+                f"externalized to artifact files (channel={channel_id})"
+            )
         messages = self._get_messages(channel_id)
         # Ambient episode id for any memory committed during this turn (learn /
         # propose_memory reach commit_candidate with no agent in scope). Set
@@ -2775,7 +2906,7 @@ class GaladrielAgent:
             turn_tools = [
                 {k: v for k, v in t.items() if k != "cache_control"}
                 for t in turn_tools
-                if t.get("name") in CONSOLIDATION_TOOLS
+                if t.get("name") in CONSOLIDATION_TURN_TOOLS
             ]
             if turn_tools:
                 turn_tools[-1] = {
@@ -2788,6 +2919,7 @@ class GaladrielAgent:
             ]
 
         max_tokens_retries = 0  # Track consecutive max_tokens hits
+        overflow_retried = False  # One compact-and-retry per turn on an over-window 400
         turn_thought = ""  # Accumulated thought deltas for the current API response
         # Turn-local API message list. When Headroom is ON we accumulate the
         # *compressed* bytes already sent so the provider prefix stays
@@ -2808,31 +2940,62 @@ class GaladrielAgent:
 
             # Auto-compaction, checked before every API call this turn makes:
             # the first one, each step of a tool cascade, and each retry after a
-            # truncated response. Measured input context is the only trigger —
-            # older messages fold into a snapshot while the current user turn
-            # and the work done for it stay verbatim (see compaction.partition).
+            # truncated response. Older messages fold into a snapshot while the
+            # current user turn and the work done for it stay verbatim (see
+            # compaction.partition). One effective threshold:
+            # min(user-selected limit, 85% of the model window). The 85% line
+            # exists because the summarizer is the channel's own model
+            # summarizing the head in place (no fallback model) — it needs its
+            # own output headroom, so waiting until the window is full would
+            # make the summarize itself impossible. Two ways to cross it, OR'd:
+            #   measured — the last successful call's reported usage. Accurate
+            #     but one call behind.
+            #   estimated — token estimate of what is about to be sent
+            #     (messages + system + tools). Catches the jump the measured
+            #     trigger misses.
             # Compaction only archives/mines here — never learns — so repeating
-            # it mid tool-cascade is cheap and safe. Resilient: a failure leaves
-            # the buffer intact and the turn proceeds on the full context.
-            if (
-                (not ephemeral)
-                and self._last_input_tokens.get(channel_id, 0) > runtime["context"]
-            ):
-                try:
-                    compacted = await self.compact_channel(
-                        channel_id,
-                        holding_lock=True,
-                        full=False,
+            # it mid tool-cascade is cheap and safe. A compaction FAILURE is
+            # not swallowed: with no fallback summarizer, proceeding would just
+            # re-archive and re-mine the same head on every cascade step and
+            # then die on the API anyway — the turn fails loudly with the real
+            # error instead (shravan wants these failures visible, 2026-09-04).
+            needs_compaction = False
+            if not ephemeral:
+                effective_threshold = min(
+                    runtime["context"],
+                    int(
+                        _resolve_context_window(channel_model)
+                        * _COMPACT_WINDOW_FRACTION
+                    ),
+                )
+                needs_compaction = (
+                    self._last_input_tokens.get(channel_id, 0)
+                    > effective_threshold
+                )
+                if not needs_compaction:
+                    estimated = estimate_request_tokens(
+                        messages, system_blocks, turn_tools,
                     )
-                    if compacted.get("compacted"):
-                        # Fresh snapshot block; the blocks built earlier are stale.
-                        system_blocks = self._with_overlay(
-                            self._assemble_system_blocks(channel_id), overlay_context,
+                    needs_compaction = estimated > effective_threshold
+                    if needs_compaction:
+                        log.info(
+                            f"[Compact] estimated request size ~{estimated:,} "
+                            f"tokens exceeds the effective threshold "
+                            f"{effective_threshold:,}; compacting before send"
                         )
-                        # Buffer was rebuilt — drop the compressed API prefix.
-                        api_messages = None
-                except Exception as e:
-                    log.warning(f"Compaction failed ({e}); proceeding with full context")
+            if needs_compaction:
+                compacted = await self.compact_channel(
+                    channel_id,
+                    holding_lock=True,
+                    full=False,
+                )
+                if compacted.get("compacted"):
+                    # Fresh snapshot block; the blocks built earlier are stale.
+                    system_blocks = self._with_overlay(
+                        self._assemble_system_blocks(channel_id), overlay_context,
+                    )
+                    # Buffer was rebuilt — drop the compressed API prefix.
+                    api_messages = None
 
             # Guard against empty message list
             if not messages:
@@ -2918,36 +3081,72 @@ class GaladrielAgent:
             self._silent_turn_active = is_silent_turn
             self._silent_turn = False
 
-            if emit is not None and not is_silent_turn:
-                response = None
-                async for kind, payload in provider.stream_message(
-                    model=channel_model,
-                    max_tokens=turn_max_tokens,
-                    system=system_blocks,
-                    tools=turn_tools,
-                    messages=messages_for_api,
-                    thinking=True,
-                    effort=runtime["effort"],
+            try:
+                if emit is not None and not is_silent_turn:
+                    response = None
+                    async for kind, payload in provider.stream_message(
+                        model=channel_model,
+                        max_tokens=turn_max_tokens,
+                        system=system_blocks,
+                        tools=turn_tools,
+                        messages=messages_for_api,
+                        thinking=True,
+                        effort=runtime["effort"],
+                    ):
+                        self._check_cancelled(channel_id)
+                        if kind == "thought":
+                            turn_thought += payload
+                            await emit({"type": kind, "text": payload})
+                        elif kind == "message":
+                            response = payload
+                        else:
+                            await emit({"type": kind, "text": payload})
+                else:
+                    response = await provider.create_message(
+                        model=channel_model,
+                        max_tokens=turn_max_tokens,
+                        system=system_blocks,
+                        tools=turn_tools,
+                        messages=messages_for_api,
+                        thinking=not is_silent_turn,
+                        effort=runtime["effort"],
+                    )
+                    turn_thought += _response_thought(response)
+            except Exception as exc:
+                # An over-window rejection is the one 4xx that is recoverable:
+                # compact and retry once. The user message and completed
+                # cascade steps are all still in the buffer, so the retry
+                # loses nothing. The 85% trigger makes this backstop rare;
+                # when it does fire, the summarizer works on the head only,
+                # which the trigger kept small enough to fit. If even that
+                # fails, the ORIGINAL error surfaces — no silent degradation.
+                if (
+                    ephemeral
+                    or overflow_retried
+                    or not is_context_overflow_error(exc)
                 ):
-                    self._check_cancelled(channel_id)
-                    if kind == "thought":
-                        turn_thought += payload
-                        await emit({"type": kind, "text": payload})
-                    elif kind == "message":
-                        response = payload
-                    else:
-                        await emit({"type": kind, "text": payload})
-            else:
-                response = await provider.create_message(
-                    model=channel_model,
-                    max_tokens=turn_max_tokens,
-                    system=system_blocks,
-                    tools=turn_tools,
-                    messages=messages_for_api,
-                    thinking=not is_silent_turn,
-                    effort=runtime["effort"],
+                    raise
+                overflow_retried = True
+                log.warning(
+                    f"API rejected the request as over the context window "
+                    f"({exc}); compacting and retrying once"
                 )
-                turn_thought += _response_thought(response)
+                try:
+                    compacted = await self.compact_channel(
+                        channel_id,
+                        holding_lock=True,
+                        full=False,
+                    )
+                except Exception as ce:
+                    log.warning(f"Overflow-recovery compaction failed ({ce})")
+                    raise exc from None
+                if not compacted.get("compacted"):
+                    raise
+                system_blocks = self._with_overlay(
+                    self._assemble_system_blocks(channel_id), overlay_context,
+                )
+                api_messages = None
+                continue
 
             call_duration_ms = int(
                 (datetime.now(timezone.utc) - call_started_at).total_seconds() * 1000
@@ -3154,7 +3353,7 @@ class GaladrielAgent:
 
                 log.warning(
                     f"Hit output ceiling mid-response (attempt {max_tokens_retries}/3, "
-                    f"{len(truncated_text)} chars kept, "
+                    f"≈{len(truncated_text) // CHARS_PER_TOKEN} tokens kept, "
                     f"{dropped_tools} unfinished tool call(s) dropped)"
                 )
 
@@ -3361,14 +3560,15 @@ class GaladrielAgent:
                             agent_fired_recall_ids.extend(fired_ids)
                             if scanned_text:
                                 agent_recall_scanned = scanned_text
-                    elif ephemeral and tool_name not in CONSOLIDATION_TOOLS:
+                    elif ephemeral and tool_name not in CONSOLIDATION_TURN_TOOLS:
                         result = (
                             f"[blocked] tool `{tool_name}` is not available during "
                             "the silent consolidation pass. Use propose_memory, "
                             "grade_retrieval, flag_memory, read_episode_segment, "
                             "palace_search, palace_kg_query, palace_kg_timeline, "
                             "get_recall, get_recent_recalls, learn_recall, "
-                            "tune_recall, or purge_recall."
+                            "tune_recall, purge_recall — or read_file/run_shell "
+                            "to chase a spilled artifact file."
                         )
                     else:
                         result = await execute_tool(
@@ -3377,6 +3577,7 @@ class GaladrielAgent:
                             working_dir=self.working_dir,
                             experience_manager=self.experience,
                             channel_id=channel_id,
+                            model=channel_model,
                         )
                     if ephemeral:
                         experience_snapshot = prior_experience
@@ -3418,18 +3619,13 @@ class GaladrielAgent:
 
                     # A tool may return a plain string OR a list of content
                     # blocks (text + image — e.g. browser screenshots become
-                    # vision input). Truncate text; images pass through whole.
+                    # vision input). Sizing already happened inside
+                    # execute_tool (tools._bound_result: 7,500-token cap with
+                    # spill-to-artifact; read_file self-bounded) — nothing is
+                    # cut again here.
                     if isinstance(result, str):
-                        if len(result) > 15000:
-                            result = result[:15000] + "\n...[truncated]"
                         result_display = result
                     else:
-                        result = [
-                            {**b, "text": b["text"][:15000] + "\n...[truncated]"}
-                            if b.get("type") == "text" and len(b.get("text", "")) > 15000
-                            else b
-                            for b in result
-                        ]
                         if not model_catalog.supports_vision(channel_model):
                             # Blind model: swap the pixels for a note now, so
                             # megabytes of base64 never enter stored history and

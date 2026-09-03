@@ -44,10 +44,9 @@ If you're under the floor, the API silently skips caching — no error, just
 
 *(Gemini minimums: [Google AI caching docs](https://ai.google.dev/gemini-api/docs/interactions/caching). Claude minimums: [Anthropic prompt-caching docs](https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching).)*
 
-The default harness uses **gemini-3.1-pro-preview** for the agent and
-**gemini-2.5-flash** for compaction (`harness/model_registry.py`). Both need a
-prefix above their respective floors — **4,096** for the agent, **2,048** for
-compaction.
+The default harness uses **gemini-3.1-pro-preview** for the agent
+(`harness/model_registry.py`); compaction always runs on the channel's own
+live model, so it shares the agent's floor — **4,096** for the default.
 
 The stable allowlist is intentionally small and high-signal. Detailed procedures
 and reference manuals live under `knowledge/` and are loaded on demand — adding a
@@ -172,8 +171,8 @@ so the total bill impact is substantial on either provider.
 ## Model choice and the cache minimum
 
 **Gemini 2.5 Flash** ($0.30/$2.50 per MTok) has a **2,048-token cache minimum** —
-easier to clear than the 4,096-token floor on gemini-3.1-pro-preview. It's the
-default compaction model and a good choice if you want cheaper automated turns.
+easier to clear than the 4,096-token floor on gemini-3.1-pro-preview. A good
+choice if you want cheaper automated turns.
 
 **Claude Sonnet 4.6** ($3/$15 per MTok) has a **2,048-token cache minimum** on
 Anthropic — easier to clear than Opus's 4,096, with lower base token cost.

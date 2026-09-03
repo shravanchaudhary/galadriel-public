@@ -92,7 +92,7 @@ instead? See [Quick Start](#quick-start).
 > (default — `GEMINI_API_KEY` or `GOOGLE_API_KEY`), or the
 > [Anthropic Console](https://console.anthropic.com/) if you switch back to Claude in
 > `harness/model_registry.py`. The default is **gemini-3.1-pro-preview** for the agent
-> and **gemini-2.5-flash** for compaction — see the
+> (compaction always runs on the channel's own live model) — see the
 > [cost section](#the-cost-savings-that-most-people-miss) for how prompt caching keeps
 > long-running agents affordable.
 
@@ -242,7 +242,7 @@ The stable block alone — your SOUL.md, MEMORY.md, identity files — is typica
 
 For a persistent agent that carries memory across sessions, caching also cuts latency on long prompts — the difference between a tool that feels alive and one that grinds.
 
-**Compaction** finishes the job, folding a long conversation into one compact, structured snapshot (goal, findings, work done, dead ends, current state, next steps). `/compact` folds **everything**. Automatic compaction — once a channel's measured input context crosses the threshold — folds only what came **before the last real user turn**, so the instruction being worked on and every tool result gathered for it survive verbatim. The channel's own model writes the snapshot in place, since it can see its own reasoning and reuses the prompt cache it already paid for; if that fails it falls back to **gemini-2.5-flash** (default) or **Claude Haiku** (if you switch back in `model_registry.py`) reading a rendered transcript. The verbatim history is archived to the memory palace first, so `palace_search` can recall it any time. A long, tool-heavy session collapses to a few thousand tokens for a fraction of a cent.
+**Compaction** finishes the job, folding a long conversation into one compact, structured snapshot (goal, findings, work done, dead ends, current state, next steps). `/compact` folds **everything**. Automatic compaction — once a channel's context crosses the effective threshold, min(selected limit, 85% of the model window), by measured usage or pre-send estimate — folds only what came **before the last real user turn**, so the instruction being worked on and every tool result gathered for it survive verbatim. The channel's own model writes the snapshot in place, since it can see its own reasoning and reuses the prompt cache it already paid for; there is no fallback summarizer — a failed summarize surfaces its error. The verbatim history is archived to the memory palace first, so `palace_search` can recall it any time. A long, tool-heavy session collapses to a few thousand tokens for a fraction of a cent.
 
 Use `/status` in Discord at any time to watch live token numbers — input, cache_read, cache_write, output — for the last API call.
 
@@ -253,7 +253,7 @@ Prompt caching has a **minimum prefix length** before it engages. If your stable
 | Provider | Model | Minimum to activate caching |
 |---|---|---|
 | **Gemini (default agent)** | gemini-3.1-pro-preview, gemini-3.5-flash | **4,096 tokens** (~16 KB) |
-| **Gemini (default compaction)** | gemini-2.5-flash, gemini-2.5-pro | **2,048 tokens** (~8 KB) |
+| Gemini (cheap tier) | gemini-2.5-flash, gemini-2.5-pro | **2,048 tokens** (~8 KB) |
 | Claude | Opus 4.8 · Sonnet 4.6 · Sonnet 4.5 | **1,024 tokens** (~4 KB) |
 | Claude | Opus 4.6 · Opus 4.5 · Haiku 4.5 | **4,096 tokens** (~16 KB) |
 | Claude | Opus 4.7 | **2,048 tokens** |
@@ -813,9 +813,9 @@ See `.env.example` for the full list with inline documentation.
 | `TOWER_AUTH_USERNAME` | No | Login username (default: `clyra`) |
 | `TOWER_AUTH_TOKEN` | No | Login password and legacy Bearer token |
 | `TOWER_COOKIE_SECURE` | No | Secure session cookies (`true` by default when auth is required) |
-| Model selection | — | Edit `TASKS` in `harness/model_registry.py` (default: gemini-3.1-pro-preview agent, gemini-2.5-flash compaction; copy from `BEDROCK_DEFAULTS` for Claude / open models). Every model, its price, caps, and intel score live in `harness/model_catalog.py` |
+| Model selection | — | Edit `TASKS` in `harness/model_registry.py` (default: gemini-3.1-pro-preview agent; copy from `BEDROCK_DEFAULTS` for Claude / open models). Compaction is not a task — it always runs on the channel's live model. Every model, its price, caps, and intel score live in `harness/model_catalog.py` |
 | Max output tokens | — | Not an env var. Each model's documented ceiling comes from `harness/model_catalog.py` via `MODEL_CAPS` (Gemini 3.x: 65,536; Claude 4.6+: 128,000) |
-| `AGENT_COMPACT_THRESHOLD` | No | Input tokens that trigger compaction (default: `300000`) |
+| `AGENT_COMPACT_THRESHOLD` | No | Selected compaction limit in tokens (default: `300000`). The effective trigger is min(this, 85% of the model window), by measured usage or pre-send estimate |
 | `MONGO_URI` / `MONGO_DB` | Yes | The palace lives here — drawers and the knowledge graph. No on-disk backend exists |
 | `PALACE_ARCHIVE_ROOT` | No | Where conversations are staged before mining (default: `~/.mempalace/archive`). Crash-safety only; `read_episode_segment` reads the database first |
 | `PALACE_WAKE_UP_FILE` | No | Cached wake-up snapshot path (default: `~/.mempalace/wake_up.md`) |
@@ -858,7 +858,7 @@ Operational docs above reflect this branch. Highlights:
 - **Ambient reflection:** no longer silent — each slot files to the palace, audits the worker, may pause it, and posts a brief status summary. (The 1.13 release note below describes the original silent design.)
 - **Worker lean ticks:** each worker turn resets its channel history; state is reconstructed from the board + DB + palace.
 - **Compaction mining:** archive mining during `/compact` now completes synchronously before the next task runs.
-- **Windowed compaction:** automatic compaction summarizes only the conversation *before* the last real user turn — the instruction in flight and the work gathered for it stay verbatim. Manual `/compact` still summarizes everything. Injected messages (recall-fire exchanges, truncation notices, tool results) never define the cut, and the channel's own model writes the snapshot so it can see its own reasoning, falling back to the cheap compaction model. Mid-loop and pre-turn compaction are now one code path.
+- **Windowed compaction:** automatic compaction summarizes only the conversation *before* the last real user turn — the instruction in flight and the work gathered for it stay verbatim. Manual `/compact` still summarizes everything. Injected messages (recall-fire exchanges, truncation notices, tool results) never define the cut, and the channel's own model writes the snapshot so it can see its own reasoning — there is no fallback summarizer; a failed summarize surfaces its error. Mid-loop and pre-turn compaction are now one code path.
 - **Per-model token ceilings:** output limits and context windows come from `MODEL_CAPS` (`harness/agent.py`), so Gemini 3.x gets its full 65,536 output tokens. The `AGENT_MAX_TOKENS` env var is gone — one number could never be right for every model, and a stale value silently capped every response. Hitting the output ceiling no longer deletes the truncated response or triggers compaction — the text is kept, only the unfinished tool call is dropped, and the model is asked to continue.
 - **Palace shutdown:** `palace.close()` on process exit flushes in-process vector writes so recall survives restarts.
 - **Strict approval nuance:** bare LinkedIn connection requests (no note) may be sent autonomously; message-bearing outbound still requires approval.

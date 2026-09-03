@@ -47,6 +47,38 @@ _DEFAULT_BUDGET = 16384
 # this a max_tokens equal to the budget leaves nothing to answer with.
 _MIN_REPLY_HEADROOM = 1024
 
+# Anthropic 400s outright when input + max_tokens exceeds the context window
+# ("input length and `max_tokens` exceed context limit"), so max_tokens is
+# fitted to the remaining window per call, exactly like the Mantle provider's
+# _fit_max_tokens. On the 200k/64k-output Claude models the auto-compaction
+# trigger (85% of window = 170k) sits ABOVE window − max_output (136k); without
+# this fit every turn in that band would be rejected before the trigger could
+# ever fire. A long input costs reply length (the 3-strike max_tokens retry
+# handles truncation), never a hard failure. Same margin/floor as Mantle.
+_FIT_MARGIN = 4_096
+_FIT_FLOOR = 8_192
+
+
+def _fit_max_tokens(max_tokens: int, model: str, messages, system, tools) -> int:
+    """Shrink `max_tokens` to what the model's context can still hold.
+
+    Sized with the shared request estimator (images at nominal cost, reasoning
+    counted once): pricing a base64 screenshot by length made one image in
+    history floor every reply — and the compaction snapshot — at 8k tokens.
+    """
+    from .. import model_catalog
+    from ..compaction import estimate_request_tokens
+
+    entry = model_catalog.get(model)
+    context = getattr(entry, "context", None)
+    if not context or not max_tokens:
+        return max_tokens
+    est = estimate_request_tokens(messages, system, tools)
+    room = context - est - _FIT_MARGIN
+    if room >= max_tokens:
+        return max_tokens
+    return max(_FIT_FLOOR, room)
+
 
 class BedrockAnthropicProvider(BaseModelProvider):
     def __init__(self, api_key: str = None, region: str | None = None):
@@ -86,6 +118,7 @@ class BedrockAnthropicProvider(BaseModelProvider):
     ) -> dict:
         from .. import model_catalog
 
+        max_tokens = _fit_max_tokens(max_tokens, model, messages, system, tools)
         kwargs = {
             "model": model_catalog.wire_id(model),
             "max_tokens": max_tokens,

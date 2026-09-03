@@ -61,7 +61,7 @@ def test_learning_tasks_pinned_not_following_active_model() -> None:
         assert model_registry.provider_name_for("recall_cues") == model_catalog.BEDROCK_MANTLE
         assert model_registry.task_effort("recall_cues") == "medium"
         # Followers still follow.
-        assert model_registry.model_for("compaction") == "claude-opus-4-6"
+        assert model_registry.model_for("chat_title") == "claude-opus-4-6"
     finally:
         model_registry.set_active_model(None)
 

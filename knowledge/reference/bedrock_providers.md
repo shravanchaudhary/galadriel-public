@@ -692,11 +692,12 @@ identical on a clean baseline (Mongo/PYTHONPATH/env issues, unrelated).
 
 ## 5b. Follow-up fixes landed after the integration
 
-- **Side tasks follow the live main model.** `chat_title`, the `compaction`
-  transcript fallback, `slack_reply_gate`, and `learn_packaging` used to be
-  pinned to `gemini-2.5-flash` in `model_registry.TASKS`, so a Gemini billing
-  cap 429'd chat titles while the chat itself ran fine on GLM-5. Those tasks
-  are now in `model_registry.FOLLOW_ACTIVE_MODEL`: the agent registers its
+- **Side tasks follow the live main model.** `chat_title` and
+  `slack_reply_gate` used to be pinned to `gemini-2.5-flash` in
+  `model_registry.TASKS`, so a Gemini billing cap 429'd chat titles while the
+  chat itself ran fine on GLM-5. Those tasks are now in
+  `model_registry.FOLLOW_ACTIVE_MODEL` (the compaction transcript fallback and
+  `learn_packaging` were later deleted outright): the agent registers its
   main-channel model on init and on every switch, and follower tasks resolve
   to that model and its provider at call time. The `TASKS` pins remain the
   fallback before an agent has registered. The `consequence_appraiser` already

@@ -1,15 +1,21 @@
 """Context compaction — snapshot old conversation into a compact memory block.
 
-When a channel's measured input context crosses the threshold (auto) or the user
+When a channel's context crosses the effective threshold (auto) or the user
 runs `/compact` (manual), the conversation is summarized into one structured
 snapshot. Automatic compaction summarizes only the *head*: `partition` splits at
 the last real user turn so the instruction being worked on, and everything
 gathered for it, survives verbatim. Manual `/compact` summarizes everything.
 
-The snapshot is produced by the channel's own model summarizing in place (it can
-see its own reasoning and reuses the prompt cache), falling back to the cheap
-compaction model reading a rendered transcript (default: gemini-2.5-flash;
-Anthropic fallback: claude-haiku-4-5).
+The snapshot is produced by the channel's own model summarizing in place — it
+can see its own reasoning and reuses the prompt cache the turn already paid
+for. There is deliberately NO fallback summarizer model (removed 2026-09-04,
+shravan's call): a fallback only works when its context window is at least the
+live model's, which no fixed cheap model can guarantee across the catalog. A
+failed summarize raises instead, so the real error surfaces in the UI and the
+failure mode gets seen and fixed rather than silently papered over. The
+headroom the live summarizer needs is what caps the auto-trigger at 85% of the
+window (agent._respond_locked_inner): past that, the head plus
+IN_CONVERSATION_MAX_TOKENS of output would no longer fit.
 
 This module only produces the snapshot text and decides where the cut goes. The
 agent stores the snapshot as its own system block ahead of the surviving tail
@@ -17,14 +23,17 @@ agent stores the snapshot as its own system block ahead of the surviving tail
 verbatim conversation to the palace first, so nothing is lost.
 """
 
-import json
 import logging
 
 from . import cost_tracker
-from . import model_registry
 from .providers import BaseModelProvider
 
 log = logging.getLogger("galadriel.compaction")
+
+# The unit authority: everything context-sized in this codebase deals in
+# TOKENS; one token ≈ this many characters. Convert to chars only at string
+# slicing/IO boundaries, never in limits, budgets, or messages.
+CHARS_PER_TOKEN = 4
 
 # Cap on the snapshot's own length. Large enough for a faithful structured
 # summary of a long conversation, small enough to stay a fraction of context.
@@ -55,16 +64,8 @@ _SNAPSHOT_RULES = (
     "Facts already stored via learn_recall must appear only as recall(<id>) pointers."
 )
 
-COMPRESSION_MESSAGE = (
-    "Context window limit reached. Produce a compressed memory snapshot so this task "
-    "can continue in a fresh context without losing progress.\n\n"
-    + _SNAPSHOT_STRUCTURE
-    + _SNAPSHOT_RULES
-)
-
-# Same job, asked of the model that is living the conversation rather than of a
-# separate summarizer reading a transcript. Sent as the final user message after
-# the messages being compacted, so "everything above" is literal.
+# Asked of the model that is living the conversation. Sent as the final user
+# message after the messages being compacted, so "everything above" is literal.
 IN_CONVERSATION_MESSAGE = (
     "[SYSTEM] Context window limit reached. The conversation above is about to be "
     "replaced by your summary of it — anything you leave out is gone. Later "
@@ -81,21 +82,78 @@ IN_CONVERSATION_MESSAGE = (
 SYNTHETIC_USER_KINDS = frozenset({"recall_fire", "truncation_notice"})
 
 
-def _coerce_text(value) -> str:
-    if isinstance(value, str):
-        return value
-    return str(value)
-
-
 def estimate_tokens(msg: dict) -> int:
-    """Rough size of one message. 4 chars ≈ 1 token; good enough for choosing
-    where to cut, and it deliberately counts base64 image payloads as large.
+    """Rough size of one message in tokens; good enough for choosing where to
+    cut, and it deliberately counts base64 image payloads as large.
     `_thought` counts too: the Mantle provider folds it into content on the
     wire, so ignoring it undersizes thought-heavy cascades (other providers
     get a mild overestimate, which only cuts earlier — the safe direction)."""
     return (
         len(str(msg.get("content", ""))) + len(msg.get("_thought") or "")
-    ) // 4
+    ) // CHARS_PER_TOKEN
+
+
+# Roughly what providers bill per image. `estimate_tokens` above deliberately
+# counts base64 by length — over-counting only moves the *cut* earlier — but
+# anything that decides whether to SEND or how much output fits cannot: one 5MB
+# screenshot would estimate as ~1.7M tokens and fire compaction on every call
+# (or floor max_tokens) for as long as it rode in the buffer.
+IMAGE_EST_TOKENS = 1_600
+_REASONING_BLOCKS = frozenset({"thinking", "redacted_thinking"})
+
+
+def estimate_message_tokens(msg: dict, *, with_reasoning: bool) -> int:
+    """Request-side token estimate for one message: text via CHARS_PER_TOKEN,
+    images at nominal cost, reasoning counted at most ONCE and only when asked.
+
+    Native Anthropic stores a turn's thinking twice — inline `thinking` blocks
+    (kept for signature continuity) plus the `_thought` mirror — and bills only
+    the current turn's thinking on input. Counting both, for every turn, made a
+    thinking-heavy cascade look 2x its billed size and compacted prematurely.
+    Callers pass `with_reasoning=True` for the newest assistant message only.
+    """
+    total = 0
+    has_inline_thinking = False
+    content = msg.get("content")
+    if not isinstance(content, list):
+        total += len(str(content or "")) // CHARS_PER_TOKEN
+    else:
+        for block in content:
+            if not isinstance(block, dict):
+                total += len(str(block)) // CHARS_PER_TOKEN
+                continue
+            btype = block.get("type")
+            if btype == "image":
+                total += IMAGE_EST_TOKENS
+            elif btype in _REASONING_BLOCKS:
+                has_inline_thinking = True
+                if with_reasoning:
+                    total += len(str(block)) // CHARS_PER_TOKEN
+            elif btype == "tool_result" and isinstance(block.get("content"), list):
+                for ib in block["content"]:
+                    if isinstance(ib, dict) and ib.get("type") == "image":
+                        total += IMAGE_EST_TOKENS
+                    else:
+                        total += len(str(ib)) // CHARS_PER_TOKEN
+            else:
+                total += len(str(block)) // CHARS_PER_TOKEN
+    if with_reasoning and not has_inline_thinking:
+        total += len(msg.get("_thought") or "") // CHARS_PER_TOKEN
+    return total
+
+
+def estimate_request_tokens(messages: list, system_blocks, tools) -> int:
+    """Cheap pre-send size of a whole request (messages + system + tools).
+    Deliberately rough — it exists to catch a request that would overfly the
+    window, or to size the output budget, not to bill it."""
+    last = len(messages) - 1
+    total = sum(
+        estimate_message_tokens(m, with_reasoning=(i == last))
+        for i, m in enumerate(messages)
+    )
+    total += len(str(system_blocks or "")) // CHARS_PER_TOKEN
+    total += len(str(tools or "")) // CHARS_PER_TOKEN
+    return total
 
 
 def _has_tool_result(msg: dict) -> bool:
@@ -185,63 +243,6 @@ def partition(
     return list(messages[:boundary]), list(messages[boundary:])
 
 
-def _render_transcript(messages: list) -> str:
-    """Flatten the API-format message list into a plain-text transcript for the
-    compaction model. Images are omitted; tool payloads are truncated so a huge
-    history doesn't blow up the compaction prompt (the verbatim copy lives in
-    the palace archive)."""
-    lines: list[str] = []
-    for msg in messages:
-        role = str(msg.get("role", "?")).upper()
-        content = msg.get("content")
-        # Reasoning is where plans and drafts live. Omitting it made the
-        # summarizer describe conclusions it could not see the basis for.
-        thought = (msg.get("_thought") or "").strip()
-        if thought:
-            lines.append(f"{role} [reasoning]: {thought[:4000]}")
-        if isinstance(content, str):
-            lines.append(f"{role}: {content}")
-            continue
-        if not isinstance(content, list):
-            lines.append(f"{role}: {_coerce_text(content)}")
-            continue
-        for block in content:
-            if not isinstance(block, dict):
-                lines.append(f"{role}: {_coerce_text(block)}")
-                continue
-            btype = block.get("type")
-            if btype == "text":
-                lines.append(f"{role}: {block.get('text', '')}")
-            elif btype == "tool_use":
-                try:
-                    args = json.dumps(block.get("input", {}), ensure_ascii=False)
-                except Exception:
-                    args = str(block.get("input", {}))
-                lines.append(f"{role} [tool_use {block.get('name', '?')}]: {args[:500]}")
-            elif btype == "tool_result":
-                result = block.get("content", "")
-                if isinstance(result, list):
-                    # Block-list result (text + image, e.g. screenshots) —
-                    # keep the text, omit image payloads.
-                    chunks = []
-                    for b in result:
-                        if isinstance(b, dict) and b.get("type") == "image":
-                            chunks.append("[image omitted]")
-                        elif isinstance(b, dict):
-                            chunks.append(str(b.get("text", "")))
-                        else:
-                            chunks.append(str(b))
-                    result = "\n".join(c for c in chunks if c)
-                else:
-                    result = _coerce_text(result)
-                lines.append(f"{role} [tool_result]: {result[:1000]}")
-            elif btype == "image":
-                lines.append(f"{role} [image omitted]")
-            else:
-                lines.append(f"{role} [{btype}]")
-    return "\n".join(lines)
-
-
 def _log_compaction_cost(
     response, provider: BaseModelProvider, model: str, channel_id: str,
     run_id: str | None = None,
@@ -308,8 +309,8 @@ async def _summarize_in_conversation(
 
     The messages go over as messages, not as a rendered transcript, which keeps
     reasoning blocks and their thought signatures intact and lets the request
-    reuse the prompt cache the turn already paid for. Raises on failure; the
-    caller falls back to the transcript summarizer.
+    reuse the prompt cache the turn already paid for. Raises on failure — there
+    is no fallback; the error is meant to surface.
     """
     request = list(messages)
     request.append({
@@ -331,14 +332,19 @@ async def _summarize_in_conversation(
     snapshot = _extract_text(response)
     if not snapshot:
         raise ValueError(f"{model} returned no snapshot text (in-conversation)")
+    # A snapshot cut off mid-way is a silent loss of history — the provider
+    # may have fitted max_tokens below IN_CONVERSATION_MAX_TOKENS to make the
+    # request fit. Failures surface; they are not absorbed.
+    if getattr(response, "stop_reason", None) == "max_tokens":
+        raise ValueError(
+            f"{model} hit its output limit mid-snapshot; refusing a truncated one"
+        )
     return snapshot
 
 
 async def compact_to_snapshot(
     messages: list,
     prior_snapshot: str = "",
-    api_key: str = None,
-    provider: BaseModelProvider = None,
     channel_id: str = "compaction",
     run_id: str | None = None,
     learned_recall_ids: list[str] | None = None,
@@ -349,10 +355,10 @@ async def compact_to_snapshot(
 ) -> dict:
     """Compress the given messages into one structured memory snapshot.
 
-    When `live_provider` and `live_model` are given, the channel's own model
-    summarizes the conversation in place (it can see its own reasoning, and the
-    prompt cache still applies). Any failure there falls back to the cheap
-    compaction model reading a rendered transcript.
+    The channel's own model summarizes the conversation in place — it can see
+    its own reasoning, and the prompt cache still applies. There is no
+    fallback summarizer; a failure here raises so the caller surfaces the real
+    error (see the module docstring for why).
 
     If `prior_snapshot` is given (a snapshot from an earlier compaction of the
     same channel), it is folded in so cumulative compactions never lose ground.
@@ -371,49 +377,28 @@ async def compact_to_snapshot(
             "snapshot": prior_snapshot,
             "messages_before": 0,
             "tokens_before": 0,
-            "tokens_after": len(prior_snapshot) // 4,
+            "tokens_after": len(prior_snapshot) // CHARS_PER_TOKEN,
         }
-
-    snapshot = ""
-    if live_provider is not None and live_model:
-        try:
-            snapshot = await _summarize_in_conversation(
-                messages,
-                provider=live_provider,
-                model=live_model,
-                system=live_system,
-                tools=live_tools,
-                prior_snapshot=prior_snapshot,
-                learned_recall_ids=learned_recall_ids,
-                channel_id=channel_id,
-                run_id=run_id,
-            )
-        except Exception as e:
-            log.warning(
-                f"In-conversation compaction failed ({e}); "
-                f"falling back to the transcript summarizer"
-            )
-
-    if not snapshot:
-        provider = provider or model_registry.get_provider("compaction", api_key=api_key)
-        user_parts = [COMPRESSION_MESSAGE]
-        user_parts.extend(_instruction_suffix(prior_snapshot, learned_recall_ids))
-        user_parts.append(
-            f"\n\nCONVERSATION TO COMPRESS:\n\n{_render_transcript(messages)}"
+    if live_provider is None or not live_model:
+        raise ValueError(
+            "compact_to_snapshot requires the channel's live summarizer "
+            "(live_provider + live_model); the fallback model was removed"
         )
-        model = model_registry.model_for("compaction")
-        response = await provider.create_message(
-            model=model,
-            max_tokens=SNAPSHOT_MAX_TOKENS,
-            messages=[{"role": "user", "content": "".join(user_parts)}],
-        )
-        _log_compaction_cost(response, provider, model, channel_id, run_id=run_id)
-        snapshot = _extract_text(response)
-        if not snapshot:
-            raise ValueError("compaction model returned an empty snapshot")
+
+    snapshot = await _summarize_in_conversation(
+        messages,
+        provider=live_provider,
+        model=live_model,
+        system=live_system,
+        tools=live_tools,
+        prior_snapshot=prior_snapshot,
+        learned_recall_ids=learned_recall_ids,
+        channel_id=channel_id,
+        run_id=run_id,
+    )
 
     tokens_before = sum(estimate_tokens(m) for m in messages)
-    tokens_after = len(snapshot) // 4
+    tokens_after = len(snapshot) // CHARS_PER_TOKEN
     log.info(
         f"Snapshot compaction: {len(messages)} msgs, "
         f"~{tokens_before} → ~{tokens_after} tokens"
