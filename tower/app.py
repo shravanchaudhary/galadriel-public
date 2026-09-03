@@ -1255,6 +1255,18 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
         pos_thr = recall_positive_threshold({"positive_threshold": data.get("positive_threshold")})
         # If client omitted the threshold, keep the existing value (handled below).
         has_pos_thr = "positive_threshold" in data
+        # Stage-2 fields — the judge reads only these two, so the editor owns
+        # them as well. Absent key = leave as-is; present = overwrite.
+        # The editor's boxes wrap over several lines; the judge reads one line.
+        act = data.get("activation_condition")
+        act = " ".join(act.split()) if isinstance(act, str) else None
+        excl = data.get("exclusions")
+        excl = " ".join(excl.split()) if isinstance(excl, str) else None
+        if act is not None and not act:
+            return jsonify({
+                "error": "Activation condition is required — it is the only field "
+                         "the Stage-2 judge reads.",
+            }), 400
 
         async def _update():
             config_path = Path("config/system_recalls.json")
@@ -1270,6 +1282,10 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
                         r["lexical_cues"] = lexical
                         if has_pos_thr:
                             r["positive_threshold"] = pos_thr
+                        if act is not None:
+                            r["activation_condition"] = act
+                        if excl is not None:
+                            r["exclusions"] = excl
                         normalize_recall_thresholds(r)
                         updated = True
                         break
@@ -1310,6 +1326,10 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
                 }
                 if has_pos_thr:
                     set_fields["positive_threshold"] = pos_thr
+                if act is not None:
+                    set_fields["activation_condition"] = act
+                if excl is not None:
+                    set_fields["exclusions"] = excl
 
                 await coll.update_one(
                     {"_id": ObjectId(recall_id)},

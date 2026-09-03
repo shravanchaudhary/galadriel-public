@@ -74,6 +74,11 @@
             </span>
         </div>
     </div>
+    <div id="recalls-pager" style="display: none; align-items: center; justify-content: flex-end; gap: 0.75rem; margin-top: 0.75rem;">
+        <span class="settings-row-hint" id="recalls-range" style="margin: 0;"></span>
+        <button type="button" class="btn btn-small btn-secondary" id="recalls-prev" onclick="stepRecallPage(-1)">&lsaquo; Previous</button>
+        <button type="button" class="btn btn-small btn-secondary" id="recalls-next" onclick="stepRecallPage(1)">Next &rsaquo;</button>
+    </div>
 </section>
 
 <section class="settings-section" style="margin-top: 2rem;">
@@ -112,19 +117,47 @@
 
 {% block scripts %}
 <script>
+const RECALLS_PER_PAGE = 10;
+let allRecalls = [];
+let recallPage = 0;
+
 async function loadRecalls() {
-    const list = document.getElementById('recalls-list');
     try {
         const response = await fetch('/api/recalls');
         const data = await response.json();
-        
+        allRecalls = data.recalls || [];
+        renderRecalls();
+    } catch (e) {
+        console.error(e);
+        document.getElementById('recalls-list').innerHTML = '<div class="settings-list-item"><span class="settings-list-content"><span class="settings-list-title muted" style="color:red">Error loading recalls.</span></span></div>';
+        document.getElementById('recalls-pager').style.display = 'none';
+    }
+}
+
+function stepRecallPage(delta) {
+    recallPage += delta;
+    renderRecalls();
+    document.getElementById('recalls-list').scrollIntoView({block: 'start', behavior: 'smooth'});
+}
+
+function renderRecalls() {
+    const list = document.getElementById('recalls-list');
+    const pager = document.getElementById('recalls-pager');
+    try {
         list.innerHTML = '';
-        if (data.recalls.length === 0) {
+        if (allRecalls.length === 0) {
             list.innerHTML = '<div class="settings-list-item"><span class="settings-list-content"><span class="settings-list-title muted">No recalls active.</span></span></div>';
+            pager.style.display = 'none';
             return;
         }
-        
-        for (const recall of data.recalls) {
+
+        const pageCount = Math.ceil(allRecalls.length / RECALLS_PER_PAGE);
+        // A delete can empty the page you were standing on — clamp, don't blank.
+        recallPage = Math.min(Math.max(recallPage, 0), pageCount - 1);
+        const start = recallPage * RECALLS_PER_PAGE;
+        const page = allRecalls.slice(start, start + RECALLS_PER_PAGE);
+
+        for (const recall of page) {
             const item = document.createElement('div');
             item.className = 'settings-list-item';
             item.style.alignItems = 'flex-start';
@@ -139,14 +172,6 @@ async function loadRecalls() {
             instruction.style.marginBottom = '0.25rem';
             instruction.textContent = recall.instruction;
             content.appendChild(instruction);
-            if (recall.activation_condition) {
-                const act = document.createElement('div');
-                act.className = 'muted';
-                act.style.fontSize = '0.8rem';
-                act.style.marginBottom = '0.25rem';
-                act.textContent = `when: ${recall.activation_condition}`;
-                content.appendChild(act);
-            }
             {
                 const backing = document.createElement('div');
                 backing.className = 'muted';
@@ -191,6 +216,53 @@ async function loadRecalls() {
             editForm.style.borderRadius = '6px';
             editForm.style.border = '1px solid var(--border-subtle)';
             
+            function judgeInput(title, value, placeholder) {
+                const wrap = document.createElement('label');
+                wrap.style.display = 'flex';
+                wrap.style.flexDirection = 'column';
+                wrap.style.gap = '0.25rem';
+                wrap.style.fontSize = '0.75rem';
+                wrap.style.fontWeight = '600';
+                wrap.style.textTransform = 'uppercase';
+                wrap.textContent = title;
+                const input = document.createElement('textarea');
+                input.rows = 4;
+                input.value = value;
+                input.placeholder = placeholder;
+                input.style.fontWeight = '400';
+                input.style.textTransform = 'none';
+                input.style.resize = 'vertical';
+                input.style.overflowY = 'auto';
+                input.style.lineHeight = '1.4';
+                input.style.padding = '0.35rem 0.5rem';
+                input.style.fontSize = '0.8rem';
+                input.style.background = 'var(--bg-primary)';
+                input.style.color = 'var(--text-main)';
+                input.style.border = '1px solid var(--border-color)';
+                input.style.borderRadius = '4px';
+                wrap.appendChild(input);
+                return { el: wrap, input };
+            }
+
+            const judgeRow = document.createElement('div');
+            judgeRow.style.display = 'flex';
+            judgeRow.style.flexDirection = 'column';
+            judgeRow.style.gap = '0.5rem';
+            judgeRow.style.marginBottom = '1rem';
+            const actInput = judgeInput(
+                '(when) Activation condition (Stage-2)',
+                recall.activation_condition || '',
+                'The user asks to\u2026'
+            );
+            const exclInput = judgeInput(
+                'Exclusions (Stage-2)',
+                recall.exclusions || '',
+                'Optional \u2014 lookalikes that must not fire'
+            );
+            judgeRow.appendChild(actInput.el);
+            judgeRow.appendChild(exclInput.el);
+            editForm.appendChild(judgeRow);
+
             function buildEditor(title, color, items) {
                 const container = document.createElement('div');
                 container.style.flex = '1';
@@ -334,6 +406,8 @@ async function loadRecalls() {
                             lexical_cues: lexEditor.getValues(),
                             negative_examples: negEditor.getValues(),
                             positive_threshold: parseFloat(posThrInput.input.value),
+                            activation_condition: actInput.input.value.trim(),
+                            exclusions: exclInput.input.value.trim(),
                         })
                     });
                     const data = await response.json();
@@ -363,7 +437,7 @@ async function loadRecalls() {
                 
                 const editBtn = document.createElement('button');
                 editBtn.className = 'btn btn-small btn-secondary';
-                editBtn.textContent = 'Edit Examples';
+                editBtn.textContent = 'Edit';
                 editBtn.style.marginRight = '0.25rem';
                 editBtn.onclick = () => {
                     const isEditing = editForm.style.display === 'block';
@@ -395,9 +469,16 @@ async function loadRecalls() {
             
             list.appendChild(item);
         }
+
+        document.getElementById('recalls-range').textContent =
+            `${start + 1}\u2013${start + page.length} of ${allRecalls.length}`;
+        document.getElementById('recalls-prev').disabled = recallPage === 0;
+        document.getElementById('recalls-next').disabled = recallPage >= pageCount - 1;
+        pager.style.display = 'flex';
     } catch (e) {
         console.error(e);
-        document.getElementById('recalls-list').innerHTML = '<div class="settings-list-item"><span class="settings-list-content"><span class="settings-list-title muted" style="color:red">Error loading recalls.</span></span></div>';
+        list.innerHTML = '<div class="settings-list-item"><span class="settings-list-content"><span class="settings-list-title muted" style="color:red">Error rendering recalls.</span></span></div>';
+        pager.style.display = 'none';
     }
 }
 
@@ -476,6 +557,9 @@ async function createRecall() {
         status.style.color = 'var(--success)';
         setTimeout(() => { status.style.display = 'none'; }, 3000);
 
+        // A new recall lands at the end of the list — jump there, or the
+        // create silently does nothing visible from any page but the last.
+        recallPage = Infinity;
         loadRecalls();
     } catch (e) {
         status.textContent = `Error: ${e.message}`;
