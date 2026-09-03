@@ -10,6 +10,7 @@ import os
 from flask import Blueprint, abort, redirect, render_template, request, url_for
 
 from . import ui_context as ui_ctx
+from .chats_board import filter_for_channel
 from harness import model_catalog, tower_settings
 from harness.loop_prompts import (
     DEFAULT_HEARTBEAT_PROMPT,
@@ -176,6 +177,9 @@ def _build_agent_items(scheduler, agent, today: str, worker=None) -> list[dict]:
 
     for item in loops:
         channel = item["channel"]
+        # Every loop writes ticks under its own channel, so each one has a
+        # chats filter to link to (reflection is shown as "ambient" there).
+        item["chats_kind"] = filter_for_channel(channel)
         selectable = item["id"] in _MODEL_SELECTABLE and channel in tower_settings.CONFIGURABLE_CHANNELS
         item["model_selectable"] = selectable
         if selectable and agent:

@@ -115,17 +115,18 @@
         {% endif %}
         {% endif %}
 
-        {% if item.id == 'worker' %}
-        <div class="settings-actions"><a href="/chats?kind=worker" class="btn btn-small btn-secondary">View recorded chats</a></div>
-        {% endif %}
-
-        {% if item.manual_trigger %}
+        {% if item.chats_kind or item.manual_trigger %}
         <div class="settings-actions">
+            {% if item.manual_trigger %}
             <button type="button" class="btn btn-small" id="run-morning-btn"
                     onclick="triggerMorningPlan()"
                     {% if item.manual_trigger_running %}disabled{% endif %}>
                 {{ 'Running…' if item.manual_trigger_running else item.manual_trigger_label }}
             </button>
+            {% endif %}
+            {% if item.chats_kind %}
+            <a href="/chats?kind={{ item.chats_kind }}" class="btn btn-small btn-secondary">View recorded chats</a>
+            {% endif %}
         </div>
         {% endif %}
 

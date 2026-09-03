@@ -41,7 +41,7 @@ def _storage_channel(kind: str) -> str:
     return _FILTER_TO_CHANNEL.get(kind, kind)
 
 
-def _filter_for_channel(channel_id: str) -> str:
+def filter_for_channel(channel_id: str) -> str:
     return _CHANNEL_TO_FILTER.get(channel_id or "", channel_id or "worker")
 
 BUCKET_ORDER = [
@@ -290,7 +290,7 @@ def _tick_items(ticks: list[dict]) -> list[dict]:
     items = []
     for tick in ticks:
         storage_channel = tick.get("channel_id") or "worker"
-        channel = _filter_for_channel(storage_channel)
+        channel = filter_for_channel(storage_channel)
         note = tick.get("notification") or f"{_CHANNEL_LABELS.get(channel, channel)} tick"
         started = tick.get("started_at")
         bucket = _bucket_for(started)
@@ -383,7 +383,7 @@ def _load_tick_detail(tick_id: str) -> dict | None:
     if tick is None:
         return None
     storage_channel = tick.get("channel_id") or "worker"
-    channel = _filter_for_channel(storage_channel)
+    channel = filter_for_channel(storage_channel)
     events = worker_tick_store.events_for_tick(tick_id)
     history = ui_ctx.serialize_chat_history(_events_to_messages(events))
     return {
