@@ -262,8 +262,12 @@ class WorkerLoop:
             return "idle", ""
         match = _STATUS_RE.search(text)
         status = match.group(1).lower() if match else "idle"
-        note = _STATUS_RE.sub("", text).strip()
-        return status, note
+        # Only a worked tick can have a state transition to report. Prose on an
+        # idle tick is a prompt violation, not a notification — dropping it here
+        # keeps it out of both the Discord DM and the tick's rail label.
+        if status != "worked":
+            return status, ""
+        return status, _STATUS_RE.sub("", text).strip()
 
     async def _send_to_discord(self, message: str):
         """Relay a worker notification to the authorized user via DM."""

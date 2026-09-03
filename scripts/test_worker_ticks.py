@@ -185,5 +185,29 @@ class TickListProjectionTests(unittest.TestCase):
         self.assertNotIn("system_prompt_versions", worker_tick_store._LIST_PROJECTION)
 
 
+class WorkerParseTests(unittest.TestCase):
+    def _parse(self, text):
+        return WorkerLoop._parse(None, text)
+
+    def test_idle_tick_drops_prose(self):
+        status, note = self._parse(
+            "**Board Status:** nothing actionable.\n<<WORKER_STATUS: idle>>"
+        )
+        self.assertEqual(status, "idle")
+        self.assertEqual(note, "")
+
+    def test_worked_tick_keeps_note(self):
+        status, note = self._parse(
+            "Finished the investor list.\n<<WORKER_STATUS: worked>>"
+        )
+        self.assertEqual(status, "worked")
+        self.assertEqual(note, "Finished the investor list.")
+
+    def test_missing_tag_is_idle_and_silent(self):
+        status, note = self._parse("Rambling with no tag at all.")
+        self.assertEqual(status, "idle")
+        self.assertEqual(note, "")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
