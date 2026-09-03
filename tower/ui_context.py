@@ -447,11 +447,11 @@ def palace_search(query: str, drawer_ids: list[str], *, wing=None, room=None, ha
     )
 
 
-def palace_kg(entity: str = "", fact_count: int = 0) -> dict:
+def palace_kg(q: str = "", fact_count: int = 0) -> dict:
     ctx = _ptr("palace_kg", "knowledge graph", reload=False, fact_count=fact_count)
-    if entity:
-        ctx["entity"] = entity
-        ctx["read"] = {"palace_kg_timeline": entity}
+    if q:
+        ctx["query"] = q
+        ctx["read"] = {"palace_kg_query": f"subject/predicate/object containing {q!r}"}
     return ctx
 
 

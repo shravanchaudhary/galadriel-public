@@ -31,6 +31,7 @@ sys.path.insert(0, str(ROOT))
 from harness import consolidation  # noqa: E402
 from harness import memory_access  # noqa: E402
 from harness import memory_graph  # noqa: E402
+from harness import palace  # noqa: E402
 
 
 def _run(coro):
@@ -210,7 +211,8 @@ def test_search_marks_a_retired_memory() -> None:
     with patch.object(consolidation, "shortlist_neighbours",
                       new=AsyncMock(return_value=hits)), \
          patch.object(memory_graph, "replacements",
-                      new=AsyncMock(return_value={"old": "new"})):
+                      new=AsyncMock(return_value={"old": "new"})), \
+         patch.object(palace, "kg_search", return_value=[]):
         text = _run(memory_access.find("the rule"))
     assert "REPLACED by `new`" in text
 
@@ -329,7 +331,8 @@ def test_search_returns_openable_ids_not_content() -> None:
     ]
     with patch.object(consolidation, "shortlist_neighbours",
                       new=AsyncMock(return_value=hits)), \
-         patch.object(memory_graph, "replacements", new=AsyncMock(return_value={})):
+         patch.object(memory_graph, "replacements", new=AsyncMock(return_value={})), \
+         patch.object(palace, "kg_search", return_value=[]):
         text = _run(memory_access.find("deploying"))
     assert "`m1`" in text and "`m2`" in text
     assert "memory(id=" in text
@@ -338,10 +341,45 @@ def test_search_returns_openable_ids_not_content() -> None:
 def test_search_with_no_hits_points_at_the_other_corpus() -> None:
     with patch.object(consolidation, "shortlist_neighbours",
                       new=AsyncMock(return_value=[])), \
-         patch.object(memory_graph, "replacements", new=AsyncMock(return_value={})):
+         patch.object(memory_graph, "replacements", new=AsyncMock(return_value={})), \
+         patch.object(palace, "kg_search", return_value=[]):
         text = _run(memory_access.find("nothing learned about this"))
     assert "palace_search" in text, (
         "curated memory being empty is not the same as knowing nothing"
+    )
+
+
+_KG_ROW = {"subject": "clodexa", "predicate": "north_star",
+           "object": "getting_more_meetings", "valid_from": "2026-08-20", "valid_to": None}
+
+
+def test_search_lists_live_kg_facts_even_with_no_curated_hit() -> None:
+    """A fact filed before the learn pipeline has no candidate to rank, and a
+    candidate's text is frozen at commit — the graph is the live record."""
+    with patch.object(consolidation, "shortlist_neighbours",
+                      new=AsyncMock(return_value=[])), \
+         patch.object(memory_graph, "replacements", new=AsyncMock(return_value={})), \
+         patch.object(palace, "kg_search", return_value=[_KG_ROW]) as kg:
+        text = _run(memory_access.find("north_star", limit=5))
+    kg.assert_called_once_with("north_star", 6)
+    assert "--[north_star]-> `getting_more_meetings`" in text
+    assert "[current]" in text
+    assert "Nothing has been learned" not in text, (
+        "a graph hit is knowledge; the not-learned message would be a lie"
+    )
+
+
+def test_search_appends_kg_facts_under_the_stubs_and_signposts_overflow() -> None:
+    hits = [{"memory_id": "m1", "type": "semantic", "content": "clodexa facts"}]
+    rows = [_KG_ROW, {**_KG_ROW, "predicate": "is", "object": "an agency"}]
+    with patch.object(consolidation, "shortlist_neighbours",
+                      new=AsyncMock(return_value=hits)), \
+         patch.object(memory_graph, "replacements", new=AsyncMock(return_value={})), \
+         patch.object(palace, "kg_search", return_value=rows):
+        text = _run(memory_access.find("clodexa", limit=1))
+    assert text.index("`m1`") < text.index("--[north_star]->")
+    assert "--[is]->" not in text and "palace_kg_query" in text, (
+        "past the limit, point at the narrower tool rather than truncating silently"
     )
 
 
@@ -392,6 +430,8 @@ def main() -> int:
         test_labelling_skips_a_result_with_no_ids,
         test_search_returns_openable_ids_not_content,
         test_search_with_no_hits_points_at_the_other_corpus,
+        test_search_lists_live_kg_facts_even_with_no_curated_hit,
+        test_search_appends_kg_facts_under_the_stubs_and_signposts_overflow,
         test_search_needs_something_to_search_for,
         test_inlined_ids_match_what_the_reader_shows,
     ]

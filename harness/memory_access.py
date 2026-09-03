@@ -70,28 +70,50 @@ def _body(text: str) -> str:
 
 
 async def find(query: str, limit: int = 5) -> str:
-    """Curated memories closest in meaning to `query`, as openable stubs.
+    """Curated memories closest in meaning to `query`, as openable stubs,
+    plus the knowledge-graph facts whose text contains it.
 
     Searches what was *learned*, not what was said — the raw conversation
     corpus stays with `palace_search`, which is a different question and two
     orders of magnitude bigger. Returns ids rather than content: choosing what
     to open is the point.
     """
-    from . import consolidation
+    from . import consolidation, palace
 
     query = (query or "").strip()
     if not query:
         return "[memory] give a `query` to search for, or an `id` to open."
+    n = max(1, limit)
     try:
-        hits = await consolidation.shortlist_neighbours(query, limit=max(1, limit))
+        hits = await consolidation.shortlist_neighbours(query, limit=n)
     except Exception as e:
         log.warning(f"Memory search failed: {e}")
         return f"[memory] search failed: {type(e).__name__}: {e}"
-    if not hits:
+    # A candidate's content is the text of the learn call that filed it,
+    # frozen: a fact filed before the pipeline has no candidate at all, and a
+    # retired fact's old text still ranks by meaning. The graph is the live
+    # record, so it is searched directly — substring, the same reader as the
+    # Tower KG page — and each fact carries its validity.
+    kg_rows = await asyncio.to_thread(palace.kg_search, query, n + 1)
+    if not hits and not kg_rows:
         return (
             f"No curated memory matches `{query}`. Nothing has been learned about "
             "this yet — `palace_search` covers raw conversation history instead."
         )
+    lines = []
+    if hits:
+        lines.extend(await _stub_lines(query, hits))
+    else:
+        lines.append(f"No curated memory matches `{query}` by meaning.")
+    if kg_rows:
+        lines.extend(["", f"**KG facts containing `{query}`** (live graph, substring match):", ""])
+        lines.extend(palace._fmt_triple(row) for row in kg_rows[:n])
+        if len(kg_rows) > n:
+            lines.append("- … more — narrow with `palace_kg_query(subject=…, predicate=…, object=…)`.")
+    return "\n".join(lines)
+
+
+async def _stub_lines(query: str, hits: list[dict]) -> list[str]:
     from . import memory_graph
 
     retired = await memory_graph.replacements(
@@ -113,7 +135,7 @@ async def find(query: str, limit: int = 5) -> str:
             f"- `{hit.get('memory_id')}` [{hit.get('type')}]{sim}{marker} "
             f"{_one_line(hit.get('content') or '', 160)}"
         )
-    return "\n".join(lines)
+    return lines
 
 
 _ID_IN_RESULT = re.compile(r"id=`([^`]+)`")

@@ -30,6 +30,9 @@ from . import ui_context as ui_ctx
 log = logging.getLogger("galadriel.tower.palace")
 
 PAGE_SIZE = 50
+# KG facts render as one unpaginated table; asking for one past it is what lets
+# the heading say the filter matched more than it shows.
+KG_PAGE_SIZE = 200
 
 
 def register_palace_browser(app, run_async=None):
@@ -220,13 +223,17 @@ def register_palace_browser(app, run_async=None):
 
     @bp.route("/palace/kg")
     def palace_kg():
-        entity = request.args.get("entity", "").strip()
-        timeline = palace.kg_timeline(entity) if entity else None
-        facts = palace.kg_list(limit=200)
+        q = request.args.get("q", "").strip()
+        facts = (
+            palace.kg_search(q, KG_PAGE_SIZE + 1) if q
+            else palace.kg_list(limit=KG_PAGE_SIZE)
+        )
+        truncated = bool(q) and len(facts) > KG_PAGE_SIZE
+        facts = facts[:KG_PAGE_SIZE]
         return render_template(
-            "palace/kg.html", entity=entity, timeline=timeline, facts=facts,
+            "palace/kg.html", q=q, facts=facts, truncated=truncated,
             notice=request.args.get("notice"),
-            page_context=ui_ctx.palace_kg(entity, len(facts)),
+            page_context=ui_ctx.palace_kg(q, len(facts)),
         )
 
     @bp.route("/palace/kg/edit", methods=["POST"])

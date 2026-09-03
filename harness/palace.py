@@ -750,16 +750,14 @@ def kg_query(
 ) -> str:
     """Query the KG. Any of S/P/O may be given.
 
-    Routing (KnowledgeGraph's actual API):
-    - subject → query_entity(subject, direction='outgoing')
-    - object only → query_entity(object, direction='incoming')
-    - predicate only → query_relationship(predicate)
-    - S+P or P+O → filter client-side from the first query
+    Each given field is a case-insensitive substring filter (`job_loc` finds
+    `job_location`). Exact equality stays with `kg_query_rows`, behind dedupe
+    and invalidate, where `Memorang` must not match `memorang`.
     """
     if not subject and not predicate and not object:
         return "[kg query] give at least one of subject, predicate, object."
     try:
-        rows = _documentdb().kg_query_rows(subject, predicate, object)
+        rows = _documentdb().kg_search_rows(subject=subject, predicate=predicate, object=object)
     except Exception as e:
         return f"[kg query] {type(e).__name__}: {e}"
     if not rows:
@@ -920,4 +918,16 @@ def kg_list(limit: int = 200) -> list[dict]:
         return _documentdb().kg_query_rows(limit=limit)
     except Exception as e:
         log.warning(f"KG list failed: {e}")
+        return []
+
+
+def kg_search(query: str, limit: int = 200) -> list[dict]:
+    """Tower KG browser filter: case-insensitive substring across subject,
+    predicate, and object. Replaces the timeline lookup as the page's search,
+    which only matched an exact subject or object, so a predicate like
+    `job_location` found nothing."""
+    try:
+        return _documentdb().kg_search_rows(query=query, limit=limit)
+    except Exception as e:
+        log.warning(f"KG search failed: {e}")
         return []

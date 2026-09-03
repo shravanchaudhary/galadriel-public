@@ -965,6 +965,27 @@ def kg_query_rows(
     return list(_kg().find(match, {"_id": 0}).sort("valid_from", -1).limit(limit))
 
 
+def kg_search_rows(
+    query=None, subject=None, predicate=None, object=None, limit=200,
+) -> list[dict]:
+    """Case-insensitive substring match — the search counterpart of
+    kg_query_rows, whose exact equality is what dedupe and invalidate need.
+
+    A field given here narrows that column; query matches any column.
+    """
+    def contains(text):
+        return {"$regex": re.escape(text), "$options": "i"}
+
+    match = {
+        key: contains(value) for key, value in
+        (("subject", subject), ("predicate", predicate), ("object", object))
+        if value
+    }
+    if query:
+        match["$or"] = [{key: contains(query)} for key in ("subject", "predicate", "object")]
+    return list(_kg().find(match, {"_id": 0}).sort("valid_from", -1).limit(limit))
+
+
 def kg_invalidate(subject, predicate, object, ended=None) -> str:
     """Close every open row for this triple, not just the first one found."""
     closed = _kg().update_many(

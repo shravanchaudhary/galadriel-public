@@ -94,7 +94,7 @@ Two corpora, two questions.
 
 ```python
 palace_search(query="the migration we ran", room="conversations")  # what happened
-memory(query="how do I deploy this")   # what I know -> ids + one-liners
+memory(query="how do I deploy this")   # what I know -> ids + one-liners, plus KG facts containing the text
 memory(id="4b722518")                  # open it: full text, what it rests on, what links to it
 ```
 
@@ -184,7 +184,7 @@ need an explicit `learn` call.
 | Tool | Use for |
 |---|---|
 | `palace_search(...)` | Recall by natural-language query |
-| `palace_kg_query(...)` | Look up structured facts |
+| `palace_kg_query(...)` | Look up structured facts (each field a case-insensitive substring) |
 | `palace_kg_timeline(entity)` | Full history of an entity |
 | `palace_taxonomy()` | Wings / rooms / halls with counts |
 | `palace_wake_up()` | Fresh wake-up digest on demand |

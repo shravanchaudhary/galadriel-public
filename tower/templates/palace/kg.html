@@ -8,19 +8,12 @@
 <div class="notice-banner">{{ notice }}</div>
 {% endif %}
 <form action="/palace/kg" method="get" class="settings-search">
-    <input type="text" name="entity" value="{{ entity }}" placeholder="Entity timeline lookup…" aria-label="Entity timeline lookup">
-    <button type="submit" class="composer-send" aria-label="View timeline">→</button>
+    <input type="text" name="q" value="{{ q }}" placeholder="Filter by subject, predicate, or object…" aria-label="Filter facts">
+    <button type="submit" class="composer-send" aria-label="Filter facts">→</button>
 </form>
 
-{% if timeline %}
 <section class="settings-section">
-    <h2 class="settings-section-title">Timeline — {{ entity }}</h2>
-    <pre class="runs-log">{{ timeline }}</pre>
-</section>
-{% endif %}
-
-<section class="settings-section">
-    <h2 class="settings-section-title">Facts</h2>
+    <h2 class="settings-section-title">Facts{% if q %} matching <code>{{ q }}</code> ({{ facts|length }}{% if truncated %}+, showing the first {{ facts|length }}{% endif %}){% endif %}</h2>
     {% if facts %}
     <div class="table-wrap" role="region" aria-label="Knowledge graph facts" tabindex="0">
     <table class="wf-table">
@@ -56,7 +49,7 @@
     </table>
     </div>
     {% else %}
-    <p class="settings-empty">No knowledge graph facts found.</p>
+    <p class="settings-empty">{% if q %}No facts match <code>{{ q }}</code>.{% else %}No knowledge graph facts found.{% endif %}</p>
     {% endif %}
 </section>
 {% endblock %}

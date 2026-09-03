@@ -372,7 +372,9 @@ TOOL_DEFINITIONS = [
             "I…', 'what did they say'); use this one for anything you are "
             "supposed to apply.\n"
             "  - `memory(query=...)`: find learned memories by meaning. Returns "
-            "ids and one-line summaries, not content.\n"
+            "ids and one-line summaries, not content — plus the knowledge-graph "
+            "facts whose subject, predicate, or object contains the query text, "
+            "with their validity.\n"
             "  - `memory(id=...)`: open one. Returns its full text, the "
             "memories it would be wrong without (inline), and a list of what "
             "else it links to — both what it rests on and what rests on it.\n"
@@ -1023,7 +1025,8 @@ TOOL_DEFINITIONS = [
         "name": "palace_kg_query",
         "description": (
             "Query the knowledge graph. Any combination of subject/predicate/object can be provided; "
-            "the others are wildcards. Returns current + expired facts marked with validity status."
+            "the others are wildcards. Each given value is a case-insensitive substring match, so a "
+            "partial name or predicate is enough. Returns current + expired facts marked with validity status."
         ),
         "input_schema": {
             "type": "object",

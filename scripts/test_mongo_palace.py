@@ -145,6 +145,24 @@ class MongoPalaceTests(unittest.TestCase):
         kg.update_one.assert_called_once()
         kg.update_many.assert_called_once()
 
+    def test_kg_search_rows_is_case_insensitive_substring_per_column(self):
+        # kg_query_rows is exact equality (what dedupe and invalidate need);
+        # search must not be, or a predicate like job_location is unfindable.
+        kg = MagicMock()
+        kg.find.return_value = Cursor([])
+        with patch.object(mongo_palace, "_db", return_value={mongo_palace.KG: kg}):
+            mongo_palace.kg_search_rows(predicate="job_loc")
+            mongo_palace.kg_search_rows(query="memorang")
+        by_field, any_field = [call.args[0] for call in kg.find.call_args_list]
+        self.assertEqual(by_field, {"predicate": {"$regex": "job_loc", "$options": "i"}})
+        self.assertEqual(
+            any_field,
+            {"$or": [
+                {key: {"$regex": "memorang", "$options": "i"}}
+                for key in ("subject", "predicate", "object")
+            ]},
+        )
+
 
 class PalaceFacadeTests(unittest.TestCase):
     """Collapsing the chroma/mongo branches deleted shared function tails."""
@@ -168,6 +186,20 @@ class PalaceFacadeTests(unittest.TestCase):
             out = palace.kg_timeline("nobody")
         self.assertIsInstance(out, str)
         self.assertIn("No KG history", out)
+
+    def test_kg_query_searches_by_substring_not_equality(self):
+        # The agent tool went through the exact-match reader, so it had to
+        # guess the stored string byte for byte to get anything back.
+        rows = [{"subject": "Memorang", "predicate": "job_location",
+                 "object": "Remote", "valid_from": "2026-08-17", "valid_to": None}]
+        with patch.object(palace, "_documentdb") as store:
+            store.return_value.kg_search_rows.return_value = rows
+            out = palace.kg_query(predicate="job_loc")
+        store.return_value.kg_search_rows.assert_called_once_with(
+            subject=None, predicate="job_loc", object=None,
+        )
+        store.return_value.kg_query_rows.assert_not_called()
+        self.assertIn("--[job_location]-> `Remote`", out)
 
     def test_public_palace_functions_never_fall_off_the_end(self):
         # Guard for the whole class of damage, not just kg_timeline.
