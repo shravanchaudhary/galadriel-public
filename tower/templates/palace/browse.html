@@ -1,7 +1,7 @@
 {% extends "palace/base.html" %}
 {% block title %}{{ wing }}{% endblock %}
 {% block heading %}Wing: {{ wing }}{% endblock %}
-{% block subtitle %}{{ rooms | length }} room(s){% endblock %}
+{% block subtitle %}{{ rooms | length }} room(s) · agent: <code>palace_taxonomy()</code>{% endblock %}
 
 {% block palace_content %}
 <nav class="settings-crumb"><a href="/palace">Memory</a><span class="settings-crumb-separator">/</span><span>{{ wing }}</span></nav>

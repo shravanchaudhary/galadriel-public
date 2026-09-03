@@ -33,6 +33,9 @@ PAGE_SIZE = 50
 # KG facts render as one unpaginated table; asking for one past it is what lets
 # the heading say the filter matched more than it shows.
 KG_PAGE_SIZE = 200
+# Similarity search always fills to its limit, so this is a shortlist size, not
+# a match count — a page of 50 would present the whole corpus as "matches".
+LEARNED_SHORTLIST = 10
 
 
 def register_palace_browser(app, run_async=None):
@@ -138,9 +141,13 @@ def register_palace_browser(app, run_async=None):
 
     @bp.route("/palace/learned")
     def palace_learned():
+        from harness import consolidation
+
+        q = request.args.get("q", "").strip()
+        if q:
+            return _learned_search(q)
         page = max(1, int(request.args.get("page", 1)))
         offset = (page - 1) * PAGE_SIZE
-        from harness import consolidation
         result = _await(consolidation.list_committed_memories(
             limit=PAGE_SIZE, offset=offset,
         ))
@@ -151,6 +158,36 @@ def register_palace_browser(app, run_async=None):
             page_context=ui_ctx.palace_learned(
                 [m["memory_id"] for m in result["memories"]], page=page,
             ),
+        )
+
+    def _learned_search(q: str):
+        """The page twin of `memory(query=…)`.
+
+        Deliberately the same two reads that `memory_access.find` makes, in the
+        same order — curated candidates ranked by meaning, then the live graph
+        by substring — so the tab and the tool can never disagree about what is
+        findable. It renders rows instead of markdown, which is the only
+        difference, exactly as `search_data` is the row-returning sibling of
+        `search`.
+        """
+        from harness import consolidation, memory_graph
+
+        hits = _await(consolidation.shortlist_neighbours(q, limit=LEARNED_SHORTLIST))
+        ids = [h["memory_id"] for h in hits if h.get("memory_id")]
+        replaced = _await(memory_graph.replacements(ids)) if ids else {}
+        for hit in hits:
+            # A retired rule was written to be findable; nothing else on the
+            # row says it no longer applies.
+            hit["replaced_by"] = replaced.get(hit.get("memory_id"))
+            flat = " ".join((hit.pop("content", "") or "").split())
+            hit["preview"] = flat[:200] + ("…" if len(flat) > 200 else "")
+        facts = palace.kg_search(q, KG_PAGE_SIZE + 1)
+        kg_truncated = len(facts) > KG_PAGE_SIZE
+        return render_template(
+            "palace/learned.html", q=q, hits=hits,
+            facts=facts[:KG_PAGE_SIZE], kg_truncated=kg_truncated,
+            notice=request.args.get("notice"),
+            page_context=ui_ctx.palace_learned(ids, query=q),
         )
 
     @bp.route("/palace/memory/<memory_id>")

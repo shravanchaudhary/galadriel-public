@@ -1,7 +1,7 @@
 {% extends "palace/base.html" %}
 {% block title %}{{ room or hall or wing or 'Drawers' }}{% endblock %}
 {% block heading %}{{ room or hall or 'Drawers' }}{% endblock %}
-{% block subtitle %}{{ total }} drawer{% if total != 1 %}s{% endif %}{% if wing %} in {{ wing }}{% endif %}{% endblock %}
+{% block subtitle %}{{ total }} drawer{% if total != 1 %}s{% endif %}{% if wing %} in {{ wing }}{% endif %} · agent: <code>palace_search(search_meta=…)</code>{% endblock %}
 
 {% block palace_content %}
 {% if notice %}

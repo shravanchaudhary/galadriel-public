@@ -1,7 +1,7 @@
 {% extends "palace/base.html" %}
 {% block title %}Memory {{ memory.memory_id[:8] }}{% endblock %}
 {% block heading %}Memory <code>{{ memory.memory_id[:12] }}…</code>{% endblock %}
-{% block subtitle %}{{ memory.type }}{% if memory.topic %} · {{ memory.topic }}{% endif %} · via {{ memory.source or '?' }}{% endblock %}
+{% block subtitle %}{{ memory.type }}{% if memory.topic %} · {{ memory.topic }}{% endif %} · via {{ memory.source or '?' }} · agent: <code>memory(id=…)</code>{% endblock %}
 
 {% block palace_content %}
 <nav class="settings-crumb" aria-label="Breadcrumb">

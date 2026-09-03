@@ -1,7 +1,7 @@
 {% extends "palace/base.html" %}
 {% block title %}Knowledge Graph{% endblock %}
 {% block heading %}Knowledge Graph{% endblock %}
-{% block subtitle %}Temporal subject–predicate–object facts{% endblock %}
+{% block subtitle %}Temporal subject–predicate–object facts · agent: <code>palace_kg_query(…)</code>{% endblock %}
 
 {% block palace_content %}
 {% if notice %}
@@ -40,6 +40,7 @@
                             <input type="text" name="predicate" value="{{ p }}" class="chat-input palace-filter-input">
                             <input type="text" name="object" value="{{ o }}" class="chat-input palace-filter-input">
                             <button type="submit" class="btn btn-small">Save (invalidate + refile)</button>
+                            <p class="settings-row-hint">Same pipeline as the agent's <code>learn(kg_invalidate=[old], kg_triplets=[new])</code>: the old triple is retired with its history kept, never overwritten.</p>
                         </form>
                     </details>
                 </td>

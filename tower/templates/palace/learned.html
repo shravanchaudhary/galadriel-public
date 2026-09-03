@@ -1,12 +1,17 @@
 {% extends "palace/base.html" %}
 {% block title %}Learned Memory{% endblock %}
 {% block heading %}Learned Memory{% endblock %}
-{% block subtitle %}{{ total }} committed memor{% if total != 1 %}ies{% else %}y{% endif %} — what the agent has distilled and keeps applying{% endblock %}
+{% block subtitle %}{% if q %}Results for <code>{{ q }}</code>{% else %}{{ total }} committed memor{% if total != 1 %}ies{% else %}y{% endif %} — what the agent has distilled and keeps applying{% endif %} · agent: <code>memory(query=…)</code>{% endblock %}
 
 {% block palace_content %}
 {% if notice %}
 <div class="notice-banner warn">{{ notice }}</div>
 {% endif %}
+
+<form action="/palace/learned" method="get" class="settings-search">
+    <input type="text" name="q" value="{{ q }}" placeholder="Search learned memory by meaning…" aria-label="Search learned memory">
+    <button type="submit" class="composer-send" aria-label="Search">→</button>
+</form>
 
 <details class="settings-prompt" id="teach">
     <summary>Teach a memory</summary>
@@ -26,7 +31,59 @@
     </form>
 </details>
 
-{% if memories %}
+{% if q %}
+<section class="settings-section">
+    <h2 class="settings-section-title">Closest by meaning ({{ hits | length }})</h2>
+    {% if hits %}
+    <div class="table-wrap" role="region" aria-label="Matching memories" tabindex="0">
+    <table class="wf-table">
+        <thead><tr><th scope="col">Memory</th><th scope="col">Type</th><th scope="col">Match</th><th scope="col">Status</th><th scope="col"><span class="sr-only">Open</span></th></tr></thead>
+        <tbody>
+            {% for m in hits %}
+            <tr>
+                <td>{{ m.preview }}</td>
+                <td><code>{{ m.type }}</code></td>
+                <td class="muted">{% if m.score is not none %}{{ '%.2f' | format(m.score) }}{% else %}—{% endif %}</td>
+                <td class="muted">{% if m.replaced_by %}replaced by <a href="/palace/memory/{{ m.replaced_by }}"><code>{{ m.replaced_by[:12] }}…</code></a>{% else %}current{% endif %}</td>
+                <td><a href="/palace/memory/{{ m.memory_id }}">open →</a></td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    </div>
+    <p class="settings-row-hint">A shortlist, not a filter: this list always fills to length, so read the match score — a top hit near 0.55 means nothing really matched. Same ranking the agent gets from <code>memory(query=…)</code>.</p>
+    {% else %}
+    <p class="settings-empty">No curated memory matches <code>{{ q }}</code> by meaning.</p>
+    {% endif %}
+</section>
+
+<section class="settings-section">
+    <h2 class="settings-section-title">KG facts containing <code>{{ q }}</code> ({{ facts | length }}{% if kg_truncated %}+, showing the first {{ facts | length }}{% endif %})</h2>
+    {% if facts %}
+    <div class="table-wrap" role="region" aria-label="Matching knowledge graph facts" tabindex="0">
+    <table class="wf-table">
+        <thead><tr><th scope="col">Subject</th><th scope="col">Predicate</th><th scope="col">Object</th><th scope="col">Valid From</th><th scope="col">Valid To</th></tr></thead>
+        <tbody>
+            {% for f in facts %}
+            <tr>
+                <td><code>{{ f.get('subject', '?') }}</code></td>
+                <td><code>{{ f.get('predicate', '?') }}</code></td>
+                <td><code>{{ f.get('object') or f.get('obj') or '?' }}</code></td>
+                <td class="muted">{{ f.get('valid_from') or '—' }}</td>
+                <td class="muted">{{ f.get('valid_to') or 'current' }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    </div>
+    <p class="settings-row-hint">Substring match on the live graph, filed by <code>learn(kg_triplets=…)</code> and searchable with <code>palace_kg_query(…)</code>. Edit them on the <a href="{{ url_for('palace_browser.palace_kg', q=q) }}">Knowledge Graph</a> tab.</p>
+    {% else %}
+    <p class="settings-empty">No KG fact contains <code>{{ q }}</code>.</p>
+    {% endif %}
+</section>
+
+<p class="settings-meta">Verbatim conversation history is a different corpus — search it on the <a href="{{ url_for('palace_browser.palace_search_page', q=q) }}">Search</a> tab (agent: <code>palace_search</code>).</p>
+{% elif memories %}
 <div class="table-wrap" role="region" aria-label="Committed memories" tabindex="0" style="margin-top:1rem;">
 <table class="wf-table">
     <thead><tr><th scope="col">Memory</th><th scope="col">Type</th><th scope="col">Topic</th><th scope="col">Source</th><th scope="col">Trigger</th><th scope="col"><span class="sr-only">Open</span></th></tr></thead>

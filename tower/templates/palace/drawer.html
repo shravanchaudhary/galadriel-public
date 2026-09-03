@@ -1,7 +1,7 @@
 {% extends "palace/base.html" %}
 {% block title %}Drawer{% endblock %}
 {% block heading %}Drawer{% endblock %}
-{% block subtitle %}<code>{{ drawer.id | truncate_label(36) }}</code>{% if drawer.source_file %} · {{ drawer.source_file | truncate_label(32) }}{% endif %}{% endblock %}
+{% block subtitle %}<code>{{ drawer.id | truncate_label(36) }}</code>{% if drawer.source_file %} · {{ drawer.source_file | truncate_label(32) }}{% endif %} · agent: <code>memory(id=…)</code>{% endblock %}
 
 {% block palace_content %}
 <nav class="settings-crumb">

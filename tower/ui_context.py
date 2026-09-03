@@ -455,8 +455,10 @@ def palace_kg(q: str = "", fact_count: int = 0) -> dict:
     return ctx
 
 
-def palace_learned(memory_ids: list[str], *, page: int = 1) -> dict:
-    return _ptr(
+def palace_learned(
+    memory_ids: list[str], *, page: int = 1, query: str = "",
+) -> dict:
+    ctx = _ptr(
         "palace_learned",
         "learned memory",
         reload=False,
@@ -464,6 +466,10 @@ def palace_learned(memory_ids: list[str], *, page: int = 1) -> dict:
         memory_ids=memory_ids,
         read={"memory": "memory(id=…) opens any listed id"},
     )
+    if query:
+        ctx["query"] = query
+        ctx["read"] = {"memory": f"memory(query={query!r}) is this same search"}
+    return ctx
 
 
 def palace_memory(memory_id: str, recall_id: str | None = None) -> dict:
