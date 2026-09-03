@@ -100,14 +100,16 @@ instead? See [Quick Start](#quick-start).
 
 ## 🟢 SIGNIFICANT CHANGE — 1.12: Persistent verbatim memory, at zero API cost
 
-> **Historical release note.** The *capability* below is current; the *storage* is
-> not. The palace no longer runs on the MemPalace library, ChromaDB or SQLite —
-> it is backed by MongoDB / DocumentDB with locally computed embeddings. See
+> **Historical release note.** The *capability* below is current in spirit; the
+> *storage and tool surface* are not. The palace is backed by MongoDB /
+> DocumentDB (not MemPalace/ChromaDB/SQLite), all memory writes now go through
+> the single typed `learn` pipeline (the granular palace write tools and the
+> diary were removed 2026-09-03), and only the palace *read* tools remain. See
 > [First-time setup](#first-time-setup) for how it actually works today.
 
 Galadriel just grew a memory palace. Not a vector-DB-as-a-service. Not a paid tier. A local, embedded, verbatim store of everything she has ever written — searchable by meaning, not just keywords — with **zero API tokens spent on retrieval**.
 
-The integration is built on [**MemPalace**](https://github.com/MemPalace/mempalace), an independent local-first memory library. MemPalace does the real work (storage, embeddings, knowledge graph, temporal reasoning, compression). This harness adds the wrappers that expose it to the agent as **10 new tools** (14 total, up from 4) and wires it into the lifecycle — conversations are archived before `/new` clears them, daily logs are mined at goodnight, and a compact wake-up snapshot rides in the dynamic block so she walks into every session with her own continuity.
+The integration is built on [**MemPalace**](https://github.com/MemPalace/mempalace), an independent local-first memory library. MemPalace does the real work (storage, embeddings, knowledge graph, temporal reasoning, compression). This harness adds the wrappers that expose it to the agent (today: five read tools plus the typed `learn` writer) and wires it into the lifecycle — conversations are archived before `/new` clears them, daily logs are mined at goodnight, and a compact wake-up snapshot rides in the dynamic block so she walks into every session with her own continuity.
 
 **Why this is the headline change:**
 
@@ -117,7 +119,7 @@ The integration is built on [**MemPalace**](https://github.com/MemPalace/mempala
 | Recall of facts older than today meant grepping daily logs | Semantic search across every config, log, and archived conversation |
 | "What did we decide about X?" drained API budget (big context re-reads) | **Zero tokens** — all retrieval runs locally in ChromaDB + SQLite |
 | No structured facts — everything was prose | Knowledge graph with temporal triples: `subject --[predicate]--> object`, with validity windows |
-| No sense of self across sessions | Diary in her own voice; L0 wake-up snapshot injected into every turn |
+| No sense of self across sessions | Episodic narrative in her own voice (`room=episodes`); wake-up snapshot injected into every turn |
 
 **Measured impact (14 consecutive API calls on a deployed instance):**
 
@@ -129,9 +131,9 @@ The integration is built on [**MemPalace**](https://github.com/MemPalace/mempala
 | Palace lookup cost for a 5-hop KG timeline | **0 tokens** — SQLite traversal runs locally |
 | Estimated annual overhead of the integration | **~$95/year** (additional) |
 | Drawers indexed on a real deployment | **706** across 7 rooms + 8 halls |
-| Tools added | **10** (palace_search, palace_add_drawer, palace_wake_up, palace_taxonomy, palace_kg_add/query/invalidate/timeline, palace_diary_write/read) |
+| Tools added | palace_search, palace_wake_up, palace_taxonomy, palace_kg_query/timeline (reads; all writes go through the typed `learn` pipeline) |
 
-The 90% cache-read discount remains intact. Adding MemPalace costs ~1.5 percentage points of cache hit ratio (10 extra tool schemas in the tools-layer cache + a ~800-token wake-up snapshot in the dynamic block) and the rest is measured, bounded, and dial-backable (`PALACE_WAKE_UP_INJECT=0`).
+The 90% cache-read discount remains intact. Adding the palace costs ~1.5 percentage points of cache hit ratio (the extra tool schemas in the tools-layer cache + a ~800-token wake-up snapshot in the dynamic block) and the rest is measured, bounded, and dial-backable (`PALACE_WAKE_UP_INJECT=0`).
 
 **What this means in practice:**
 
@@ -150,13 +152,11 @@ MemPalace organizes memory the way a human would organize a library, and the age
 | Metaphor | What it is | Example |
 |---|---|---|
 | **Drawer** | A single chunk of content — the atomic unit. ~200–1000 tokens, a verbatim slice of something the agent (or you) wrote. | One paragraph of a daily log. One decision note. One archived Discord exchange. |
-| **Room** | A purpose grouping inside the `agent` wing. Every drawer belongs to exactly one room. | `conversations` (verbatim chat), `knowledge` (durable facts), `episodes` (daily recaps), `diary` (first-person reflection). |
+| **Room** | A purpose grouping inside the `agent` wing. Every drawer belongs to exactly one room. | `conversations` (verbatim chat), `knowledge` (durable facts), `procedures` (how-tos), `episodes` (day recaps and narratives), `preferences` (how to behave). |
 | **Wing** | The top-level namespace. Lived memory uses one wing only. | `wing=agent` |
 | **Hall** | The sub-grouping inside a room (not a project ID). In `room=conversations` it is the **speaker**, set by the archiver. | `hall=user`, `hall=assistant`; in other rooms, topic labels like `hall=clodexa-tech`. |
 
 Why this matters: **rooms** let you say *"look only at chat archives"* or *"only durable knowledge"*, **halls** let you say *"look only at what the user actually said"*, and you can compose both. A search like `palace_search("retry logic", room="conversations", hall="user", k=10)` reads as "find where the user raised retry logic" — which is exactly how a human would ask a librarian.
-
-The agent's **diary** is a room inside the same `agent` wing — her own journal, written at end-of-session, read at wake-up. Her own voice to her future self, not mixed with operational logs.
 
 The **knowledge graph** sits alongside the drawers. Where drawers are prose, the KG is relational: `gemini-3.1-pro-preview --[supports]--> implicit_caching` with `valid_from=2026-03-01`. When a fact changes you don't delete the old triple, you invalidate it. History is preserved; the timeline is queryable.
 
@@ -173,8 +173,8 @@ pip install -r requirements.txt
 # first write; there is no init step and nothing on disk to seed.
 ```
 
-Lived memory is filed by the harness (conversation archives, `palace_add_drawer`,
-diary). The repo is never mined into the palace.
+Lived memory is filed by the harness (conversation archives) and the typed
+`learn` pipeline. The repo is never mined into the palace.
 
 That's it. The harness picks it up automatically on next start. `palace_search` works as soon as drawers exist; the wake-up snapshot appears after the first mine.
 
@@ -204,9 +204,10 @@ python main.py --no-palace
 GALADRIEL_NO_PALACE=1 python main.py
 ```
 
-In this mode the harness **withholds all ten memory-palace tools** from the
+In this mode the harness **withholds every memory tool** (the five palace reads
+plus `memory`, `learn`, and `propose_memory`) from the
 advertised tool set — the agent isn't merely discouraged from recalling, it is
-not *offered* the means to. (A stray palace call, if one slips through, returns a
+not *offered* the means to, and it cannot write memory either. (A stray palace call, if one slips through, returns a
 clear stateless message rather than touching disk.) Everything else runs
 normally: shell, file read/write, the daily log, Discord, the Tower. Only
 cross-session memory is suppressed.
@@ -233,7 +234,7 @@ Galadriel exploits this with a provider-specific caching strategy:
 
 | Cache layer | What it covers | Behaviour |
 |---|---|---|
-| **Tool definitions** | All 14 tool schemas (4 core + 10 palace) | Cached once at startup, never re-sent |
+| **Tool definitions** | Every tool schema (core + db + palace + browser) | Cached once at startup, never re-sent |
 | **Stable system block** | Personality + memory + identity files | Hits at ~100% after first call |
 | **Trailing message history** | The growing conversation | Cache hit rate rises every turn |
 
@@ -265,7 +266,7 @@ agent. Detailed procedures and project reference live under `knowledge/` and loa
 on demand via `knowledge/INDEX.md` — they are **not** auto-injected into L1.
 
 **The simple rule:** stable core → deterministic file index (`knowledge/INDEX.md`)
-→ MemPalace detail (`room=knowledge` / `episodes` / `conversations` / `diary`).
+→ MemPalace detail (`room=knowledge` / `procedures` / `episodes` / `conversations` / `preferences`).
 
 Once you're over the threshold, verify it's working:
 
@@ -307,7 +308,7 @@ These aren't abstract ideals — they are mechanically enforced via the `CLAUDE.
 - **Discord gateway** — DMs, channel mentions, or a dedicated channel; gated by user ID
 - **Slack gateway** — a shared team channel (`SLACK_CHANNEL_ID`) where any member can talk/read, while mutating tools and approvals are restricted to the owner/installer and configured Slack admins (see [Slack](#slack))
 - **Web UI (Tower)** — local chat interface and dashboard at `localhost:8080`, plus generic workflow screens (table, kanban, detail/timeline, approval inbox, run log)
-- **Tool use** — shell execution, file read/write, memory logging, a headed browser driver, web search + fast page fetch, TOTP 2FA, **7 `db_*` workflow primitives** (the agent's only path to MongoDB — they enforce a per-workflow spec's state machine + audit trail), and 10 [MemPalace](https://github.com/MemPalace/mempalace) tools (semantic search, knowledge graph, diary, taxonomy); all async, non-blocking
+- **Tool use** — shell execution, file read/write, memory logging, a headed browser driver, web search + fast page fetch, TOTP 2FA, **7 `db_*` workflow primitives** (the agent's only path to MongoDB — they enforce a per-workflow spec's state machine + audit trail), and the [MemPalace](https://github.com/MemPalace/mempalace)-derived memory tools (semantic search, knowledge-graph reads, taxonomy, wake-up — writes go through the typed `learn` pipeline); all async, non-blocking
 - **Structured workflows (mini-app generator)** — declarative `workflows/*.json` specs define entities and their state machines; the `db_*` primitives enforce them (legal transitions only, dedup, auto history) and the Tower screens auto-render live MongoDB state. The agent designs a workflow with you in chat, then operates it — no freestyle DB scripting
 - **Persistent verbatim memory** — local MemPalace integration with wings/rooms/halls/drawers, zero-token retrieval, archive-before-clear on `/new`, goodnight mine of daily logs, wake-up snapshot in the dynamic block
 - **Semantic recalls (two-stage)** — reactive mid-turn pointers (`learn_recall` / `get_recall` / `get_recent_recalls`). Stage-1 proposes via embed floor + lexical cues; Stage-2 verifies intent with a batched judge-model entailment call before inject. See [Semantic recalls](#semantic-recalls--reactive-mid-turn-pointers)
@@ -462,10 +463,10 @@ harness/
   agent.py                Core agent loop: LLM API (Gemini default), tool use, cache management
   memory.py               Stable + dynamic system prompt blocks; daily memory logs
   recall.py               Two-stage semantic recalls (Stage-1 embed/lexical + Stage-2 judge verify)
-  tools.py                Tool defs + dispatch: run_shell, wait, read/write_file, browser, web, 7 db_*, 10 palace_*, learn_recall*
+  tools.py                Tool defs + dispatch: run_shell, wait, read/write_file, browser, web, 7 db_*, 5 palace_* reads, learn, memory, recall tools
   db_ops.py               DB primitives — the agent's only MongoDB path (enforces the workflow spec)
   workflows.py            Workflow spec loader / entity registry (reads workflows/*.json)
-  palace.py               MemPalace wrapper: search, archive, wake-up, KG, diary, taxonomy
+  palace.py               MemPalace wrapper: search, archive, wake-up, KG, taxonomy
   safety.py               Command classification (green / yellow / red); blocks freestyle DB access
   compaction.py           Snapshot compaction + the head/tail cut (archives to palace first)
   model_registry.py       Task → (provider, model) — single source of truth for model selection
@@ -503,7 +504,7 @@ memory/                   Daily logs — auto-generated, gitignored (hot dynamic
 
 ### Semantic recalls — reactive mid-turn pointers
 
-Palace search is **pull** (the model decides to look something up). Semantic recalls are **push**: when conversation text matches a recall's cues, the harness injects a synthetic `recall()` tool exchange — a fabricated assistant tool call plus a tool result carrying the fire text (both `kind=recall_fire`) — so the main model can act on a one-liner pointer (usually to a palace room, knowledge file, or board path). The stable prompt block documents the contract: fires are ignorable hints, never justify side-effectful actions on their own, and the agent grades them with `tune_recall`.
+Palace search is **pull** (the model decides to look something up). Semantic recalls are **push**: when conversation text matches a recall's cues, the harness injects a synthetic `recall()` tool exchange — a fabricated assistant tool call plus a tool result carrying the fire text (both `kind=recall_fire`) — so the main model can act on a one-liner pointer (usually to a palace room, knowledge file, or board path). The stable prompt block documents the contract: fires are ignorable hints and never justify side-effectful actions on their own; fire feedback happens in the consolidation passes (`tune_recall` is consolidation-only), which read the fire telemetry directly.
 
 | Stage | What runs | Role |
 |---|---|---|
@@ -694,7 +695,7 @@ crash mid-flight re-arms it rather than losing it. A wake is never silently lost
 # Arm a wake (fires once, ~8s after the next start)
 curl -s -X POST http://localhost:8080/api/scheduler/wake \
   -H 'Content-Type: application/json' \
-  -d '{"prompt": "[SYSTEM:WAKE] Resume the task you restarted for. Recover context from your diary + palace, finish, then sign off."}'
+  -d '{"prompt": "[SYSTEM:WAKE] Resume the task you restarted for. Recover context from the palace, finish, then sign off."}'
 
 # Disarm
 curl -s -X POST http://localhost:8080/api/scheduler/wake \
@@ -715,8 +716,9 @@ At a workday cadence (11:00, 14:00, 17:00, 20:00 CET by default), the scheduler
 fires a reflection turn. The agent is prompted to take stock — *What is the
 state of the work? What did I notice that I haven't recorded? Is there an open
 question worth keeping, a pattern worth naming, a fact that has changed?* — and
-to **file anything worth keeping to the memory palace** (a drawer, a
-knowledge-graph fact, a diary entry).
+to **file anything worth keeping to the memory palace** through the typed
+pipeline (`propose_memory`: a durable fact, a knowledge-graph change, an
+episodic narrative).
 
 It also **audits the background worker** against the job cookbooks and
 `config/GUARDRAILS.md`: reconciles today's progress file (`state/progress/`,
@@ -737,7 +739,7 @@ goodnight. The intended trajectory:
 
 1. **Now:** palace filing + worker audit on a fixed cadence — recording what would
    otherwise be lost between turns, and steering the background worker when it drifts.
-2. **Next:** reflection that reads its own recent diary + open-questions and
+2. **Next:** reflection that reads its own recent episodes + open-questions and
    *threads* across ticks, so a thought begun at 11:00 can be picked up at 14:00
    rather than starting fresh each time.
 3. **Later:** the agent deciding *when* it has something worth reflecting on,
@@ -814,7 +816,7 @@ See `.env.example` for the full list with inline documentation.
 | Model selection | — | Edit `TASKS` in `harness/model_registry.py` (default: gemini-3.1-pro-preview agent, gemini-2.5-flash compaction; copy from `BEDROCK_DEFAULTS` for Claude / open models). Every model, its price, caps, and intel score live in `harness/model_catalog.py` |
 | Max output tokens | — | Not an env var. Each model's documented ceiling comes from `harness/model_catalog.py` via `MODEL_CAPS` (Gemini 3.x: 65,536; Claude 4.6+: 128,000) |
 | `AGENT_COMPACT_THRESHOLD` | No | Input tokens that trigger compaction (default: `300000`) |
-| `MONGO_URI` / `MONGO_DB` | Yes | The palace lives here — drawers, knowledge graph, diary. No on-disk backend exists |
+| `MONGO_URI` / `MONGO_DB` | Yes | The palace lives here — drawers and the knowledge graph. No on-disk backend exists |
 | `PALACE_ARCHIVE_ROOT` | No | Where conversations are staged before mining (default: `~/.mempalace/archive`). Crash-safety only; `read_episode_segment` reads the database first |
 | `PALACE_WAKE_UP_FILE` | No | Cached wake-up snapshot path (default: `~/.mempalace/wake_up.md`) |
 | `PALACE_WAKE_UP_INJECT` | No | Set to `0` to disable injection of the wake-up snapshot into the dynamic system-prompt block (default: `1` — enabled) |

@@ -102,12 +102,13 @@ def test_repository_stable_core_stays_minimal() -> None:
 
     # The neutral product base must remain useful but must not regain a copied
     # tenant persona merely to cross a provider-specific prompt-cache floor.
-    # The ceiling covers the config files plus the two code-owned architecture
-    # sections (RECALL_STABLE_SECTION, PALACE_STABLE_SECTION) — raised from
-    # 12k when the palace conversation schema was added, which is mechanism the
-    # agent cannot infer and must not re-learn per turn. It is a persona guard,
-    # not a cap on documenting the harness.
-    assert 4_000 <= len(stable) <= 14_000, len(stable)
+    # The ceiling covers the config files plus the code-owned architecture
+    # sections (RECALL_STABLE_SECTION, PALACE_STABLE_SECTION,
+    # OVERSIZED_INPUT_STABLE_SECTION) — raised from 12k for the palace
+    # conversation schema and from 14k for the oversized-input contract, both
+    # mechanism the agent cannot infer and must not re-learn per turn. It is a
+    # persona guard, not a cap on documenting the harness.
+    assert 4_000 <= len(stable) <= 16_000, len(stable)
     for name in STABLE_FILES:
         assert (ROOT / "config" / name).read_text(encoding="utf-8") in stable
     # Non-allowlisted reference material must stay out of the stable prompt.
@@ -168,7 +169,9 @@ def test_add_drawer_defaults_to_knowledge_room() -> None:
     assert palace.DEFAULT_DRAWER_ROOM == "knowledge"
     assert palace.CONVERSATION_ROOM == "conversations"
     assert palace.EPISODES_ROOM == "episodes"
-    assert palace.DIARY_ROOM == "diary"
+    # The diary room was deleted with its tools (2026-09-03): zero drawers were
+    # ever written, and reflections belong in room=episodes via learn(episodic).
+    assert not hasattr(palace, "DIARY_ROOM")
 
 
 def test_archive_channel_kind_naming_and_legacy_match() -> None:

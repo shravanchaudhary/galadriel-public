@@ -446,13 +446,35 @@ def palace_kg(entity: str = "", fact_count: int = 0) -> dict:
     return ctx
 
 
-def palace_diary(drawer_ids: list[str], *, page: int = 1) -> dict:
+def palace_learned(memory_ids: list[str], *, page: int = 1) -> dict:
     return _ptr(
-        "palace_diary",
-        "diary",
+        "palace_learned",
+        "learned memory",
         reload=False,
         page=page,
-        drawer_ids=drawer_ids,
+        memory_ids=memory_ids,
+        read={"memory": "memory(id=…) opens any listed id"},
+    )
+
+
+def palace_memory(memory_id: str, recall_id: str | None = None) -> dict:
+    ctx = _ptr(
+        "palace_memory",
+        memory_id,
+        memory_id=memory_id,
+        read={"memory": memory_id},
+    )
+    if recall_id:
+        ctx["recall_id"] = recall_id
+    return ctx
+
+
+def palace_daily(dates: list[str]) -> dict:
+    return _ptr(
+        "palace_daily",
+        "daily logs",
+        reload=False,
+        dates=dates,
     )
 
 

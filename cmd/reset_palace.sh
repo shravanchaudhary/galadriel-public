@@ -7,7 +7,7 @@
 #
 # The palace lives in MongoDB / DocumentDB, not on disk. This drops those
 # collections outright:
-#   palace_drawers           all memory: conversations, knowledge, diary
+#   palace_drawers           all memory: conversations, knowledge, procedures, episodes, preferences
 #   palace_knowledge_graph   every KG triple
 #   palace_chunk_counters    per-conversation chunk numbering
 #   palace_archive_cursors   per-channel archive position

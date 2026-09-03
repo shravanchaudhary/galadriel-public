@@ -100,7 +100,7 @@ blocks without it are appended to the tail of `contents` so they don't bust the 
 
 - `knowledge/INDEX.md` → procedures / skills / reference files, loaded via
   `read_file` when a semantic recall or known procedure needs them.
-- MemPalace `agent` wing rooms: `conversations`, `knowledge`, `episodes`, `diary`.
+- MemPalace `agent` wing rooms: `conversations`, `knowledge`, `procedures`, `episodes`, `preferences`.
 
 ### `harness/agent.py` (Anthropic path)
 

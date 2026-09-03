@@ -69,7 +69,7 @@ the first two tiers automatically; the palace you query on demand.
 | **L2 — dynamic block** | Yesterday + today's daily logs, wake-up snapshot, timestamp, active-project banner | system prompt, rebuilt each call | not cached, small | Recent context; what happened today |
 | **Shared experiential workspace** | Bounded interoceptive state + most salient change | agent-owned dynamic block, every stream in `influence` mode | not cached, small | Causal attention, calibration, continuity, and reflection |
 | **L2.5 — file knowledge** | `knowledge/INDEX.md` → procedures / skills / reference | `read_file` on demand | tokens only when loaded | Known procedures and deep reference |
-| **L3a — conversation memory** | Verbatim drawers: what was said and done | `palace_search` / `palace_diary_*` | **0 tokens**, local | What happened, when, in whose exact words |
+| **L3a — conversation memory** | Verbatim drawers: what was said and done | `palace_search` | **0 tokens**, local | What happened, when, in whose exact words |
 | **L3b — learned memory** | Curated memories + their typed links | `memory` / `palace_kg_*` | **0 tokens**, local | What you know and are supposed to apply |
 
 **Daily logs are an INDEX, not the record.** The `memory/*.md` files (and their L2
@@ -84,13 +84,13 @@ it** — never grep `memory/*.md` expecting the full message.
 They answer different questions, and asking the wrong one is the common mistake.
 
 **Conversation memory** is the verbatim record — every message, archived session
-by session, plus daily recaps and diary. It is *episodic*: it tells you what
+by session, plus day recaps. It is *episodic*: it tells you what
 happened and when. Reach for it when the question is about the past.
 
 > "Did I ever run that migration?" · "What were their exact words?" ·
 > "What did we decide last Tuesday?"
 
-`palace_search`. Rooms `conversations`, `episodes`, `diary`.
+`palace_search`. Rooms `conversations`, `episodes`.
 
 **Learned memory** is what was distilled *out* of those conversations and kept
 because it should change how you act later — rules, procedures, durable facts,
@@ -147,9 +147,9 @@ An agent-initiated `recall()` call scans the current pause early; the pause-end
 auto-scan dedupes against it.
 
 Package durable content with the unified `learn` tool, picking `type` yourself
-(`semantic` / `procedural` / `preference`). The *trigger* — `learn_recall`,
-`tune_recall`, `purge_recall` — belongs to the consolidation passes, which work
-from fire telemetry spanning episodes. Audit with `get_recent_recalls` (proposed
+(`semantic` / `procedural` / `preference` / `episodic`). The *trigger* —
+`learn_recall`, `tune_recall`, `purge_recall` — belongs to the consolidation
+passes, which work from fire telemetry spanning episodes. Audit with `get_recent_recalls` (proposed
 vs verified). System recall instructions are immutable; cues may be tuned.
 
 ### 1c. Memory graph (what comes with a memory)
@@ -251,7 +251,7 @@ When you need real depth on a topic, build a knowledge base, then mine it:
 4. **To update later:** edit/add files in `sme/` and refresh the corresponding palace drawer when a fact should be recallable by meaning.
 
 Do **not** mine the whole product image into the palace. Lived memory is
-conversations / knowledge / episodes / diary only.
+conversations / knowledge / procedures / episodes / preferences only.
 
 ### 5. Background jobs — your worker hat
 

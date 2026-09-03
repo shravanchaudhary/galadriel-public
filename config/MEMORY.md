@@ -18,5 +18,6 @@ turns. It starts neutral for every new tenant.
 ## Maintaining this file
 
 Update it when an enduring user preference, standing authorization, or high-value
-memory becomes useful on most turns. Keep it short. Put episodic history in daily
-logs or the memory palace and operational work in `state/`.
+memory becomes useful on most turns. Keep it short. Anything durable belongs in
+the palace via `learn` (daily logs decay after two days); operational work goes
+in `state/`.

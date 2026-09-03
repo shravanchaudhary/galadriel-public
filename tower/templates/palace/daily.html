@@ -1,0 +1,23 @@
+{% extends "palace/base.html" %}
+{% block title %}Daily Logs{% endblock %}
+{% block heading %}Daily Logs{% endblock %}
+{% block subtitle %}The ~48-hour working-memory index — not durable storage{% endblock %}
+
+{% block palace_content %}
+<p class="settings-meta">Only <strong>today and yesterday</strong> are injected into the
+agent's context; older files below are visible to you but not to the agent.
+Durable narrative lives in <code>room=episodes</code> (goodnight files a
+<code>daily-recap</code> there via <code>learn</code>); the verbatim transcript
+is archived in <code>room=conversations</code>.</p>
+
+{% if logs %}
+{% for log in logs %}
+<details class="settings-prompt" {% if log.date in injected_dates %}open{% endif %}>
+    <summary>{{ log.date }}{% if log.date in injected_dates %} <span class="muted">(injected)</span>{% endif %}</summary>
+    <pre style="white-space:pre-wrap;">{{ log.text }}</pre>
+</details>
+{% endfor %}
+{% else %}
+<p class="settings-empty">No daily logs yet.</p>
+{% endif %}
+{% endblock %}

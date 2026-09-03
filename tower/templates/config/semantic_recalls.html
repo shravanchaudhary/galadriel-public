@@ -55,7 +55,7 @@
                     <input type="text" id="new-recall-activation" placeholder="Activation condition — e.g. The user asks for a report on a repeating schedule" autocomplete="off" style="width: 100%;">
                     <input type="text" id="new-recall-exclusions" placeholder="Exclusions (optional) — lookalikes that must not fire, e.g. one-off reminders" autocomplete="off" style="width: 100%;">
                     <label style="display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.75rem; font-weight: 600; color: var(--danger); text-transform: uppercase;">
-                        Negatives — local tier only
+                        Negatives — Stage-2 judge misfires
                         <textarea id="new-recall-negatives" rows="2" style="font-weight: 400; text-transform: none; width: 100%; padding: 0.4rem 0.5rem; font-size: 0.85rem; background: var(--bg-primary); color: var(--text-main); border: 1px solid var(--border-color); border-radius: 4px;" placeholder="Optional — misfires also accumulate automatically via tune_recall"></textarea>
                     </label>
                 </div>
@@ -146,6 +146,18 @@ async function loadRecalls() {
                 act.style.marginBottom = '0.25rem';
                 act.textContent = `when: ${recall.activation_condition}`;
                 content.appendChild(act);
+            }
+            {
+                const backing = document.createElement('div');
+                backing.className = 'muted';
+                backing.style.fontSize = '0.8rem';
+                backing.style.marginBottom = '0.25rem';
+                if (recall.memory_id) {
+                    backing.innerHTML = `backs memory <a href="/palace/memory/${recall.memory_id}"><code>${recall.memory_id.slice(0, 12)}…</code></a>`;
+                } else {
+                    backing.textContent = 'self-contained rule — no backing memory';
+                }
+                content.appendChild(backing);
             }
             
             const examplesDiv = document.createElement('div');

@@ -52,7 +52,7 @@ STATS_COLLECTION = "memory_stats"
 # retention long before a week of behaviour can be judged from it.
 MAINTENANCE_COLLECTION = "memory_maintenance"
 
-MEMORY_TYPES = ("semantic", "procedural", "preference")
+MEMORY_TYPES = ("semantic", "procedural", "preference", "episodic")
 
 # Ambient episode id for commits. The tool layer (learn / propose_memory) has
 # no agent reference, so the agent sets this at turn entry and every commit in
@@ -83,8 +83,11 @@ _MIN_GRADED_FOR_BIN = 5
 # Memory types that earn a retrieval trigger on commit. A stored memory with
 # no trigger is inert — reachable only when the agent happens to search for it
 # — so every durable type gets one. Kept as an explicit set rather than
-# "everything", because episodic conversation mining also lands in the palace
-# and must never spawn triggers for ordinary chat archives.
+# "everything", because episodic content also lands in the palace and must
+# never spawn triggers: this gate covers BOTH post-commit passes (trigger
+# generation and edge classification), so `type=episodic` memories get
+# neither — they stay reachable as edge *targets* via the shortlist, which
+# spans every type.
 RECALL_ELIGIBLE_TYPES = frozenset({"semantic", "procedural", "preference"})
 
 
@@ -254,8 +257,10 @@ async def commit_candidate(
     type: str,
     content: str = "",
     kg_triplets: list | None = None,
+    kg_invalidate: list | None = None,
     topic: str | None = None,
     valid_from: str | None = None,
+    ended: str | None = None,
     evidence: list[str] | None = None,
     confidence: float | None = None,
     source: str = "runtime",
@@ -269,6 +274,14 @@ async def commit_candidate(
     "runtime" (the `learn` tool), "task_consolidator", "periodic_consolidator",
     or "tower". Returns {"status": "committed"|"duplicate"|"error",
     "memory_id": str, "detail": str}.
+
+    `kg_invalidate` retires KG facts (list of [subject, predicate, object])
+    through the same commit so a fact change is one call: invalidate the old
+    triple(s), add the new ones via `kg_triplets`. Valid with type=semantic
+    only; invalidations alone (no adds, no content) are a legitimate commit —
+    retiring a fact is a change to the store worth a provenance record.
+    `ended` backdates the retirement's valid_to (the mirror of `valid_from`)
+    for facts that stopped being true before today.
 
     `supersedes_memory_id` states that this memory replaces an existing one as
     the active rule. It is the only path that writes a SUPERSEDES edge, and it
@@ -297,23 +310,38 @@ async def commit_candidate(
         triplets, triplet_error, triplet_note = clean_triplets(kg_triplets)
         if triplet_error:
             return {"status": "error", "memory_id": None, "detail": triplet_error}
-    if not content and not triplets:
+    invalidations: list[tuple[str, str, str]] = []
+    invalidate_note = ""
+    if kg_invalidate:
+        invalidations, invalidate_error, invalidate_note = clean_triplets(kg_invalidate)
+        if invalidate_error:
+            return {"status": "error", "memory_id": None, "detail": invalidate_error}
+    if not content and not triplets and not invalidations:
         return {
             "status": "error", "memory_id": None,
             "detail": (
-                "nothing to store: pass content (prose) or kg_triplets (an "
-                "array of [subject, predicate, object]). Either alone is valid."
+                "nothing to store: pass content (prose), kg_triplets (an "
+                "array of [subject, predicate, object]), or kg_invalidate "
+                "(triples to retire). Any one alone is valid."
             ),
         }
-    if triplets and type_ != "semantic":
-        return {"status": "error", "memory_id": None, "detail": "kg_triplets is only valid for type=semantic."}
+    if (triplets or invalidations) and type_ != "semantic":
+        return {"status": "error", "memory_id": None, "detail": "kg_triplets / kg_invalidate are only valid for type=semantic."}
     valid_from, date_warning = _clean_valid_from(valid_from)
+    ended, ended_warning = _clean_valid_from(ended, field="ended")
+    if triplets and not content:
+        # Stored on the candidate so a KG-only memory is findable by meaning:
+        # `memory(query=…)` and the edge shortlist both search candidate
+        # content, and an empty string made a third of the corpus invisible.
+        content = _render_triplets(triplets)
 
     memory_id = uuid.uuid4().hex
     duplicate_of: str | None = None
     try:
-        if triplets:
-            status, destination, detail = await _commit_kg(triplets, valid_from)
+        if triplets or invalidations:
+            status, destination, detail = await _commit_kg(
+                triplets, valid_from, invalidations=invalidations, ended=ended,
+            )
         else:
             duplicate_of = await _is_prose_duplicate(type_, content)
             if duplicate_of:
@@ -329,6 +357,10 @@ async def commit_candidate(
                 status, destination, detail = await _commit_procedural(
                     content, topic, memory_id=memory_id,
                 )
+            elif type_ == "episodic":
+                status, destination, detail = await _commit_drawer(
+                    content, topic, room="episodes", memory_id=memory_id,
+                )
             else:
                 status, destination, detail = await _commit_preference(
                     content, topic, memory_id=memory_id,
@@ -337,14 +369,19 @@ async def commit_candidate(
         status, destination, detail = "error", {}, f"{type(e).__name__}: {e}"
     if date_warning:
         detail = f"{detail} ({date_warning})"
+    if ended_warning:
+        detail = f"{detail} ({ended_warning})"
     if triplet_note:
         detail = f"{detail} [{triplet_note}]"
+    if invalidate_note:
+        detail = f"{detail} [kg_invalidate: {invalidate_note}]"
 
     await _save_candidate({
         "memory_id": memory_id,
         "type": type_,
         "content": content,
         "kg_triplets": [list(t) for t in triplets],
+        "kg_invalidated": [list(t) for t in invalidations],
         "topic": topic,
         "valid_from": valid_from,
         "evidence": evidence or [],
@@ -580,13 +617,14 @@ async def _save_candidate(record: dict) -> None:
         log.warning(f"Memory candidate record failed: {e}")
 
 
-def _clean_valid_from(raw: str | None) -> tuple[str | None, str]:
+def _clean_valid_from(raw: str | None, field: str = "valid_from") -> tuple[str | None, str]:
     """(iso_date, warning) — validate an optional ISO date.
 
     A malformed date is dropped rather than failing the commit: losing the
-    memory over a bad optional field is worse than falling back to kg_add's
-    default of today. The warning rides back in the tool result so the caller
-    can pass it correctly next time.
+    memory over a bad optional field is worse than falling back to the write
+    path's default of today. The warning rides back in the tool result so the
+    caller can pass it correctly next time. Also validates `ended` (the
+    retirement mirror of valid_from) via the `field` name.
     """
     text = (raw or "").strip()
     if not text:
@@ -594,14 +632,36 @@ def _clean_valid_from(raw: str | None) -> tuple[str | None, str]:
     try:
         return date.fromisoformat(text).isoformat(), ""
     except ValueError:
-        return None, f"ignored valid_from={text!r} — not an ISO date (YYYY-MM-DD)"
+        return None, f"ignored {field}={text!r} — not an ISO date (YYYY-MM-DD)"
 
 
 async def _commit_kg(
-    triplets: list[tuple[str, str, str]], valid_from: str | None = None,
+    triplets: list[tuple[str, str, str]],
+    valid_from: str | None = None,
+    invalidations: list[tuple[str, str, str]] | None = None,
+    ended: str | None = None,
 ) -> tuple[str, dict, str]:
     from . import palace
     loop = asyncio.get_running_loop()
+    # Retire before adding, so a fact change (invalidate old + add new in one
+    # call) never has both triples reading as current between the two writes.
+    # `ended` backdates valid_to for facts that stopped being true in the past
+    # — the retirement mirror of valid_from.
+    retired, missed = 0, []
+    for s, p, o in invalidations or []:
+        result = await loop.run_in_executor(
+            None,
+            lambda s=s, p=p, o=o: palace.kg_invalidate(
+                subject=s, predicate=p, object=o, ended=ended,
+            ),
+        )
+        # kg_invalidate reports "nothing open to invalidate" (or an error)
+        # without raising; counting those as retired told the caller a stale
+        # fact was gone while it stayed current.
+        if isinstance(result, str) and result.startswith("KG: invalidated"):
+            retired += 1
+        else:
+            missed.append(f"{s}|{p}|{o}")
     stored, duplicate = 0, 0
     for s, p, o in triplets:
         if await _is_kg_duplicate(s, p, o):
@@ -614,25 +674,44 @@ async def _commit_kg(
             ),
         )
         stored += 1
-    destination = {"kind": "kg", "stored": stored, "duplicate": duplicate}
+    destination = {
+        "kind": "kg", "stored": stored, "duplicate": duplicate,
+        "retired": retired, "not_retired": len(missed),
+    }
+    parts = []
     if stored:
-        msg = f"kg: stored {stored} triplet(s)" + (f", {duplicate} already known" if duplicate else "")
-        return "committed", destination, msg
-    return "duplicate", destination, f"kg: all {duplicate} triplet(s) already known — no-op"
+        parts.append(f"stored {stored} triplet(s)")
+    if duplicate:
+        parts.append(f"{duplicate} add(s) already known")
+    if retired:
+        parts.append(f"retired {retired}")
+    if missed:
+        parts.append(
+            f"{len(missed)} not retired — no open fact matched: "
+            + ", ".join(missed[:3])
+        )
+    detail = "kg: " + ", ".join(parts)
+    if stored or retired:
+        return "committed", destination, detail
+    if duplicate:
+        return "duplicate", destination, detail + " — no-op"
+    return "error", destination, detail
 
 
 async def _is_kg_duplicate(subject: str, predicate: str, obj: str) -> bool:
-    """Exact-match dedupe: same subject+predicate already pointing at the same
-    object. A different object is a legitimate new/updated fact, not a dup —
-    the KG's own temporal model (valid_from/valid_to) handles that case.
+    """Exact-match dedupe against CURRENT facts only: same triple with an open
+    validity row. A different object is a legitimate new/updated fact, and an
+    expired identical triple is legitimately re-addable (facts can revert;
+    invalidate-then-re-add restarts validity) — matching history here made the
+    documented fact-change flow retire the old fact and then drop its
+    replacement as "already known".
     """
     try:
         from . import palace
         loop = asyncio.get_running_loop()
-        text = await loop.run_in_executor(
-            None, lambda: palace.kg_query(subject=subject, predicate=predicate)
+        return await loop.run_in_executor(
+            None, lambda: palace.kg_fact_is_current(subject, predicate, obj)
         )
-        return f"--[{predicate}]-> `{obj}`" in text
     except Exception as e:
         log.warning(f"KG dedupe check failed ({subject}/{predicate}/{obj}): {e}")
         return False
@@ -877,6 +956,95 @@ async def memory_texts(memory_ids: list[str]) -> dict[str, dict]:
     except Exception as e:
         log.warning(f"Memory text lookup failed: {e}")
         return {}
+
+
+async def list_committed_memories(limit: int = 50, offset: int = 0) -> dict:
+    """Paged committed-memory listing for Tower's Learned page.
+
+    Projection at the query per the listing rule; `preview` is derived here so
+    the template never touches full content for a row it only lists.
+    """
+    coll = await _collection(CANDIDATES_COLLECTION)
+    if coll is None:
+        return {"total": 0, "memories": []}
+    query = {"status": "committed"}
+    try:
+        total = await coll.count_documents(query)
+        cursor = coll.find(query, {
+            "_id": 0, "memory_id": 1, "type": 1, "topic": 1, "content": 1,
+            "source": 1, "created_at_ts": 1, "created_at": 1,
+            "trigger.recall_id": 1, "trigger.status": 1,
+        }).sort("created_at_ts", -1).skip(max(0, offset)).limit(max(1, limit))
+        rows = [doc async for doc in cursor]
+    except Exception as e:
+        log.warning(f"Committed-memory listing failed: {e}")
+        return {"total": 0, "memories": []}
+    for row in rows:
+        flat = " ".join((row.pop("content", "") or "").split())
+        row["preview"] = flat[:200] + ("…" if len(flat) > 200 else "")
+    return {"total": total, "memories": rows}
+
+
+async def memory_admin_overview(memory_id: str) -> dict | None:
+    """Everything Tower's memory detail page shows, joined on the one id:
+    the candidate record, graph edges both directions, supersession, and the
+    retrieval telemetry for the memory and its trigger."""
+    from . import memory_graph
+
+    coll = await _collection(CANDIDATES_COLLECTION)
+    if coll is None:
+        return None
+    try:
+        doc = await coll.find_one({"memory_id": memory_id}, {"_id": 0, "embedding": 0})
+    except Exception as e:
+        log.warning(f"Memory overview lookup failed for {memory_id}: {e}")
+        return None
+    if not doc:
+        return None
+    out: dict = {"memory": doc, "edges_out": [], "edges_in": [], "replaced_by": None}
+    try:
+        out["edges_out"] = await memory_graph.edges_from(memory_id)
+        out["edges_in"] = await memory_graph.edges_into(memory_id)
+        out["replaced_by"] = (await memory_graph.replacements([memory_id])).get(memory_id)
+    except Exception as e:
+        log.warning(f"Memory overview edge lookup failed for {memory_id}: {e}")
+    neighbour_ids = [e.get("to") for e in out["edges_out"]] + [e.get("from") for e in out["edges_in"]]
+    summaries = await memory_texts([nid for nid in neighbour_ids if nid])
+    for edge in out["edges_out"]:
+        edge["summary"] = " ".join(((summaries.get(edge.get("to")) or {}).get("content") or "").split())[:110]
+    for edge in out["edges_in"]:
+        edge["summary"] = " ".join(((summaries.get(edge.get("from")) or {}).get("content") or "").split())[:110]
+
+    keys = [f"memory:{memory_id}"]
+    recall_id = (doc.get("trigger") or {}).get("recall_id")
+    if recall_id:
+        keys.append(f"recall:{recall_id}")
+    out["stats"] = []
+    stats_coll = await _collection(STATS_COLLECTION)
+    if stats_coll is not None:
+        try:
+            out["stats"] = [
+                s async for s in stats_coll.find(
+                    {"memory_key": {"$in": keys}}, {"_id": 0},
+                )
+            ]
+        except Exception as e:
+            log.warning(f"Memory overview stats lookup failed for {memory_id}: {e}")
+    out["events"] = []
+    events_coll = await _collection(RETRIEVAL_EVENTS_COLLECTION)
+    if events_coll is not None:
+        try:
+            out["events"] = [
+                e async for e in events_coll.find(
+                    {"memory_key": {"$in": keys}},
+                    {"_id": 0, "retrieval_id": 1, "memory_key": 1, "memory_kind": 1,
+                     "ts": 1, "graded": 1, "used": 1, "outcome": 1, "channel": 1,
+                     "unopened": 1},
+                ).sort("ts", -1).limit(20)
+            ]
+        except Exception as e:
+            log.warning(f"Memory overview event lookup failed for {memory_id}: {e}")
+    return out
 
 
 async def _commit_drawer(

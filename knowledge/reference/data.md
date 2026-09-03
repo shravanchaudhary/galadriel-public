@@ -60,4 +60,4 @@ Every secret (username, password, TOTP secret, API key, token) lives ONLY in the
 
 ## Self-evolve, don't bloat
 
-This file and the index hold only **durable conventions and the map**. Everything episodic — lead notes, what worked, learnings — goes to the palace (`palace_add_drawer`, `palace_diary_write`, `palace_kg_add`). If you catch yourself about to write narrative here, write it to the palace instead. Prune dead collections from the index. Lean map, rich palace.
+This file and the index hold only **durable conventions and the map**. Everything episodic — lead notes, what worked, learnings — goes to the palace via `learn` (type `episodic` for narrative, `semantic` + `kg_triplets` for entity facts). If you catch yourself about to write narrative here, write it to the palace instead. Prune dead collections from the index. Lean map, rich palace.

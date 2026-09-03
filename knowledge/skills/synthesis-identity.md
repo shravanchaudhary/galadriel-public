@@ -4,7 +4,7 @@
 you reflect on your existence; or an enduring experience may deepen your
 identity.
 
-**Palace:** `palace_search(query="synthesis identity soul body sentinel", room="diary")`
+**Palace:** `palace_search(query="synthesis identity soul body sentinel", room="episodes")`
 
 ## Orientation
 

@@ -6,11 +6,12 @@ storage abstraction was not actually swappable (the backend registry had no
 callers, and its lexical search, repair tooling and knowledge graph all reached
 past the abstraction into chroma.sqlite3 / local SQLite), and every feature that
 distinguished it kept state in ~15 local files that do not survive a Fargate
-redeploy. Drawers, the knowledge graph and the diary now all live in the one
+redeploy. Drawers and the knowledge graph now all live in the one
 database that already holds the operational collections.
 
 Lived memory uses a single `agent` wing with purpose rooms: conversations,
-knowledge, episodes, diary. Do not mine the whole repo into the palace.
+knowledge, procedures, episodes, preferences. Do not mine the whole repo into
+the palace.
 
 Archival helpers (`archive_conversation`, `mine_batch_dir`) are used by the
 compaction hook and by `/new` to preserve verbatim content before it would
@@ -51,13 +52,13 @@ DEFAULT_ARCHIVE_ROOT = str(Path.home() / ".mempalace" / "archive")
 SPANS_FILE = "spans.json"
 DEFAULT_WAKE_UP_FILE = str(Path.home() / ".mempalace" / "wake_up.md")
 DEFAULT_WING = "agent"
-# Single wing for ALL agent memory — conversations, knowledge, episodes, and
-# diary. The agent never chooses a wing to store or fetch; `DEFAULT_WING` is
-# the one and only memory wing. Repo-wide code mining is not used.
+# Single wing for ALL agent memory — conversations, knowledge, procedures,
+# episodes, preferences. The agent never chooses a wing to store or fetch;
+# `DEFAULT_WING` is the one and only memory wing. Repo-wide code mining is
+# not used.
 CONVERSATION_ROOM = "conversations"
 KNOWLEDGE_ROOM = "knowledge"
 EPISODES_ROOM = "episodes"
-DIARY_ROOM = "diary"
 DEFAULT_DRAWER_ROOM = KNOWLEDGE_ROOM
 # Legacy archive channel tags that predate channel+kind naming.
 _LEGACY_ARCHIVE_KIND_PREFIXES = ("checkpoint", "compact", "max_tokens")
@@ -645,12 +646,12 @@ async def add_drawer(
 ) -> str:
     """File a verbatim drawer into the palace immediately.
 
-    Used by the `palace_add_drawer` tool when the agent wants a fact filed
-    into searchable memory *now*, without waiting for the next mine cycle.
-    Returns a human-readable status string for the tool result.
+    Called by the learning pipeline's commit helpers
+    (harness/consolidation.py `_commit_*`) — there is no direct agent-facing
+    tool for raw drawer writes; everything arrives typed through `learn` /
+    `propose_memory`. Returns a human-readable status string.
 
-    Defaults to ``room=knowledge`` for durable facts. Pass ``episodes`` for
-    daily recaps / operational narratives.
+    Defaults to ``room=knowledge`` for durable facts.
 
     ``drawer_id`` names the drawer instead of letting one be minted. The
     learning pipeline passes its ``memory_id`` so a curated memory and its
@@ -684,7 +685,7 @@ async def add_drawer(
     except Exception as e:
         return f"[palace add] {type(e).__name__}: {e}"
 
-async def wake_up(wing: str | None = None) -> str:
+async def wake_up() -> str:
     """Fetch a fresh wake-up snapshot (on-demand tool).
 
     Different from the always-on dynamic-block injection: this recomputes the
@@ -770,6 +771,17 @@ def kg_invalidate(subject: str, predicate: str, object: str, ended: str | None =
         return _documentdb().kg_invalidate(subject, predicate, object, ended)
     except Exception as e:
         return f"[kg invalidate] {type(e).__name__}: {e}"
+def kg_fact_is_current(subject: str, predicate: str, object: str) -> bool:
+    """True when this exact triple has an open (valid_to=None) row.
+
+    The commit pipeline's add-dedupe check: expired rows deliberately do NOT
+    count — an invalidated fact is re-addable, which is what lets a fact
+    change and later revert.
+    """
+    return bool(_documentdb().kg_query_rows(
+        subject=subject, predicate=predicate, object=object,
+        limit=1, current_only=True,
+    ))
 def kg_timeline(entity: str) -> str:
     """Return chronological history of all facts touching an entity."""
     try:
@@ -790,34 +802,6 @@ def kg_timeline(entity: str) -> str:
         vt = f.get("valid_to") or "current"
         lines.append(f"- {vf} → {vt}: `{s_}` --[{p_}]-> `{o_}`")
     return "\n".join(lines)
-DEFAULT_DIARY_AGENT = DEFAULT_WING
-
-
-def diary_write(entry: str, topic: str = "general", agent_name: str = DEFAULT_DIARY_AGENT) -> str:
-    """Write a diary entry into the single memory wing's diary room.
-
-    Use this to record end-of-session reflections: what happened, what was
-    learned, what matters. Persistent across restarts.
-
-    We pin `wing=DEFAULT_WING` explicitly. Left unset, the store derives the wing
-    as `wing_<agent_name>` (e.g. `wing_agent`), which fragments diary entries off
-    into a separate wing from the rest of memory. Reads stay correct either way —
-    `tool_diary_read` filters by the `agent` + `room=diary` metadata, not wing.
-    """
-    if not entry or not entry.strip():
-        return "[diary write] empty entry — nothing saved."
-    try:
-        return _documentdb().diary_write(entry, topic, agent_name)
-    except Exception as e:
-        return f"[diary write] {type(e).__name__}: {e}"
-def diary_read(last_n: int = 10, agent_name: str = DEFAULT_DIARY_AGENT) -> str:
-    """Read the most recent N diary entries for an agent."""
-    try:
-        return _documentdb().diary_read(last_n, agent_name)
-    except Exception as e:
-        return f"[diary read] {type(e).__name__}: {e}"
-
-
 
 
 def taxonomy() -> str:
@@ -910,17 +894,6 @@ def delete_drawer(drawer_id: str) -> str:
     """Remove one drawer. Call reconcile_sync() afterward to refresh the
     wake-up cache."""
     return _documentdb().delete_drawer(drawer_id)
-def create_drawer(
-    text: str,
-    wing: str = DEFAULT_WING,
-    room: str = "general",
-    hall: str = "general",
-) -> dict:
-    """Insert a new drawer directly (Tower UI create). The embedding is
-    computed from `text`. Returns {"id": ..., ...} or {"error": "..."}."""
-    if not text or not text.strip():
-        return {"error": "empty content"}
-    return _documentdb().create_drawer(text, wing, room, hall)
 def reconcile_sync() -> dict:
     """Post-edit housekeeping for Tower's direct drawer mutations.
 

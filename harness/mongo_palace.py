@@ -909,32 +909,6 @@ def delete_drawer(drawer_id: str) -> str:
     return f"Drawer `{drawer_id}` deleted." if deleted else f"[palace delete] drawer `{drawer_id}` not found"
 
 
-def create_drawer(text: str, wing=DEFAULT_WING, room="general", hall="general") -> dict:
-    if not text.strip():
-        return {"error": "empty content"}
-    return upsert_drawer(text, wing=wing, room=room, hall=hall, source_file="tower:create")
-
-
-def diary_write(entry: str, topic="general", agent_name=DEFAULT_WING) -> str:
-    if not entry.strip():
-        return "[diary write] empty entry — nothing saved."
-    upsert_drawer(entry, wing=DEFAULT_WING, room="diary", hall=topic, topic=topic, agent=agent_name)
-    return f"Diary entry saved to wing `{DEFAULT_WING}`, topic `{topic}`."
-
-
-def diary_read(last_n=10, agent_name=DEFAULT_WING) -> str:
-    rows = list(_collection().find(
-        {"room": "diary", "agent": agent_name},
-        {"embedding": 0},
-    ).sort("filed_at", -1).limit(max(1, min(last_n, 50))))
-    if not rows:
-        return f"No diary entries yet for agent `{agent_name}`."
-    lines = [f"**Diary — `{agent_name}` (last {len(rows)})**", ""]
-    for row in rows:
-        lines.extend([f"### {row.get('filed_at', '?')}  _(topic: {row.get('topic', '?')})_", row["text"], ""])
-    return "\n".join(lines).rstrip()
-
-
 def _kg():
     global _kg_indexed
     collection = _db()[KG]

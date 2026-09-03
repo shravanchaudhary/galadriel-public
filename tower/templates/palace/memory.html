@@ -1,0 +1,118 @@
+{% extends "palace/base.html" %}
+{% block title %}Memory {{ memory.memory_id[:8] }}{% endblock %}
+{% block heading %}Memory <code>{{ memory.memory_id[:12] }}…</code>{% endblock %}
+{% block subtitle %}{{ memory.type }}{% if memory.topic %} · {{ memory.topic }}{% endif %} · via {{ memory.source or '?' }}{% endblock %}
+
+{% block palace_content %}
+<nav class="settings-crumb" aria-label="Breadcrumb">
+    <a href="/palace/learned">Learned Memory</a>
+    <span class="settings-crumb-separator">/</span>
+    <span class="muted">{{ memory.memory_id[:12] }}…</span>
+</nav>
+
+{% if overview.replaced_by %}
+<div class="notice-banner warn">Replaced — <a href="/palace/memory/{{ overview.replaced_by }}">{{ overview.replaced_by[:12] }}…</a> is the rule now in force; this stays as history.</div>
+{% endif %}
+
+<section class="settings-section">
+    <div class="settings-section-head"><h2 class="settings-section-title">Content</h2></div>
+    <pre style="white-space:pre-wrap;">{{ memory.content or '(no prose — KG-only memory)' }}</pre>
+    {% if memory.kg_triplets %}
+    <p class="settings-meta">KG triples:</p>
+    <ul>
+        {% for t in memory.kg_triplets %}<li><code>{{ t[0] }}</code> — <code>{{ t[1] }}</code> — <code>{{ t[2] }}</code></li>{% endfor %}
+    </ul>
+    {% endif %}
+    {% if memory.kg_invalidated %}
+    <p class="settings-meta">Retired by this commit:</p>
+    <ul>
+        {% for t in memory.kg_invalidated %}<li><code>{{ t[0] }}</code> — <code>{{ t[1] }}</code> — <code>{{ t[2] }}</code></li>{% endfor %}
+    </ul>
+    {% endif %}
+    <p class="settings-meta">Drawer <a href="/palace/drawer/{{ memory.memory_id }}">{{ memory.memory_id[:12] }}…</a> shares this id — editing the drawer edits this memory's text.</p>
+</section>
+
+<section class="settings-section">
+    <div class="settings-section-head">
+        <h2 class="settings-section-title">Recall trigger</h2>
+        <p class="settings-section-desc">When this memory resurfaces on its own. A memory with no trigger is still findable by deliberate search — <code>memory(query=…)</code>.</p>
+    </div>
+    {% if trigger and trigger.recall_id %}
+    <p>Trigger <code>{{ trigger.recall_id }}</code> ({{ trigger.status or '?' }}) — <a href="/config/semantic-recalls">manage &amp; test on the Recalls page</a>.</p>
+    {% elif memory.type == 'episodic' %}
+    <p class="muted">Episodic — deliberately triggerless; it is the record, not a rule.</p>
+    {% elif trigger %}
+    <p class="muted">Trigger authoring recorded status <code>{{ trigger.status or '?' }}</code>{% if trigger.detail %} — {{ trigger.detail }}{% endif %}. The periodic consolidator can backfill it.</p>
+    {% else %}
+    <p class="muted">No trigger yet — authoring runs in the background after commit; the periodic consolidator backfills failures.</p>
+    {% endif %}
+</section>
+
+<section class="settings-section">
+    <div class="settings-section-head">
+        <h2 class="settings-section-title">Graph</h2>
+        <p class="settings-section-desc">Typed edges to other memories — what this rests on, and what rests on it.</p>
+    </div>
+    {% if overview.edges_out or overview.edges_in %}
+    <ul>
+        {% for e in overview.edges_out %}
+        <li>→ <a href="/palace/memory/{{ e.to }}"><code>{{ e.to[:12] }}…</code></a> <strong>{{ e.relation }}</strong>{% if e.label %} <span class="muted">({{ e.label }})</span>{% endif %} — {{ e.summary or '' }}</li>
+        {% endfor %}
+        {% for e in overview.edges_in %}
+        <li>← <a href="/palace/memory/{{ e['from'] }}"><code>{{ e['from'][:12] }}…</code></a> <strong>{{ e.relation }}</strong>{% if e.label %} <span class="muted">({{ e.label }})</span>{% endif %} — {{ e.summary or '' }}</li>
+        {% endfor %}
+    </ul>
+    {% else %}
+    <p class="muted">No edges — a common, correct outcome; the classifier relates only what functionally connects.</p>
+    {% endif %}
+</section>
+
+<section class="settings-section">
+    <div class="settings-section-head">
+        <h2 class="settings-section-title">Telemetry</h2>
+        <p class="settings-section-desc">How this memory (and its trigger) actually performs.</p>
+    </div>
+    {% if overview.stats %}
+    <div class="table-wrap" role="region" aria-label="Utility stats" tabindex="0">
+    <table class="wf-table">
+        <thead><tr><th scope="col">Key</th><th scope="col">Retrieved</th><th scope="col">Graded</th><th scope="col">Used</th><th scope="col">Helpful</th><th scope="col">Harmful</th><th scope="col">Last used</th></tr></thead>
+        <tbody>
+            {% for s in overview.stats %}
+            <tr>
+                <td><code>{{ s.memory_key }}</code></td>
+                <td>{{ s.retrieval_count or 0 }}</td>
+                <td>{{ s.graded_count or 0 }}</td>
+                <td>{{ s.use_count or 0 }}</td>
+                <td>{{ s.helpful_count or 0 }}</td>
+                <td>{{ s.harmful_count or 0 }}</td>
+                <td class="muted">{{ s.last_used or '—' }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    </div>
+    {% else %}
+    <p class="muted">No retrieval telemetry yet.</p>
+    {% endif %}
+    {% if overview.events %}
+    <p class="settings-meta" style="margin-top:0.75rem;">Recent retrieval events:</p>
+    <div class="table-wrap" role="region" aria-label="Recent retrievals" tabindex="0">
+    <table class="wf-table">
+        <thead><tr><th scope="col">When</th><th scope="col">Kind</th><th scope="col">Channel</th><th scope="col">Graded</th><th scope="col">Used</th><th scope="col">Outcome</th></tr></thead>
+        <tbody>
+            {% for e in overview.events %}
+            <tr>
+                <td class="muted">{{ e.ts }}</td>
+                <td><code>{{ e.memory_kind }}</code></td>
+                <td>{{ e.channel or '—' }}</td>
+                <td>{{ 'yes' if e.graded else 'no' }}</td>
+                <td>{{ 'yes' if e.used else ('no' if e.graded else '—') }}</td>
+                <td>{{ e.outcome or '—' }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    </div>
+    {% endif %}
+</section>
+{% endblock %}

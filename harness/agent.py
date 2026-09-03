@@ -94,16 +94,16 @@ CONSOLIDATION_TOOLS = frozenset({
 # own bookkeeping, so they are excluded from the mid-turn recall scan corpus.
 RECALL_SCAN_EXCLUDED_TOOLS = CONSOLIDATION_TOOLS | frozenset({"learn", "recall"})
 
-# Granular memory writers + consolidator-authoring tools hidden from a normal
-# turn's toolset. `learn` is the one runtime-facing writer (conservative,
-# typed, routes through the same commit path as the consolidators — see
-# harness/consolidation.py); these remain fully functional for Tower (calls
-# palace.py directly), for the task-end consolidation pass (CONSOLIDATION_TOOLS),
-# and for the periodic consolidator (ambient reflection / goodnight — see
-# PERIODIC_CONSOLIDATOR_CHANNELS), just not offered to the model mid-task.
+# Consolidator-only tools hidden from a normal turn's toolset. `learn` is the
+# ONE writer of new memory anywhere (typed, routes through
+# consolidation.commit_candidate — the same path propose_memory and Tower's
+# create use); what stays hidden here is trigger surgery (learn_recall /
+# tune_recall / purge_recall) and the consolidation pass's own judgment tools.
+# They remain offered to the task-end consolidation pass (CONSOLIDATION_TOOLS)
+# and the periodic consolidator channels (ambient reflection / goodnight — see
+# PERIODIC_CONSOLIDATOR_CHANNELS), just not to the model mid-task.
 RUNTIME_HIDDEN_TOOLS = frozenset({
-    "palace_add_drawer", "palace_kg_add", "palace_kg_invalidate",
-    "palace_diary_write", "learn_recall", "tune_recall", "purge_recall",
+    "learn_recall", "tune_recall", "purge_recall",
     "propose_memory", "propose_recall", "grade_retrieval", "flag_memory",
     "read_episode_segment", "memory_utility_report",
 })
@@ -3682,6 +3682,13 @@ class GaladrielAgent:
         """
         if not self.learning_enabled:
             log.info(f"[Consolidate] skip channel={channel_id} reason=learning_disabled")
+            return
+        from .tools import palace_disabled
+        if palace_disabled():
+            # An amnesiac (--no-palace) session must not write memory: the
+            # dispatch short-circuit already blocks `learn`, and this blocks
+            # the side channel whose propose_memory reaches the same store.
+            log.info(f"[Consolidate] skip channel={channel_id} reason=no_palace_mode")
             return
         if not messages_snapshot:
             log.info(f"[Consolidate] skip channel={channel_id} reason=empty_episode")

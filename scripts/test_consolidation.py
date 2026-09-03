@@ -107,7 +107,7 @@ def test_clean_triplets_recognizes_several_payloads_run_together() -> None:
 
 
 def test_commit_candidate_rejects_unknown_type() -> None:
-    result = _run(consolidation.commit_candidate(type="episodic", content="x"))
+    result = _run(consolidation.commit_candidate(type="autobiographical", content="x"))
     assert result["status"] == "error", result
     assert "unknown type" in result["detail"]
 
@@ -115,11 +115,11 @@ def test_commit_candidate_rejects_unknown_type() -> None:
 def test_commit_candidate_requires_content_or_triplets() -> None:
     result = _run(consolidation.commit_candidate(type="semantic", content=""))
     assert result["status"] == "error", result
-    # Says both are absent AND that either alone suffices — the previous
+    # Says all are absent AND that any one alone suffices — the previous
     # wording let a model read "content or kg_triplets is required" as
     # "kg_triplets needs content too".
     assert "nothing to store" in result["detail"], result
-    assert "Either alone is valid" in result["detail"], result
+    assert "Any one alone is valid" in result["detail"], result
 
 
 def test_empty_kg_triplets_still_means_absent_not_malformed() -> None:
@@ -162,7 +162,7 @@ def test_commit_candidate_rejects_triplets_on_non_semantic() -> None:
 
 
 def test_commit_candidate_kg_path_calls_kg_add() -> None:
-    with patch("harness.palace.kg_query", return_value="(no facts)"), \
+    with patch("harness.palace.kg_fact_is_current", return_value=False), \
          patch("harness.palace.kg_add", return_value="stored") as kg_add_mock, \
          patch.object(consolidation, "_save_candidate", new=AsyncMock()):
         result = _run(consolidation.commit_candidate(
@@ -178,7 +178,7 @@ def test_commit_candidate_kg_path_calls_kg_add() -> None:
 
 def test_commit_candidate_passes_valid_from_to_kg() -> None:
     """A fact learned now but true for months must not be stamped as today."""
-    with patch("harness.palace.kg_query", return_value="(no facts)"), \
+    with patch("harness.palace.kg_fact_is_current", return_value=False), \
          patch("harness.palace.kg_add", return_value="stored") as kg_add_mock, \
          patch.object(consolidation, "_save_candidate", new=AsyncMock()):
         result = _run(consolidation.commit_candidate(
@@ -197,7 +197,7 @@ def test_commit_candidate_passes_valid_from_to_kg() -> None:
 def test_commit_candidate_drops_malformed_valid_from_but_still_commits() -> None:
     """Losing the memory over a bad optional date is worse than defaulting."""
     saved = AsyncMock()
-    with patch("harness.palace.kg_query", return_value="(no facts)"), \
+    with patch("harness.palace.kg_fact_is_current", return_value=False), \
          patch("harness.palace.kg_add", return_value="stored") as kg_add_mock, \
          patch.object(consolidation, "_save_candidate", new=saved):
         result = _run(consolidation.commit_candidate(
@@ -223,8 +223,7 @@ def test_clean_valid_from_accepts_iso_only() -> None:
 
 
 def test_commit_candidate_kg_dedup_skips_existing_triplet() -> None:
-    existing_text = "Alice --[works_on]-> `Project X`"
-    with patch("harness.palace.kg_query", return_value=existing_text), \
+    with patch("harness.palace.kg_fact_is_current", return_value=True), \
          patch("harness.palace.kg_add") as kg_add_mock, \
          patch.object(consolidation, "_save_candidate", new=AsyncMock()):
         result = _run(consolidation.commit_candidate(
@@ -237,12 +236,10 @@ def test_commit_candidate_kg_dedup_skips_existing_triplet() -> None:
 
 
 def test_commit_candidate_kg_partial_dedup_stores_only_new() -> None:
-    def fake_query(subject=None, predicate=None):
-        if predicate == "works_on":
-            return "Alice --[works_on]-> `Project X`"
-        return "(no facts)"
+    def fake_current(subject, predicate, obj):
+        return predicate == "works_on"
 
-    with patch("harness.palace.kg_query", side_effect=fake_query), \
+    with patch("harness.palace.kg_fact_is_current", side_effect=fake_current), \
          patch("harness.palace.kg_add", return_value="stored") as kg_add_mock, \
          patch.object(consolidation, "_save_candidate", new=AsyncMock()):
         result = _run(consolidation.commit_candidate(
@@ -260,6 +257,157 @@ def test_commit_candidate_kg_partial_dedup_stores_only_new() -> None:
 
 
 # ─── commit_candidate: prose (drawer / procedural / preference) ────────
+
+
+def test_commit_candidate_episodic_writes_episodes_drawer_without_packaging() -> None:
+    """type=episodic lands in room=episodes and schedules NEITHER a recall
+    trigger NOR edge classification — one gate covers both post-commit passes."""
+    with patch.object(consolidation, "_is_prose_duplicate", new=AsyncMock(return_value=None)), \
+         patch("harness.palace.add_drawer", new=AsyncMock(return_value="filed")) as drawer_mock, \
+         patch.object(consolidation, "_save_candidate", new=AsyncMock()), \
+         patch.object(consolidation, "_spawn") as spawn_mock:
+        result = _run(consolidation.commit_candidate(
+            type="episodic", content="Shipped the report; the retry loop was the fix.",
+            topic="daily-recap",
+        ))
+    assert result["status"] == "committed", result
+    assert drawer_mock.await_args.kwargs["room"] == "episodes"
+    spawn_mock.assert_not_called()
+
+
+def test_commit_candidate_kg_only_renders_content_for_search() -> None:
+    """A KG-only memory stores rendered triplet prose on the candidate, so
+    memory(query=…) and the edge shortlist can find it — empty content made a
+    third of the live corpus invisible to semantic search."""
+    saved = AsyncMock()
+    with patch("harness.palace.kg_fact_is_current", return_value=False), \
+         patch("harness.palace.kg_add", return_value="stored"), \
+         patch.object(consolidation, "_save_candidate", new=saved):
+        result = _run(consolidation.commit_candidate(
+            type="semantic", kg_triplets=[["Ada", "role", "CTO"]],
+        ))
+    assert result["status"] == "committed", result
+    record = saved.await_args.args[0]
+    assert record["content"] == "Ada — role — CTO", record["content"]
+
+
+def test_commit_candidate_kg_invalidate_retires_before_adding() -> None:
+    """A fact change is one call: the stale triple is retired FIRST, then the
+    replacement added, so both never read as current between the writes."""
+    calls: list[tuple] = []
+    with patch("harness.palace.kg_fact_is_current", return_value=False), \
+         patch("harness.palace.kg_invalidate",
+               side_effect=lambda **kw: calls.append(("invalidate", kw)) or "KG: invalidated"), \
+         patch("harness.palace.kg_add",
+               side_effect=lambda **kw: calls.append(("add", kw)) or "stored"), \
+         patch.object(consolidation, "_save_candidate", new=AsyncMock()) as saved:
+        result = _run(consolidation.commit_candidate(
+            type="semantic",
+            kg_invalidate=[["Ada", "role", "CTO"]],
+            kg_triplets=[["Ada", "role", "CEO"]],
+        ))
+    assert result["status"] == "committed", result
+    assert [c[0] for c in calls] == ["invalidate", "add"], calls
+    assert calls[0][1]["object"] == "CTO"
+    assert calls[1][1]["object"] == "CEO"
+    assert "retired 1" in result["detail"], result
+    record = saved.await_args.args[0]
+    assert record["kg_invalidated"] == [["Ada", "role", "CTO"]], record
+
+
+def test_commit_candidate_kg_invalidate_alone_is_a_commit() -> None:
+    """Retiring a fact with no replacement is a legitimate change to the store
+    — committed for provenance, but never given a recall trigger or edges."""
+    with patch("harness.palace.kg_invalidate", return_value="KG: invalidated `a`") as inv_mock, \
+         patch("harness.palace.kg_add") as add_mock, \
+         patch.object(consolidation, "_save_candidate", new=AsyncMock()), \
+         patch.object(consolidation, "_spawn") as spawn_mock:
+        result = _run(consolidation.commit_candidate(
+            type="semantic", kg_invalidate=[["Ada", "role", "CTO"]],
+        ))
+    assert result["status"] == "committed", result
+    inv_mock.assert_called_once()
+    add_mock.assert_not_called()
+    spawn_mock.assert_not_called()
+
+
+def test_commit_candidate_rejects_invalidate_on_non_semantic() -> None:
+    result = _run(consolidation.commit_candidate(
+        type="procedural", content="x", kg_invalidate=[["a", "b", "c"]],
+    ))
+    assert result["status"] == "error", result
+    assert "only valid for type=semantic" in result["detail"]
+
+
+def test_commit_candidate_missed_invalidation_is_not_reported_as_retired() -> None:
+    """kg_invalidate on a triple with no open row must not claim success —
+    counting the attempt as a retirement told the caller a stale fact was
+    gone while it stayed current."""
+    with patch("harness.palace.kg_invalidate",
+               return_value="KG: nothing open to invalidate for `a` --[b]-> `c`"), \
+         patch("harness.palace.kg_add") as add_mock, \
+         patch.object(consolidation, "_save_candidate", new=AsyncMock()), \
+         patch.object(consolidation, "_spawn") as spawn_mock:
+        result = _run(consolidation.commit_candidate(
+            type="semantic", kg_invalidate=[["a", "b", "c"]],
+        ))
+    assert result["status"] == "error", result
+    assert "not retired" in result["detail"], result
+    assert "a|b|c" in result["detail"], result
+    add_mock.assert_not_called()
+    spawn_mock.assert_not_called()
+
+
+def test_commit_candidate_threads_ended_to_kg_invalidate() -> None:
+    """Retiring a fact that stopped being true in the past must backdate
+    valid_to, or temporal as-of queries keep returning it as in force."""
+    with patch("harness.palace.kg_invalidate",
+               return_value="KG: invalidated `a`") as inv_mock, \
+         patch.object(consolidation, "_save_candidate", new=AsyncMock()), \
+         patch.object(consolidation, "_spawn"):
+        result = _run(consolidation.commit_candidate(
+            type="semantic", kg_invalidate=[["a", "b", "c"]], ended="2026-08-01",
+        ))
+    assert result["status"] == "committed", result
+    assert inv_mock.call_args.kwargs["ended"] == "2026-08-01"
+
+
+def test_commit_candidate_expired_fact_is_readdable() -> None:
+    """The invalidate-then-re-add fact-change flow: dedupe checks CURRENT rows
+    only, so a triple that existed before but was retired stores again —
+    matching history here retired the old fact and then dropped its
+    replacement as 'already known', leaving no current fact at all."""
+    with patch("harness.palace.kg_fact_is_current", return_value=False) as cur_mock, \
+         patch("harness.palace.kg_invalidate",
+               return_value="KG: invalidated `Ada`"), \
+         patch("harness.palace.kg_add", return_value="stored") as add_mock, \
+         patch.object(consolidation, "_save_candidate", new=AsyncMock()), \
+         patch.object(consolidation, "_spawn"):
+        result = _run(consolidation.commit_candidate(
+            type="semantic",
+            kg_invalidate=[["Ada", "city", "London"]],
+            kg_triplets=[["Ada", "city", "Berlin"]],
+        ))
+    assert result["status"] == "committed", result
+    assert "stored 1" in result["detail"], result
+    add_mock.assert_called_once()
+    cur_mock.assert_called_once_with("Ada", "city", "Berlin")
+
+
+def test_commit_candidate_reports_malformed_invalidations() -> None:
+    """A partial retirement must not read as a whole one — malformed
+    kg_invalidate entries are named in the detail, like adds already were."""
+    with patch("harness.palace.kg_invalidate",
+               return_value="KG: invalidated `Bob`"), \
+         patch.object(consolidation, "_save_candidate", new=AsyncMock()), \
+         patch.object(consolidation, "_spawn"):
+        result = _run(consolidation.commit_candidate(
+            type="semantic",
+            kg_invalidate=[["Ada", "employer"], ["Bob", "city", "Pune"]],
+        ))
+    assert result["status"] == "committed", result
+    assert "kg_invalidate:" in result["detail"], result
+    assert "malformed" in result["detail"], result
 
 
 def test_commit_candidate_semantic_prose_writes_drawer() -> None:
@@ -492,8 +640,9 @@ def test_learn_tool_forwards_to_commit_candidate() -> None:
         ))
     assert out == "drawer: filed", out
     commit_mock.assert_awaited_once_with(
-        type="semantic", content="Some fact.", kg_triplets=None, topic="t1",
-        valid_from=None, source="runtime",
+        type="semantic", content="Some fact.", kg_triplets=None,
+        kg_invalidate=None, topic="t1",
+        valid_from=None, ended=None, source="runtime",
     )
 
 
@@ -574,7 +723,8 @@ def test_execute_tool_dispatches_learn_with_type() -> None:
         }))
     assert out == "ok"
     mock.assert_awaited_once_with(
-        type="preference", content="c", kg_triplets=None, topic="t", valid_from=None,
+        type="preference", content="c", kg_triplets=None, kg_invalidate=None,
+        topic="t", valid_from=None, ended=None,
     )
 
 
@@ -1080,12 +1230,18 @@ def test_reflection_prompt_drops_the_memory_half_after_the_first_slot() -> None:
     assert "state/worker_control.md" in skipped
 
 
-def test_goodnight_prompt_unchanged_episode_recap() -> None:
+def test_goodnight_prompt_recap_goes_through_learn() -> None:
+    """The recap files via the typed pipeline with an UNDATED topic — the
+    dated `daily-recap-YYYY-MM-DD` hall never exact-matched morning's undated
+    `daily-recap` filter, and minted a fresh hall every day."""
     from harness.loop_prompts import goodnight_prompt
 
     text = goodnight_prompt("2026-08-23")
-    assert "daily-recap-YYYY-MM-DD" in text
-    assert "room=" in text and "episodes" in text
+    assert 'learn(type="episodic"' in text
+    assert 'topic="daily-recap"' in text
+    assert "daily-recap-YYYY-MM-DD" not in text
+    assert "palace_add_drawer" not in text
+    assert "2026-08-23" in text
 
 
 # ─── Telemetry defects ──────────────────────────────────────────────────
@@ -1588,6 +1744,15 @@ def main() -> int:
         test_clean_valid_from_accepts_iso_only,
         test_commit_candidate_kg_dedup_skips_existing_triplet,
         test_commit_candidate_kg_partial_dedup_stores_only_new,
+        test_commit_candidate_episodic_writes_episodes_drawer_without_packaging,
+        test_commit_candidate_kg_only_renders_content_for_search,
+        test_commit_candidate_kg_invalidate_retires_before_adding,
+        test_commit_candidate_kg_invalidate_alone_is_a_commit,
+        test_commit_candidate_rejects_invalidate_on_non_semantic,
+        test_commit_candidate_missed_invalidation_is_not_reported_as_retired,
+        test_commit_candidate_threads_ended_to_kg_invalidate,
+        test_commit_candidate_expired_fact_is_readdable,
+        test_commit_candidate_reports_malformed_invalidations,
         test_commit_candidate_semantic_prose_writes_drawer,
         test_commit_candidate_prose_duplicate_skips_write,
         test_commit_candidate_procedural_writes_knowledge_file,
@@ -1617,7 +1782,7 @@ def main() -> int:
         test_toolset_gating_constants_are_consistent,
         test_reflection_prompt_uses_periodic_consolidator_contract,
         test_reflection_prompt_worker_audit_untouched,
-        test_goodnight_prompt_unchanged_episode_recap,
+        test_goodnight_prompt_recap_goes_through_learn,
         test_ungraded_surfacings_do_not_indict_a_trigger,
         test_a_genuinely_measured_bad_trigger_is_still_reported,
         test_bad_trigger_needs_enough_graded_evidence,

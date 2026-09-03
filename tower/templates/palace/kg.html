@@ -4,6 +4,9 @@
 {% block subtitle %}Temporal subject–predicate–object facts{% endblock %}
 
 {% block palace_content %}
+{% if notice %}
+<div class="notice-banner">{{ notice }}</div>
+{% endif %}
 <form action="/palace/kg" method="get" class="settings-search">
     <input type="text" name="entity" value="{{ entity }}" placeholder="Entity timeline lookup…" aria-label="Entity timeline lookup">
     <button type="submit" class="composer-send" aria-label="View timeline">→</button>

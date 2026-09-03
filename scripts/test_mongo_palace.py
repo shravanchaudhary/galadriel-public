@@ -103,18 +103,16 @@ class MongoPalaceTests(unittest.TestCase):
         self.assertEqual(rows[0]["id"], "apple")
         collection.aggregate.assert_not_called()
 
-    def test_crud_and_diary_behavior(self):
+    def test_crud_behavior(self):
         collection = MemoryCollection()
         with patch.object(mongo_palace, "_collection", return_value=collection), patch.object(
             mongo_palace, "_embedding", return_value=[0.0] * 384
         ):
-            created = mongo_palace.create_drawer("durable fact")
+            created = mongo_palace.upsert_drawer("durable fact")
             drawer_id = created["id"]
             self.assertEqual(mongo_palace.get_drawer(drawer_id)["text"], "durable fact")
             self.assertIn("updated", mongo_palace.update_drawer(drawer_id, hall="storage"))
             self.assertEqual(mongo_palace.get_drawer(drawer_id)["hall"], "storage")
-            self.assertIn("saved", mongo_palace.diary_write("remember this"))
-            self.assertIn("remember this", mongo_palace.diary_read())
             self.assertIn("deleted", mongo_palace.delete_drawer(drawer_id))
             self.assertIsNone(mongo_palace.get_drawer(drawer_id))
 
@@ -123,9 +121,9 @@ class MongoPalaceTests(unittest.TestCase):
         collection.find.return_value = Cursor([])
         collection.count_documents.return_value = 0
         with patch.object(mongo_palace, "_collection", return_value=collection):
-            mongo_palace.list_drawers(room="diary", limit=50, offset=50)
+            mongo_palace.list_drawers(room="episodes", limit=50, offset=50)
         collection.find.assert_called_once_with(
-            {"room": "diary"}, mongo_palace._LIST_PROJECTION,
+            {"room": "episodes"}, mongo_palace._LIST_PROJECTION,
         )
         self.assertNotIn("embedding", mongo_palace._LIST_PROJECTION)
 

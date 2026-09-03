@@ -39,7 +39,8 @@ _TOPIC_HALL_DESCRIPTION = (
     "it gets grouped with related memories, so choose it deliberately. The "
     "palace has exactly one wing — `agent` — covering this whole system (every "
     "channel and background run is the same agent). Inside it, rooms are broad "
-    "categories (conversations, knowledge, procedures, episodes) and halls are "
+    "categories (conversations, knowledge, procedures, episodes, preferences) "
+    "and halls are "
     "the sub-category within a room. Two memories in DIFFERENT rooms that share "
     "a hall become linked, so a well-chosen hall is what connects a procedure "
     "to the facts behind it. Reuse an existing hall name whenever one fits — "
@@ -87,14 +88,16 @@ TOOL_DEFINITIONS = [
     {
         "name": "learn",
         "description": (
-            "Conservative, typed memory writer for explicit corrections and "
-            "clearly durable facts learned mid-task. You pick the type — there "
-            "is no internal model guessing the packaging:\n"
+            "THE memory writer — the one way to store anything durable. You "
+            "pick the type; there is no internal model guessing the packaging:\n"
             "  - semantic (what is true): pass kg_triplets for crisp "
             "entity/relationship facts (people, projects, tools, stable "
             "preferences), OR content alone for durable prose worth re-reading "
             "later (becomes a palace drawer). Either one alone is enough — "
-            "kg_triplets does NOT also require content.\n"
+            "kg_triplets does NOT also require content. When a stored fact "
+            "CHANGED, pass kg_invalidate with the old triple(s) and "
+            "kg_triplets with the replacement — history is preserved, never "
+            "overwritten.\n"
             "  - procedural (how to do something): a reusable step-by-step "
             "lesson (becomes a knowledge/** file plus a palace drawer).\n"
             "  - preference (how to behave for this user going forward): "
@@ -102,6 +105,10 @@ TOOL_DEFINITIONS = [
             "often as the user does — repetition is what earns a preference a "
             "place in the always-on system prompt, and duplicates are counted, "
             "not stored twice.\n"
+            "  - episodic (what happened): a narrative worth keeping — a day "
+            "recap, an operational episode. Becomes a palace drawer in "
+            "room=episodes; gets no recall trigger, it is the record, not a "
+            "rule.\n"
             "The write is deduped against recently stored memories of the same "
             "type automatically (a near-duplicate is skipped, not re-written). "
             "Be conservative — use this for things you're confident are worth "
@@ -118,12 +125,12 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "type": {
                     "type": "string",
-                    "enum": ["semantic", "procedural", "preference"],
+                    "enum": ["semantic", "procedural", "preference", "episodic"],
                     "description": "What kind of memory this is. Required.",
                 },
                 "content": {
                     "type": "string",
-                    "description": "What was learned, with enough context to be useful on its own later. Required unless kg_triplets is given.",
+                    "description": "What was learned, with enough context to be useful on its own later. Required unless kg_triplets or kg_invalidate is given.",
                 },
                 "kg_triplets": {
                     "type": "array",
@@ -140,6 +147,20 @@ TOOL_DEFINITIONS = [
                         "type=semantic."
                     ),
                 },
+                "kg_invalidate": {
+                    "type": "array",
+                    "items": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                    "description": (
+                        "KG triples to RETIRE (mark no longer valid, history "
+                        "kept): flat array of [subject, predicate, object]. "
+                        "Use together with kg_triplets when a fact changed, or "
+                        "alone to retire a fact outright. Only valid with "
+                        "type=semantic."
+                    ),
+                },
                 "topic": {
                     "type": "string",
                     "description": _TOPIC_HALL_DESCRIPTION,
@@ -147,6 +168,16 @@ TOOL_DEFINITIONS = [
                 "valid_from": {
                     "type": "string",
                     "description": _VALID_FROM_DESCRIPTION,
+                },
+                "ended": {
+                    "type": "string",
+                    "description": (
+                        "Optional ISO date (YYYY-MM-DD) when the kg_invalidate "
+                        "fact(s) STOPPED being true — the retirement mirror of "
+                        "valid_from. Defaults to today; pass it when the fact "
+                        "ended in the past so temporal queries place the "
+                        "change correctly. Only used with kg_invalidate."
+                    ),
                 },
             },
             "required": ["type"],
@@ -244,8 +275,8 @@ TOOL_DEFINITIONS = [
     {
         "name": "tune_recall",
         "description": (
-            "Feedback on a fired recall (a recall() fire result). Call after "
-            "you acted on — or deliberately ignored — a fire. "
+            "Consolidation-only: feedback on a fired recall (a recall() fire "
+            "result), judged with episode hindsight. "
             "applicable=true reinforces the match: the fired chunk is appended to "
             "the recall's positive_examples. applicable=false records a misfire: "
             "the chunk is appended to negative_examples, and the Stage-2 judge is "
@@ -384,12 +415,12 @@ TOOL_DEFINITIONS = [
             "properties": {
                 "type": {
                     "type": "string",
-                    "enum": ["semantic", "procedural", "preference"],
+                    "enum": ["semantic", "procedural", "preference", "episodic"],
                     "description": "What kind of memory this is.",
                 },
                 "content": {
                     "type": "string",
-                    "description": "The memory content, self-contained enough to be useful later. Required unless kg_triplets is given.",
+                    "description": "The memory content, self-contained enough to be useful later. Required unless kg_triplets or kg_invalidate is given.",
                 },
                 "kg_triplets": {
                     "type": "array",
@@ -403,6 +434,16 @@ TOOL_DEFINITIONS = [
                         "type=semantic."
                     ),
                 },
+                "kg_invalidate": {
+                    "type": "array",
+                    "items": {"type": "array", "items": {"type": "string"}},
+                    "description": (
+                        "KG triples to RETIRE (history kept): flat array of "
+                        "[subject, predicate, object]. Pair with kg_triplets "
+                        "when the episode shows a stored fact changed, or use "
+                        "alone to retire one. Only valid with type=semantic."
+                    ),
+                },
                 "topic": {
                     "type": "string",
                     "description": _TOPIC_HALL_DESCRIPTION,
@@ -410,6 +451,16 @@ TOOL_DEFINITIONS = [
                 "valid_from": {
                     "type": "string",
                     "description": _VALID_FROM_DESCRIPTION,
+                },
+                "ended": {
+                    "type": "string",
+                    "description": (
+                        "Optional ISO date (YYYY-MM-DD) when the kg_invalidate "
+                        "fact(s) STOPPED being true — the retirement mirror of "
+                        "valid_from. Defaults to today; pass it when the fact "
+                        "ended in the past so temporal queries place the "
+                        "change correctly. Only used with kg_invalidate."
+                    ),
                 },
                 "evidence_episode_ids": {
                     "type": "array",
@@ -568,9 +619,9 @@ TOOL_DEFINITIONS = [
             "drawer summary, don't touch the content), bad-memory candidates "
             "(harmful use and/or a user correction -> rewrite, invalidate, or "
             "delete), and stale memories (unused 90+ days -> consider "
-            "archiving). Read-only — act with the existing tools (tune_recall, "
-            "learn_recall, palace_kg_invalidate, palace_add_drawer, "
-            "purge_recall)."
+            "archiving). Read-only — act with the existing tools: tune_recall / "
+            "learn_recall / purge_recall for triggers, propose_memory (with "
+            "supersedes_memory_id, or kg_invalidate for a KG fact) for content."
         ),
         "input_schema": {
             "type": "object",
@@ -798,7 +849,14 @@ TOOL_DEFINITIONS = [
     },
     {
         "name": "memory_log",
-        "description": "Append an entry to today's memory log. Use this to persist important information across sessions.",
+        "description": (
+            "Jot a scratch note into today's daily log — a hot index injected "
+            "into your context for roughly 48 hours (yesterday + today), after "
+            "which it falls out of view and nothing resurfaces it. Use it for "
+            "progress ticks and same-day working notes only. Anything that "
+            "must survive — a fact, a lesson, a preference, a day recap — "
+            "goes through `learn` instead."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
@@ -937,63 +995,18 @@ TOOL_DEFINITIONS = [
         },
     },
     {
-        "name": "palace_add_drawer",
-        "description": (
-            "File a verbatim fact or memory directly into the palace *right now*. "
-            "Unlike memory_log (which only writes to today's daily log as a hot "
-            "index), this tool makes the content immediately retrievable via "
-            "palace_search. "
-            "Use sparingly — only for facts worth remembering across sessions "
-            "(decisions, discoveries, durable context). Defaults to room=knowledge; "
-            "use room=episodes for daily recaps."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "content": {
-                    "type": "string",
-                    "description": "The verbatim content to file. Write it the way you want to read it back.",
-                },
-                "topic": {
-                    "type": "string",
-                    "description": "Optional short topic hint (used for the filename slug).",
-                },
-                "room": {
-                    "type": "string",
-                    "description": (
-                        "Room inside the agent wing. Defaults to 'knowledge' for "
-                        "durable reusable facts. Use 'episodes' for daily recaps / "
-                        "operational narratives, 'conversations' only for verbatim "
-                        "chat archives (prefer the archive helpers), 'diary' via "
-                        "palace_diary_write instead."
-                    ),
-                },
-                "wing": {
-                    "type": "string",
-                    "description": "Wing to file under (default 'agent' — the only lived-memory wing).",
-                },
-            },
-            "required": ["content"],
-        },
-    },
-    {
         "name": "palace_wake_up",
         "description": (
-            "Fetch a fresh L0+L1 wake-up snapshot from the palace (~800 tokens). "
-            "Different from the auto-injected wake-up in your system prompt: this "
-            "runs live, optionally filtered to a single wing, so you can pull a "
-            "targeted palace overview mid-conversation. Useful when you suspect "
-            "the auto-injected wake-up is stale, or when you need a focused "
-            "recall of a specific project/person."
+            "Regenerate and return the wake-up digest live: the newest learned "
+            "drawers (knowledge / procedures / episodes / preferences — never "
+            "raw conversation), capped at ~3000 chars. It is the same digest the "
+            "system auto-injects into your prompt; call this only when you "
+            "suspect that injected copy is stale (e.g. right after filing "
+            "something you expect to see there)."
         ),
         "input_schema": {
             "type": "object",
-            "properties": {
-                "wing": {
-                    "type": "string",
-                    "description": "Optional wing filter (project or person). Omit for a global snapshot.",
-                },
-            },
+            "properties": {},
             "required": [],
         },
     },
@@ -1005,27 +1018,6 @@ TOOL_DEFINITIONS = [
             "you want to know which room/hall to filter on. Zero API cost."
         ),
         "input_schema": {"type": "object", "properties": {}, "required": []},
-    },
-    {
-        "name": "palace_kg_add",
-        "description": (
-            "File a fact into the knowledge graph as a (subject, predicate, object) "
-            "triple with a validity window. Use for durable relational facts: "
-            "`user — prefers — concise updates`, "
-            "`service — runs_on — ARM64 t4g`, `project — shipped_at — 2026-04-20`. "
-            "Facts can be superseded later via palace_kg_invalidate. "
-            "Prefer this over palace_add_drawer for structured relations."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "subject": {"type": "string", "description": "The entity the fact is about."},
-                "predicate": {"type": "string", "description": "The relationship verb (is/works_on/prefers/runs_on/ships_as/etc)."},
-                "object": {"type": "string", "description": "What the subject relates to."},
-                "valid_from": {"type": "string", "description": "Optional ISO date (YYYY-MM-DD) when the fact became true. Defaults to today."},
-            },
-            "required": ["subject", "predicate", "object"],
-        },
     },
     {
         "name": "palace_kg_query",
@@ -1044,23 +1036,6 @@ TOOL_DEFINITIONS = [
         },
     },
     {
-        "name": "palace_kg_invalidate",
-        "description": (
-            "Mark a KG fact as no longer valid (sets valid_to). Use when a fact changes: "
-            "first invalidate the old triple, then palace_kg_add the new one. Preserves history."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "subject": {"type": "string"},
-                "predicate": {"type": "string"},
-                "object": {"type": "string"},
-                "ended": {"type": "string", "description": "Optional ISO date when the fact stopped being true. Defaults to today."},
-            },
-            "required": ["subject", "predicate", "object"],
-        },
-    },
-    {
         "name": "palace_kg_timeline",
         "description": (
             "Return the chronological history of all KG facts touching a given entity. "
@@ -1072,37 +1047,6 @@ TOOL_DEFINITIONS = [
                 "entity": {"type": "string", "description": "Entity name (appears as subject or object)."},
             },
             "required": ["entity"],
-        },
-    },
-    {
-        "name": "palace_diary_write",
-        "description": (
-            "Write a diary entry — your personal journal. Use at end-of-session, goodnight, "
-            "or any time something is worth remembering as a reflection (not as a raw fact). "
-            "Different from palace_add_drawer (verbatim durable fact) and memory_log "
-            "(append to today's daily log). Diary entries are your curated thoughts."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "entry": {"type": "string", "description": "The diary entry text. Write it as you want to read it back."},
-                "topic": {"type": "string", "description": "Optional topic tag (default 'general')."},
-            },
-            "required": ["entry"],
-        },
-    },
-    {
-        "name": "palace_diary_read",
-        "description": (
-            "Read the most recent N diary entries — your own reflections across past sessions. "
-            "Useful on wake-up if the auto-injected L1 doesn't cover what you need."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "last_n": {"type": "integer", "description": "Number of entries to return (default 10, max 50)."},
-            },
-            "required": [],
         },
     },
     {
@@ -1317,8 +1261,8 @@ TOOL_DEFINITIONS = [
             "Read recent recall proposals and verified fires for Stage-1/2 audit. "
             "proposed+rejected = Stage-1 matched but Stage-2 vetoed; "
             "proposed+verified / verified = Stage-2 accepted and injected. "
-            "Cue patches via learn_recall retune Stage-2 few-shots (use matched_chunk "
-            "as a negative when an inject was a false positive). "
+            "Read-only: cue fixes happen in the consolidation passes, which "
+            "read this same telemetry. "
             "Not the definition catalog — use get_recall for that."
         ),
         "input_schema": {
@@ -1352,10 +1296,9 @@ TOOL_DEFINITIONS.extend(PHONE_TOOL_DEFINITIONS)
 # not amnesiac. It reaches drawers directly (`memory_access._open_verbatim`) as
 # well as the curated store.
 _PALACE_TOOL_NAMES = frozenset({
-    "palace_search", "palace_add_drawer", "palace_wake_up", "palace_taxonomy",
-    "palace_kg_add", "palace_kg_query", "palace_kg_invalidate",
-    "palace_kg_timeline", "palace_diary_write", "palace_diary_read",
-    "memory",
+    "palace_search", "palace_wake_up", "palace_taxonomy",
+    "palace_kg_query", "palace_kg_timeline",
+    "memory", "learn", "propose_memory",
 })
 
 
@@ -1770,8 +1713,10 @@ async def _execute_tool_impl(
             type=inputs.get("type", ""),
             content=inputs.get("content", ""),
             kg_triplets=inputs.get("kg_triplets"),
+            kg_invalidate=inputs.get("kg_invalidate"),
             topic=inputs.get("topic"),
             valid_from=inputs.get("valid_from"),
+            ended=inputs.get("ended"),
         )
     elif name == "learn_recall":
         return await _learn_recall(
@@ -1828,8 +1773,10 @@ async def _execute_tool_impl(
             type=inputs.get("type", ""),
             content=inputs.get("content", ""),
             kg_triplets=inputs.get("kg_triplets"),
+            kg_invalidate=inputs.get("kg_invalidate"),
             topic=inputs.get("topic"),
             valid_from=inputs.get("valid_from"),
+            ended=inputs.get("ended"),
             evidence=evidence,
             confidence=inputs.get("confidence"),
             source=source,
@@ -1931,31 +1878,12 @@ async def _execute_tool_impl(
         # Both corpora live in one store, so a conversation search can surface a
         # learned memory. Say which is which rather than leaving them identical.
         return await memory_access.label_curated(result)
-    elif name == "palace_add_drawer":
-        from . import palace
-        return await palace.add_drawer(
-            content=inputs["content"],
-            topic=inputs.get("topic"),
-            wing=inputs.get("wing", "agent"),
-            room=inputs.get("room"),
-        )
     elif name == "palace_wake_up":
         from . import palace
-        return await palace.wake_up(wing=inputs.get("wing"))
+        return await palace.wake_up()
     elif name == "palace_taxonomy":
         from . import palace
         return await asyncio.get_running_loop().run_in_executor(None, palace.taxonomy)
-    elif name == "palace_kg_add":
-        from . import palace
-        return await asyncio.get_running_loop().run_in_executor(
-            None,
-            lambda: palace.kg_add(
-                subject=inputs["subject"],
-                predicate=inputs["predicate"],
-                object=inputs["object"],
-                valid_from=inputs.get("valid_from"),
-            ),
-        )
     elif name == "palace_kg_query":
         from . import palace
         return await asyncio.get_running_loop().run_in_executor(
@@ -1966,37 +1894,11 @@ async def _execute_tool_impl(
                 object=inputs.get("object"),
             ),
         )
-    elif name == "palace_kg_invalidate":
-        from . import palace
-        return await asyncio.get_running_loop().run_in_executor(
-            None,
-            lambda: palace.kg_invalidate(
-                subject=inputs["subject"],
-                predicate=inputs["predicate"],
-                object=inputs["object"],
-                ended=inputs.get("ended"),
-            ),
-        )
     elif name == "palace_kg_timeline":
         from . import palace
         return await asyncio.get_running_loop().run_in_executor(
             None,
             lambda: palace.kg_timeline(entity=inputs["entity"]),
-        )
-    elif name == "palace_diary_write":
-        from . import palace
-        return await asyncio.get_running_loop().run_in_executor(
-            None,
-            lambda: palace.diary_write(
-                entry=inputs["entry"],
-                topic=inputs.get("topic", "general"),
-            ),
-        )
-    elif name == "palace_diary_read":
-        from . import palace
-        return await asyncio.get_running_loop().run_in_executor(
-            None,
-            lambda: palace.diary_read(last_n=inputs.get("last_n", 10)),
         )
     elif name == "google_search":
         results = await serper_search(

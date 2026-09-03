@@ -1077,11 +1077,15 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
         return jsonify({"model": saved, "persisted": True})
 
     def _run_async(coro):
+        # scheduler._loop is None until Scheduler.start(), and Tower serves
+        # requests before the agent loop exists — guard the value, not just
+        # the attribute, or the fallback loop below is unreachable (the old
+        # worker branch was worse: WorkerLoop._loop is an async method, so
+        # that check always raised).
         loop = None
-        if scheduler and hasattr(scheduler, "_loop") and scheduler._loop.is_running():
-            loop = scheduler._loop
-        elif worker and hasattr(worker, "_loop") and worker._loop.is_running():
-            loop = worker._loop
+        sched_loop = getattr(scheduler, "_loop", None) if scheduler else None
+        if sched_loop is not None and sched_loop.is_running():
+            loop = sched_loop
 
         if loop:
             return asyncio.run_coroutine_threadsafe(coro, loop).result()
@@ -1096,7 +1100,21 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
     def api_get_recalls():
         from harness.recall import fetch_all_recalls
         try:
-            recalls = _run_async(fetch_all_recalls())
+            # Management listing: disabled recalls must stay visible or the
+            # Enable button can never be reached again.
+            recalls = _run_async(fetch_all_recalls(include_disabled=True))
+            # A recall authored for a committed memory carries that memory's id
+            # so the page can link trigger -> content (and the memory page
+            # links back). sys_*/hand-written recalls have none — legitimate:
+            # a self-contained rule needs no backing memory.
+            try:
+                from harness.consolidation import memory_ids_by_recall
+                ids = [r.get("recall_id") for r in recalls if r.get("recall_id")]
+                backing = _run_async(memory_ids_by_recall(ids)) if ids else {}
+                for r in recalls:
+                    r["memory_id"] = backing.get(r.get("recall_id"))
+            except Exception:
+                pass
             return jsonify({"status": "ok", "recalls": recalls})
         except Exception as e:
             return jsonify({"error": str(e)}), 500
@@ -1164,10 +1182,13 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
             verified, rejected = _run_async(filter_matches_with_judge(proposed))
             # Same resolution the live fire path stamps, so the test page shows
             # which stored cue actually won rather than a field nothing sets.
-            # Skipped when the caller picked a non-default encoder: winning_cue
-            # scores with the configured one, so the answer would name a cue
-            # that this scan's encoder never ranked highest.
-            if not model:
+            # Skipped when the caller picked an encoder other than the
+            # CONFIGURED one: winning_cue scores with get_encoder() unforced,
+            # so the answer would otherwise name a cue this scan's encoder
+            # never ranked highest. (The old `if not model` guard could never
+            # stamp — the page always sends a model.)
+            configured = os.environ.get("RECALL_ENCODER", "fastembed").lower()
+            if (model or configured).lower() == configured:
                 for match in verified:
                     cue = winning_cue(match)
                     if cue:
@@ -1254,9 +1275,11 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
                         break
                 
                 if updated:
-                    if not positive or not negative or not lexical:
+                    # Negatives stay optional on edit, matching create — they
+                    # are Stage-2 judge few-shots, not a required Stage-1 cue.
+                    if not positive or not lexical:
                         return jsonify({
-                            "error": "positive_examples, negative_examples, and lexical_cues must each be non-empty",
+                            "error": "positive_examples and lexical_cues must each be non-empty",
                         }), 400
                     with open(config_path, "w", encoding="utf-8") as f:
                         json.dump(sys_recalls, f, indent=4)
@@ -1269,9 +1292,9 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
             if db is None:
                 return jsonify({"error": "No database"}), 500
 
-            if not positive or not negative or not lexical:
+            if not positive or not lexical:
                 return jsonify({
-                    "error": "positive_examples, negative_examples, and lexical_cues must each be non-empty",
+                    "error": "positive_examples and lexical_cues must each be non-empty",
                 }), 400
             
             try:
@@ -1586,9 +1609,9 @@ def create_tower(agent, scheduler=None, worker=None) -> Flask:
     from .config_browser import register_config_browser
     register_config_browser(app, agent, scheduler=scheduler)
 
-    # "Palace" — memory palace browser (wings/rooms/halls/drawers/KG/diary).
+    # "Palace" — memory browser (drawers/KG/learned memory/daily logs).
     from .palace_browser import register_palace_browser
-    register_palace_browser(app)
+    register_palace_browser(app, run_async=_run_async)
 
     # Costs — LLM API spend by day/channel/model (harness/cost_tracker.py).
     from .cost_board import register_cost_board

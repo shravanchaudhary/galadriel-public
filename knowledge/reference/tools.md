@@ -41,7 +41,7 @@ chart, UI mockup, or photo — look at it and answer from what you see.
 
 *Your verbatim semantic memory. The **complete chat history** (every message,
 archived on `/new`, compaction, and shutdown) lives here in `room=conversations`,
-alongside your diary and the facts you file with `learn` — all searchable by meaning.
+alongside the facts you file with `learn` — all searchable by meaning.
 Stored in MongoDB/DocumentDB and embedded locally. **Zero API tokens spent,
 ever.** Results are your exact words, never paraphrased.*
 
@@ -56,8 +56,9 @@ ever.** Results are your exact words, never paraphrased.*
 - **Room** — purpose grouping within the `agent` wing:
   - `conversations` — verbatim chat archives only
   - `knowledge` — durable reusable / personal learned facts
-  - `episodes` — daily recaps and operational narratives
-  - `diary` — first-person reflection
+  - `procedures` — reusable how-tos (`learn type=procedural`)
+  - `episodes` — day recaps and operational narratives (`learn type=episodic`)
+  - `preferences` — how to behave for this user (`learn type=preference`)
 - **Wing** — top-level namespace. **All lived memory is the single `agent` wing —
   you never choose a wing.**
 - **Hall** — the sub-category inside a room, and the palace's only topical
@@ -85,7 +86,7 @@ Two corpora, two questions.
 
 | | Conversation memory | Learned memory |
 |---|---|---|
-| Holds | every message, verbatim, plus recaps and diary | rules, procedures, facts, preferences |
+| Holds | every message, verbatim, plus recaps | rules, procedures, facts, preferences |
 | Answers | *what happened, when, in whose words* | *what do I know, how should I act* |
 | Search | `palace_search` | `memory(query=…)` |
 | Open one | `memory(id=…)` — verbatim, no links | `memory(id=…)` — with its linked context |
@@ -119,7 +120,7 @@ palace_search(order="recency", room="conversations", channel="main", k=5)  # lat
 
 - `query` — full phrases beat keywords.
 - `wing` — **leave `None`.**
-- `room` — optional filter (`conversations`, `knowledge`, `episodes`, `diary`).
+- `room` — optional filter (`conversations`, `knowledge`, `procedures`, `episodes`, `preferences`).
 - `hall` — optional auto-topic filter (not a project name).
 - `k` — 5 is usually enough; bump to 10–20 for broader sweeps.
 
@@ -144,11 +145,13 @@ scratch notes and `learn` for anything durable. Pick the `type` yourself.
 
 | What you want to save | Use | Becomes palace-searchable |
 |---|---|---|
-| A raw observation, progress tick, quick note | `memory_log(entry)` | Hot daily index only |
+| A raw observation, progress tick, quick note | `memory_log(entry)` | No — hot daily index only, gone from view after ~48h |
 | A durable fact worth re-reading later | `learn(type="semantic", content=..., topic=...)` | Immediately, as a `knowledge` drawer |
 | A structured relational fact | `learn(type="semantic", kg_triplets=[[s, p, o]], valid_from=...)` | Immediately via KG |
+| A stored fact that CHANGED | `learn(type="semantic", kg_invalidate=[[old s, p, o]], kg_triplets=[[new s, p, o]])` | Immediately — old fact retired with history kept |
 | A reusable how-to, or the lesson from a failure | `learn(type="procedural", content=..., topic=...)` | Immediately — `knowledge/**` file plus a drawer |
 | How the user wants you to behave going forward | `learn(type="preference", content=...)` | Immediately — daily log plus a drawer |
+| A narrative of what happened (day recap, episode) | `learn(type="episodic", content=..., topic=...)` | Immediately, as an `episodes` drawer (no recall trigger) |
 | Always-on lean fact every turn | `MEMORY.md` (stable block) | No — already in context |
 
 `learn` validates, dedupes against recent memories of the same type, writes, and
@@ -162,13 +165,11 @@ system firing on your behalf. You may call it yourself, but only
 when meaningful new content exists since the last result; when everything is
 scanned it returns nothing new — take that answer and move on.
 
-**Recalls are maintained elsewhere.** The granular writers —
-`palace_add_drawer`, `palace_kg_add`, `palace_kg_invalidate`,
-`palace_diary_write`, `learn_recall`, `tune_recall`, `purge_recall` — belong to
-the consolidation passes that run at episode boundaries, and to Tower. They
-decide *when* a memory should resurface, working from fire telemetry that spans
-episodes. Within a turn, using a helpful fire and moving past an unhelpful one
-is the complete handling.
+**Recalls are maintained elsewhere.** The trigger tools — `learn_recall`,
+`tune_recall`, `purge_recall` — belong to the consolidation passes that run at
+episode boundaries, and to Tower. They decide *when* a memory should resurface,
+working from fire telemetry that spans episodes. Within a turn, using a helpful
+fire and moving past an unhelpful one is the complete handling.
 
 For the encode → retrieve-test loop when filing durable knowledge, follow
 `knowledge/skills/retrieval-practice.md` (INDEX id `retrieval-practice`): dig
@@ -185,25 +186,25 @@ need an explicit `learn` call.
 | `palace_search(...)` | Recall by natural-language query |
 | `palace_kg_query(...)` | Look up structured facts |
 | `palace_kg_timeline(entity)` | Full history of an entity |
-| `palace_diary_read(last_n=10)` | Past reflections |
 | `palace_taxonomy()` | Wings / rooms / halls with counts |
-| `palace_wake_up(wing=None)` | Fresh L0+L1 snapshot on demand |
+| `palace_wake_up()` | Fresh wake-up digest on demand |
 
 ### End-of-session ritual
 
 At goodnight, and whenever a meaningful exchange concludes:
 
 ```
-palace_diary_write(
-    entry="<what happened, what was decided, what is still open, what surprised you>",
-    topic="<e.g. 'ops', 'bug-fix', 'decisions'>"
+learn(
+    type="episodic",
+    content="<what happened, what was decided, what is still open, what surprised you>",
+    topic="<e.g. 'ops', 'bug-fix', 'daily-recap'>"
 )
 ```
 
 ### What you cannot do
 
 - **Delete / edit drawers** — append-only from your side. File a corrected version
-  (and optionally `palace_kg_invalidate` the stale fact).
+  (`learn`, with `kg_invalidate` when a KG fact went stale).
 - Prefer the curated palace tools over calling a CLI via `run_shell`.
 
 All palace tools spend **zero** API tokens. Prefer them over `read_file` when
@@ -476,7 +477,7 @@ Same rule as heartbeat: **use the Tower API**, not a direct write to
 # Arm (fires once, shortly after the next scheduler loop / next boot)
 curl -s -X POST http://localhost:8080/api/scheduler/wake \
   -H 'Content-Type: application/json' \
-  -d '{"prompt": "[SYSTEM:WAKE] <self-contained resume instructions — diary + palace + board>"}'
+  -d '{"prompt": "[SYSTEM:WAKE] <self-contained resume instructions — palace + board>"}'
 
 # Disarm
 curl -s -X POST http://localhost:8080/api/scheduler/wake \

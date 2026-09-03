@@ -18,18 +18,9 @@
     {% endif %}
 </nav>
 
-{% if wing or room or hall %}
-<details class="settings-prompt">
-    <summary>Create drawer</summary>
-<form method="post" action="/palace/drawer/create" class="settings-editor">
-    <input type="hidden" name="wing" value="{{ wing or 'agent' }}">
-    <input type="hidden" name="room" value="{{ room or 'general' }}">
-    <input type="hidden" name="hall" value="{{ hall or 'general' }}">
-    <textarea name="text" class="chat-input" rows="3" placeholder="Drawer content…" required style="width:100%;margin-bottom:0.5rem;"></textarea>
-    <button type="submit" class="btn btn-small">Create drawer</button>
-</form>
-</details>
-{% endif %}
+<p class="settings-meta">New content is taught, not filed raw — use the
+<a href="/palace/learned">Learned</a> tab's Teach form so it gets an identity,
+dedupe, a trigger, and graph edges like everything the agent learns.</p>
 
 {% if drawers %}
 <div class="settings-list" style="margin-top:1.5rem;">

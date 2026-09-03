@@ -278,14 +278,21 @@ def _load_system_recalls() -> list[dict]:
         return []
 
 
-async def fetch_all_recalls() -> list[dict]:
-    """Fetch both system recalls and user-defined recalls from DB."""
+async def fetch_all_recalls(include_disabled: bool = False) -> list[dict]:
+    """Fetch both system recalls and user-defined recalls from DB.
+
+    Default excludes disabled user recalls — the scan/judge corpus must not
+    see them. Tower's management listing passes `include_disabled=True`;
+    without it a disabled recall vanished from the page and its Enable
+    button was unreachable, so disabling was one-way from the UI.
+    """
     recalls = _load_system_recalls()
     db = get_db()
     if db is not None:
         try:
             coll = db[RECALLS_COLLECTION]
-            async for doc in coll.find({"enabled": {"$ne": False}}):
+            query = {} if include_disabled else {"enabled": {"$ne": False}}
+            async for doc in coll.find(query):
                 doc["source"] = "user"
                 doc["recall_id"] = str(doc.pop("_id"))
                 normalize_recall_thresholds(doc)
@@ -1203,8 +1210,6 @@ _STAGE2_BARE_TOOLS: frozenset[str] = frozenset(
         "db_upsert",
         "db_delete",
         "palace_search",
-        "palace_add_drawer",
-        "palace_kg_add",
         "palace_kg_query",
         "palace_taxonomy",
         "memory_log",

@@ -47,16 +47,15 @@ setting `state/worker_control.md` to `active` — not hoping the idle loop notic
 Each process starts with limited context. Memory is stacked:
 
 - **`MEMORY.md`** — always-on lean facts needed every turn.
-- **Daily logs + memory palace** — durable detail and searchable history.
-- **Semantic recalls** — reactive one-liner lookups. Stage-1 (per-recall embed
-  floor, 0.6 by default, or a lexical cue) proposes candidates; Stage-2 (judge
-  model) verifies intent on `matched_chunk` before inject. Mid-turn inject only
-  on `tool_use` pauses (plus start-of-turn user scan). Inspect them with
-  `get_recall` and `get_recent_recalls` (proposed vs verified). A trigger is
-  authored and holdout-tested by its own model pass when a memory is committed,
-  then retuned by the consolidation passes at episode boundaries, which read the
-  fire telemetry across episodes. System recall instructions are immutable;
-  their cues may be tuned.
+- **Daily logs** — a hot index of today + yesterday, auto-injected; entries
+  fall out of view after that. Working memory, not storage.
+- **Memory palace** — durable detail and searchable history (learned memory
+  via `memory`, verbatim history via `palace_search`).
+- **Semantic recalls** — reactive triggers that resurface learned rules
+  mid-turn (see the Semantic Recalls section of the system prompt). A trigger
+  is authored and holdout-tested by its own model pass when a memory is
+  committed, then retuned by the consolidation passes at episode boundaries.
+  Inspect with `get_recall` / `get_recent_recalls`.
 
 Read before relying on past facts, and update the appropriate store after meaningful changes.
 
@@ -66,14 +65,16 @@ Durable learning is encode → retrieve-test → restudy → spaced retest.
 
 - **Dig deep before filing:** connect new info to existing palace/KG neighbors;
   prefer structured KG links and short episode arcs over orphan prose.
-- **File with `learn`:** pick the type — `semantic` (what is true, plus
-  `kg_triplets` for entity facts), `procedural` (a reusable how-to),
-  `preference` (how to behave). Near-duplicates are counted, not rewritten, so
-  re-teaching is safe and repetition earns a preference the always-on prompt.
+- **`learn` is the one writer:** pick the type — `semantic` (what is true,
+  plus `kg_triplets` for entity facts; `kg_invalidate` retires a fact that
+  changed), `procedural` (a reusable how-to), `preference` (how to behave),
+  `episodic` (a narrative of what happened). Near-duplicates are counted, not
+  rewritten, so re-teaching is safe and repetition earns a preference the
+  always-on prompt.
 - **Make each memory self-contained:** carry the context that makes it
   meaningful alone; it may resurface long after this task ends.
 - **3R on durable knowledge:** after filing (or before claiming), retrieve via
-  `palace_search` / `palace_kg_query` without relying on the just-written
+  `memory(query=…)` / `palace_kg_query` without relying on the just-written
   buffer, then restudy the gaps.
 - **Never drop known items:** during reflection, retest at least one
   already-known fact or recall — not only novelties.
@@ -82,28 +83,30 @@ Full practice: `knowledge/skills/retrieval-practice.md`.
 
 ## Memory palace
 
-One wing (`agent`), four rooms — shared across every channel (main, worker,
+One wing (`agent`), purpose rooms — shared across every channel (main, worker,
 morning / reflection / goodnight). Channels do not share live buffers; they share
 this palace.
 
 | Room | What lives there |
 |---|---|
 | `conversations` | Verbatim chat — auto-archived on checkpoint, compaction, `/new`, shutdown |
-| `knowledge` | Durable facts / lessons you file with `palace_add_drawer` |
-| `episodes` | Daily recaps and operational narratives |
-| `diary` | First-person reflection (`palace_diary_write`) |
+| `knowledge` | Durable facts / lessons (`learn type=semantic`) |
+| `procedures` | Reusable how-tos (`learn type=procedural`) |
+| `episodes` | Day recaps and operational narratives (`learn type=episodic`) |
+| `preferences` | How to behave for this user (`learn type=preference`) |
 
 1. Read the injected wake-up summary when present.
 2. Before you speak about any past decision, number, date, name, or historical
-   fact: **`palace_search` or `palace_kg_query` FIRST. Never guess.** Wrong is
-   worse than slow. Prefer a `room=` filter when you know which (past chat →
-   `conversations`; learned fact → `knowledge`; day recap → `episodes`).
+   fact: **query FIRST. Never guess.** Wrong is worse than slow. A rule or
+   durable fact you should APPLY → `memory(query=…)`, then `memory(id=…)` to
+   open it with its linked context; what was said or done (episodic past) →
+   `palace_search`; an entity relation → `palace_kg_query` /
+   `palace_kg_timeline`.
 3. Do **not** re-dump chat into the palace — raw turns are already archived.
-   File only distilled lessons (`knowledge` / `episodes` / diary / KG).
+   File only distilled lessons, through `learn`.
 4. If unsure about a specific figure — say you will check, then query.
-5. After a meaningful session, or at goodnight: **`palace_diary_write`**.
-6. When facts change: `palace_kg_invalidate` the old fact, `palace_kg_add` the new
-   one. Preserve history instead of overwriting it.
+5. When facts change: `learn(type=semantic, kg_invalidate=[old triple],
+   kg_triplets=[new triple])`. Preserve history instead of overwriting it.
 
 ## Maintaining this file
 

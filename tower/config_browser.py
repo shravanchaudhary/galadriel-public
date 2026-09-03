@@ -6,7 +6,7 @@ Read/edit surface for every *.md file the agent actually consults:
   - jobs/*.md     — playbooks, read on demand by the worker/scheduler
   - knowledge/*.md — indexed procedures and reference, read on demand
   - state/*.md    — board files (plan, progress, steering, backlog, ...)
-  - sme/*.md      — subject-matter knowledge, mined into the palace
+  - sme/*.md      — curated subject-matter reference files, read on demand
 
 Nothing here is cached: every view re-reads from disk, and `MemoryManager`
 does the same on every agent turn (see harness/memory.py), so what you see
@@ -112,7 +112,7 @@ CATEGORIES = {
     "jobs": ("Playbooks", "read on demand by the worker/scheduler", JOBS_DIR, _job_files),
     "knowledge": ("Knowledge", "indexed procedures and reference, read on demand", KNOWLEDGE_DIR, _knowledge_files),
     "state": ("Board / State", "read on demand", STATE_DIR, _state_files),
-    "sme": ("SME Knowledge", "mined into the palace, not in the prompt", SME_DIR, _sme_files),
+    "sme": ("SME Knowledge", "curated reference files, read on demand — durable facts go to the palace via learn", SME_DIR, _sme_files),
     "tools": ("Personal Tools", "reusable tools created by the agent", personal_tools_root(), _personal_tools_files),
 }
 

@@ -46,7 +46,7 @@ When your changes create orphans:
 ### Clean-up of Test Files
 
 - **Clean Up Your Mess:** Always delete any temporary test scripts, scratch files (`test_*.py`, `tmp_*.py`, etc.) immediately after troubleshooting or testing an issue. Do not leave behind test files that bloat the repository.
-- **Skill Memorization:** If a test script contains a valuable trick, skill, or codebase discovery, document it under `knowledge/skills/` (and add an INDEX row), or file it to the palace with `palace_add_drawer(..., room="knowledge")`. Only put essentials that must be present every turn in `config/MEMORY.md`.
+- **Skill Memorization:** If a test script contains a valuable trick, skill, or codebase discovery, document it under `knowledge/skills/` (and add an INDEX row), or file it to the palace with `learn(type="semantic", content=..., topic=...)`. Only put essentials that must be present every turn in `config/MEMORY.md`.
 
 The test: Every changed line should trace directly to the user's request.
 

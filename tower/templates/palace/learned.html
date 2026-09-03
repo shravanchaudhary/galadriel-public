@@ -1,0 +1,60 @@
+{% extends "palace/base.html" %}
+{% block title %}Learned Memory{% endblock %}
+{% block heading %}Learned Memory{% endblock %}
+{% block subtitle %}{{ total }} committed memor{% if total != 1 %}ies{% else %}y{% endif %} — what the agent has distilled and keeps applying{% endblock %}
+
+{% block palace_content %}
+{% if notice %}
+<div class="notice-banner warn">{{ notice }}</div>
+{% endif %}
+
+<details class="settings-prompt" id="teach">
+    <summary>Teach a memory</summary>
+    <form method="post" action="/palace/teach" class="settings-editor">
+        <div class="settings-actions" style="margin-bottom:0.5rem;">
+            <select name="type" class="chat-input" style="max-width:12rem;">
+                <option value="semantic">semantic — a durable fact</option>
+                <option value="procedural">procedural — a how-to</option>
+                <option value="preference">preference — how to behave</option>
+                <option value="episodic">episodic — what happened</option>
+            </select>
+            <input type="text" name="topic" placeholder="Topic (becomes the hall)" class="chat-input" style="max-width:16rem;">
+        </div>
+        <textarea name="content" class="chat-input" rows="3" placeholder="What should be remembered, self-contained…" required style="width:100%;margin-bottom:0.5rem;"></textarea>
+        <button type="submit" class="btn btn-small">Teach</button>
+        <p class="settings-row-hint" style="margin-top:0.5rem;">Goes through the same commit pipeline as the agent's <code>learn</code> tool: identity, dedupe, provenance, then a recall trigger and graph edges are authored in the background (episodic gets neither — it is the record, not a rule).</p>
+    </form>
+</details>
+
+{% if memories %}
+<div class="table-wrap" role="region" aria-label="Committed memories" tabindex="0" style="margin-top:1rem;">
+<table class="wf-table">
+    <thead><tr><th scope="col">Memory</th><th scope="col">Type</th><th scope="col">Topic</th><th scope="col">Source</th><th scope="col">Trigger</th><th scope="col"><span class="sr-only">Open</span></th></tr></thead>
+    <tbody>
+        {% for m in memories %}
+        <tr>
+            <td>{{ m.preview }}</td>
+            <td><code>{{ m.type }}</code></td>
+            <td>{{ m.topic or '—' }}</td>
+            <td class="muted">{{ m.source or '—' }}</td>
+            <td class="muted">{% if m.trigger and m.trigger.recall_id %}yes{% elif m.type == 'episodic' %}n/a{% else %}none{% endif %}</td>
+            <td><a href="/palace/memory/{{ m.memory_id }}">open →</a></td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+</div>
+
+<div class="settings-actions">
+    {% if page > 1 %}
+    <a class="btn btn-small btn-secondary" href="?page={{ page - 1 }}">Previous</a>
+    {% endif %}
+    <span class="muted">Page {{ page }}</span>
+    {% if page * page_size < total %}
+    <a class="btn btn-small btn-secondary" href="?page={{ page + 1 }}">Next</a>
+    {% endif %}
+</div>
+{% else %}
+<p class="settings-empty">Nothing learned yet. The agent files memories with its <code>learn</code> tool; you can teach one above.</p>
+{% endif %}
+{% endblock %}
