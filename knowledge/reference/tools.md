@@ -138,6 +138,31 @@ cosine — lower = closer.
 If the top hit is strong (`d<0.4`) and answers directly, **don't grep**. If loose
 or truncated, grep the source file the result names.
 
+### Large text lives on disk, not in the conversation
+
+Any tool result over the inline bound is saved to `state/artifacts/` (kept
+~24h) and arrives as a **survey**: head, tail, and probes spaced evenly by
+token offset, each labelled with its token position and line. The tools whose
+output is sized by the world — `run_shell`, `browser`, `fetch_url_data`,
+`google_search`, the palace and db readers, the phone and enrichment tools —
+take `save_to=<path>` to force the same thing for output that would have fit.
+
+The loop, at any file size:
+
+1. `survey_file(path)` — what is in here, and where.
+2. Zoom: `survey_file(path, start=<tok>, end=<tok>)` between two probes. Each
+   zoom divides the range by the probe count at the same fixed cost.
+3. Slice: `read_file(path, start, end)` for a token window, `run_shell` grep
+   `-n` / `sed -n 'N,Mp'` by content or line.
+4. Reshape on disk, never in your reply: `run_shell` python (`html.parser`,
+   `bs4`, `lxml`, `re`, `json`) or shell writes a clean derivative file.
+   Survey that; `study_file` it if you will search it by meaning.
+
+Token offsets are the primary key because a minified page or one huge line has
+no useful line numbers. Reading a whole file into the conversation to rewrite
+a cleaned version of it back out is the expensive path — the file is already
+where the cheap tools are.
+
 ### Decision matrix — where to record what
 
 During a normal turn you have exactly two memory writers: `memory_log` for
@@ -246,22 +271,26 @@ Rules of thumb:
 
 ---
 
-## Reading a web page — the waterfall
+## Reading a web page
 
-Once you have a URL, you almost always just need to **read** it. Don't open a
-browser tab for that — use the waterfall.
+Once you have a URL, you almost always just need to **read** it — that is one
+tool call, `fetch_url_data(url)`. It is the whole waterfall:
 
-| Step | Tool | When |
+| Step | What it does | Notes |
 |---|---|---|
-| 1 | `fetch_url_data(url)` | **Always first** for reading a page |
-| 2 | `browser("open <url>")` then `browser("eval \"document.body.innerText\"")` | Only if step 1 returns `[no content]` |
-| 3 | Ask the user to unblock | Only if step 2 is also blocked **and** the page is essential |
+| 1 | Trafilatura Lambda | Stateless, fast, text only. Skipped for `mode="raw"`. |
+| 2 | The browser | Loads the page in one dedicated tab, opened once and reused. |
 
-Rules:
-- If `fetch_url_data` returns content, you're done — do NOT open the browser.
-- Use the browser directly when you need to **click, type, or navigate**.
-- Without Trafilatura credentials configured, `fetch_url_data` may always return
-  `[no content]` and you fall through to the browser.
+- `mode="text"` (default) returns readable page text; `mode="raw"` returns the
+  full HTML and always goes through the browser.
+- The browser step waits up to 10s for the page to finish loading, then reads it.
+- `[browser offline]` means the browser is not on — ask the user to open Chrome
+  and toggle **Agent ON** in the extension popup, then retry.
+- `[no content]` means the page loaded but is blocked (login wall, CAPTCHA, bot
+  check). Inspect it with `browser`, and only ask the user to unblock it in
+  their live window when the page is essential; otherwise skip it.
+- Use the browser directly when you need to **click, type, or navigate** —
+  `fetch_url_data` only reads.
 
 ---
 

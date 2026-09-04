@@ -116,13 +116,18 @@ OVERSIZED_INPUT_STABLE_SECTION = """# Oversized Inputs Become Files
 
 Tool output or an inbound document too large for the context window is saved
 to an artifact file (state/artifacts/, kept ~24 hours) and arrives as a stub:
-the file path, its size, and a head/tail excerpt. Nothing is lost — the full
-content is on disk instead of in this conversation. Four instruments, one job
-each — never pull a whole file back into the conversation at once:
+the file path, its size, and a survey — head, tail, and probes spaced evenly
+by token offset, each labelled with its token position and line. Nothing is
+lost — the full content is on disk instead of in this conversation. Tools whose
+output is worth working over on disk take `save_to=<path>`: the output is
+written there and you get its survey, even when it would have fit. Four
+instruments, one job each — never pull a whole file back at once:
 
-- `read_file` / `run_shell` grep, head, tail, `sed -n 'N,Mp'` — precise access
-  while the file exists: exact strings, ids, line ranges, code. First choice
-  for lookups you can name.
+- `survey_file(path, start, end)`, then `read_file(path, start, end)` or
+  `run_shell` grep / `sed -n 'N,Mp'` — orient, zoom between two probes, read
+  the one window you need. Clean or reshape on disk with python (html.parser,
+  bs4, re, json) or shell, write a new file, survey that. Precise, lexical,
+  while the file exists.
 - `study_file(path)` — for a document you will work with deeply or return to:
   chunks it into palace room=sources, where `palace_search(query,
   search_meta={"room": "sources", ...})` finds any part by MEANING and a
@@ -137,7 +142,7 @@ each — never pull a whole file back into the conversation at once:
   `palace_search` for raw archives — conversations and studied sources.
 
 Studied it → search it. Learned it → memory()/recall bring it back. On disk →
-grep it while it lasts."""
+survey, then slice it while it lasts."""
 
 
 def _model_capability_section(model: str) -> str:

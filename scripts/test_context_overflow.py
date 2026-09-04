@@ -3,7 +3,8 @@
 
 Three layers, all pure/local — no API key or network needed:
   1. tools.bound_tool_result / _read_file_sync — no tool result enters the
-     buffer oversized; the full text moves to an artifact file.
+     buffer oversized; the full text moves to an artifact file and the model
+     gets its token-spaced survey (text_survey), or `save_to` a file it named.
   2. agent.externalize_oversized_input — an oversized paste becomes an
      artifact stub before the recall scan, storage, or the API see it.
   3. llm_retry.is_context_overflow_error — every provider's over-window
@@ -66,14 +67,16 @@ def test_oversized_result_is_spilled() -> bool:
     out = bound_tool_result(text, "run_shell")
     new = [p for p in _artifact_files() if p not in before]
     ok = (
-        len(out) < len(text)
-        and out.startswith("A" * 100)
-        and out.endswith("Z" * 100)
+        len(out) < INLINE_CHARS
+        and "── head" in out
+        and "── probe 10/10" in out
+        and "── tail" in out
+        and "saved for ~24h" in out
         and len(new) == 1
         and new[0].read_text() == text
         and str(new[0]) in out
     )
-    return _check("oversized tool result → head+tail stub + full artifact file", ok)
+    return _check("oversized tool result → survey stub + full artifact file", ok)
 
 
 def test_read_file_skips_the_central_bound() -> bool:
@@ -93,7 +96,7 @@ def test_block_list_text_is_bounded() -> bool:
     out = _bound_result(result, "browser")
     ok = (
         len(out[0]["text"]) < len(big)
-        and "omitted" in out[0]["text"]
+        and "── probe" in out[0]["text"]
         and out[1]["type"] == "image"
     )
     return _check("block-list result: text bounded, image untouched", ok)
@@ -105,14 +108,14 @@ def test_read_file_default_is_bounded_like_everything_else() -> bool:
     path.write_text(body)
     out = _read_file_sync(str(path))
     ok = (
-        out.startswith("H" * 100)
-        and out.endswith("T" * 100)
-        and "MIDDLE-MARKER" not in out
+        "── head" in out
+        and "── probe 10/10" in out
+        and "── tail" in out
         and str(path) in out
         and "full_page" in out
-        and len(out) < INLINE_CHARS + 500
+        and len(out) < INLINE_CHARS
     )
-    return _check("read_file default → same 30k head+tail bound, full_page hint", ok)
+    return _check("read_file default → survey at the shared 7.5k bound, full_page hint", ok)
 
 
 def test_full_page_returns_whole_file_within_budget() -> bool:
@@ -128,13 +131,130 @@ def test_full_page_still_respects_a_small_model_window() -> bool:
     # gpt-oss-120b: 131072 ctx − 65536 out → ×0.8×4 ≈ 209k chars < 300k file.
     out = _read_file_sync(str(path), full_page=True, model="gpt-oss-120b")
     ok = (
-        "MIDDLE-MARKER" not in out
-        and out.startswith("H" * 100)
-        and out.endswith("T" * 100)
+        "── probe" in out
         and "context budget" in out
-        and len(out) < 250_000
+        and len(out) < INLINE_CHARS
     )
     return _check("full_page on a small-window model is still capped", ok)
+
+
+def _numbered_file(name: str, lines: int = 20_000) -> Path:
+    path = Path(_TMP) / name
+    with path.open("w") as f:
+        for i in range(1, lines + 1):
+            f.write(f"line {i:06d} " + "x" * 39 + "\n")   # 52 bytes = 13 tokens each
+    return path
+
+
+def test_survey_probes_are_token_spaced_and_line_labelled() -> bool:
+    import re
+    from harness.text_survey import survey_file
+    path = _numbered_file("survey.txt")
+    out = survey_file(path)
+    labels = re.findall(r"── (head|probe \d+/10|tail) · tokens ([\d,]+)–([\d,]+) · line ([\d,]+) ──", out)
+    starts = [int(a.replace(",", "")) for _, a, _, _ in labels]
+    lines_at = [int(l.replace(",", "")) for _, _, _, l in labels]
+    gaps = [b - a for a, b in zip(starts[1:-1], starts[2:-1])]
+    ok = (
+        len(labels) == 12
+        and starts == sorted(starts)
+        # the 10 probes are evenly spaced (integer division jitter only)
+        and max(gaps) - min(gaps) <= 2
+        # the line label matches the byte offset (52 bytes per line)
+        and all(l == s * 4 // 52 + 1 for s, l in zip(starts, lines_at))
+        and "20,000 lines" in out
+        and len(out) // 4 < 3_500
+    )
+    return _check("survey: 12 windows, even token spacing, correct line labels", ok)
+
+
+def test_survey_zoom_between_probes_narrows_to_full_text() -> bool:
+    from harness.text_survey import survey_file
+    path = _numbered_file("survey.txt")
+    ranged = survey_file(path, start=100_000, end=110_000, probes=4)
+    zoomed = survey_file(path, start=100_000, end=101_000)
+    ok = (
+        "range 100,000–110,000" in ranged
+        and "probe 4/4" in ranged
+        and "probe 5/" not in ranged
+        and "the whole range fits" in zoomed
+        and "line 007694 " in zoomed     # 100,000 tokens × 4 / 52 lands inside line 7,693
+    )
+    return _check("survey: sub-range keeps its own head/tail; zoom returns the range whole", ok)
+
+
+def test_survey_survives_binary_and_empty_ranges() -> bool:
+    from harness.text_survey import survey_file, survey_text
+    bad = Path(_TMP) / "survey_bin.txt"
+    bad.write_bytes(b"\xff\xfe\x00" * 40_000)
+    out = survey_file(bad)
+    empty = survey_file(_numbered_file("survey.txt"), start=50, end=50)
+    single_line = survey_text("a" * 200_000, "blob")
+    ok = (
+        "── probe 10/10" in out
+        and "empty range" in empty
+        and "1 lines" in single_line and "── probe" in single_line
+    )
+    return _check("survey: binary bytes, empty range, and a single-line blob all render", ok)
+
+
+def test_read_file_token_window() -> bool:
+    path = _numbered_file("survey.txt")
+    out = _read_file_sync(str(path), start=13, end=26)    # exactly line 2
+    past_eof = _read_file_sync(str(path), start=259_980, end=999_999)
+    ok = (
+        out == "line 000002 " + "x" * 39 + "\n"
+        and "\nline 020000 " in past_eof
+        and len(past_eof) == 80
+    )
+    return _check("read_file: start/end token window; end past EOF clamps", ok)
+
+
+def test_save_to_writes_file_and_returns_survey() -> bool:
+    import asyncio
+    from harness.tools import execute_tool
+    target = Path(_TMP) / "saved" / "out.txt"
+    inputs = {"command": "python3 -c \"print('k' * 4000)\"", "save_to": str(target)}
+    out = asyncio.run(execute_tool("run_shell", inputs))
+    err = asyncio.run(execute_tool(
+        "run_shell", {"command": "git status", "save_to": str(target) + ".err"},
+    ))
+    ok = (
+        target.read_text() == "k" * 4000          # run_shell strips the newline
+        and str(target) in out
+        and "the whole text fits" in out         # under budget → survey shows it whole
+        and inputs.get("save_to") == str(target)  # caller's dict untouched
+        and err.startswith("[blocked]")
+        and not (Path(str(target) + ".err")).exists()  # errors are not saved
+    )
+    return _check("save_to: file written, survey returned, errors not saved", ok)
+
+
+def test_save_to_on_block_results_keeps_images() -> bool:
+    target = Path(_TMP) / "saved" / "page.txt"
+    result = [
+        {"type": "text", "text": "<html>" + "q" * 50_000 + "</html>"},
+        {"type": "image", "source": {"data": "..."}},
+    ]
+    out = _bound_result(result, "browser", str(target))
+    ok = (
+        target.read_text().startswith("<html>")
+        and "── probe" in out[0]["text"]
+        and out[1]["type"] == "image"
+    )
+    return _check("save_to: block-list text saved + surveyed, image untouched", ok)
+
+
+def test_save_to_is_advertised_on_every_blob_tool() -> bool:
+    from harness.tools import TOOL_DEFINITIONS, _SAVEABLE_TOOLS
+    have = {
+        t["name"] for t in TOOL_DEFINITIONS
+        if "save_to" in t["input_schema"]["properties"]
+    }
+    ok = have == _SAVEABLE_TOOLS and {
+        "run_shell", "browser", "fetch_url_data", "google_search", "db_query",
+    } <= have and "learn" not in have
+    return _check("save_to advertised on exactly the blob-producing tools", ok, str(have ^ _SAVEABLE_TOOLS))
 
 
 # ── 2. Oversized inbound input ───────────────────────────────────────
@@ -265,7 +385,7 @@ def test_execute_tool_central_bound_applies_to_real_tools() -> bool:
     ok = (
         isinstance(out, str)
         and len(out) < INLINE_CHARS
-        and "tokens omitted" in out
+        and "── probe" in out
         and "saved for ~24h" in out
     )
     return _check("execute_tool: shared bound + spill wired for real tools", ok)
@@ -670,8 +790,8 @@ def test_stable_contract_names_all_four_instruments() -> bool:
     ok = all(
         term in sec
         for term in (
-            "study_file", "learn", "read_file", "palace_search",
-            "memory(query)", '"sources"', "~24 hours",
+            "study_file", "learn", "read_file", "survey_file", "save_to",
+            "palace_search", "memory(query)", '"sources"', "~24 hours",
         )
     )
     return _check("stable section maps grep/study/learn/memory-vs-search", ok)
@@ -752,6 +872,13 @@ def main() -> int:
         test_estimate_prices_images_nominally(),
         test_estimate_counts_reasoning_once_and_only_for_the_last_turn(),
         test_execute_tool_central_bound_applies_to_real_tools(),
+        test_survey_probes_are_token_spaced_and_line_labelled(),
+        test_survey_zoom_between_probes_narrows_to_full_text(),
+        test_survey_survives_binary_and_empty_ranges(),
+        test_read_file_token_window(),
+        test_save_to_writes_file_and_returns_survey(),
+        test_save_to_on_block_results_keeps_images(),
+        test_save_to_is_advertised_on_every_blob_tool(),
         test_overflow_messages_are_recognized(),
         test_non_overflow_messages_are_not(),
         test_413_status_is_overflow(),

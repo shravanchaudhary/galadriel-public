@@ -1204,6 +1204,7 @@ _CHANNEL_PREFIX_RE = re.compile(r"^\[[^\]]+\]:\s*")
 _STAGE2_BARE_TOOLS: frozenset[str] = frozenset(
     {
         "read_file",
+        "survey_file",
         "write_file",
         "run_shell",
         "db_query",

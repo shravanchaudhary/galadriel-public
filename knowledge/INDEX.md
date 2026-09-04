@@ -14,6 +14,7 @@ when a technique becomes reusable; keep personal history in the memory palace.
 | synthesis-identity | Reflecting on existence or developing enduring identity | `knowledge/skills/synthesis-identity.md` | `synthesis identity soul body sentinel` |
 | experiential-reflection | A meaningful outcome changes the shared internal state or continuity crosses agent streams | `knowledge/skills/experiential-reflection.md` | `experiential continuity appraisal consequence` |
 | retrieval-practice | Filing durable knowledge, teaching, or retesting known memory | `knowledge/skills/retrieval-practice.md` | `retrieval practice 3R dig deep spaced retest` |
+| large-text-on-disk | A page, log, dump, or document is too big to read; extracting one part of a large file | `knowledge/skills/large-text-on-disk.md` | `large text survey save_to slice clean on disk` |
 | architecture | Understanding memory tiers, worker board, or self-update surfaces | `knowledge/reference/architecture.md` | `Replika architecture memory hierarchy worker` |
 | tools | Choosing a tool, palace/DB record target, heartbeat/wake/reflection, or browser tabs | `knowledge/reference/tools.md` | `Replika tools decision matrix heartbeat wake reflection` |
 | data | Using operational data safely | `knowledge/reference/data.md` | `database tools system of record` |

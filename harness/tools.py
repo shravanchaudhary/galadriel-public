@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .compaction import CHARS_PER_TOKEN
+from .text_survey import survey_file, survey_text
 
 log = logging.getLogger("galadriel.tools")
 
@@ -681,12 +682,12 @@ TOOL_DEFINITIONS = [
     {
         "name": "read_file",
         "description": (
-            "Read the contents of a file from the local filesystem. Large "
-            "files come back as a head+tail view with the middle omitted; "
-            "pass full_page=true when you genuinely need the whole file in "
-            "one read (it is still capped to what the model's context can "
-            "hold). For targeted slices prefer run_shell with grep, head, "
-            "tail, or sed -n 'N,Mp'."
+            "Read a file, or a window of it: `start`/`end` are TOKEN offsets "
+            "(the positions survey_file reports). A window that fits the "
+            "inline budget comes back whole; anything larger comes back as a "
+            "survey of that range, so narrow it. full_page=true raises the "
+            "budget to what the model's context can hold. For lookups by "
+            "content or line prefer run_shell grep -n / sed -n 'N,Mp'."
         ),
         "input_schema": {
             "type": "object",
@@ -695,12 +696,54 @@ TOOL_DEFINITIONS = [
                     "type": "string",
                     "description": "Absolute or relative path to the file.",
                 },
+                "start": {
+                    "type": "integer",
+                    "description": "Token offset to start reading at (default 0).",
+                },
+                "end": {
+                    "type": "integer",
+                    "description": "Token offset to stop at (default: end of file).",
+                },
                 "full_page": {
                     "type": "boolean",
                     "description": (
-                        "Return as much of the file as the model's context "
-                        "budget allows instead of the default bounded view."
+                        "Raise the inline budget to the model's own context "
+                        "budget for this read."
                     ),
+                },
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "survey_file",
+        "description": (
+            "Make sense of a large file without reading it: returns its head, "
+            "N probes spaced evenly by TOKEN offset, and tail — each labelled "
+            "with its token position and line — for the whole file or the "
+            "`start`–`end` range. Same cost at every zoom level: survey the "
+            "gap between two probes to go deeper, then read_file(start, end) "
+            "the window you want or grep/sed it by line. Orient first, then "
+            "slice; never pull a big file whole into the conversation."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Absolute or relative path to the file.",
+                },
+                "start": {
+                    "type": "integer",
+                    "description": "Token offset the range begins at (default 0).",
+                },
+                "end": {
+                    "type": "integer",
+                    "description": "Token offset the range ends at (default: end of file).",
+                },
+                "probes": {
+                    "type": "integer",
+                    "description": "How many evenly spaced probes (default 10, max 30).",
                 },
             },
             "required": ["path"],
@@ -1119,8 +1162,7 @@ TOOL_DEFINITIONS = [
         "description": (
             "Perform a Google search using the Serper API. "
             "Use this tool ONLY for web search. To READ any result page, use "
-            "fetch_url_data first (fast, no browser). Only use the browser tool "
-            "when fetch_url_data can't reach the page, or when you need to click/"
+            "fetch_url_data. Only use the browser tool when you need to click/"
             "type/navigate rather than just read."
         ),
         "input_schema": {
@@ -1145,22 +1187,21 @@ TOOL_DEFINITIONS = [
     {
         "name": "fetch_url_data",
         "description": (
-            "Read a web page by URL — the FAST, CHEAP, FIRST-CHOICE way to get a "
-            "page's text once you have its URL (e.g. a google_search result, or a "
-            "link from anywhere). Runs a waterfall of lightweight extractor APIs; "
-            "NO browser tab is opened, so it's far faster than the cloud browser.\n\n"
-            "WATERFALL — follow this order whenever you just need to READ a page:\n"
-            "1. Call fetch_url_data first. If it returns content, you're done — do "
-            "NOT open the browser.\n"
-            "2. If it returns [no content] (login wall, bot detection, JS-only "
-            "page, or extraction failure), open the browser tool "
-            "(`open <url>` then `eval \"document.body.innerText\"` or `state`).\n"
-            "3. If the browser is ALSO blocked (login / CAPTCHA / OTP / "
-            "bot-detection) AND the page is essential to the task, STOP and ask "
-            "the user to take over in the live window to unblock it, then continue. "
-            "If the page is not essential, skip it and move on.\n\n"
-            "Use the browser directly (not this tool) when you need to "
-            "click, type, or navigate — fetch_url_data only reads."
+            "Read a web page by URL — the one way to get a page's contents once "
+            "you have its URL (e.g. a google_search result, or a link from "
+            "anywhere). Tries a fast stateless extractor first, then loads the "
+            "page in the user's own signed-in browser, in a single tab it opens "
+            "once and reuses. That fallback is what gets past JS-only pages and "
+            "most login walls, so you rarely need the browser tool just to READ.\n\n"
+            "mode='text' (default) returns the page's readable text. mode='raw' "
+            "returns the full HTML and always goes through the browser.\n\n"
+            "If it replies that the browser is offline, ask the user to turn it "
+            "on (extension popup, Agent ON) and retry. If it replies [no content] "
+            "the page is blocked (login / CAPTCHA / bot check): inspect it with "
+            "the browser tool, and only ask the user to unblock it in their live "
+            "window when the page is essential — otherwise skip it and move on.\n\n"
+            "Use the browser tool directly when you need to click, type, or "
+            "navigate — fetch_url_data only reads."
         ),
         "input_schema": {
             "type": "object",
@@ -1168,6 +1209,11 @@ TOOL_DEFINITIONS = [
                 "url": {
                     "type": "string",
                     "description": "The full http/https URL of the page to read.",
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": ["text", "raw"],
+                    "description": "'text' (default) for readable page text, 'raw' for full HTML.",
                 },
             },
             "required": ["url"],
@@ -1527,19 +1573,45 @@ def visible_tool_definitions() -> list:
 # straight to an API 400 (see project-agent-kb/kb/context-overflow-400.md).
 # Every result is therefore bounded at the one choke point all tools pass
 # through: oversized output is spilled to an artifact file and the model gets
-# head + tail + the path, so nothing is lost — it moves to disk, where
-# run_shell/read_file can slice it on demand.
+# the path plus a token-spaced survey of it (text_survey), so nothing is lost —
+# it moves to disk, where survey_file/read_file/run_shell slice it on demand.
 
 # All limits in TOKENS (compaction.CHARS_PER_TOKEN converts at string
 # boundaries) — token counts are what every model limit is denominated in.
 _INLINE_RESULT_MAX_TOKENS = 7_500  # matches Claude Code's shell-output cap
-_SPILL_EXCERPT_TOKENS = 500        # shown from each end of a spilled result
-# read_file bounds itself inside _read_file_sync (default head+tail at the
-# same 7.5k tokens, `full_page=True` up to the model's own budget — the source is
-# already a file, so there is nothing to spill). Every other tool goes through
-# the one shared limit: no per-tool carve-outs, every channel plays by the
-# same rules.
+# read_file bounds itself inside _read_file_sync (a window that fits the same
+# 7.5k tokens comes back whole, `full_page=True` raises that to the model's own
+# budget, anything larger is surveyed — the source is already a file, so there
+# is nothing to spill). Every other tool goes through the one shared limit: no
+# per-tool carve-outs, every channel plays by the same rules.
 _SELF_BOUNDED_TOOLS = frozenset({"read_file"})
+
+# Tools whose output is sized by the world (a page, a command, a query) rather
+# than by a fixed schema advertise `save_to`: write the full output to a file
+# and return its survey instead. The mechanism itself is honoured for every
+# tool in execute_tool; this set only decides where the schema mentions it.
+_SAVEABLE_TOOLS = frozenset({
+    "run_shell", "browser", "fetch_url_data", "google_search",
+    "read_episode_segment", "memory", "palace_search", "palace_kg_query",
+    "palace_kg_timeline", "palace_taxonomy", "db_get", "db_query",
+    "phone_shell", "phone_ui_dump", *EXPLORIUM_TOOL_NAMES,
+})
+
+_SAVE_TO_SCHEMA = {
+    "type": "string",
+    "description": (
+        "Also write the full output to this file path (created or overwritten) "
+        "and return a token-spaced survey of it instead of the output itself. "
+        "Use it whenever the output is worth working over on disk — a page, a "
+        "log, a dump, a long listing — then survey_file / read_file / run_shell "
+        "slice, grep, and clean the file without ever pulling it whole into "
+        "the conversation."
+    ),
+}
+
+for _tool in TOOL_DEFINITIONS:
+    if _tool["name"] in _SAVEABLE_TOOLS:
+        _tool["input_schema"]["properties"]["save_to"] = _SAVE_TO_SCHEMA
 
 
 def artifact_dir() -> Path:
@@ -1582,30 +1654,58 @@ def spill_text(text: str, prefix: str) -> Path:
 
 
 def bound_tool_result(text: str, tool_name: str) -> str:
-    """Cap one tool result's inline size; spill the full text to a file."""
+    """Cap one tool result's inline size; spill the full text to a file and
+    return its survey. Nothing is re-run: the file is sliced on demand."""
     est_tokens = len(text) // CHARS_PER_TOKEN
     if est_tokens <= _INLINE_RESULT_MAX_TOKENS:
         return text
-    excerpt = _SPILL_EXCERPT_TOKENS * CHARS_PER_TOKEN
     try:
-        where = f"full output saved for ~24h to {spill_text(text, tool_name)}"
+        path = spill_text(text, tool_name)
     except Exception as e:
         log.warning(f"Could not spill oversized {tool_name} result: {e}")
-        where = "full output could NOT be saved — rerun with a narrower command"
+        return (
+            f"[{tool_name} output is ≈{est_tokens:,} tokens and could NOT be "
+            "saved to a file — rerun with a narrower command, or pass save_to "
+            "with a path you can write. Survey of what came back:]\n"
+            f"{survey_text(text, tool_name)}"
+        )
     return (
-        f"{text[:excerpt]}\n\n[... ≈{est_tokens - 2 * _SPILL_EXCERPT_TOKENS:,} "
-        f"of ≈{est_tokens:,} tokens omitted — {where}. Slice it with "
-        "run_shell (grep/head/tail/sed) or read_file instead of re-running "
-        "the command. ...]\n\n"
-        f"{text[-excerpt:]}"
+        f"[{tool_name} output is ≈{est_tokens:,} tokens — too large to inline; "
+        f"full output saved for ~24h to {path}. Work on the file, do not rerun "
+        "the command.]\n"
+        f"{survey_file(path)}"
     )
 
 
-def _bound_result(result, tool_name: str):
-    if tool_name in _SELF_BOUNDED_TOOLS:
+def save_tool_result(text: str, tool_name: str, save_to: str, working_dir=None) -> str:
+    """`save_to`: write the full output where the agent asked and hand back
+    its survey. Tool errors are returned as they are — an error is not output."""
+    if text.startswith(("[tool error]", "[error]", "[blocked]")):
+        return text
+    from .path_policy import assert_agent_writable
+
+    p = assert_agent_writable(save_to, working_dir=working_dir)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(text, encoding="utf-8")
+    return (
+        f"[{tool_name} output — ≈{len(text) // CHARS_PER_TOKEN:,} tokens — "
+        f"saved to {p}.]\n{survey_file(p)}"
+    )
+
+
+def _bound_result(result, tool_name: str, save_to: str = None, working_dir=None):
+    """Size every text result: saved to `save_to` when asked, else bounded.
+    Image blocks (browser screenshots) ride untouched either way."""
+    if save_to:
+        def size(text):
+            return save_tool_result(text, tool_name, save_to, working_dir)
+    elif tool_name in _SELF_BOUNDED_TOOLS:
         return result
+    else:
+        def size(text):
+            return bound_tool_result(text, tool_name)
     if isinstance(result, str):
-        return bound_tool_result(result, tool_name)
+        return size(result)
     if isinstance(result, list):
         for block in result:
             if (
@@ -1613,7 +1713,7 @@ def _bound_result(result, tool_name: str):
                 and block.get("type") == "text"
                 and isinstance(block.get("text"), str)
             ):
-                block["text"] = bound_tool_result(block["text"], tool_name)
+                block["text"] = size(block["text"])
     return result
 
 
@@ -1638,6 +1738,12 @@ async def execute_tool(
             f"[tool error] {name} expected a dict of arguments, "
             f"got {type(inputs).__name__}. Call again with the schema fields."
         )
+    # `save_to` belongs to this boundary, not to any tool: the tool never sees
+    # it (a copy, so the recorded call keeps it), and the result is sized here.
+    save_to = inputs.get("save_to")
+    if save_to is not None:
+        inputs = {k: v for k, v in inputs.items() if k != "save_to"}
+        save_to = str(save_to).strip() or None
     try:
         result = await _execute_tool_impl(
             name, inputs,
@@ -1649,7 +1755,7 @@ async def execute_tool(
         )
         # Bounding may spill megabytes to disk (spill_text write + TTL sweep)
         # — off the event loop so one huge result can't stall other channels.
-        return await asyncio.to_thread(_bound_result, result, name)
+        return await asyncio.to_thread(_bound_result, result, name, save_to, working_dir)
     except KeyError as e:
         missing = e.args[0] if e.args else "?"
         got = sorted(inputs.keys())
@@ -1877,8 +1983,17 @@ async def _execute_tool_impl(
     elif name == "read_file":
         return await _read_file(
             inputs["path"],
+            start=inputs.get("start"),
+            end=inputs.get("end"),
             full_page=bool(inputs.get("full_page")),
             model=model,
+        )
+    elif name == "survey_file":
+        return await _survey_file(
+            inputs["path"],
+            start=inputs.get("start"),
+            end=inputs.get("end"),
+            probes=inputs.get("probes"),
         )
     elif name == "study_file":
         return await _study_file(
@@ -2088,16 +2203,7 @@ async def _execute_tool_impl(
         return json.dumps(results, indent=2, ensure_ascii=False)
     elif name == "fetch_url_data":
         from .web_fetch import fetch_url_data
-        content = await fetch_url_data(inputs["url"])
-        if content:
-            return content
-        return (
-            "[no content] Fast extraction could not read this URL (possible login "
-            "wall, bot detection, or JS-only page). Read it with the browser tool "
-            "(`open <url>` then `eval \"document.body.innerText\"` or `state`). If "
-            "the browser is also blocked and the page is essential, ask the user to "
-            "unblock it in the live window; otherwise skip it."
-        )
+        return await fetch_url_data(inputs["url"], inputs.get("mode") or "text")
     elif name == "db_create":
         from . import db_ops
         return await db_ops.create(inputs["entity"], inputs["doc"])
@@ -2544,13 +2650,16 @@ def _attach_screenshots(text: str, paths: list[str]) -> str | list:
     return [{"type": "text", "text": text}, *blocks]
 
 
-def _anchor_tab(commands: list[list[str]], tab: int | None) -> list[list[str]]:
+def _anchor_tab(commands: list[list[str]], tab: int | None) -> tuple[list[list[str]], bool]:
     """Prepend an atomic `tab switch <tab>` so every command in this locked
     batch runs on the caller's own tab. Skipped when the first command is
-    itself a `tab` command (tab management calls pick their own target)."""
+    itself a `tab` command (tab management calls pick their own target).
+
+    Returns (commands, anchored); `anchored` tells the runner that the first
+    output is the harness's own plumbing, not something the caller asked for."""
     if tab is None or (commands and commands[0] and commands[0][0] == "tab"):
-        return commands
-    return [["tab", "switch", str(tab)], *commands]
+        return commands, False
+    return [["tab", "switch", str(tab)], *commands], True
 
 
 async def _run_browser_bce(args: str, profile: str | None = None, tab: int | None = None) -> str | list:
@@ -2560,7 +2669,7 @@ async def _run_browser_bce(args: str, profile: str | None = None, tab: int | Non
     commands, err = _split_browser_commands(args)
     if err:
         return err
-    commands = _anchor_tab(commands, tab)
+    commands, anchored = _anchor_tab(commands, tab)
     screenshot_paths = _ensure_screenshot_paths(commands)
 
     pairing_code, resolve_err = _resolve_bce_pairing_code(profile)
@@ -2570,11 +2679,15 @@ async def _run_browser_bce(args: str, profile: str | None = None, tab: int | Non
     lock_key = f"bce-{profile or _DEFAULT_PROFILE}"
     async with _lock_for(lock_key):
         outputs: list[str] = []
-        for cmd in commands:
+        for position, cmd in enumerate(commands):
             text, ok = await asyncio.to_thread(
                 run_argv, cmd, pairing_code=pairing_code, ensure_online=True
             )
-            outputs.append(text)
+            # The anchor's `{"tab_id": ...}` ack is plumbing the caller never
+            # asked for, and it corrupts anything that parses the real output.
+            # Keep it only when it failed and is the reason we stopped.
+            if not (anchored and position == 0 and ok):
+                outputs.append(text)
             if not ok:
                 break
         out = "\n".join(o for o in outputs if o).strip() or "(no output)"
@@ -2607,7 +2720,7 @@ async def _run_browser(args: str, profile: str | None = None, tab: int | None = 
     commands, err = _split_browser_commands(args)
     if err:
         return err.replace("browser command", "browser-use command")
-    commands = _anchor_tab(commands, tab)
+    commands, anchored = _anchor_tab(commands, tab)
     screenshot_paths = _ensure_screenshot_paths(commands)
 
     cfg, err = await _resolve_browser_profile(profile)
@@ -2628,9 +2741,10 @@ async def _run_browser(args: str, profile: str | None = None, tab: int | None = 
         daemon_up = state == "ours"
 
         outputs: list[str] = []
-        for cmd in commands:
+        for position, cmd in enumerate(commands):
             text, ok = await _run_one_browser(_with_cdp(cmd, daemon_up, session, cdp_url))
-            outputs.append(text)
+            if not (anchored and position == 0 and ok):
+                outputs.append(text)
             if not ok:
                 break
             daemon_up = True
@@ -3504,23 +3618,26 @@ def _full_page_token_budget(model: str | None) -> int:
     return max(_INLINE_RESULT_MAX_TOKENS, int((context - max_output) * 0.8))
 
 
-async def _read_file(path: str, full_page: bool = False, model: str = None) -> str:
+async def _read_file(path: str, start=None, end=None, full_page: bool = False,
+                     model: str = None) -> str:
     """Read a file's contents without blocking the event loop."""
     loop = asyncio.get_running_loop()
     try:
         return await loop.run_in_executor(
-            None, _read_file_sync, path, full_page, model,
+            None, _read_file_sync, path, start, end, full_page, model,
         )
     except Exception as e:
         return f"[error] {e}"
 
 
-def _read_file_sync(path: str, full_page: bool = False, model: str = None) -> str:
+def _read_file_sync(path: str, start=None, end=None, full_page: bool = False,
+                    model: str = None) -> str:
     """Synchronous file read, run in executor. Bounds itself (execute_tool's
-    shared bound skips read_file): the default view is head+tail at the same
-    7.5k tokens every tool gets; `full_page` raises the cap to the model's own context
-    budget. No refusal, no spill — the source is already a file the model can
-    slice with run_shell."""
+    shared bound skips read_file): the requested window — the whole file by
+    default, `start`–`end` in tokens otherwise — comes back whole when it fits
+    the same 7.5k tokens every tool gets (`full_page` raises that to the
+    model's own context budget), and as a survey of that range when it does
+    not. No refusal, no spill — the source is already a file."""
     from .path_policy import assert_agent_readable
 
     p = assert_agent_readable(path)
@@ -3530,25 +3647,33 @@ def _read_file_sync(path: str, full_page: bool = False, model: str = None) -> st
     limit_tokens = (
         _full_page_token_budget(model) if full_page else _INLINE_RESULT_MAX_TOKENS
     )
-    # File size in bytes ≈ chars for the text files this tool reads.
-    if size <= limit_tokens * CHARS_PER_TOKEN:
-        return p.read_text(encoding="utf-8")
-    excerpt = (limit_tokens // 2) * CHARS_PER_TOKEN
+    # Token offsets seek as bytes: bytes ≈ chars for the text this reads.
+    start_b = max(0, min(int(start or 0) * CHARS_PER_TOKEN, size))
+    end_b = size if end is None else max(start_b, min(int(end) * CHARS_PER_TOKEN, size))
+    if end_b - start_b <= limit_tokens * CHARS_PER_TOKEN:
+        with p.open("rb") as f:
+            f.seek(start_b)
+            return f.read(end_b - start_b).decode("utf-8", errors="replace")
     hint = (
-        "pass full_page=true for the whole file, or slice"
+        "narrow start/end, pass full_page=true, or slice by line with run_shell"
         if not full_page
-        else "that is this model's context budget — slice the rest"
+        else "that is this model's context budget — narrow start/end"
     )
-    with p.open("rb") as f:
-        head = f.read(excerpt).decode("utf-8", errors="replace")
-        f.seek(size - excerpt)
-        tail = f.read().decode("utf-8", errors="replace")
     return (
-        f"{head}\n\n[... file is ≈{size // CHARS_PER_TOKEN:,} tokens — "
-        f"showing the first and last ≈{limit_tokens // 2:,}. {hint} with "
-        f"run_shell (grep, sed -n 'N,Mp', head, tail) on {p} ...]\n\n"
-        f"{tail}"
+        f"[read_file: the requested range is ≈{(end_b - start_b) // CHARS_PER_TOKEN:,} "
+        f"tokens, over the ≈{limit_tokens:,}-token budget — {hint}. Survey of "
+        f"the range instead:]\n{survey_file(p, start=start_b // CHARS_PER_TOKEN, end=end_b // CHARS_PER_TOKEN)}"
     )
+
+
+async def _survey_file(path: str, start=None, end=None, probes=None) -> str:
+    """survey_file tool: text_survey over an agent-readable path, off the loop."""
+    from .path_policy import assert_agent_readable
+
+    p = assert_agent_readable(path)
+    if not p.exists():
+        return f"[error] File not found: {path}"
+    return await asyncio.to_thread(survey_file, p, start or 0, end, probes)
 
 
 async def _write_file(path: str, content: str) -> str:

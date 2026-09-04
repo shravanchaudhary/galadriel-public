@@ -97,7 +97,7 @@ CONSOLIDATION_TOOLS = frozenset({
 # that set also feeds RECALL_SCAN_EXCLUDED_TOOLS, and read_file/run_shell
 # results on normal turns must stay in the recall scan corpus.
 CONSOLIDATION_TURN_TOOLS = CONSOLIDATION_TOOLS | frozenset({
-    "read_file", "run_shell",
+    "read_file", "survey_file", "run_shell",
 })
 
 # Tools whose args/results are recall/learning meta-content (example phrases,
@@ -365,13 +365,12 @@ class TurnCancelled(Exception):
 #
 # A pasted document larger than a fraction of the model's window would crowd
 # out (or overflow) the context in one message. It is spilled to an artifact
-# file instead: the stored message carries the path plus a head/tail excerpt,
-# and the model slices the file on demand — the same contract as oversized
-# tool results (tools.bound_tool_result), stated once in the stable system
-# prompt (memory.OVERSIZED_INPUT_STABLE_SECTION).
+# file instead: the stored message carries the path plus a token-spaced
+# survey, and the model slices the file on demand — the same contract as
+# oversized tool results (tools.bound_tool_result), stated once in the stable
+# system prompt (memory.OVERSIZED_INPUT_STABLE_SECTION).
 
 _INPUT_INLINE_WINDOW_FRACTION = 0.20
-_INPUT_EXCERPT_TOKENS = 500
 
 # Auto-compaction may not wait past this fraction of the model window: the
 # summarizer is the channel's own model summarizing the head in place, so the
@@ -396,18 +395,18 @@ def _externalize_text(text: str, limit: int) -> str | None:
     if est_tokens <= int(limit * _INPUT_INLINE_WINDOW_FRACTION):
         return None
     from .tools import spill_text
+    from .text_survey import survey_file
     try:
         path = spill_text(text, "input")
     except Exception as e:
         log.warning(f"Could not spill oversized input ({e}); passing it through")
         return None
-    excerpt = _INPUT_EXCERPT_TOKENS * CHARS_PER_TOKEN
     return (
         f"[Attached input too large to inline: ≈{est_tokens:,} tokens against "
-        f"a {limit:,}-token context limit. Saved for ~24h to {path} — slice "
-        "it (read_file, run_shell grep/head/tail/sed), or study_file(path) "
-        "to make it permanently searchable. Head and tail excerpts:]\n\n"
-        f"{text[:excerpt]}\n\n[... middle omitted ...]\n\n{text[-excerpt:]}"
+        f"a {limit:,}-token context limit. Saved for ~24h to {path} — survey_file "
+        "/ read_file / run_shell slice it, or study_file(path) to make it "
+        "permanently searchable.]\n"
+        f"{survey_file(path)}"
     )
 
 
