@@ -22,7 +22,6 @@ replika_runtime_secret_names = [
   "BCE_API_KEY",
   "FULLENRICH_API_KEY",
   "GEMINI_API_KEY",
-  "HANDINGER_API_KEY",
   "SERPER_API_KEY",
   "TOWER_SECRET_KEY",
   "TRAFILATURA_API_KEY",
@@ -33,7 +32,6 @@ replika_runtime_provider_secret_arns = {
   BCE_API_KEY              = "arn:aws:secretsmanager:ap-south-1:ACCOUNT:secret:replika/runtime/bce-api-key"
   FULLENRICH_API_KEY  = "arn:aws:secretsmanager:ap-south-1:ACCOUNT:secret:replika/runtime/fullenrich-api-key"
   GEMINI_API_KEY      = "arn:aws:secretsmanager:ap-south-1:ACCOUNT:secret:replika/runtime/gemini-api-key"
-  HANDINGER_API_KEY   = "arn:aws:secretsmanager:ap-south-1:ACCOUNT:secret:replika/runtime/handinger-api-key"
   SERPER_API_KEY      = "arn:aws:secretsmanager:ap-south-1:ACCOUNT:secret:replika/runtime/serper-api-key"
   TRAFILATURA_API_KEY = "arn:aws:secretsmanager:ap-south-1:ACCOUNT:secret:replika/runtime/trafilatura-api-key"
 }

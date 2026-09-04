@@ -140,7 +140,6 @@ variable "replika_runtime_provider_secret_arns" {
       "BCE_API_KEY",
       "FULLENRICH_API_KEY",
       "GEMINI_API_KEY",
-      "HANDINGER_API_KEY",
       "SERPER_API_KEY",
       "TRAFILATURA_API_KEY",
     ]))) == 0
@@ -183,7 +182,6 @@ variable "replika_runtime_secret_names" {
     "BCE_API_KEY",
     "FULLENRICH_API_KEY",
     "GEMINI_API_KEY",
-    "HANDINGER_API_KEY",
     "SERPER_API_KEY",
     "TOWER_SECRET_KEY",
     "TRAFILATURA_API_KEY",
@@ -195,7 +193,6 @@ variable "replika_runtime_secret_names" {
       "BCE_API_KEY",
       "FULLENRICH_API_KEY",
       "GEMINI_API_KEY",
-      "HANDINGER_API_KEY",
       "SERPER_API_KEY",
       "TOWER_SECRET_KEY",
       "TRAFILATURA_API_KEY",
