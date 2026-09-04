@@ -278,8 +278,11 @@ tool call, `fetch_url_data(url)`. It is the whole waterfall:
 
 | Step | What it does | Notes |
 |---|---|---|
-| 1 | Trafilatura Lambda | Stateless, fast, text only. Skipped for `mode="raw"`. |
+| 1 | Trafilatura Lambda | Stateless, fast (~0.3–2s), text only. Skipped for `mode="raw"`. |
 | 2 | The browser | Loads the page in one dedicated tab, opened once and reused. |
+
+Most pages never reach step 2. The browser is for what Trafilatura genuinely
+cannot fetch — login walls, bot checks, JS-only pages — and for `mode="raw"`.
 
 - `mode="text"` (default) returns readable page text; `mode="raw"` returns the
   full HTML and always goes through the browser.
@@ -289,6 +292,9 @@ tool call, `fetch_url_data(url)`. It is the whole waterfall:
 - `[no content]` means the page loaded but is blocked (login wall, CAPTCHA, bot
   check). Inspect it with `browser`, and only ask the user to unblock it in
   their live window when the page is essential; otherwise skip it.
+- `[wrong page]` means the browser moved to a different site while the page was
+  loading — the window is shared with the user and other agents. Just retry. If
+  the url genuinely redirects elsewhere, fetch the destination it names.
 - Use the browser directly when you need to **click, type, or navigate** —
   `fetch_url_data` only reads.
 
